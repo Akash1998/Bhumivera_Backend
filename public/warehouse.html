@@ -645,12 +645,10 @@ Sys:{
         
         try {
             let res = await fetch(`https://service.anritvox.com/api/warehouse/state?_t=${Date.now()}`, { 
-                headers: { 
-                    'Authorization': 'Bearer ' + token,
-                    'Cache-Control': 'no-cache, no-store, must-revalidate',
-                    'Pragma': 'no-cache'
-                }
-            });
+    headers: { 
+        'Authorization': 'Bearer ' + token
+    }
+});
             if(res.status === 401) { AV.Auth.logout(); return; }
             let data = await res.json();
             
