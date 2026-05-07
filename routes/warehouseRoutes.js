@@ -108,7 +108,7 @@ router.post('/sales', auth, async (req, res) => {
 // GET /api/warehouse/logs
 router.get('/logs', auth, async (req, res) => {
   try {
-    const [logs] = await pool.query('SELECT l.*,a.email as admin_email FROM warehouse_logs l LEFT JOIN admins a ON l.admin_id=a.id ORDER BY l.created_at DESC LIMIT 200');
+    const [logs] = await pool.query('SELECT l.*,a.email as admin_email FROM warehouse_logs l LEFT JOIN admin_users a ON l.admin_id=a.id ORDER BY l.created_at DESC LIMIT 200');
     res.json({ logs });
   } catch(e) { res.status(500).json({ message: e.message }); }
 });
