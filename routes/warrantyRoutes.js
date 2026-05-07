@@ -1,148 +1,108 @@
-// backend/routes/warrantyRoutes.js
-const express = require("express");
+const express = require('express');
+const pool = require('../config/db');
+const { authenticateUser } = require('../middleware/authMiddleware');
 const router = express.Router();
-const pool = require("../config/db");
-const {
-  validateSerial,
-  registerWarranty,
-  getAllRegistrations,
-  updateWarrantyStatus,
-  deleteWarranty
-} = require("../models/warrantyModel");
-const { authenticateAdmin } = require("../middleware/authMiddleware");
 
-// PUBLIC: Check serial for the E-Warranty form
-// Returns serial info including is_legacy and base_warranty_months
-// so the frontend can show the purchase date field only for new-policy serials
-router.get("/validate/:serial", async (req, res) => {
+// Apply standard user authentication
+const auth = authenticateUser;
+
+// GET: Fetch the user's entire warehouse state on login
+router.get('/state', auth, async (req, res) => {
   try {
-    if (!req.params.serial) {
-      return res.status(400).json({ message: "Serial parameter is required" });
+    const uid = req.user.id;
+    const [inv] = await pool.query('SELECT * FROM warehouse_inventory WHERE user_id=?', [uid]);
+    const [cust] = await pool.query('SELECT * FROM warehouse_customers WHERE user_id=?', [uid]);
+    const [sales] = await pool.query('SELECT * FROM warehouse_sales WHERE user_id=?', [uid]);
+    const [state] = await pool.query('SELECT * FROM warehouse_cloud_state WHERE user_id=?', [uid]);
+
+    // Format DB rows back into the exact JSON structure your frontend expects
+    const avState = {
+      i: inv.map(x => ({ id: x.id, name: x.name, cat: x.category, qty: x.quantity, price: parseFloat(x.sell_price), dateAdded: x.date_added, soldQty: x.sold_qty })),
+      c: cust.map(x => ({ id: x.id, name: x.name, phone: x.phone, loc: x.loc, type: x.type, wallet: parseFloat(x.wallet) })),
+      s: sales.map(x => JSON.parse(x.sale_json)),
+      l: state.length > 0 && state[0].logs_json ? JSON.parse(state[0].logs_json) : [],
+      p: state.length > 0 && state[0].proofs_json ? JSON.parse(state[0].proofs_json) : [],
+      cfg: state.length > 0 && state[0].cfg_json ? JSON.parse(state[0].cfg_json) : { cats: ['General'], hid: [], auth: {} }
+    };
+
+    res.json({ success: true, state: avState });
+  } catch(e) { res.status(500).json({ message: e.message }); }
+});
+
+// POST: Sync the frontend state to the relational database
+router.post('/sync', auth, async (req, res) => {
+  const uid = req.user.id;
+  const { i, c, s, p, l, cfg } = req.body;
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    // 1. Sync Inventory (Upsert)
+    if (i && i.length) {
+      const invIds = i.map(item => item.id);
+      if(invIds.length > 0) {
+        await conn.query(`DELETE FROM warehouse_inventory WHERE user_id = ? AND id NOT IN (?)`, [uid, invIds]);
+      }
+      for (const item of i) {
+        await conn.query(`
+          INSERT INTO warehouse_inventory (id, user_id, name, category, quantity, sell_price, date_added, sold_qty)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE name=VALUES(name), category=VALUES(category), quantity=VALUES(quantity), sell_price=VALUES(sell_price), sold_qty=VALUES(sold_qty)
+        `, [item.id, uid, item.name, item.cat, item.qty, item.price, new Date(item.dateAdded), item.soldQty || 0]);
+      }
+    } else {
+        await conn.query(`DELETE FROM warehouse_inventory WHERE user_id = ?`, [uid]);
     }
-    const info = await validateSerial(req.params.serial);
-    res.json(info);
-  } catch (err) {
-    res.status(err.status || 500).json({ message: err.message || "Validation failed" });
-  }
-});
 
-// PUBLIC: Register the warranty
-// Body fields:
-//   serialNumber / serial, productId, customerName, email, phone,
-//   purchaseDate (required for new-policy serials), shopName,
-//   invoiceUrl (optional, for anti-tampering audit trail)
-//
-// The 14-day IST validation and warranty_end_date calculation happen
-// entirely server-side inside warrantyModel.registerWarranty()
-router.post("/register", async (req, res) => {
-  try {
-    if (!req.body || Object.keys(req.body).length === 0) {
-      return res.status(400).json({ message: "Empty request payload" });
+    // 2. Sync Customers (Upsert)
+    if (c && c.length) {
+      const custIds = c.map(cust => cust.id);
+      if(custIds.length > 0) {
+        await conn.query(`DELETE FROM warehouse_customers WHERE user_id = ? AND id NOT IN (?)`, [uid, custIds]);
+      }
+      for (const cust of c) {
+        await conn.query(`
+          INSERT INTO warehouse_customers (id, user_id, name, phone, loc, type, wallet)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE name=VALUES(name), phone=VALUES(phone), loc=VALUES(loc), type=VALUES(type), wallet=VALUES(wallet)
+        `, [cust.id, uid, cust.name, cust.phone, cust.loc, cust.type, cust.wallet]);
+      }
+    } else {
+        await conn.query(`DELETE FROM warehouse_customers WHERE user_id = ?`, [uid]);
     }
-    const result = await registerWarranty(req.body);
-    res.status(201).json(result);
-  } catch (err) {
-    // Preserve the exact error status (400 for 14-day rejection, 404 for invalid serial, etc.)
-    res.status(err.status || 500).json({ message: err.message || "Registration failed" });
-  }
-});
 
-// ADMIN: View all warranty registrations
-router.get("/admin", authenticateAdmin, async (req, res) => {
-  try {
-    const list = await getAllRegistrations();
-    res.json(list);
-  } catch (err) {
-    res.status(500).json({ message: "Server error loading registrations" });
-  }
-});
+    // 3. Sync Sales (Upsert)
+    if (s && s.length) {
+      const saleIds = s.map(sale => sale.id);
+      if(saleIds.length > 0) {
+        await conn.query(`DELETE FROM warehouse_sales WHERE user_id = ? AND id NOT IN (?)`, [uid, saleIds]);
+      }
+      for (const sale of s) {
+        await conn.query(`
+          INSERT INTO warehouse_sales (id, user_id, date, customer_id, total, paid, sale_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE sale_json=VALUES(sale_json)
+        `, [sale.id, uid, new Date(sale.date), sale.cust.id, sale.billTotal || sale.total, sale.paid || 0, JSON.stringify(sale)]);
+      }
+    } else {
+        await conn.query(`DELETE FROM warehouse_sales WHERE user_id = ?`, [uid]);
+    }
 
-// ADMIN: Update warranty status
-router.put("/admin/:id", authenticateAdmin, async (req, res) => {
-  try {
-    await updateWarrantyStatus(req.params.id, req.body.status);
-    res.json({ message: "Status updated successfully" });
-  } catch (err) {
-    res.status(500).json({ message: "Server error updating status" });
-  }
-});
+    // 4. Sync Settings & Media
+    await conn.query(`
+      INSERT INTO warehouse_cloud_state (user_id, logs_json, proofs_json, cfg_json)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE logs_json=VALUES(logs_json), proofs_json=VALUES(proofs_json), cfg_json=VALUES(cfg_json)
+    `, [uid, JSON.stringify(l), JSON.stringify(p), JSON.stringify(cfg)]);
 
-// ADMIN: Delete warranty registration
-router.delete("/admin/:id", authenticateAdmin, async (req, res) => {
-  try {
-    await deleteWarranty(req.params.id);
-    res.json({ message: "Warranty deleted successfully" });
-  } catch (err) {
-    res.status(500).json({ message: "Server error deleting warranty" });
-  }
-});
-
-// ADMIN: Delete a serial number directly from warranty/serial management
-router.delete("/serials/:id", authenticateAdmin, async (req, res) => {
-  try {
-    const serialId = req.params.id;
-    const [rows] = await pool.query("SELECT product_id FROM product_serials WHERE id = ?", [serialId]);
-    if (rows.length === 0) return res.status(404).json({ message: "Serial not found" });
-    const productId = rows[0].product_id;
-    await pool.query("DELETE FROM product_serials WHERE id = ?", [serialId]);
-    await pool.query("UPDATE products SET quantity = GREATEST(0, quantity - 1) WHERE id = ?", [productId]);
-    res.json({ message: "Serial number deleted and inventory adjusted" });
-  } catch (err) {
-    console.error("Delete serial error:", err);
-    res.status(500).json({ message: "Server error deleting serial" });
-  }
-});
-
-// ADMIN: Get all serials with product info (for full serial management)
-// Now includes base_warranty_months and is_legacy for admin visibility
-router.get("/serials", authenticateAdmin, async (req, res) => {
-  try {
-    const [rows] = await pool.query(`
-      SELECT ps.id, ps.serial_number, ps.status, ps.product_id, ps.created_at,
-             ps.base_warranty_months, ps.is_legacy,
-             p.name as product_name, p.sku
-      FROM product_serials ps
-      LEFT JOIN products p ON ps.product_id = p.id
-      ORDER BY ps.created_at DESC
-      LIMIT 500
-    `);
-    res.json(rows);
-  } catch (err) {
-    console.error("Get serials error:", err);
-    res.status(500).json({ message: "Server error loading serials" });
-  }
-});
-
-// ALIAS: GET / = GET /admin (for frontend api.js compatibility)
-router.get('/', authenticateAdmin, async (req, res) => {
-  try {
-    const list = await getAllRegistrations();
-    res.json(list);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error loading registrations' });
-  }
-});
-
-// ADMIN: Update warranty status
-router.patch('/:id/status', authenticateAdmin, async (req, res) => {
-  try {
-    const { status } = req.body;
-    const validStatuses = ['pending', 'approved', 'rejected', 'processing', 'resolved', 'closed'];
-    if (!validStatuses.includes(status)) return res.status(400).json({ message: 'Invalid status value' });
-    await updateWarrantyStatus(req.params.id, status);
-    res.json({ message: 'Warranty status updated', status });
-  } catch (err) {
-    res.status(err.status || 500).json({ message: err.message || 'Update failed' });
-  }
-});
-
-// ADMIN: Delete warranty registration
-router.delete('/:id', authenticateAdmin, async (req, res) => {
-  try {
-    await deleteWarranty(req.params.id);
-    res.json({ message: 'Warranty registration deleted' });
-  } catch (err) {
-    res.status(err.status || 500).json({ message: err.message || 'Delete failed' });
+    await conn.commit();
+    res.json({ success: true });
+  } catch(err) {
+    await conn.rollback();
+    res.status(500).json({ error: err.message });
+  } finally {
+    conn.release();
   }
 });
 
