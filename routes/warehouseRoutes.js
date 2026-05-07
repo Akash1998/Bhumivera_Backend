@@ -1,11 +1,11 @@
 const express = require('express');
 const path = require('path');
 const pool = require('../config/db');
-const { verifyAdminToken } = require('../middleware/authMiddleware');
+const { authenticateAdmin } = require('../middleware/authMiddleware');
 const router = express.Router();
 
 // Auth middleware for all API routes
-const auth = verifyAdminToken;
+const auth = authenticateAdmin;
 
 // GET /api/warehouse/stats
 router.get('/stats', auth, async (req, res) => {
