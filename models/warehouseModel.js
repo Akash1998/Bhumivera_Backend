@@ -2,61 +2,54 @@ const pool = require('../config/db');
 
 const initWarehouseTables = async () => {
   try {
+    // Inventory mapped to user accounts
     await pool.query(`CREATE TABLE IF NOT EXISTS warehouse_inventory (
-      id INT AUTO_INCREMENT PRIMARY KEY,
+      id BIGINT PRIMARY KEY,
+      user_id INT NOT NULL,
       name VARCHAR(255) NOT NULL,
       category VARCHAR(100),
-      sku VARCHAR(100),
-      unit VARCHAR(50) DEFAULT 'pcs',
       quantity INT DEFAULT 0,
-      cost_price DECIMAL(12,2) DEFAULT 0,
       sell_price DECIMAL(12,2) DEFAULT 0,
-      min_stock INT DEFAULT 0,
-      location VARCHAR(100),
-      description TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      date_added DATETIME,
+      sold_qty INT DEFAULT 0,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
 
+    // Customers mapped to user accounts
     await pool.query(`CREATE TABLE IF NOT EXISTS warehouse_customers (
-      id INT AUTO_INCREMENT PRIMARY KEY,
+      id BIGINT PRIMARY KEY,
+      user_id INT NOT NULL,
       name VARCHAR(255) NOT NULL,
       phone VARCHAR(50),
-      email VARCHAR(255),
-      balance DECIMAL(12,2) DEFAULT 0,
-      notes TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      loc VARCHAR(255),
+      type VARCHAR(50),
+      wallet DECIMAL(12,2) DEFAULT 0,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
 
+    // Sales mapped to user accounts
     await pool.query(`CREATE TABLE IF NOT EXISTS warehouse_sales (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      customer_id INT,
-      admin_id INT,
+      id BIGINT PRIMARY KEY,
+      user_id INT NOT NULL,
+      date DATETIME,
+      customer_id BIGINT,
       total DECIMAL(12,2) DEFAULT 0,
-      discount DECIMAL(12,2) DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      paid DECIMAL(12,2) DEFAULT 0,
+      sale_json LONGTEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
 
-    await pool.query(`CREATE TABLE IF NOT EXISTS warehouse_sale_items (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      sale_id INT NOT NULL,
-      item_id INT NOT NULL,
-      quantity INT DEFAULT 1,
-      price DECIMAL(12,2) DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    // System Settings & Logs payload
+    await pool.query(`CREATE TABLE IF NOT EXISTS warehouse_cloud_state (
+      user_id INT PRIMARY KEY,
+      logs_json LONGTEXT,
+      proofs_json LONGTEXT,
+      cfg_json LONGTEXT,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
 
-    await pool.query(`CREATE TABLE IF NOT EXISTS warehouse_logs (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      action VARCHAR(100),
-      entity VARCHAR(100),
-      entity_id INT,
-      admin_id INT,
-      details TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`);
-
-    console.log('[Warehouse] Tables initialized successfully');
+    console.log('[Warehouse] Multi-Tenant Cloud Tables initialized successfully');
   } catch (e) {
     console.error('[Warehouse] Table init error:', e.message);
   }
