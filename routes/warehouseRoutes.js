@@ -1,38 +1,18 @@
 const express = require('express');
 const pool = require('../config/db');
-const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
+const { authenticateUser, authenticateAdmin, isWarehouseAdmin } = require('../middleware/authMiddleware');
 const router = express.Router();
 
-// ── Middleware: check warehouse access ──────────────────────────────────────
-const requireWarehouseAccess = async (req, res, next) => {
-  try {
-    // Admin always has access
-    if (req.user && req.user.role === 'admin') return next();
-    const [rows] = await pool.query(
-      'SELECT is_active FROM warehouse_access WHERE user_id = ?',
-      [req.user.id]
-    );
-    if (rows.length === 0 || rows[0].is_active !== 1) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. You do not have warehouse access. Please contact the admin.'
-      });
-    }
-    next();
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
-
+// Aliases for readability
 const auth = authenticateUser;
 const adminAuth = authenticateAdmin;
 
-// ── USER ROUTES ──────────────────────────────────────────────────────────────
+// ── USER ROUTES ──────────────────────────────────────────────────────────────────────
 
 // Check if current user has warehouse access
-router.get('/check-access', auth, async (req, res) => {
+router.get('/check-access', auth, isWarehouseAdmin, async (req, res) => {
   try {
-    if (req.user.role === 'admin') return res.json({ success: true, hasAccess: true, isAdmin: true });
+    if (req.user.role === 'superadmin') return res.json({ success: true, hasAccess: true, isAdmin: true });
     const [rows] = await pool.query(
       'SELECT is_active, store_name FROM warehouse_access WHERE user_id = ?',
       [req.user.id]
@@ -45,7 +25,7 @@ router.get('/check-access', auth, async (req, res) => {
 });
 
 // Download State to Browser (requires warehouse access)
-router.get('/state', auth, requireWarehouseAccess, async (req, res) => {
+router.get('/state', auth, isWarehouseAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT app_state FROM warehouse_user_states WHERE user_id=?', [req.user.id]);
     if (rows.length > 0 && rows[0].app_state) {
@@ -53,11 +33,13 @@ router.get('/state', auth, requireWarehouseAccess, async (req, res) => {
     } else {
       res.json({ success: true, state: null });
     }
-  } catch(e) { res.status(500).json({ message: e.message }); }
+  } catch(e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 // Upload State from Browser (requires warehouse access)
-router.post('/sync', auth, requireWarehouseAccess, async (req, res) => {
+router.post('/sync', auth, isWarehouseAdmin, async (req, res) => {
   try {
     const stateStr = JSON.stringify(req.body);
     await pool.query(`
@@ -72,7 +54,7 @@ router.post('/sync', auth, requireWarehouseAccess, async (req, res) => {
 });
 
 // Log a sale (called from warehouse app)
-router.post('/log-sale', auth, requireWarehouseAccess, async (req, res) => {
+router.post('/log-sale', auth, isWarehouseAdmin, async (req, res) => {
   try {
     const { product_name, quantity, sale_price } = req.body;
     if (!product_name) return res.status(400).json({ message: 'product_name required' });
@@ -88,14 +70,14 @@ router.post('/log-sale', auth, requireWarehouseAccess, async (req, res) => {
   }
 });
 
-// ── ADMIN ROUTES ─────────────────────────────────────────────────────────────
+// ── ADMIN ROUTES (superadmin only via adminAuth) ───────────────────────────────────
 
 // Get all users with warehouse access
 router.get('/admin/users', adminAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT wa.id, wa.user_id, u.name, u.email, wa.store_name, wa.is_active, wa.granted_at,
-             (SELECT COUNT(*) FROM warehouse_sales_log wsl WHERE wsl.user_id = wa.user_id) as total_sales
+        (SELECT COUNT(*) FROM warehouse_sales_log wsl WHERE wsl.user_id = wa.user_id) as total_sales
       FROM warehouse_access wa
       JOIN users u ON u.id = wa.user_id
       ORDER BY wa.granted_at DESC
@@ -111,7 +93,7 @@ router.get('/admin/all-users', adminAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT u.id, u.name, u.email,
-             CASE WHEN wa.user_id IS NOT NULL AND wa.is_active=1 THEN 1 ELSE 0 END as has_access
+        CASE WHEN wa.user_id IS NOT NULL AND wa.is_active=1 THEN 1 ELSE 0 END as has_access
       FROM users u
       LEFT JOIN warehouse_access wa ON wa.user_id = u.id
       WHERE u.role != 'admin' OR u.role IS NULL
@@ -163,26 +145,17 @@ router.post('/admin/update-store', adminAuth, async (req, res) => {
   }
 });
 
-// Get sales overview (total across all stores or by date)
+// Get sales overview
 router.get('/admin/sales', adminAuth, async (req, res) => {
   try {
     const { date, store_user_id } = req.query;
-    let baseQuery = `SELECT wsl.id, wsl.user_id, u.name as distributor_name,
-      wsl.store_name, wsl.product_name, wsl.quantity, wsl.sale_price,
-      (wsl.quantity * wsl.sale_price) as total_value,
-      wsl.sold_at
-      FROM warehouse_sales_log wsl
-      JOIN users u ON u.id = wsl.user_id
-      WHERE 1=1`;
+    let baseQuery = `SELECT wsl.id, wsl.user_id, u.name as distributor_name, wsl.store_name,
+      wsl.product_name, wsl.quantity, wsl.sale_price,
+      (wsl.quantity * wsl.sale_price) as total_value, wsl.sold_at
+      FROM warehouse_sales_log wsl JOIN users u ON u.id = wsl.user_id WHERE 1=1`;
     const params = [];
-    if (date) {
-      baseQuery += ' AND DATE(wsl.sold_at) = ?';
-      params.push(date);
-    }
-    if (store_user_id) {
-      baseQuery += ' AND wsl.user_id = ?';
-      params.push(store_user_id);
-    }
+    if (date) { baseQuery += ' AND DATE(wsl.sold_at) = ?'; params.push(date); }
+    if (store_user_id) { baseQuery += ' AND wsl.user_id = ?'; params.push(store_user_id); }
     baseQuery += ' ORDER BY wsl.sold_at DESC';
     const [rows] = await pool.query(baseQuery, params);
     res.json({ success: true, sales: rows });
@@ -191,16 +164,13 @@ router.get('/admin/sales', adminAuth, async (req, res) => {
   }
 });
 
-// Get sales summary per product grouped (admin dashboard)
+// Get sales summary per product grouped
 router.get('/admin/sales-summary', adminAuth, async (req, res) => {
   try {
     const { date, store_user_id } = req.query;
-    let q = `SELECT product_name, store_name,
-      SUM(quantity) as total_qty,
-      SUM(quantity * sale_price) as total_revenue,
-      COUNT(*) as transactions
-      FROM warehouse_sales_log
-      WHERE 1=1`;
+    let q = `SELECT product_name, store_name, SUM(quantity) as total_qty,
+      SUM(quantity * sale_price) as total_revenue, COUNT(*) as transactions
+      FROM warehouse_sales_log WHERE 1=1`;
     const params = [];
     if (date) { q += ' AND DATE(sold_at) = ?'; params.push(date); }
     if (store_user_id) { q += ' AND user_id = ?'; params.push(store_user_id); }
@@ -216,11 +186,9 @@ router.get('/admin/sales-summary', adminAuth, async (req, res) => {
 router.get('/admin/sales-daily', adminAuth, async (req, res) => {
   try {
     const { store_user_id } = req.query;
-    let q = `SELECT DATE(sold_at) as date,
-      SUM(quantity) as total_qty,
+    let q = `SELECT DATE(sold_at) as date, SUM(quantity) as total_qty,
       SUM(quantity * sale_price) as total_revenue
-      FROM warehouse_sales_log
-      WHERE sold_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+      FROM warehouse_sales_log WHERE sold_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
     const params = [];
     if (store_user_id) { q += ' AND user_id = ?'; params.push(store_user_id); }
     q += ' GROUP BY DATE(sold_at) ORDER BY date ASC';
