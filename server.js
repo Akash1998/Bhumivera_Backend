@@ -43,6 +43,7 @@ const{initProductsTable}=require("./models/productModel");
 const{initCategoriesTable}=require("./models/categoryModel");
 const{initReturnsTable}=require("./models/returnModel");
 const{initContactTable}=require("./models/contactModel");
+const {initAdminTable}=require("./models/adminModel");
 const app=express();
 const allowedOrigins=["https://www.anritvox.com","https://anritvox.com","http://localhost:5173","http://localhost:3000"];
 const corsOptions={origin:function(origin,callback){if(!origin)return callback(null,true);const isAllowed=allowedOrigins.includes(origin)||origin.endsWith(".vercel.app")||process.env.NODE_ENV==="development";if(isAllowed){callback(null,true);}else{console.log("[Security] CORS Rejected Origin:",origin);callback(new Error("Not allowed by CORS"));}},credentials:true,methods:["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"],allowedHeaders:["Content-Type","Authorization","X-Requested-With","Accept","Origin"],exposedHeaders:["Content-Range","X-Content-Range"],optionsSuccessStatus:204};
@@ -89,5 +90,6 @@ app.use("/api",(req,res)=>{res.status(404).json({success:false,message:`API Endp
 app.use((err,req,res,next)=>{if(err.message==="Not allowed by CORS"){return res.status(403).json({success:false,message:"CORS Origin Rejected"});}if(err.name==="JsonWebTokenError"||err.name==="TokenExpiredError"){return res.status(401).json({success:false,message:"Session invalid or expired"});}const statusCode=err.status||500;res.status(statusCode).json({success:false,message:err.message||"Internal Server Error"});});
 const PORT=process.env.PORT||5000;
 initWarehouseTables().catch(e=>console.error('[Warehouse] Init error:',e.message));
+initAdminTable().catch(e=>console.error('[AdminModel] Init error:',e.message));
 app.listen(PORT,async()=>{console.log(`Server running on port ${PORT}`);await initDB();});
 module.exports=app;
