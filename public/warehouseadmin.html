@@ -68,7 +68,7 @@
 <script>
     lucide.createIcons();
     const API_URL = '/api';
-    const token = localStorage.getItem('token');
+            const token = localStorage.getItem('token') || localStorage.getItem('ms_token');
     
     if (!token) window.location.href = '/login';
 
@@ -155,6 +155,7 @@
         } catch (e) {
             console.error(e);
             alert("Matrix sync failed. Connection error.");
+                        document.getElementById('loader').classList.add('hidden');
         }
     }
 
