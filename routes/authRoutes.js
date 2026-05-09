@@ -8,9 +8,9 @@ const { authenticateAdmin } = require('../middleware/authMiddleware');
 
 const { getAdminByEmail, getAdminById, verifyPassword: verifyAdminPassword, updateAdminPassword } = require("../models/adminModel");
 const {
-   createUser, getUserByEmail, getUserById, verifyPassword: verifyCustomerPassword,
-   saveResetOtp, clearResetOtp, updateUserPassword, verifySecurityAnswer
- } = require("../models/userModel");
+  createUser, getUserByEmail, getUserById, verifyPassword: verifyCustomerPassword,
+  saveResetOtp, clearResetOtp, updateUserPassword, verifySecurityAnswer
+} = require("../models/userModel");
 
 const router = express.Router();
 
@@ -40,17 +40,14 @@ const verifyTurnstile = async (token) => {
   }
 };
 
-// ── ADMIN LOGIN (with Turnstile) ─────────────────────────────────
+// ── ADMIN LOGIN ────────────────────────────────────────────────────────────
 router.post("/admin/login", loginLimiter, async (req, res) => {
   try {
     const { email, password, turnstileToken } = req.body;
     if (!email || !password) return res.status(400).json({ message: "Email and password required" });
 
-    // TURNSTILE BOT CHECK
     const isHuman = await verifyTurnstile(turnstileToken);
-    if (!isHuman) {
-      return res.status(403).json({ message: 'Bot verification failed. Please try again.' });
-    }
+    if (!isHuman) return res.status(403).json({ message: 'Bot verification failed. Please try again.' });
 
     const admin = await getAdminByEmail(email);
     if (!admin) return res.status(401).json({ message: "Invalid admin credentials" });
@@ -66,17 +63,14 @@ router.post("/admin/login", loginLimiter, async (req, res) => {
   }
 });
 
-// ── USER LOGIN (with Turnstile) ───────────────────────────────────
+// ── USER LOGIN ─────────────────────────────────────────────────────────────
 router.post("/login", loginLimiter, async (req, res) => {
   try {
     const { email, password, turnstileToken } = req.body;
     if (!email || !password) return res.status(400).json({ message: "Email and password required" });
 
-    // TURNSTILE BOT CHECK
     const isHuman = await verifyTurnstile(turnstileToken);
-    if (!isHuman) {
-      return res.status(403).json({ message: 'Bot verification failed. Please try again.' });
-    }
+    if (!isHuman) return res.status(403).json({ message: 'Bot verification failed. Please try again.' });
 
     const customer = await getUserByEmail(email);
     if (!customer) return res.status(401).json({ message: "Invalid credentials" });
@@ -84,7 +78,6 @@ router.post("/login", loginLimiter, async (req, res) => {
     const validCustomer = await verifyCustomerPassword(password, customer.password_hash);
     if (!validCustomer) return res.status(401).json({ message: "Invalid credentials" });
 
-    // MFA Intercept Logic
     if (customer.two_factor_enabled) {
       return res.status(202).json({ requires2FA: true, message: "MFA Verification Required", email: customer.email });
     }
@@ -97,6 +90,7 @@ router.post("/login", loginLimiter, async (req, res) => {
   }
 });
 
+// ── 2FA VERIFICATION ───────────────────────────────────────────────────────
 router.post("/2fa/verify", otpLimiter, async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -117,44 +111,32 @@ router.post("/2fa/verify", otpLimiter, async (req, res) => {
   }
 });
 
+// ── PASSWORD RECOVERY FLOW ─────────────────────────────────────────────────
 router.post("/forgot-password", otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     const user = await getUserByEmail(email);
-    
     if (!user) return res.status(404).json({ message: "Designation not found in registry." });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpiry = Date.now() + 10 * 60 * 1000;
 
-    try {
-      await saveResetOtp(user.id, otp, otpExpiry);
-    } catch (dbErr) {
-      console.error("DATABASE ERROR saving OTP:", dbErr);
-      return res.status(500).json({ message: "Database failure. Did you run the ALTER TABLE command?" });
-    }
+    await saveResetOtp(user.id, otp, otpExpiry);
 
-    try {
-      await sendMail({
-        to: email, 
-        subject: 'Security Key Recovery Protocol', 
-        html: `
-          <div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #00ff00;">
-            <h2>Hardware Node Access</h2>
-            <p>A request was made to recover the security key for this node.</p>
-            <h1 style="font-size: 32px; letter-spacing: 4px;">${otp}</h1>
-            <p>Token self-destructs in 10 minutes.</p>
-          </div>
-        `
-      });
-    } catch (mailErr) {
-      console.error("MAILJET ERROR:", mailErr);
-      return res.status(500).json({ message: "Email dispatch failed. Verify Mailjet API keys in .env." });
-    }
+    await sendMail({
+      to: email, 
+      subject: 'Security Key Recovery Protocol', 
+      html: `<div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #00ff00;">
+              <h2>Hardware Node Access</h2>
+              <p>A request was made to recover the security key for this node.</p>
+              <h1 style="font-size: 32px; letter-spacing: 4px;">${otp}</h1>
+              <p>Token self-destructs in 10 minutes.</p>
+            </div>`
+    });
 
     res.json({ message: "Recovery token dispatched." });
   } catch (err) {
-    console.error("Forgot Password Fatal Error:", err);
+    console.error("Forgot Password Error:", err);
     res.status(500).json({ message: "Fatal Server Error." });
   }
 });
@@ -197,13 +179,14 @@ router.post("/reset-password", otpLimiter, async (req, res) => {
   }
 });
 
+// ── SECURITY QUESTION VERIFICATION ─────────────────────────────────────────
 router.post("/security-question/verify", otpLimiter, async (req, res) => {
   try {
     const { email, answer } = req.body;
     const user = await getUserByEmail(email);
     if (!user) return res.status(404).json({ message: "Node not found." });
 
-    if (!user.security_answer_hash) return res.status(400).json({ message: "No security question configured for this node." });
+    if (!user.security_answer_hash) return res.status(400).json({ message: "No security question configured." });
 
     const isValid = await verifySecurityAnswer(answer, user.security_answer_hash);
     if (!isValid) return res.status(401).json({ message: "Identity verification failed." });
@@ -215,83 +198,96 @@ router.post("/security-question/verify", otpLimiter, async (req, res) => {
   }
 });
 
-// ── REGISTER (email-only, no phone, with Turnstile) ──────────────────────
+// ── REGISTER ───────────────────────────────────────────────────────────────
 router.post("/register", registerLimiter, async (req, res) => {
   try {
-    const { name, email, password, securityAnswer, turnstileToken } = req.body;
-    if (!name || !email || !password) return res.status(400).json({ message: "Name, email, and password are required" });
+    const { name, email, password, turnstileToken } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ message: "Required fields missing" });
 
-    // TURNSTILE BOT CHECK
     const isHuman = await verifyTurnstile(turnstileToken);
-    if (!isHuman) {
-      return res.status(403).json({ message: 'Bot verification failed. Please try again.' });
-    }
+    if (!isHuman) return res.status(403).json({ message: 'Bot verification failed.' });
 
     const emailDomain = email.split('@')[1].toLowerCase();
     if (DISPOSABLE_DOMAINS.includes(emailDomain)) return res.status(400).json({ message: "Disposable emails not allowed" });
-
-    if (password.length < 8) return res.status(400).json({ message: "Password must be at least 8 characters" });
 
     const existingUser = await getUserByEmail(email);
     if (existingUser) return res.status(409).json({ message: "Email already registered" });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const hashedPassword = await bcrypt.hash(password, 10);
-    const secHash = securityAnswer ? await bcrypt.hash(securityAnswer.toLowerCase(), 10) : null;
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
 
-    // NOTE: phone field removed - email-only registration
     await pool.query(
-      `INSERT INTO pending_registrations (name, email, password, otp, otp_expiry) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE otp=?, otp_expiry=?, created_at=NOW()`,
+      `INSERT INTO pending_registrations (name, email, password, otp, otp_expiry) 
+       VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE otp=?, otp_expiry=?, created_at=NOW()`,
       [name, email, hashedPassword, otp, otpExpiry, otp, otpExpiry]
     );
 
-    try {
-      await sendMail({
-        to: email, subject: 'Verify your Anritvox account', html: `
-          <div style="font-family: sans-serif; padding: 20px;">
-            <h2>Welcome to Anritvox!</h2>
-            <p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p>
-            <p>This code expires in 10 minutes.</p>
-          </div>
-        `
-      });
-    } catch (mailErr) {
-       console.error("Register Mailjet Error:", mailErr);
-       return res.status(500).json({ message: "Failed to dispatch email. Check Mailjet keys." });
-    }
+    await sendMail({
+      to: email, 
+      subject: 'Verify your Anritvox account', 
+      html: `<div style="font-family: sans-serif; padding: 20px;">
+              <h2>Welcome to Anritvox!</h2>
+              <p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p>
+              <p>Expires in 10 minutes.</p>
+            </div>`
+    });
 
     res.json({ success: true, message: "OTP sent to email." });
   } catch (err) {
-     console.error("Register Error:", err);
+    console.error("Register Error:", err);
     res.status(500).json({ message: "Server error" });
-   }
+  }
 });
 
+// ── VERIFY EMAIL (FIXED) ──────────────────────────────────────────────────
 router.post("/verify-email", otpLimiter, async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email, otp, securityAnswer } = req.body; 
     if (!email || !otp) return res.status(400).json({ message: "Email and OTP required" });
 
     const [rows] = await pool.query('SELECT * FROM pending_registrations WHERE email = ?', [email]);
     const pending = rows[0];
-    if (!pending) return res.status(404).json({ message: "No pending registration found" });
 
-    if (pending.otp !== otp) return res.status(400).json({ message: "Invalid OTP" });
-    if (new Date() > new Date(pending.otp_expiry)) return res.status(400).json({ message: "OTP expired." });
+    if (!pending) return res.status(404).json({ message: "Registration session expired. Please sign up again." });
 
-    // NOTE: phone removed from createUser call
-    const insertId = await createUser({ name: pending.name, email: pending.email, password: pending.password, securityAnswer: 'default-answer' });
+    // Robust OTP Comparison
+    if (String(pending.otp) !== String(otp)) {
+      return res.status(400).json({ message: "Invalid verification code." });
+    }
+
+    // Expiry Check
+    if (new Date() > new Date(pending.otp_expiry)) {
+      await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
+      return res.status(400).json({ message: "Code expired. Please request a new one." });
+    }
+
+    // Pass actual securityAnswer
+    const insertId = await createUser({ 
+      name: pending.name, 
+      email: pending.email, 
+      password: pending.password, 
+      securityAnswer: securityAnswer || null 
+    });
+
     await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
 
     const user = await getUserById(insertId);
-    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role }, 
+      process.env.JWT_SECRET, 
+      { expiresIn: "7d" }
+    );
 
-    res.status(201).json({ success: true, token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    res.status(201).json({ 
+      success: true, 
+      token, 
+      user: { id: user.id, name: user.name, email: user.email, role: user.role } 
+    });
   } catch (err) {
-     console.error("Verify Email Error:", err);
-    res.status(500).json({ message: "Server error" });
-   }
+    console.error("Verify Email Error:", err);
+    res.status(500).json({ message: "Internal server error during verification." });
+  }
 });
 
 router.get("/profile", authenticateAdmin, async (req, res) => {
