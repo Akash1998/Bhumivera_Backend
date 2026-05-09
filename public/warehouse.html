@@ -90,7 +90,7 @@
             const select = document.getElementById('product_name');
             select.innerHTML = '<option value="">-- Select Valid Product --</option>';
             
-            const products = prodData.data || prodData.products || prodData || [];
+                        const products = Array.isArray(prodData) ? prodData : (Array.isArray(prodData.data) ? prodData.data : (Array.isArray(prodData.products) ? prodData.products : []));
             products.forEach(p => { select.innerHTML += `<option value="${p.name}">${p.name}</option>`; });
 
             document.getElementById('loader').classList.add('hidden');
