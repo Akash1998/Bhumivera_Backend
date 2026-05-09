@@ -9,16 +9,35 @@ const adminAuth = authenticateAdmin;
 
 // ── USER ROUTES ──────────────────────────────────────────────────────────────────────
 
-// Check if current user has warehouse access
+/**
+ * Check if current user has warehouse access
+ * Updated to grant 'admin' the same bypass privileges as 'superadmin'
+ */
 router.get('/check-access', auth, isWarehouseAdmin, async (req, res) => {
   try {
-    if (req.user.role === 'superadmin') return res.json({ success: true, hasAccess: true, isAdmin: true });
+    // FIX: Added 'admin' alongside 'superadmin' for master clearance
+    if (req.user.role === 'superadmin' || req.user.role === 'admin') {
+      return res.json({ 
+        success: true, 
+        hasAccess: true, 
+        isAdmin: true, 
+        storeName: 'Master Admin Access' 
+      });
+    }
+
     const [rows] = await pool.query(
       'SELECT is_active, store_name FROM warehouse_access WHERE user_id = ?',
       [req.user.id]
     );
+
     const hasAccess = rows.length > 0 && rows[0].is_active === 1;
-    res.json({ success: true, hasAccess, storeName: hasAccess ? rows[0].store_name : null });
+    
+    res.json({ 
+      success: true, 
+      hasAccess, 
+      isAdmin: false,
+      storeName: hasAccess ? rows[0].store_name : null 
+    });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -58,8 +77,15 @@ router.post('/log-sale', auth, isWarehouseAdmin, async (req, res) => {
   try {
     const { product_name, quantity, sale_price } = req.body;
     if (!product_name) return res.status(400).json({ message: 'product_name required' });
-    const [access] = await pool.query('SELECT store_name FROM warehouse_access WHERE user_id=?', [req.user.id]);
-    const store_name = access.length > 0 ? access[0].store_name : 'Unknown';
+
+    // For admins/superadmins, we use the master label if they aren't in the access table
+    let store_name = 'Master Admin Access';
+    
+    if (req.user.role !== 'superadmin' && req.user.role !== 'admin') {
+      const [access] = await pool.query('SELECT store_name FROM warehouse_access WHERE user_id=?', [req.user.id]);
+      store_name = access.length > 0 ? access[0].store_name : 'Unknown';
+    }
+
     await pool.query(
       'INSERT INTO warehouse_sales_log (user_id, store_name, product_name, quantity, sale_price) VALUES (?,?,?,?,?)',
       [req.user.id, store_name, product_name, quantity || 1, sale_price || 0]
@@ -70,7 +96,7 @@ router.post('/log-sale', auth, isWarehouseAdmin, async (req, res) => {
   }
 });
 
-// ── ADMIN ROUTES (superadmin only via adminAuth) ───────────────────────────────────
+// ── ADMIN ROUTES (superadmin/admin via adminAuth) ───────────────────────────────────
 
 // Get all users with warehouse access
 router.get('/admin/users', adminAuth, async (req, res) => {
@@ -96,7 +122,7 @@ router.get('/admin/all-users', adminAuth, async (req, res) => {
         CASE WHEN wa.user_id IS NOT NULL AND wa.is_active=1 THEN 1 ELSE 0 END as has_access
       FROM users u
       LEFT JOIN warehouse_access wa ON wa.user_id = u.id
-      WHERE u.role != 'admin' OR u.role IS NULL
+      WHERE u.role NOT IN ('admin', 'superadmin') OR u.role IS NULL
       ORDER BY u.name ASC
     `);
     res.json({ success: true, users: rows });
@@ -110,11 +136,15 @@ router.post('/admin/grant-access', adminAuth, async (req, res) => {
   try {
     const { user_id, store_name } = req.body;
     if (!user_id) return res.status(400).json({ message: 'user_id required' });
+    
+    // Check if performing user is admin or superadmin from adminAuth
+    const grantorId = req.admin ? req.admin.id : req.user.id;
+
     await pool.query(`
       INSERT INTO warehouse_access (user_id, granted_by, store_name, is_active)
       VALUES (?, ?, ?, 1)
       ON DUPLICATE KEY UPDATE is_active=1, store_name=VALUES(store_name), granted_by=VALUES(granted_by)
-    `, [user_id, req.admin.id, store_name || null]);
+    `, [user_id, grantorId, store_name || null]);
     res.json({ success: true, message: 'Warehouse access granted' });
   } catch(e) {
     res.status(500).json({ message: e.message });
