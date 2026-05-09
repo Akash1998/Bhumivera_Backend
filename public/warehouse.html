@@ -85,7 +85,7 @@
             document.getElementById('store-name').innerText = accessData.storeName || 'Master Admin Access';
             
             // 2. Fetch REAL products to prevent garbage data
-            const prodRes = await authFetch('/products');
+                        const prodRes = await fetch(API_URL + '/products/active');
             const prodData = await prodRes.json();
             const select = document.getElementById('product_name');
             select.innerHTML = '<option value="">-- Select Valid Product --</option>';
