@@ -56,7 +56,7 @@
 <script>
     lucide.createIcons();
     const API_URL = '/api'; 
-    const token = localStorage.getItem('token');
+            const token = localStorage.getItem('token') || localStorage.getItem('ms_token');
     
     // SECURITY INTERCEPTOR
     if (!token) {
@@ -85,7 +85,7 @@
             document.getElementById('store-name').innerText = accessData.storeName || 'Master Admin Access';
             
             // 2. Fetch REAL products to prevent garbage data
-            const prodRes = await fetch(API_URL + '/products');
+            const prodRes = await authFetch('/products');
             const prodData = await prodRes.json();
             const select = document.getElementById('product_name');
             select.innerHTML = '<option value="">-- Select Valid Product --</option>';
@@ -98,6 +98,11 @@
         } catch(e) {
             console.error(e);
             alert("Initialization failed. Please re-login.");
+                        document.getElementById('loader').classList.add('hidden');
+            document.body.insertAdjacentHTML('afterbegin', `<div style="position:fixed;top:0;left:0;right:0;background:#ef4444;color:#fff;padding:12px;text-align:center;font-weight:bold;z-index:999">
+              Connection error: ${e.message || 'Please log in again'}.
+              <a href="/login" style="color:#fff;text-decoration:underline;margin-left:8px">Login</a>
+            </div>`);
         }
     }
 
