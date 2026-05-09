@@ -248,4 +248,4 @@ router.get('/admin/user-state/:userId', adminAuth, async (req, res) => {
   }
 });
 
-module.exports = router;
+// Get today's stats summary (for dashboard cards) router.get('/admin/today-stats', adminAuth, async (req, res) => { try { const today = new Date().toISOString().slice(0,10); const [salesRows] = await pool.query('SELECT COUNT(*) as count, SUM(quantity*sale_price) as revenue FROM warehouse_sales_log WHERE DATE(sold_at)=?', [today]); const [distRows] = await pool.query('SELECT COUNT(*) as count FROM warehouse_access WHERE is_active=1'); res.json({ success:true, today_sales: salesRows[0].count||0, today_revenue: salesRows[0].revenue||0, active_distributors: distRows[0].count||0 }); } catch(e){ res.status(500).json({message:e.message}); } }); module.exports = router;
