@@ -31,17 +31,19 @@ const updateAdminPassword = async (id, newHash) => {
   );
 };
 const initAdminTable = async () => {
+  const addColIfMissing = async (col, def) => {
+    const [cols] = await pool.query(`SHOW COLUMNS FROM admin_users LIKE ?`, [col]);
+    if (cols.length === 0) await pool.query(`ALTER TABLE admin_users ADD COLUMN ${def}`);
+  };
   try {
-    // Add OTP columns if missing (safe to run multiple times)
-    await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS role VARCHAR(50) NOT NULL DEFAULT 'admin'`);
-    await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS login_otp VARCHAR(10) DEFAULT NULL`);
-    await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS login_otp_expires DATETIME DEFAULT NULL`);
-    console.log('[AdminModel] admin_users table columns verified.');
+    await addColIfMissing('role', "role VARCHAR(50) NOT NULL DEFAULT 'admin'");
+    await addColIfMissing('login_otp', 'login_otp VARCHAR(10) DEFAULT NULL');
+    await addColIfMissing('login_otp_expires', 'login_otp_expires DATETIME DEFAULT NULL');
+    console.log('[AdminModel] admin_users columns verified.');
   } catch (err) {
     console.error('[AdminModel] Migration error:', err.message);
   }
 };
-
 module.exports = {
 
     getAdminByEmail,
