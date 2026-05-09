@@ -3,36 +3,40 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Master Admin | Warehouse Matrix</title>
+    <title>Master Admin | Warehouse Command</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         body { background-color: #020617; color: #cbd5e1; font-family: system-ui, -apple-system, sans-serif; }
-        .glass { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(30, 41, 59, 0.8); }
+        .glass { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(30, 41, 59, 0.8); backdrop-filter: blur(12px); }
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: #020617; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+        .tab-active { border-bottom: 2px solid #06b6d4; color: #06b6d4; }
     </style>
 </head>
-<body class="min-h-screen p-4 md:p-8 custom-scrollbar">
+<body class="min-h-screen custom-scrollbar">
 
-<div id="loader" class="flex h-[80vh] items-center justify-center text-cyan-500 font-black uppercase tracking-widest animate-pulse text-sm">Decrypting Global Matrix...</div>
+<div id="loader" class="fixed inset-0 bg-slate-950 z-50 flex items-center justify-center text-cyan-500 font-black uppercase tracking-widest animate-pulse">Initializing Command Link...</div>
 
-<div id="dashboard" class="hidden max-w-7xl mx-auto space-y-6">
-    <div class="flex items-center justify-between pb-6 border-b border-slate-800">
+<div id="dashboard" class="hidden max-w-7xl mx-auto p-4 md:p-8 space-y-6">
+    <div class="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-slate-800 gap-4">
         <div>
             <h1 class="text-3xl font-black text-white uppercase tracking-tight flex items-center gap-3">
-                Warehouse <span class="text-cyan-500">Command Center</span>
+                Warehouse <span class="text-cyan-500">Command</span>
             </h1>
-            <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Live Global Sales Telemetry</p>
+            <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Master Admin Clearance Level 4</p>
         </div>
         <div class="flex gap-3">
-            <button onclick="loadData()" class="p-3 bg-slate-900 border border-slate-800 rounded-xl hover:text-cyan-400 transition-colors shadow-lg"><i data-lucide="refresh-cw"></i></button>
-            <button onclick="logout()" class="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-500 rounded-xl hover:bg-rose-500 hover:text-white transition-colors shadow-lg"><i data-lucide="log-out"></i></button>
+            <nav class="flex gap-6 mr-6">
+                <button onclick="switchTab('ledger')" id="btn-ledger" class="text-xs font-black uppercase tracking-widest pb-2 tab-active">Live Ledger</button>
+                <button onclick="switchTab('users')" id="btn-users" class="text-xs font-black uppercase tracking-widest pb-2 text-slate-500 hover:text-white">User Control</button>
+            </nav>
+            <button onclick="loadData()" class="p-3 bg-slate-900 border border-slate-800 rounded-xl hover:text-cyan-400 transition-colors"><i data-lucide="refresh-cw" class="w-5 h-5"></i></button>
+            <button onclick="logout()" class="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-500 rounded-xl hover:bg-rose-500 hover:text-white transition-colors"><i data-lucide="log-out" class="w-5 h-5"></i></button>
         </div>
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div id="view-ledger" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 glass rounded-[2rem] overflow-hidden shadow-2xl">
             <div class="p-6 border-b border-slate-800 bg-slate-950/50 flex items-center justify-between">
                 <h3 class="text-xs font-black uppercase tracking-widest text-white flex items-center gap-2">
@@ -43,123 +47,215 @@
                 <table class="w-full text-left border-collapse">
                     <thead class="bg-slate-950/80 border-b border-slate-800 sticky top-0 backdrop-blur-md">
                         <tr>
-                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Timestamp</th>
-                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Distributor Node</th>
-                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Product Dispatched</th>
-                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest text-right">Financials</th>
+                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Time</th>
+                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Distributor</th>
+                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Item</th>
+                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest text-right">Value</th>
                         </tr>
                     </thead>
-                    <tbody id="ledger-body" class="divide-y divide-slate-800/50">
-                        </tbody>
+                    <tbody id="ledger-body" class="divide-y divide-slate-800/50"></tbody>
                 </table>
             </div>
         </div>
 
-        <div class="glass rounded-[2rem] p-6 h-fit shadow-2xl">
-            <h3 class="text-xs font-black uppercase tracking-widest text-white mb-6 flex items-center gap-2">
-                <i data-lucide="shield-check" class="text-emerald-400 w-4 h-4"></i> Authorized Distributors
+        <div class="space-y-6">
+            <div class="glass rounded-[2rem] p-6 shadow-2xl">
+                <h3 class="text-xs font-black uppercase tracking-widest text-white mb-6 flex items-center gap-2">
+                    <i data-lucide="zap" class="text-yellow-400 w-4 h-4"></i> Active Nodes
+                </h3>
+                <div id="active-nodes" class="space-y-4"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="view-users" class="hidden glass rounded-[2rem] overflow-hidden shadow-2xl">
+        <div class="p-6 border-b border-slate-800 bg-slate-950/50">
+            <h3 class="text-xs font-black uppercase tracking-widest text-white flex items-center gap-2">
+                <i data-lucide="users" class="text-cyan-400 w-4 h-4"></i> Registered System Users
             </h3>
-            <div id="access-list" class="space-y-4">
-                </div>
+        </div>
+        <div class="overflow-x-auto h-[600px] custom-scrollbar">
+            <table class="w-full text-left border-collapse">
+                <thead class="bg-slate-950/80 border-b border-slate-800 sticky top-0 backdrop-blur-md">
+                    <tr>
+                        <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">User Details</th>
+                        <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Current Status</th>
+                        <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="user-list-body" class="divide-y divide-slate-800/50"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="grant-modal" class="hidden fixed inset-0 bg-slate-950/90 z-[100] flex items-center justify-center p-4">
+    <div class="glass max-w-md w-full rounded-[2rem] p-8 space-y-6 border-cyan-500/30">
+        <h2 class="text-xl font-black text-white uppercase tracking-tight">Authorize Node</h2>
+        <div class="space-y-2">
+            <label class="text-[10px] font-black uppercase text-slate-500 tracking-widest">Assign Store Name</label>
+            <input type="text" id="store-name-input" placeholder="e.g. Kolkata Spares" class="w-full bg-slate-900 border border-slate-700 p-4 rounded-xl text-white">
+        </div>
+        <div class="flex gap-3">
+            <button onclick="confirmGrant()" class="flex-1 bg-cyan-600 p-4 rounded-xl font-black text-xs uppercase tracking-widest text-white hover:bg-cyan-500 transition-all">Enable Access</button>
+            <button onclick="closeModal()" class="flex-1 bg-slate-800 p-4 rounded-xl font-black text-xs uppercase tracking-widest text-slate-400">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div id="state-modal" class="hidden fixed inset-0 bg-slate-950/95 z-[100] flex items-center justify-center p-4">
+    <div class="glass max-w-4xl w-full h-[80vh] rounded-[2rem] p-8 flex flex-col space-y-6">
+        <div class="flex justify-between items-center">
+            <h2 id="state-title" class="text-xl font-black text-white uppercase tracking-tight text-cyan-500">Inventory Probe</h2>
+            <button onclick="closeStateModal()" class="text-slate-500 hover:text-white"><i data-lucide="x"></i></button>
+        </div>
+        <div id="state-content" class="flex-1 overflow-y-auto custom-scrollbar bg-slate-950/50 rounded-2xl p-6 font-mono text-xs text-emerald-500">
+            Scanning node memory...
         </div>
     </div>
 </div>
 
 <script>
-    lucide.createIcons();
     const API_URL = '/api';
-    const token = localStorage.getItem('token');
-    
+    const token = localStorage.getItem('token'); // Use standard token key
+    let selectedUserId = null;
+
     if (!token) window.location.href = '/login';
 
-    async function authFetch(url) {
-        return fetch(API_URL + url, { headers: { 'Authorization': `Bearer ${token}` } });
+    async function authFetch(url, method = 'GET', body = null) {
+        const options = {
+            method,
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+        };
+        if (body) options.body = JSON.stringify(body);
+        return fetch(API_URL + url, options);
+    }
+
+    function switchTab(tab) {
+        document.getElementById('view-ledger').classList.add('hidden');
+        document.getElementById('view-users').classList.add('hidden');
+        document.getElementById('btn-ledger').classList.remove('tab-active');
+        document.getElementById('btn-users').classList.remove('tab-active');
+        
+        document.getElementById('view-' + tab).classList.remove('hidden');
+        document.getElementById('btn-' + tab).classList.add('tab-active');
     }
 
     async function loadData() {
         try {
-            // Verify Master Admin Status
             const authCheck = await authFetch('/warehouse/check-access');
             const authData = await authCheck.json();
             if(!authData.isAdmin) {
-                document.body.innerHTML = '<div class="text-rose-500 text-center mt-20 font-black text-xl uppercase tracking-widest">RESTRICTED<br><span class="text-[10px] text-slate-500">Master Admin Clearance Required</span></div>';
+                document.body.innerHTML = '<div class="text-rose-500 text-center mt-20 font-black text-xl">ACCESS DENIED: ADMIN ONLY</div>';
                 return;
             }
 
-            // Fetch Data
-            const [salesRes, usersRes] = await Promise.all([
+            const [salesRes, usersRes, allUsersRes] = await Promise.all([
                 authFetch('/warehouse/admin/sales'),
-                authFetch('/warehouse/admin/users')
+                authFetch('/warehouse/admin/users'),
+                authFetch('/warehouse/admin/all-users')
             ]);
             
-            const salesData = await salesRes.json();
-            const usersData = await usersRes.json();
+            const sales = await salesRes.json();
+            const activeNodes = await usersRes.json();
+            const allUsers = await allUsersRes.json();
 
-            // Populate Sales Ledger
-            const tbody = document.getElementById('ledger-body');
-            tbody.innerHTML = '';
-            if(!salesData.sales || salesData.sales.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="p-10 text-center text-slate-500 text-[10px] font-black uppercase tracking-widest">No data blocks found.</td></tr>';
-            } else {
-                salesData.sales.forEach(trx => {
-                    const date = new Date(trx.sold_at);
-                    tbody.innerHTML += `
-                        <tr class="hover:bg-cyan-500/5 transition-colors">
-                            <td class="p-5">
-                                <p class="text-xs font-bold text-slate-300">${date.toLocaleDateString()}</p>
-                                <p class="text-[9px] font-mono text-slate-500 mt-0.5">${date.toLocaleTimeString()}</p>
-                            </td>
-                            <td class="p-5">
-                                <p class="text-sm font-bold text-white">${trx.distributor_name || 'Unknown Identity'}</p>
-                                <p class="text-[9px] text-emerald-500 font-black uppercase tracking-widest mt-0.5"><i data-lucide="store" class="w-3 h-3 inline"></i> ${trx.store_name}</p>
-                            </td>
-                            <td class="p-5">
-                                <p class="text-sm font-bold text-cyan-400">${trx.product_name}</p>
-                                <p class="text-[10px] text-slate-500 mt-0.5">Quantity: <span class="text-white font-black">${trx.quantity}</span></p>
-                            </td>
-                            <td class="p-5 text-right">
-                                <p class="text-sm font-black text-emerald-400">₹${parseFloat(trx.total_value).toLocaleString()}</p>
-                                <p class="text-[9px] text-slate-500 mt-0.5">@ ₹${parseFloat(trx.sale_price).toLocaleString()}/unit</p>
-                            </td>
-                        </tr>
-                    `;
-                });
-            }
-
-            // Populate Active Distributors
-            const accessList = document.getElementById('access-list');
-            accessList.innerHTML = '';
-            const activeUsers = (usersData.users || []).filter(u => u.is_active === 1);
-            if(activeUsers.length === 0) {
-                accessList.innerHTML = '<p class="text-slate-500 text-[10px] text-center p-4 font-black uppercase tracking-widest">No active nodes.</p>';
-            } else {
-                activeUsers.forEach(u => {
-                    accessList.innerHTML += `
-                        <div class="p-5 bg-slate-950/60 border border-slate-800 rounded-[1rem] flex justify-between items-center hover:border-emerald-500/50 transition-colors">
-                            <div>
-                                <p class="text-sm font-bold text-white">${u.name}</p>
-                                <p class="text-[9px] text-emerald-500 font-black uppercase tracking-widest mt-1">${u.store_name}</p>
-                            </div>
-                            <div class="text-right">
-                                <p class="text-xs font-black text-cyan-400">${u.total_sales} Trx</p>
-                            </div>
-                        </div>
-                    `;
-                });
-            }
+            renderSales(sales.sales);
+            renderActiveNodes(activeNodes.users);
+            renderUserControl(allUsers.users);
 
             document.getElementById('loader').classList.add('hidden');
             document.getElementById('dashboard').classList.remove('hidden');
             lucide.createIcons();
+        } catch (e) { alert("Matrix Sync Failed: " + e.message); }
+    }
 
-        } catch (e) {
-            console.error(e);
-            alert("Matrix sync failed. Connection error.");
+    function renderSales(data) {
+        const tbody = document.getElementById('ledger-body');
+        tbody.innerHTML = data.map(trx => `
+            <tr class="hover:bg-cyan-500/5 transition-colors">
+                <td class="p-5 text-xs font-bold text-slate-400">${new Date(trx.sold_at).toLocaleString()}</td>
+                <td class="p-5">
+                    <div class="text-sm font-bold text-white">${trx.distributor_name}</div>
+                    <div class="text-[9px] text-emerald-500 font-black uppercase tracking-widest">${trx.store_name}</div>
+                </td>
+                <td class="p-5">
+                    <div class="text-sm font-bold text-cyan-400">${trx.product_name}</div>
+                    <div class="text-[10px] text-slate-500 font-bold">Qty: ${trx.quantity}</div>
+                </td>
+                <td class="p-5 text-right font-black text-emerald-400">₹${parseFloat(trx.total_value).toLocaleString()}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="4" class="p-10 text-center uppercase font-black text-slate-600">No Data Pulse</td></tr>';
+    }
+
+    function renderActiveNodes(data) {
+        document.getElementById('active-nodes').innerHTML = data.filter(u => u.is_active === 1).map(u => `
+            <div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex justify-between items-center">
+                <div>
+                    <div class="text-sm font-bold text-white">${u.name}</div>
+                    <div class="text-[9px] text-cyan-500 font-black uppercase">${u.store_name}</div>
+                </div>
+                <button onclick="peekState(${u.user_id}, '${u.name}')" class="text-xs font-black text-emerald-500 hover:text-emerald-400 uppercase tracking-widest">Monitor</button>
+            </div>
+        `).join('');
+    }
+
+    function renderUserControl(data) {
+        document.getElementById('user-list-body').innerHTML = data.map(u => `
+            <tr class="hover:bg-slate-800/20">
+                <td class="p-5">
+                    <div class="text-sm font-bold text-white">${u.name}</div>
+                    <div class="text-xs text-slate-500">${u.email}</div>
+                </td>
+                <td class="p-5">
+                    ${u.has_access ? '<span class="text-[10px] font-black text-emerald-400 uppercase bg-emerald-400/10 px-3 py-1 rounded-full border border-emerald-400/20">Authorized Node</span>' : '<span class="text-[10px] font-black text-slate-500 uppercase bg-slate-800/40 px-3 py-1 rounded-full border border-slate-700">Offline Node</span>'}
+                </td>
+                <td class="p-5 text-right">
+                    ${u.has_access ? 
+                        `<button onclick="revokeAccess(${u.id})" class="text-[10px] font-black text-rose-500 uppercase tracking-widest bg-rose-500/10 px-4 py-2 rounded-lg border border-rose-500/30 hover:bg-rose-500 hover:text-white transition-all">Revoke</button>` : 
+                        `<button onclick="openGrantModal(${u.id})" class="text-[10px] font-black text-cyan-400 uppercase tracking-widest bg-cyan-400/10 px-4 py-2 rounded-lg border border-cyan-400/30 hover:bg-cyan-500 hover:text-white transition-all">Authorize</button>`
+                    }
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    async function peekState(id, name) {
+        document.getElementById('state-modal').classList.remove('hidden');
+        document.getElementById('state-title').innerText = "Probing: " + name.toUpperCase();
+        const res = await authFetch(`/warehouse/admin/user-state/${id}`);
+        const data = await res.json();
+        const content = document.getElementById('state-content');
+        if (data.state) {
+            let invHtml = "--- LIVE INVENTORY ---\n";
+            data.state.i.forEach(item => {
+                invHtml += `[${item.qty}] ${item.name} | Price: ₹${item.price}\n`;
+            });
+            content.innerText = invHtml;
+        } else {
+            content.innerText = "NO CLOUD STATE FOUND FOR THIS DISTRIBUTOR.";
         }
+        lucide.createIcons();
+    }
+
+    function openGrantModal(id) { selectedUserId = id; document.getElementById('grant-modal').classList.remove('hidden'); }
+    function closeModal() { document.getElementById('grant-modal').classList.add('hidden'); }
+    function closeStateModal() { document.getElementById('state-modal').classList.add('hidden'); }
+
+    async function confirmGrant() {
+        const store = document.getElementById('store-name-input').value;
+        const res = await authFetch('/warehouse/admin/grant-access', 'POST', { user_id: selectedUserId, store_name: store });
+        if((await res.json()).success) { closeModal(); loadData(); }
+    }
+
+    async function revokeAccess(id) {
+        if(!confirm("TERMINATE CONNECTION? Node will be locked immediately.")) return;
+        const res = await authFetch('/warehouse/admin/revoke-access', 'POST', { user_id: id });
+        if((await res.json()).success) loadData();
     }
 
     function logout() { localStorage.removeItem('token'); window.location.href = '/login'; }
-    loadData();
+    window.onload = loadData;
 </script>
 </body>
 </html>
