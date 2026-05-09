@@ -1,614 +1,165 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Warehouse Admin Panel - Anritvox</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-//cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-<style>
-  body {font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;}
-  .card {background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 24px; margin-bottom: 20px;}
-  .stat-card {background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px; padding: 20px; margin-bottom: 16px;}
-  .stat-card.green {background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);}
-  .stat-card.orange {background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);}
-  .stat-card.blue {background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);}
-  table {width: 100%; border-collapse: collapse;}
-  th {background: #f7fafc; padding: 12px; text-align: left; font-weight: 600; border-bottom: 2px solid #e2e8f0;}
-  td {padding: 12px; border-bottom: 1px solid #e2e8f0;}
-  tr:hover {background: #f7fafc;}
-  .btn {padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 500; transition: all 0.2s;}
-  .btn-primary {background: #667eea; color: white; border: none;}
-  .btn-primary:hover {background: #5a67d8;}
-  .btn-danger {background: #f56565; color: white; border: none;}
-  .btn-success {background: #48bb78; color: white; border: none;}
-  .badge {padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500;}
-  .badge-active {background: #c6f6d5; color: #22543d;}
-  .badge-inactive {background: #fed7d7; color: #742a2a;}
-  select, input {padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; width: 100%;}
-  .loader {border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 40px auto;}
-  @keyframes spin {0% {transform: rotate(0deg);} 100% {transform: rotate(360deg);}}
-  .modal {display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center;}
-  .modal.show {display: flex;}
-  .modal-content {background: white; padding: 30px; border-radius: 12px; max-width: 500px; width: 90%;}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Master Admin | Warehouse Matrix</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { background-color: #020617; color: #cbd5e1; font-family: system-ui, -apple-system, sans-serif; }
+        .glass { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(30, 41, 59, 0.8); }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #020617; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+    </style>
 </head>
-<body class="bg-gray-50">
+<body class="min-h-screen p-4 md:p-8 custom-scrollbar">
 
-<!-- Header -->
-<div id="siteHeader" class="bg-gradient-to-r from-purple-600 to-indigo-600 text-white p-6 shadow-lg hidden">
-  <div class="max-w-7xl mx-auto flex justify-between items-center">
-    <div>
-      <h1 class="text-3xl font-bold">📦 Warehouse Admin Panel</h1>
-      <p class="text-purple-100 mt-1">Manage distributor access & monitor sales</p>
-    </div>
-    <div id="adminInfo" class="text-right">
-      <div class="text-sm opacity-90">Logged in as</div>
-      <div class="font-bold" id="adminName">Admin</div>
-      <button onclick="logout()" class="mt-2 text-xs bg-white/20 px-3 py-1 rounded hover:bg-white/30">Logout</button>
-    </div>
-  </div>
-</div>
+<div id="loader" class="flex h-[80vh] items-center justify-center text-cyan-500 font-black uppercase tracking-widest animate-pulse text-sm">Decrypting Global Matrix...</div>
 
-<div id="loginScreen" class="min-h-screen flex items-center justify-center">
-  <div class="card max-w-md w-full mx-4">
-    <h2 class="text-2xl font-bold mb-6 text-center">🔐 Admin Login</h2>
-    <input id="loginEmail" type="email" placeholder="Admin Email" class="mb-3">
-    <input id="loginPassword" type="password" placeholder="Password" class="mb-4">
-    <button onclick="login()" class="btn btn-primary w-full">Login</button>
-    <div id="loginError" class="text-red-500 text-sm mt-2 hidden"></div>
-  </div>
-</div>
-
-<div id="mainApp" class="hidden">
-  <!-- Navigation Tabs -->
-  <div class="bg-white shadow-sm border-b">
-    <div class="max-w-7xl mx-auto px-6 py-3 flex gap-4">
-      <button onclick="showTab('dashboard')" class="tab-btn active px-4 py-2 font-medium rounded-lg" data-tab="dashboard">
-        <i class="fas fa-chart-line mr-2"></i>Dashboard
-      </button>
-      <button onclick="showTab('access')" class="tab-btn px-4 py-2 font-medium rounded-lg" data-tab="access">
-        <i class="fas fa-users mr-2"></i>Access Control
-      </button>
-      <button onclick="showTab('sales')" class="tab-btn px-4 py-2 font-medium rounded-lg" data-tab="sales">
-        <i class="fas fa-cash-register mr-2"></i>Sales Log
-      </button>
-      <button onclick="showTab('stores')" class="tab-btn px-4 py-2 font-medium rounded-lg" data-tab="stores">
-        <i class="fas fa-store mr-2"></i>Store Monitor
-      </button>
-    </div>
-  </div>
-
-  <div class="max-w-7xl mx-auto p-6">
-    
-    <!-- DASHBOARD TAB -->
-    <div id="tab-dashboard" class="tab-content">
-      <!-- Stats Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div class="stat-card">
-          <div class="text-sm opacity-90">Total Distributors</div>
-          <div class="text-4xl font-bold mt-1" id="totalDistributors">0</div>
+<div id="dashboard" class="hidden max-w-7xl mx-auto space-y-6">
+    <div class="flex items-center justify-between pb-6 border-b border-slate-800">
+        <div>
+            <h1 class="text-3xl font-black text-white uppercase tracking-tight flex items-center gap-3">
+                Warehouse <span class="text-cyan-500">Command Center</span>
+            </h1>
+            <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Live Global Sales Telemetry</p>
         </div>
-        <div class="stat-card green">
-          <div class="text-sm opacity-90">Active Stores</div>
-          <div class="text-4xl font-bold mt-1" id="activeStores">0</div>
+        <div class="flex gap-3">
+            <button onclick="loadData()" class="p-3 bg-slate-900 border border-slate-800 rounded-xl hover:text-cyan-400 transition-colors shadow-lg"><i data-lucide="refresh-cw"></i></button>
+            <button onclick="logout()" class="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-500 rounded-xl hover:bg-rose-500 hover:text-white transition-colors shadow-lg"><i data-lucide="log-out"></i></button>
         </div>
-        <div class="stat-card orange">
-          <div class="text-sm opacity-90">Today's Sales</div>
-          <div class="text-4xl font-bold mt-1" id="todaySales">0</div>
-        </div>
-        <div class="stat-card blue">
-          <div class="text-sm opacity-90">Total Revenue</div>
-          <div class="text-4xl font-bold mt-1" id="totalRevenue">₹0</div>
-        </div>
-      </div>
-
-      <!-- Date Filter -->
-      <div class="card">
-        <div class="flex gap-4 items-end">
-          <div class="flex-1">
-            abel class="text-sm font-medium text-gray-700 mb-1 block">Filter by Date</label>
-            <input type="date" id="dashboardDate" class="w-full" onchange="loadDashboard()">
-          </div>
-          <div class="flex-1">
-            abel class="text-sm font-medium text-gray-700 mb-1 block">Filter by Store</label>
-            <select id="dashboardStore" class="w-full" onchange="loadDashboard()">
-              <option value="">All Stores</option>
-            </select>
-          </div>
-          <button onclick="clearFilters()" class="btn bg-gray-200 text-gray-800">Clear</button>
-        </div>
-      </div>
-
-      <!-- Charts -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="card">
-          <h3 class="text-lg font-bold mb-4">Sales Trend (Last 30 Days)</h3>
-          anvas id="salesChart" height="200"></canvas>
-        </div>
-        <div class="card">
-          <h3 class="text-lg font-bold mb-4">Product Distribution</h3>
-          anvas id="productChart" height="200"></canvas>
-        </div>
-      </div>
-
-      <!-- Product Summary Table -->
-      <div class="card">
-        <h3 class="text-lg font-bold mb-4">📊 Product Sales Summary</h3>
-        <div class="overflow-x-auto">
-          <table id="summaryTable">
-            <thead>
-              <tr>
-                <th>Product</th>
-                <th>Store</th>
-                <th>Quantity Sold</th>
-                <th>Revenue</th>
-                <th>Transactions</th>
-              </tr>
-            </thead>
-            <tbody id="summaryBody"></tbody>
-          </table>
-        </div>
-      </div>
     </div>
 
-    <!-- ACCESS CONTROL TAB -->
-    <div id="tab-access" class="tab-content hidden">
-      <div class="card">
-        <div class="flex justify-between items-center mb-4">
-          <h3 class="text-xl font-bold">👥 Manage Warehouse Access</h3>
-          <button onclick="openGrantModal()" class="btn btn-success">
-            <i class="fas fa-plus mr-2"></i>Grant Access
-          </button>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 glass rounded-[2rem] overflow-hidden shadow-2xl">
+            <div class="p-6 border-b border-slate-800 bg-slate-950/50 flex items-center justify-between">
+                <h3 class="text-xs font-black uppercase tracking-widest text-white flex items-center gap-2">
+                    <i data-lucide="activity" class="text-purple-400 w-4 h-4"></i> Live Transaction Ledger
+                </h3>
+            </div>
+            <div class="overflow-x-auto h-[600px] custom-scrollbar">
+                <table class="w-full text-left border-collapse">
+                    <thead class="bg-slate-950/80 border-b border-slate-800 sticky top-0 backdrop-blur-md">
+                        <tr>
+                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Timestamp</th>
+                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Distributor Node</th>
+                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest">Product Dispatched</th>
+                            <th class="p-5 text-[9px] font-black uppercase text-slate-500 tracking-widest text-right">Financials</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ledger-body" class="divide-y divide-slate-800/50">
+                        </tbody>
+                </table>
+            </div>
         </div>
-        <div class="overflow-x-auto">
-          <table>
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Email</th>
-                <th>Store Name</th>
-                <th>Status</th>
-                <th>Total Sales</th>
-                <th>Granted At</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="accessBody"></tbody>
-          </table>
+
+        <div class="glass rounded-[2rem] p-6 h-fit shadow-2xl">
+            <h3 class="text-xs font-black uppercase tracking-widest text-white mb-6 flex items-center gap-2">
+                <i data-lucide="shield-check" class="text-emerald-400 w-4 h-4"></i> Authorized Distributors
+            </h3>
+            <div id="access-list" class="space-y-4">
+                </div>
         </div>
-      </div>
     </div>
-
-    <!-- SALES LOG TAB -->
-    <div id="tab-sales" class="tab-content hidden">
-      <div class="card">
-        <div class="flex gap-4 mb-4">
-          <div class="flex-1">
-            <input type="date" id="salesDate" class="w-full" onchange="loadSalesLog()">
-          </div>
-          <div class="flex-1">
-            <select id="salesStore" class="w-full" onchange="loadSalesLog()">
-              <option value="">All Stores</option>
-            </select>
-          </div>
-        </div>
-        <div class="overflow-x-auto">
-          <table>
-            <thead>
-              <tr>
-                <th>Date & Time</th>
-                <th>Distributor</th>
-                <th>Store</th>
-                <th>Product</th>
-                <th>Qty</th>
-                <th>Price</th>
-                <th>Total</th>
-              </tr>
-            </thead>
-            <tbody id="salesBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- STORE MONITOR TAB -->
-    <div id="tab-stores" class="tab-content hidden">
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6" id="storeCards"></div>
-    </div>
-
-  </div>
-</div>
-
-<!-- Grant Access Modal -->
-<div id="grantModal" class="modal">
-  <div class="modal-content">
-    <h3 class="text-xl font-bold mb-4">Grant Warehouse Access</h3>
-    <select id="grantUserId" class="mb-3"></select>
-    <input id="grantStoreName" type="text" placeholder="Store Name (optional)" class="mb-4">
-    <div class="flex gap-3">
-      <button onclick="grantAccess()" class="btn btn-primary flex-1">Grant Access</button>
-      <button onclick="closeGrantModal()" class="btn bg-gray-200 text-gray-800 flex-1">Cancel</button>
-    </div>
-  </div>
 </div>
 
 <script>
-const API_BASE = 'https://service.anritvox.com/api';
-let authToken = localStorage.getItem('AV_ADMIN_TOKEN');
-let salesChart, productChart;
-let allUsers = [];
-
-// ========== AUTH ==========
-async function login() {
-  const email = document.getElementById('loginEmail').value;
-  const password = document.getElementById('loginPassword').value;
-  const err = document.getElementById('loginError');
-  
-  try {
-    const res = await fetch(`${API_BASE}/auth/admin/login`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({email, password})
-    });
-    const data = await res.json();
+    lucide.createIcons();
+    const API_URL = '/api';
+    const token = localStorage.getItem('token');
     
-    if (!res.ok) throw new Error(data.message || 'Login failed');
-    if (data.admin.role !== 'admin') throw new Error('Access denied: Admin privileges required');
-    
-    authToken = data.token;
-    localStorage.setItem('AV_ADMIN_TOKEN', authToken);
-    document.getElementById('loginScreen').classList.add('hidden');
-    document.getElementById('mainApp').classList.remove('hidden');
-    document.getElementById('adminName').textContent = data.admin.email || 'Admin';
-    init();
-  } catch (e) {
-    err.textContent = e.message;
-    err.classList.remove('hidden');
-  }
-}
+    if (!token) window.location.href = '/login';
 
-function logout() {
-  localStorage.removeItem('AV_ADMIN_TOKEN');
-  location.reload();
-}
-
-// ========== INIT ==========
-async function init() {
-  if (!authToken) {
-    document.getElementById('loginScreen').classList.remove('hidden');
-    return;
-  }
-  
-  document.getElementById('loginScreen').classList.add('hidden');
-  document.getElementById('mainApp').classList.remove('hidden');
-  
-  await loadDashboard();
-  await loadAccessControl();
-  initCharts();
-}
-
-// ========== TABS ==========
-function showTab(tabName) {
-  document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active', 'bg-purple-100', 'text-purple-700'));
-  
-  document.getElementById(`tab-${tabName}`).classList.remove('hidden');
-  document.querySelector(`[data-tab="${tabName}"]`).classList.add('active', 'bg-purple-100', 'text-purple-700');
-  
-  if (tabName === 'sales') loadSalesLog();
-  if (tabName === 'stores') loadStoreMonitor();
-}
-
-// ========== DASHBOARD ==========
-async function loadDashboard() {
-  const date = document.getElementById('dashboardDate').value;
-  const storeUserId = document.getElementById('dashboardStore').value;
-  
-  try {
-    // Stats
-    const [usersRes, salesRes, summaryRes, dailyRes] = await Promise.all([
-      apiGet('/warehouse/admin/users'),
-      apiGet(`/warehouse/admin/sales?${new URLSearchParams({date, store_user_id: storeUserId})}`),
-      apiGet(`/warehouse/admin/sales-summary?${new URLSearchParams({date, store_user_id: storeUserId})}`),
-      apiGet(`/warehouse/admin/sales-daily?${new URLSearchParams({store_user_id: storeUserId})}`)
-    ]);
-    
-    const users = usersRes.users || [];
-    const sales = salesRes.sales || [];
-    const summary = summaryRes.summary || [];
-    const daily = dailyRes.daily || [];
-    
-    document.getElementById('totalDistributors').textContent = users.length;
-    document.getElementById('activeStores').textContent = users.filter(u => u.is_active).length;
-    document.getElementById('todaySales').textContent = sales.length;
-    
-    const totalRev = sales.reduce((sum, s) => sum + (s.total_value || 0), 0);
-    document.getElementById('totalRevenue').textContent = `₹${totalRev.toFixed(2)}`;
-    
-    // Populate store dropdown
-    const storeSelect = document.getElementById('dashboardStore');
-    storeSelect.innerHTML = '<option value="">All Stores</option>';
-    users.filter(u => u.is_active).forEach(u => {
-      const opt = document.createElement('option');
-      opt.value = u.user_id;
-      opt.textContent = `${u.store_name || u.name} (${u.email})`;
-      storeSelect.appendChild(opt);
-    });
-    if (storeUserId) storeSelect.value = storeUserId;
-    
-    // Summary table
-    const summaryBody = document.getElementById('summaryBody');
-    summaryBody.innerHTML = summary.map(s => `
-      <tr>
-        <td class="font-medium">${s.product_name}</td>
-        <td>${s.store_name || 'N/A'}</td>
-        <td class="text-center font-bold">${s.total_qty}</td>
-        <td class="text-green-600 font-bold">₹${parseFloat(s.total_revenue || 0).toFixed(2)}</td>
-        <td class="text-center">${s.transactions}</td>
-      </tr>
-    `).join('');
-    
-    // Update charts
-    updateCharts(daily, summary);
-    
-  } catch (e) {
-    console.error('Dashboard load error:', e);
-  }
-}
-
-function clearFilters() {
-  document.getElementById('dashboardDate').value = '';
-  document.getElementById('dashboardStore').value = '';
-  loadDashboard();
-}
-
-// ========== CHARTS ==========
-function initCharts() {
-  const salesCtx = document.getElementById('salesChart').getContext('2d');
-  const productCtx = document.getElementById('productChart').getContext('2d');
-  
-  salesChart = new Chart(salesCtx, {
-    type: 'line',
-    data: {labels: [], datasets: [{label: 'Sales', data: [], borderColor: '#667eea', tension: 0.4, fill: true, backgroundColor: 'rgba(102, 126, 234, 0.1)'}]},
-    options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}}}
-  });
-  
-  productChart = new Chart(productCtx, {
-    type: 'bar',
-    data: {labels: [], datasets: [{label: 'Quantity', data: [], backgroundColor: '#48bb78'}]},
-    options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}}}
-  });
-}
-
-function updateCharts(daily, summary) {
-  salesChart.data.labels = daily.map(d => d.date);
-  salesChart.data.datasets[0].data = daily.map(d => d.total_qty);
-  salesChart.update();
-  
-  const top10 = summary.slice(0, 10);
-  productChart.data.labels = top10.map(s => s.product_name);
-  productChart.data.datasets[0].data = top10.map(s => s.total_qty);
-  productChart.update();
-}
-
-// ========== ACCESS CONTROL ==========
-async function loadAccessControl() {
-  try {
-    const res = await apiGet('/warehouse/admin/users');
-    const users = res.users || [];
-    
-    const tbody = document.getElementById('accessBody');
-    tbody.innerHTML = users.map(u => `
-      <tr>
-        <td class="font-medium">${u.name}</td>
-        <td>${u.email}</td>
-        <td>${u.store_name || '<i class="text-gray-400">Not set</i>'}</td>
-        <td>
-          <span class="badge ${u.is_active ? 'badge-active' : 'badge-inactive'}">
-            ${u.is_active ? 'Active' : 'Inactive'}
-          </span>
-        </td>
-        <td class="text-center font-bold">${u.total_sales || 0}</td>
-        <td>${new Date(u.granted_at).toLocaleDateString()}</td>
-        <td>
-          ${u.is_active ? 
-            `<button onclick="revokeAccess(${u.user_id})" class="btn btn-danger text-xs">Revoke</button>` :
-            `<button onclick="reGrantAccess(${u.user_id})" class="btn btn-success text-xs">Re-grant</button>`
-          }
-          <button onclick="editStore(${u.user_id}, '${u.store_name || ''}')" class="btn bg-blue-500 text-white text-xs ml-1">Edit Store</button>
-        </td>
-      </tr>
-    `).join('');
-  } catch (e) {
-    console.error('Load access error:', e);
-  }
-}
-
-async function openGrantModal() {
-  try {
-    const res = await apiGet('/warehouse/admin/all-users');
-    allUsers = res.users || [];
-    
-    const select = document.getElementById('grantUserId');
-    select.innerHTML = '<option value="">Select User...</option>' + 
-      allUsers.filter(u => !u.has_access).map(u => 
-        `<option value="${u.id}">${u.name} (${u.email})</option>`
-      ).join('');
-    
-    document.getElementById('grantModal').classList.add('show');
-  } catch (e) {
-    console.error('Load users error:', e);
-  }
-}
-
-function closeGrantModal() {
-  document.getElementById('grantModal').classList.remove('show');
-}
-
-async function grantAccess() {
-  const userId = document.getElementById('grantUserId').value;
-  const storeName = document.getElementById('grantStoreName').value;
-  
-  if (!userId) return alert('Please select a user');
-  
-  try {
-    await apiPost('/warehouse/admin/grant-access', {user_id: parseInt(userId), store_name: storeName});
-    alert('Access granted successfully!');
-    closeGrantModal();
-    loadAccessControl();
-    loadDashboard();
-  } catch (e) {
-    alert('Error: ' + e.message);
-  }
-}
-
-async function revokeAccess(userId) {
-  if (!confirm('Revoke warehouse access for this user?')) return;
-  
-  try {
-    await apiPost('/warehouse/admin/revoke-access', {user_id: userId});
-    alert('Access revoked');
-    loadAccessControl();
-    loadDashboard();
-  } catch (e) {
-    alert('Error: ' + e.message);
-  }
-}
-
-async function reGrantAccess(userId) {
-  const storeName = prompt('Enter store name (optional):');
-  try {
-    await apiPost('/warehouse/admin/grant-access', {user_id: userId, store_name: storeName});
-    alert('Access re-granted');
-    loadAccessControl();
-    loadDashboard();
-  } catch (e) {
-    alert('Error: ' + e.message);
-  }
-}
-
-async function editStore(userId, currentName) {
-  const storeName = prompt('Enter new store name:', currentName);
-  if (storeName === null) return;
-  
-  try {
-    await apiPost('/warehouse/admin/update-store', {user_id: userId, store_name: storeName});
-    alert('Store name updated');
-    loadAccessControl();
-  } catch (e) {
-    alert('Error: ' + e.message);
-  }
-}
-
-// ========== SALES LOG ==========
-async function loadSalesLog() {
-  const date = document.getElementById('salesDate').value;
-  const storeUserId = document.getElementById('salesStore').value;
-  
-  try {
-    const res = await apiGet(`/warehouse/admin/sales?${new URLSearchParams({date, store_user_id: storeUserId})}`);
-    const sales = res.sales || [];
-    
-    // Populate store dropdown
-    const usersRes = await apiGet('/warehouse/admin/users');
-    const storeSelect = document.getElementById('salesStore');
-    storeSelect.innerHTML = '<option value="">All Stores</option>';
-    (usersRes.users || []).filter(u => u.is_active).forEach(u => {
-      const opt = document.createElement('option');
-      opt.value = u.user_id;
-      opt.textContent = `${u.store_name || u.name}`;
-      storeSelect.appendChild(opt);
-    });
-    if (storeUserId) storeSelect.value = storeUserId;
-    
-    const tbody = document.getElementById('salesBody');
-    tbody.innerHTML = sales.map(s => `
-      <tr>
-        <td>${new Date(s.sold_at).toLocaleString()}</td>
-        <td>${s.distributor_name}</td>
-        <td>${s.store_name || 'N/A'}</td>
-        <td class="font-medium">${s.product_name}</td>
-        <td class="text-center">${s.quantity}</td>
-        <td>₹${parseFloat(s.sale_price).toFixed(2)}</td>
-        <td class="text-green-600 font-bold">₹${s.total_value.toFixed(2)}</td>
-      </tr>
-    `).join('');
-  } catch (e) {
-    console.error('Load sales error:', e);
-  }
-}
-
-// ========== STORE MONITOR ==========
-async function loadStoreMonitor() {
-  try {
-    const usersRes = await apiGet('/warehouse/admin/users');
-    const users = (usersRes.users || []).filter(u => u.is_active);
-    
-    const container = document.getElementById('storeCards');
-    container.innerHTML = '';
-    
-    for (const user of users) {
-      const stateRes = await apiGet(`/warehouse/admin/user-state/${user.user_id}`);
-      const state = stateRes.state;
-      
-      const card = document.createElement('div');
-      card.className = 'card';
-      card.innerHTML = `
-        <h3 class="text-lg font-bold mb-2">${user.store_name || user.name}</h3>
-        <p class="text-sm text-gray-600 mb-4">${user.email}</p>
-        ${state ? `
-          <div class="grid grid-cols-2 gap-4 mb-4">
-            <div class="bg-blue-50 p-3 rounded">
-              <div class="text-xs text-gray-600">Inventory Items</div>
-              <div class="text-2xl font-bold text-blue-600">${state.i?.length || 0}</div>
-            </div>
-            <div class="bg-green-50 p-3 rounded">
-              <div class="text-xs text-gray-600">Total Sales</div>
-              <div class="text-2xl font-bold text-green-600">${state.s?.length || 0}</div>
-            </div>
-            <div class="bg-purple-50 p-3 rounded">
-              <div class="text-xs text-gray-600">Customers</div>
-              <div class="text-2xl font-bold text-purple-600">${state.c?.length || 0}</div>
-            </div>
-            <div class="bg-orange-50 p-3 rounded">
-              <div class="text-xs text-gray-600">Payments</div>
-              <div class="text-2xl font-bold text-orange-600">${state.p?.length || 0}</div>
-            </div>
-          </div>
-          <div class="text-xs text-gray-500">Last sync: ${stateRes.updated_at ? new Date(stateRes.updated_at).toLocaleString() : 'Never'}</div>
-        ` : '<div class="text-gray-400 text-center py-8">No data synced yet</div>'}
-      `;
-      container.appendChild(card);
+    async function authFetch(url) {
+        return fetch(API_URL + url, { headers: { 'Authorization': `Bearer ${token}` } });
     }
-  } catch (e) {
-    console.error('Load store monitor error:', e);
-  }
-}
 
-// ========== API HELPERS ==========
-async function apiGet(endpoint) {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
-    headers: {'Authorization': `Bearer ${authToken}`}
-  });
-  if (!res.ok) throw new Error('API error');
-  return await res.json();
-}
+    async function loadData() {
+        try {
+            // Verify Master Admin Status
+            const authCheck = await authFetch('/warehouse/check-access');
+            const authData = await authCheck.json();
+            if(!authData.isAdmin) {
+                document.body.innerHTML = '<div class="text-rose-500 text-center mt-20 font-black text-xl uppercase tracking-widest">RESTRICTED<br><span class="text-[10px] text-slate-500">Master Admin Clearance Required</span></div>';
+                return;
+            }
 
-async function apiPost(endpoint, body) {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
-    method: 'POST',
-    headers: {'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) throw new Error('API error');
-  return await res.json();
-}
+            // Fetch Data
+            const [salesRes, usersRes] = await Promise.all([
+                authFetch('/warehouse/admin/sales'),
+                authFetch('/warehouse/admin/users')
+            ]);
+            
+            const salesData = await salesRes.json();
+            const usersData = await usersRes.json();
 
-// ========== INIT ==========
-if (authToken) init();
+            // Populate Sales Ledger
+            const tbody = document.getElementById('ledger-body');
+            tbody.innerHTML = '';
+            if(!salesData.sales || salesData.sales.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="p-10 text-center text-slate-500 text-[10px] font-black uppercase tracking-widest">No data blocks found.</td></tr>';
+            } else {
+                salesData.sales.forEach(trx => {
+                    const date = new Date(trx.sold_at);
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-cyan-500/5 transition-colors">
+                            <td class="p-5">
+                                <p class="text-xs font-bold text-slate-300">${date.toLocaleDateString()}</p>
+                                <p class="text-[9px] font-mono text-slate-500 mt-0.5">${date.toLocaleTimeString()}</p>
+                            </td>
+                            <td class="p-5">
+                                <p class="text-sm font-bold text-white">${trx.distributor_name || 'Unknown Identity'}</p>
+                                <p class="text-[9px] text-emerald-500 font-black uppercase tracking-widest mt-0.5"><i data-lucide="store" class="w-3 h-3 inline"></i> ${trx.store_name}</p>
+                            </td>
+                            <td class="p-5">
+                                <p class="text-sm font-bold text-cyan-400">${trx.product_name}</p>
+                                <p class="text-[10px] text-slate-500 mt-0.5">Quantity: <span class="text-white font-black">${trx.quantity}</span></p>
+                            </td>
+                            <td class="p-5 text-right">
+                                <p class="text-sm font-black text-emerald-400">₹${parseFloat(trx.total_value).toLocaleString()}</p>
+                                <p class="text-[9px] text-slate-500 mt-0.5">@ ₹${parseFloat(trx.sale_price).toLocaleString()}/unit</p>
+                            </td>
+                        </tr>
+                    `;
+                });
+            }
+
+            // Populate Active Distributors
+            const accessList = document.getElementById('access-list');
+            accessList.innerHTML = '';
+            const activeUsers = (usersData.users || []).filter(u => u.is_active === 1);
+            if(activeUsers.length === 0) {
+                accessList.innerHTML = '<p class="text-slate-500 text-[10px] text-center p-4 font-black uppercase tracking-widest">No active nodes.</p>';
+            } else {
+                activeUsers.forEach(u => {
+                    accessList.innerHTML += `
+                        <div class="p-5 bg-slate-950/60 border border-slate-800 rounded-[1rem] flex justify-between items-center hover:border-emerald-500/50 transition-colors">
+                            <div>
+                                <p class="text-sm font-bold text-white">${u.name}</p>
+                                <p class="text-[9px] text-emerald-500 font-black uppercase tracking-widest mt-1">${u.store_name}</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-xs font-black text-cyan-400">${u.total_sales} Trx</p>
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            document.getElementById('loader').classList.add('hidden');
+            document.getElementById('dashboard').classList.remove('hidden');
+            lucide.createIcons();
+
+        } catch (e) {
+            console.error(e);
+            alert("Matrix sync failed. Connection error.");
+        }
+    }
+
+    function logout() { localStorage.removeItem('token'); window.location.href = '/login'; }
+    loadData();
 </script>
-
 </body>
 </html>
