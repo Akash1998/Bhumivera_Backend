@@ -6,7 +6,7 @@ const { sendMail } = require('../utils/mail');
 const { registerLimiter, loginLimiter, otpLimiter } = require('../middleware/rateLimiter');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 
-const { createAdmin, getAdminByEmail, getAdminById, verifyPassword: verifyAdminPassword, updateAdminPassword } = require("../models/adminModel");
+const { getAdminByEmail, getAdminById, verifyPassword: verifyAdminPassword, updateAdminPassword } = require("../models/adminModel");
 const { 
   createUser, getUserByEmail, getUserById, verifyPassword: verifyCustomerPassword, 
   saveResetOtp, clearResetOtp, updateUserPassword, verifySecurityAnswer 
@@ -247,4 +247,4 @@ router.get("/profile", authenticateAdmin, async (req, res) => {
   res.json({ message: "Profile access" });
 });
 
-// TEMP SEED - REMOVE AFTER USE router.post("/admin/seed", async (req, res) => {   try {     const { email, password, secret } = req.body;     if (secret !== "AV_SEED_2026") return res.status(403).json({ message: "Forbidden" });     await createAdmin(email, password);     res.json({ message: "Admin created successfully", email });   } catch (e) {     res.status(500).json({ message: e.message });   } });  module.exports = router;
+module.exports = router;
