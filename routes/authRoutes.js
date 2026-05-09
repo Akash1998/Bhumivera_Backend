@@ -294,4 +294,85 @@ router.get("/profile", authenticateAdmin, async (req, res) => {
   res.json({ message: "Profile access" });
 });
 
+// ── ADMIN OTP LOGIN (email-only, no password) ────────────────────────────
+router.post('/admin/request-otp', otpLimiter, async (req, res) => {
+  try {
+    const { email, turnstileToken } = req.body;
+    if (!email) return res.status(400).json({ message: 'Email required' });
+    const isHuman = await verifyTurnstile(turnstileToken);
+    if (!isHuman) return res.status(403).json({ message: 'Bot verification failed.' });
+    const admin = await getAdminByEmail(email);
+    if (!admin) return res.status(404).json({ message: 'No admin account with that email.' });
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
+    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=? WHERE email=?', [otp, expiry, email]);
+    await sendMail({ to: email, subject: 'Anritvox Admin Login OTP', html: `<p>Your admin login OTP is: <strong>${otp}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>` });
+    res.json({ message: 'OTP sent to your email.' });
+  } catch (err) {
+    console.error('Admin OTP Request Error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
+  try {
+    const { email, otp, turnstileToken } = req.body;
+    if (!email || !otp) return res.status(400).json({ message: 'Email and OTP required' });
+    const isHuman = await verifyTurnstile(turnstileToken);
+    if (!isHuman) return res.status(403).json({ message: 'Bot verification failed.' });
+    const admin = await getAdminByEmail(email);
+    if (!admin) return res.status(404).json({ message: 'Admin not found.' });
+    if (!admin.login_otp || admin.login_otp !== otp) return res.status(401).json({ message: 'Invalid OTP.' });
+    if (new Date() > new Date(admin.login_otp_expires)) return res.status(401).json({ message: 'OTP expired. Request a new one.' });
+    await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?', [email]);
+    const token = jwt.sign({ id: admin.id, email: admin.email, role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, admin: { id: admin.id, email: admin.email, role: 'admin' } });
+  } catch (err) {
+    console.error('Admin OTP Verify Error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ── WAREHOUSE ADMIN OTP LOGIN ─────────────────────────────────────────────
+router.post('/warehouse/request-otp', otpLimiter, async (req, res) => {
+  try {
+    const { email, turnstileToken } = req.body;
+    if (!email) return res.status(400).json({ message: 'Email required' });
+    const isHuman = await verifyTurnstile(turnstileToken);
+    if (!isHuman) return res.status(403).json({ message: 'Bot verification failed.' });
+    const [rows] = await pool.query('SELECT id, email, role FROM admin_users WHERE email=? AND role IN (?,?)', [email, 'warehouse_admin', 'superadmin']);
+    const warehouseAdmin = rows[0];
+    if (!warehouseAdmin) return res.status(404).json({ message: 'No warehouse admin account with that email.' });
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
+    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=? WHERE email=?', [otp, expiry, email]);
+    await sendMail({ to: email, subject: 'Anritvox Warehouse Login OTP', html: `<p>Your warehouse login OTP is: <strong>${otp}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>` });
+    res.json({ message: 'OTP sent to your email.' });
+  } catch (err) {
+    console.error('Warehouse OTP Request Error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/warehouse/verify-otp', otpLimiter, async (req, res) => {
+  try {
+    const { email, otp, turnstileToken } = req.body;
+    if (!email || !otp) return res.status(400).json({ message: 'Email and OTP required' });
+    const isHuman = await verifyTurnstile(turnstileToken);
+    if (!isHuman) return res.status(403).json({ message: 'Bot verification failed.' });
+    const [rows] = await pool.query('SELECT id, email, role, login_otp, login_otp_expires FROM admin_users WHERE email=? AND role IN (?,?)', [email, 'warehouse_admin', 'superadmin']);
+    const warehouseAdmin = rows[0];
+    if (!warehouseAdmin) return res.status(404).json({ message: 'Warehouse admin not found.' });
+    if (!warehouseAdmin.login_otp || warehouseAdmin.login_otp !== otp) return res.status(401).json({ message: 'Invalid OTP.' });
+    if (new Date() > new Date(warehouseAdmin.login_otp_expires)) return res.status(401).json({ message: 'OTP expired. Request a new one.' });
+    await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?', [email]);
+    const token = jwt.sign({ id: warehouseAdmin.id, email: warehouseAdmin.email, role: warehouseAdmin.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, admin: { id: warehouseAdmin.id, email: warehouseAdmin.email, role: warehouseAdmin.role } });
+  } catch (err) {
+    console.error('Warehouse OTP Verify Error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
 module.exports = router;
