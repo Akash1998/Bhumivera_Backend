@@ -787,7 +787,7 @@ Auth:{
             }
         } catch(e) { $('l-msg').innerText = "NETWORK ERROR"; }
     },
-    logout(){localStorage.removeItem('AV_WH_TOKEN'); localStorage.removeItem('AV_CLOUD_BACKUP'); location.reload()},
+    async checkAccess(){try{const t=localStorage.getItem('AV_WH_TOKEN');if(!t)return true;const r=await fetch('https://service.anritvox.com/api/warehouse/check-access',{headers:{'Authorization':'Bearer '+t}});if(r.status===401){AV.Auth.logout();return false;}const d=await r.json();if(!d.success||!d.hasAccess){const m=document.createElement('div');m.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:99999;display:flex;align-items:center;justify-content:center';m.innerHTML='<div style="background:#c53030;padding:32px 40px;border-radius:16px;text-align:center;color:white;max-width:380px"><div style="font-size:52px;margin-bottom:12px">&#x1F6AB;</div><h2 style="margin:0 0 10px">Access Denied</h2><p style="margin:0 0 20px;opacity:.85">You do not have warehouse access.<br>Contact your administrator.</p><button onclick="AV.Auth.logout()" style="background:white;color:#c53030;border:none;padding:10px 28px;border-radius:8px;font-weight:700;cursor:pointer;font-size:15px">Go to Login</button></div>';document.body.appendChild(m);localStorage.removeItem('AV_WH_TOKEN');return false;}return true;}catch(e){console.error('Access check:',e);return true;}}, logout(){localStorage.removeItem('AV_WH_TOKEN'); localStorage.removeItem('AV_CLOUD_BACKUP'); location.reload()},
     async authorizeDevice() {
         let pin = _V('da-pin');
         if(pin === AV.d.cfg.deviceLockPin) {
