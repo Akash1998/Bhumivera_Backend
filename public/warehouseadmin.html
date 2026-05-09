@@ -104,9 +104,9 @@
 </div>
 
 <div id="state-modal" class="hidden fixed inset-0 bg-slate-950/95 z-[100] flex items-center justify-center p-4">
-    <div class="glass max-w-4xl w-full h-[80vh] rounded-[2rem] p-8 flex flex-col space-y-6">
+    <div class="glass max-w-4xl w-full h-[80vh] rounded-[2rem] p-8 flex flex-col space-y-6 text-white">
         <div class="flex justify-between items-center">
-            <h2 id="state-title" class="text-xl font-black text-white uppercase tracking-tight text-cyan-500">Inventory Probe</h2>
+            <h2 id="state-title" class="text-xl font-black uppercase tracking-tight text-cyan-500">Inventory Probe</h2>
             <button onclick="closeStateModal()" class="text-slate-500 hover:text-white"><i data-lucide="x"></i></button>
         </div>
         <div id="state-content" class="flex-1 overflow-y-auto custom-scrollbar bg-slate-950/50 rounded-2xl p-6 font-mono text-xs text-emerald-500">
@@ -117,7 +117,7 @@
 
 <script>
     const API_URL = '/api';
-    const token = localStorage.getItem('token'); // Use standard token key
+    const token = localStorage.getItem('token'); 
     let selectedUserId = null;
 
     if (!token) window.location.href = '/login';
@@ -172,7 +172,7 @@
 
     function renderSales(data) {
         const tbody = document.getElementById('ledger-body');
-        tbody.innerHTML = data.map(trx => `
+        tbody.innerHTML = (data || []).map(trx => `
             <tr class="hover:bg-cyan-500/5 transition-colors">
                 <td class="p-5 text-xs font-bold text-slate-400">${new Date(trx.sold_at).toLocaleString()}</td>
                 <td class="p-5">
@@ -189,7 +189,7 @@
     }
 
     function renderActiveNodes(data) {
-        document.getElementById('active-nodes').innerHTML = data.filter(u => u.is_active === 1).map(u => `
+        document.getElementById('active-nodes').innerHTML = (data || []).filter(u => u.is_active === 1).map(u => `
             <div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex justify-between items-center">
                 <div>
                     <div class="text-sm font-bold text-white">${u.name}</div>
@@ -197,11 +197,11 @@
                 </div>
                 <button onclick="peekState(${u.user_id}, '${u.name}')" class="text-xs font-black text-emerald-500 hover:text-emerald-400 uppercase tracking-widest">Monitor</button>
             </div>
-        `).join('');
+        `).join('') || '<p class="text-slate-600 text-xs p-4">No active nodes.</p>';
     }
 
     function renderUserControl(data) {
-        document.getElementById('user-list-body').innerHTML = data.map(u => `
+        document.getElementById('user-list-body').innerHTML = (data || []).map(u => `
             <tr class="hover:bg-slate-800/20">
                 <td class="p-5">
                     <div class="text-sm font-bold text-white">${u.name}</div>
@@ -212,8 +212,8 @@
                 </td>
                 <td class="p-5 text-right">
                     ${u.has_access ? 
-                        `<button onclick="revokeAccess(${u.id})" class="text-[10px] font-black text-rose-500 uppercase tracking-widest bg-rose-500/10 px-4 py-2 rounded-lg border border-rose-500/30 hover:bg-rose-500 hover:text-white transition-all">Revoke</button>` : 
-                        `<button onclick="openGrantModal(${u.id})" class="text-[10px] font-black text-cyan-400 uppercase tracking-widest bg-cyan-400/10 px-4 py-2 rounded-lg border border-cyan-400/30 hover:bg-cyan-500 hover:text-white transition-all">Authorize</button>`
+                        `<button onclick="revokeAccess(${u.id})" class="text-[10px] font-black text-rose-500 uppercase tracking-widest bg-rose-500/10 px-4 py-2 rounded-lg border border-rose-500/30 hover:bg-rose-500 hover:text-white transition-all">Revoke Access</button>` : 
+                        `<button onclick="openGrantModal(${u.id})" class="text-[10px] font-black text-cyan-400 uppercase tracking-widest bg-cyan-400/10 px-4 py-2 rounded-lg border border-cyan-400/30 hover:bg-cyan-500 hover:text-white transition-all">Grant Access</button>`
                     }
                 </td>
             </tr>
@@ -227,14 +227,16 @@
         const data = await res.json();
         const content = document.getElementById('state-content');
         if (data.state) {
-            let invHtml = "--- LIVE INVENTORY ---\n";
-            data.state.i.forEach(item => {
-                invHtml += `[${item.qty}] ${item.name} | Price: ₹${item.price}\n`;
+            let invHtml = "--- LIVE INVENTORY MONITOR ---\n\n";
+            (data.state.i || []).forEach(item => {
+                invHtml += `[QTY: ${item.qty}] ${item.name.padEnd(25)} | Rate: ₹${item.price}\n`;
+            });
+            invHtml += "\n--- CUSTOMER DATABASE ---\n";
+            (data.state.c || []).forEach(c => {
+                invHtml += `[${c.name}] Wallet: ₹${c.wallet}\n`;
             });
             content.innerText = invHtml;
-        } else {
-            content.innerText = "NO CLOUD STATE FOUND FOR THIS DISTRIBUTOR.";
-        }
+        } else { content.innerText = "NO CLOUD STATE FOUND FOR THIS DISTRIBUTOR."; }
         lucide.createIcons();
     }
 
