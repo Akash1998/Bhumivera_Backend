@@ -31,8 +31,8 @@ const updateAdminPassword = async (id, newHash) => {
   );
 };
 
-module.exports = {
-  getAdminByEmail,
+const createAdmin = async (email, password) => {   const hash = await bcrypt.hash(password, 10);   await pool.query(     `INSERT INTO admin_users (email, password_hash) VALUES (?, ?)`,     [email, hash]   ); };  module.exports = {
+  createAdmin,   getAdminByEmail,
   getAdminById,
   verifyPassword,
   updateAdminPassword,
