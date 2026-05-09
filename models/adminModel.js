@@ -4,7 +4,7 @@ const bcrypt = require("bcrypt");
 
 const getAdminByEmail = async (email) => {
   const [rows] = await pool.query(
-    `SELECT id, email, password_hash
+    `SELECT id, email, password_hash, role, login_otp, login_otp_expires
      FROM admin_users
      WHERE email = ?`,
     [email]
