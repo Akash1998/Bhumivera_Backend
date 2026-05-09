@@ -247,7 +247,7 @@ async function login() {
   const err = document.getElementById('loginError');
   
   try {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    const res = await fetch(`${API_BASE}/auth/admin/login`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({email, password})
@@ -255,13 +255,13 @@ async function login() {
     const data = await res.json();
     
     if (!res.ok) throw new Error(data.message || 'Login failed');
-    if (data.role !== 'admin') throw new Error('Access denied: Admin privileges required');
+    if (data.admin.role !== 'admin') throw new Error('Access denied: Admin privileges required');
     
     authToken = data.token;
     localStorage.setItem('AV_ADMIN_TOKEN', authToken);
     document.getElementById('loginScreen').classList.add('hidden');
     document.getElementById('mainApp').classList.remove('hidden');
-    document.getElementById('adminName').textContent = data.name || 'Admin';
+    document.getElementById('adminName').textContent = data.admin.email || 'Admin';
     init();
   } catch (e) {
     err.textContent = e.message;
