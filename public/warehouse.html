@@ -325,7 +325,7 @@ const AV = {
                     body: JSON.stringify({email:u, password:p})
                 });
                 let data = await res.json();
-                if(data.token) { localStorage.setItem('AV_WH_TOKEN', data.token); location.reload(); }
+                if(data.token){localStorage.setItem('AV_WH_TOKEN',data.token);let ca=await fetch('https://service.anritvox.com/api/warehouse/check-access',{headers:{'Authorization':'Bearer '+data.token}});let cd=await ca.json();if(cd.hasAccess||cd.isAdmin){location.reload();}else{localStorage.removeItem('AV_WH_TOKEN');$('l-msg').innerText='Access not granted. Contact admin.';}}
                 else $('l-msg').innerText = "Failed";
             } catch(e){ $('l-msg').innerText = "Error"; }
         },
