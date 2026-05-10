@@ -6,6 +6,7 @@
 <title>Anritvox Warehouse v2 </title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rajdhani:wght@600;700&family=Roboto+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -110,9 +111,22 @@ tr:hover td{background:#f8fafc;}
     <div style="width:420px; padding:45px; background:#fff; border-radius:20px; text-align:center; border:1px solid #e2e8f0; box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.15);">
         <h1 style="font-family:var(--font-head); color:var(--olive-dark); margin-bottom:5px; font-size:40px; font-weight:700;">ANRITVOX</h1>
         <div style="display:inline-block; background:var(--olive-light); color:var(--olive-dark); padding:6px 14px; border-radius:10px; font-size:12px; font-weight:700; letter-spacing:1px; margin-bottom:35px;">CLOUD TERMINAL v2.5.1</div>
-        <input id="l-u" type="email" placeholder="Account Email" style="text-align:center; background:#f8fafc; font-weight:600; padding:16px; font-size:15px;">
-        <input type="password" id="l-p" placeholder="Password" style="text-align:center; margin-bottom:25px; background:#f8fafc; font-weight:600; padding:16px; font-size:15px; letter-spacing:2px;">
-        <button class="btn btn-pri full-w" style="height:52px; font-size:15px; font-weight:700; letter-spacing:1px;" onclick="AV.Auth.login()">ACCESS TERMINAL</button>
+
+        <div id="l-form-std">
+            <input id="l-u" type="email" placeholder="Account Email" style="text-align:center; background:#f8fafc; font-weight:600; padding:16px; font-size:15px;">
+            <input type="password" id="l-p" placeholder="Password" style="text-align:center; margin-bottom:20px; background:#f8fafc; font-weight:600; padding:16px; font-size:15px; letter-spacing:2px;">
+            <div class="cf-turnstile" data-sitekey="0x4AAAAAAAKk7wXzD0Xyxxxx" style="margin-bottom: 20px; display: flex; justify-content: center;"></div>
+            <button class="btn btn-pri full-w" style="height:52px; font-size:15px; font-weight:700; letter-spacing:1px;" onclick="AV.Auth.login()">ACCESS TERMINAL</button>
+        </div>
+
+        <div id="l-form-otp" class="hidden">
+            <div style="width:50px; height:50px; background:#ecfdf5; color:#059669; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 15px auto;"><i class="ph-bold ph-shield-check"></i></div>
+            <p style="font-size:14px; color:var(--text-mute); margin-bottom:20px; font-weight:600;">Multi-Factor Authentication Required.</p>
+            <input type="text" id="l-otp" placeholder="Enter 6-Digit OTP" style="text-align:center; margin-bottom:25px; background:#f8fafc; font-weight:700; padding:16px; font-size:18px; letter-spacing:4px;">
+            <button class="btn btn-pri full-w" style="height:52px; font-size:15px; font-weight:700; letter-spacing:1px;" onclick="AV.Auth.verify2FA()">VERIFY IDENTITY</button>
+            <button class="btn btn-sec full-w mt-2" style="height:44px; font-size:14px;" onclick="AV.Auth.cancel2FA()">Cancel & Go Back</button>
+        </div>
+
         <div id="l-msg" style="color:#ef4444; font-size:14px; margin-top:20px; font-weight:600; letter-spacing:0.5px;"></div>
     </div>
 </div>
@@ -771,21 +785,73 @@ factReset(){if(!confirm("Factory Reset? All cloud data for this account will be 
 Auth:{
     async login(){
         let u=_V('l-u'), p=_V('l-p');
+        let tt = document.querySelector('[name="cf-turnstile-response"]');
+        let turnstileToken = tt ? tt.value : '';
+
+        if(!u || !p) { $('l-msg').innerText = "Email and Password required."; return; }
+        if(!turnstileToken) { $('l-msg').innerText = "Please complete the bot verification."; return; }
+
         $('l-msg').innerText = "Authenticating with Cloud...";
+        $('l-msg').style.color = "var(--text-mute)";
+
         try {
             let res = await fetch('https://service.anritvox.com/api/auth/login', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ email: u, password: p })
+                body: JSON.stringify({ email: u, password: p, turnstileToken: turnstileToken })
+            });
+            let data = await res.json();
+            
+            if (res.status === 202 && data.requires2FA) {
+                AV.tmp.authEmail = u;
+                _H('l-form-std');
+                _S('l-form-otp');
+                $('l-msg').innerText = "OTP sent to your email. Please verify.";
+                $('l-msg').style.color = "#059669";
+            } else if (res.ok && data.token) {
+                localStorage.setItem('AV_WH_TOKEN', data.token);
+                await AV.Sys.init();
+            } else {
+                $('l-msg').innerText = data.message || "INVALID CREDENTIALS";
+                $('l-msg').style.color = "#ef4444";
+                if(window.turnstile) window.turnstile.reset();
+            }
+        } catch(e) { 
+            $('l-msg').innerText = "NETWORK ERROR"; 
+            $('l-msg').style.color = "#ef4444";
+            if(window.turnstile) window.turnstile.reset();
+        }
+    },
+    async verify2FA(){
+        let otp = _V('l-otp');
+        if(!otp) return;
+        $('l-msg').innerText = "Verifying Security Token...";
+        $('l-msg').style.color = "var(--text-mute)";
+        try {
+            let res = await fetch('https://service.anritvox.com/api/auth/2fa/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ email: AV.tmp.authEmail, otp: otp })
             });
             let data = await res.json();
             if (res.ok && data.token) {
                 localStorage.setItem('AV_WH_TOKEN', data.token);
                 await AV.Sys.init();
             } else {
-                $('l-msg').innerText = data.message || "INVALID CREDENTIALS";
+                $('l-msg').innerText = data.message || "INVALID OTP";
+                $('l-msg').style.color = "#ef4444";
             }
-        } catch(e) { $('l-msg').innerText = "NETWORK ERROR"; }
+        } catch(e) {
+            $('l-msg').innerText = "NETWORK ERROR";
+            $('l-msg').style.color = "#ef4444";
+        }
+    },
+    cancel2FA() {
+        _H('l-form-otp');
+        _S('l-form-std');
+        $('l-msg').innerText = "";
+        $('l-otp').value = "";
+        if(window.turnstile) window.turnstile.reset();
     },
     logout(){localStorage.removeItem('AV_WH_TOKEN'); localStorage.removeItem('AV_CLOUD_BACKUP'); location.reload()},
     async authorizeDevice() {
