@@ -39,7 +39,7 @@ This guide provides complete instructions for deploying the enhanced serial numb
 
 ### Step 1: Pull Latest Changes
 ```bash
-cd /path/to/backend-anritvox
+cd /path/to/backend-Bhumivera
 git pull origin main
 ```
 
@@ -65,10 +65,10 @@ If you have existing data, the indexes will be added without data loss.
 ### Step 4: Restart the Server
 ```bash
 # If using PM2
-pm2 restart backend-anritvox
+pm2 restart backend-Bhumivera
 
 # If using systemd
-sudo systemctl restart backend-anritvox
+sudo systemctl restart backend-Bhumivera
 
 # Or manual restart
 npm start
@@ -269,13 +269,13 @@ If you need to rollback:
 ```bash
 git revert HEAD~3  # Reverts last 3 commits
 npm install
-pm2 restart backend-anritvox
+pm2 restart backend-Bhumivera
 ```
 
 ## Support
 
 For issues or questions:
-1. Check server logs: `pm2 logs backend-anritvox`
+1. Check server logs: `pm2 logs backend-Bhumivera`
 2. Review database queries
 3. Check API response times
 4. Monitor memory usage

@@ -1,6 +1,6 @@
-# Anritvox Backend API Documentation
+# Bhumivera Backend API Documentation
 
-**Base URL:** `https://service.anritvox.com`  
+**Base URL:** `https://service.Bhumivera.com`  
 **Version:** 3.1  
 **Database:** MySQL (Railway)  
 **Storage:** AWS S3 + CloudFront  
@@ -29,7 +29,7 @@ All protected routes require `Authorization: Bearer <token>` header.
 
 **Response:**
 ```json
-{"status": "ok", "message": "Anritvox API running", "version": "3.1"}
+{"status": "ok", "message": "Bhumivera API running", "version": "3.1"}
 ```
 
 ---

@@ -2,7 +2,7 @@ const { Pinecone } = require('@pinecone-database/pinecone');
 const pool = require('../config/db');
 
 const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
-const indexName = 'anritvox-products';
+const indexName = 'Bhumivera-products';
 
 // Singleton pattern to load the AI model once in memory
 let extractorPipeline;
@@ -37,7 +37,7 @@ async function syncProductToVectorDB(product) {
     const contentToEmbed = `
       Product: ${product.name}
       Category: ${product.category_id}
-      Brand: ${product.brand || 'Anritvox'}
+      Brand: ${product.brand || 'Bhumivera'}
       Description: ${product.description}
       Tags: ${product.tags || ''}
       Specifications: ${product.specifications || ''}

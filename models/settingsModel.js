@@ -13,7 +13,7 @@ const createSettingsTable = async () => {
   `);
   // Seed default settings if not exist
   const defaults = [
-    ['store_name', 'Anritvox', 'general'],
+    ['store_name', 'Bhumivera', 'general'],
     ['store_email', '', 'general'],
     ['store_phone', '', 'general'],
     ['store_address', '', 'general'],
@@ -21,9 +21,9 @@ const createSettingsTable = async () => {
     ['store_currency_symbol', '₹', 'general'],
     ['store_logo', '', 'general'],
     ['store_favicon', '', 'general'],
-    ['meta_title', 'Anritvox - Electronics Store', 'seo'],
+    ['meta_title', 'Bhumivera - Electronics Store', 'seo'],
     ['meta_description', 'Best electronics at best prices', 'seo'],
-    ['meta_keywords', 'electronics, gadgets, anritvox', 'seo'],
+    ['meta_keywords', 'electronics, gadgets, Bhumivera', 'seo'],
     ['free_shipping_threshold', '500', 'shipping'],
     ['default_shipping_charge', '50', 'shipping'],
     ['tax_rate', '0', 'tax'],
@@ -41,7 +41,7 @@ const createSettingsTable = async () => {
     ['smtp_port', '587', 'email'],
     ['smtp_user', '', 'email'],
     ['smtp_pass', '', 'email'],
-    ['smtp_from_name', 'Anritvox', 'email'],
+    ['smtp_from_name', 'Bhumivera', 'email'],
   ];
   for (const [key_name, value, group_name] of defaults) {
     await pool.query(

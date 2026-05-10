@@ -10,7 +10,7 @@ const MJ_PRIVATE =
   process.env.MJ_APIKEY_PRIVATE ||
   process.env.MAILJET_PRIVATE;
 const EMAIL_FROM = process.env.EMAIL_FROM || "no-reply@yourdomain.com";
-const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "ANRITVOX Logistics";
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Bhumivera Logistics";
 
 if (!MJ_PUBLIC || !MJ_PRIVATE) {
   console.warn(
@@ -176,7 +176,7 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
   const htmlTemplate = `
     <div style="font-family: 'Inter', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
       <div style="background-color: #0f172a; padding: 30px 20px; text-align: center;">
-        <h1 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: -0.5px;">ANRITVOX STORE</h1>
+        <h1 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: -0.5px;">Bhumivera STORE</h1>
       </div>
       <div style="padding: 40px 30px;">
         <p style="color: #64748b; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; font-weight: bold; margin-bottom: 5px;">Order #${formattedId}</p>
@@ -186,11 +186,11 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
         ${trackingHtml}
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
         <p style="color: #64748b; font-size: 14px; text-align: center; margin: 0;">
-          Need help? <a href="https://anritvox.com/support" style="color: #3b82f6; text-decoration: none;">Contact our Support Team</a>
+          Need help? <a href="https://Bhumivera.com/support" style="color: #3b82f6; text-decoration: none;">Contact our Support Team</a>
         </p>
       </div>
       <div style="background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #e2e8f0;">
-        <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} Anritvox. All rights reserved.</p>
+        <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} Bhumivera. All rights reserved.</p>
       </div>
     </div>
   `;

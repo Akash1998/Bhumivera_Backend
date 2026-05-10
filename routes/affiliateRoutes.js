@@ -1,4 +1,4 @@
-// backend-anritvox/routes/affiliateRoutes.js
+// backend-Bhumivera/routes/affiliateRoutes.js
 const express = require('express');
 const router = express.Router();
 

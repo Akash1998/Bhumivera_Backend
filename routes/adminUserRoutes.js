@@ -85,7 +85,7 @@ router.post('/users/:id/reset-password', authenticateAdmin, async (req, res) => 
 
     await sendMail({
       to: user.email,
-      subject: 'Your Anritvox Password Reset OTP',
+      subject: 'Your Bhumivera Password Reset OTP',
       html: `<p>An administrator has triggered a password reset for your account.</p><p>Your OTP is: <strong>${otp}</strong></p><p>It expires in 15 minutes.</p>`,
       text: `Admin triggered reset. OTP: ${otp}. Expires in 15 minutes.`,
     });

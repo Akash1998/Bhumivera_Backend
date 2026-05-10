@@ -113,7 +113,7 @@ router.put('/security-question', authenticateUser, async (req, res) => {
 router.post('/2fa/generate', authenticateUser, async (req, res) => {
   try {
     const secret = authenticator.generateSecret();
-    const otpauth = authenticator.keyuri(req.user.email, 'Anritvox Store', secret);
+    const otpauth = authenticator.keyuri(req.user.email, 'Bhumivera Store', secret);
     const qrCodeUrl = await qrcode.toDataURL(otpauth);
     res.json({ secret, qrCode: qrCodeUrl });
   } catch (err) { res.status(500).json({ message: "Server error" }); }

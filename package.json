@@ -1,7 +1,7 @@
 {
-  "name": "anritvox-backend",
+  "name": "Bhumivera-backend",
   "version": "1.1.0",
-  "description": "Anritvox Backend API - E-commerce Core with AI Integration",
+  "description": "Bhumivera Backend API - E-commerce Core with AI Integration",
   "main": "server.js",
   "engines": {
     "node": ">=22.0.0"
