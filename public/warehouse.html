@@ -644,7 +644,7 @@ const AVL = {
 
 const $=e=>document.getElementById(e),_N=e=>parseFloat(e)||0,_T=e=>e.innerText,_H=e=>document.getElementById(e).classList.add('hidden'),_S=e=>document.getElementById(e).classList.remove('hidden'),_V=e=>document.getElementById(e).value,_I=e=>new Date(e).toISOString().split('T')[0];
 
-const AV={d:{i:[],c:[],s:[],l:[],p:[],cfg:{cats:['General','Electronics','Spares','Accessories'],hid:[], authDevices:[], deviceLockPin:"123456", shopDetails:null},logo:null},c:[],xc:[],tmp:{saveQueue:false,isSyncing:false},
+const AV = {     d: {         i: [], c: [], s: [], l: [], p: [],         cfg: { cats: ['General', 'Electronics', 'Spares', 'Accessories'], hid: [], authDevices: [], deviceLockPin: "123456", shopDetails: null },         logo: null     },     c: [],     xc: [],     tmp: { saveQueue: false, isSyncing: false } };
 Sys:{
     async init(){
         let token = localStorage.getItem('AV_WH_TOKEN');
@@ -654,7 +654,7 @@ Sys:{
         $('boot-screen').style.display='flex';
         
         try {
-            let res = await fetch(`https://service.anritvox.com/api/warehouse/state?_t=${Date.now()}`, { 
+           let res = await fetch(`https://service.anritvox.com/api/warehouse/state?_t=${Date.now()}`, { 
     headers: { 
         'Authorization': 'Bearer ' + token
     }
