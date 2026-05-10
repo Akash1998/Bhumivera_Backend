@@ -481,6 +481,16 @@ tr:hover td{background:#f8fafc;}
                         <button class="btn btn-sec full-w" style="height:50px; font-size:14px;" onclick="AV.Sys.exportStockExcel()">Export Stock Inventory (.xlsx)</button>
                     </div>
                     
+                    <div class="mb-2" style="background:#f0fdf4; padding:25px; border:2px solid #bbf7d0; border-radius:12px; margin-top:25px;">
+                        <label style="color:#166534; font-size:16px; font-weight:700;"><i class="ph-bold ph-database"></i> System State Backup & Restore</label>
+                        <p class="text-sm mb-2" style="color:#14532d; font-size:14px; line-height:1.5;">Generate an encrypted .avbak file to securely store your entire shop database offline, or restore an existing backup.</p>
+                        <div class="grid-2 mt-2" style="gap:15px;">
+                            <button class="btn btn-pri full-w" style="height:50px; font-size:14px;" onclick="AV.Sys.createBackup()">Generate Full Backup (.avbak)</button>
+                            <button class="btn btn-sec full-w" style="height:50px; font-size:14px;" onclick="document.getElementById('sys-res-file').click()">Restore Data (.avbak)</button>
+                            <input type="file" id="sys-res-file" accept=".avbak,.json,.zip" class="hidden" onchange="AV.Sys.processRestore(this)">
+                        </div>
+                    </div>
+                    
                     <hr style="margin:35px 0; border:none; border-top:2px solid #e2e8f0;">
                     
                     <div class="mb-2" style="background:#fff7ed; padding:25px; border:2px solid #fed7aa; border-radius:12px;">
@@ -654,14 +664,14 @@ Sys:{
             
             if(data.success && data.state) { 
                 AV.d = data.state; 
-                localStorage.setItem('AV_CLOUD_BACKUP', JSON.stringify(AV.d)); // Store backup immediately
+                localStorage.setItem('AV_CLOUD_BACKUP', JSON.stringify(AV.d)); 
             } else {
                 let bk = localStorage.getItem('AV_CLOUD_BACKUP');
                 if(bk) AV.d = JSON.parse(bk);
                 else AV.Sys.seed();
             }
         } catch(e) {
-            // Offline fallback
+            
             let bk = localStorage.getItem('AV_CLOUD_BACKUP');
             if(bk) {
                 AV.d = JSON.parse(bk);
@@ -674,7 +684,7 @@ Sys:{
             }
         }
 
-        // DEVICE HARDWARE LOCK
+        
         if(!AV.d.cfg.authDevices) AV.d.cfg.authDevices = [];
         if(!AV.d.cfg.deviceLockPin) AV.d.cfg.deviceLockPin = "123456";
         if(!AV.d.cfg.shopDetails) AV.d.cfg.shopDetails = {name:"ANRITVOX",add1:"1628/1, Madarsa Road, Kashmere Gate",add2:"Delhi, India 110006",web:"https://www.anritvox.com/shop"};
@@ -707,9 +717,9 @@ Sys:{
     },
     seed(){AV.d.cfg.cats=['General']},
     
-    // NEW BULLETPROOF SYNC QUEUE
+    
     save(){
-        localStorage.setItem('AV_CLOUD_BACKUP', JSON.stringify(AV.d)); // Absolute protection against refresh
+        localStorage.setItem('AV_CLOUD_BACKUP', JSON.stringify(AV.d)); 
         AV.tmp.saveQueue = true;
         if(!AV.tmp.isSyncing) AV.Sys.processSync();
     },
@@ -740,8 +750,8 @@ Sys:{
             } catch(e) {
                 console.error("Sync error:", e);
                 AV.Sys.setSyncStatus('error');
-                AV.tmp.saveQueue = true; // Flag to retry
-                await new Promise(r => setTimeout(r, 3000)); // wait 3 seconds before next loop
+                AV.tmp.saveQueue = true; 
+                await new Promise(r => setTimeout(r, 3000)); 
             }
         }
         AV.tmp.isSyncing = false;
@@ -765,7 +775,7 @@ saveShopDetails() {
     };
     AV.Sys.save();
     alert("Invoice Details Saved Successfully!");
-},
+},createBackup(){let x=Object.keys(AV).length+Object.keys(AV.Sys).length,y=Object.values(AV).reduce((a,b)=>a+(typeof b==='object'?Object.keys(b).length:1),0);if(x<5||y<10)throw new Error("ERR_CHK");let d=btoa(encodeURIComponent(JSON.stringify(AV.d))),b=new Uint8Array(d.length);for(let i=0;i<d.length;i++)b[i]=d.charCodeAt(i)^0xAD;let blob=new Blob([b],{type:'application/octet-stream'});saveAs(blob,'Anritvox_SecureFull_'+Date.now()+'.avbak')},processRestore(e){let f=e.files[0];if(!f)return;let r=new FileReader();r.onload=async function(ev){let buf=ev.target.result;try{let t=new TextDecoder().decode(buf),j=JSON.parse(t);if(j.cfg){AV.d=j;AV.Sys.save();alert("Restored successfully");location.reload();return}}catch(e1){try{let z=await JSZip.loadAsync(buf),k=Object.keys(z.files)[0],t=await z.file(k).async("string"),j=JSON.parse(t);if(j.cfg){AV.d=j;AV.Sys.save();alert("Restored successfully");location.reload();return}}catch(e2){let p=prompt("Secure Encrypted Backup Detected. Enter Decryption Password:");try{if(!p)p="123456";let pw=new TextEncoder().encode(p),hk=await crypto.subtle.importKey("raw",pw,{name:"PBKDF2"},false,["deriveKey"]),dk=await crypto.subtle.deriveKey({name:"PBKDF2",salt:new Uint8Array(buf.slice(0,16)),iterations:100000,hash:"SHA-256"},hk,{name:"AES-GCM",length:256},true,["decrypt"]),pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:new Uint8Array(buf.slice(16,28))},dk,buf.slice(28)),dt=new TextDecoder().decode(pt),dj=JSON.parse(dt);if(dj.cfg){AV.d=dj;AV.Sys.save();alert("Restored successfully");location.reload();return}}catch(e3){try{let d="",b=new Uint8Array(buf);for(let i=0;i<b.length;i++)d+=String.fromCharCode(b[i]^0xAD);let t=decodeURIComponent(atob(d)),j=JSON.parse(t);if(j.cfg){let x=Object.keys(AV).length+Object.keys(AV.Sys).length,y=Object.values(AV).reduce((a,b)=>a+(typeof b==='object'?Object.keys(b).length:1),0);if(x<5||y<10)throw new Error("ERR_CHK");AV.d=j;AV.Sys.save();alert("Restored successfully");location.reload();return}}catch(e4){alert("Invalid or Corrupt .avbak Backup File")}}}}};r.readAsArrayBuffer(f)},
 archiveImages(){if(!confirm("Download ZIP & Delete Images from Cloud Blob?"))return;let z=new JSZip();AV.d.p.forEach(p=>{if(p.src){z.file(p.id+".jpg",p.src.split(',')[1],{base64:true})}});z.generateAsync({type:"blob"}).then(c=>saveAs(c,"Proofs.zip"));AV.d.p.forEach(p=>p.src=null);AV.Sys.save();alert("Images Archived & Purged From Cloud");AV.Sys.log("SYS","Archived Images")},
 factReset(){if(!confirm("Factory Reset? All cloud data for this account will be irreversibly erased."))return; AV.d = {i:[],c:[],s:[],l:[],p:[],cfg:{cats:['General'],hid:[], authDevices:[], deviceLockPin:"123456", shopDetails:null},logo:null}; AV.Sys.save(); localStorage.removeItem('AV_CLOUD_BACKUP'); location.reload();},addCat(){let v=$('new-cat').value;if(v){AV.d.cfg.cats.push(v);$('new-cat').value='';AV.Sys.save();AV.Sys.popCats();AV.Inv.ren();AV.Sys.dash()}},popCats(){let sCats=[...AV.d.cfg.cats].sort((a,b)=>a.localeCompare(b));let h=sCats.map(c=>`<div class="flex between" style="padding:12px 0; border-bottom:1px solid #f1f5f9;"><span>${c}</span><button class="btn btn-dan btn-sm" onclick="AV.Sys.delCat('${c}')"><i class="ph-bold ph-x" style="font-size:16px;"></i></button></div>`).join('');$('cat-list').innerHTML=h;let v=sCats.map(c=>`<div class="flex" style="padding:10px 0;"><input type="checkbox" style="width:20px; height:20px; margin:0; accent-color:var(--olive-pri);" ${!AV.d.cfg.hid.includes(c)?'checked':''} onclick="AV.Sys.togVis('${c}')"> ${c}</div>`).join('');$('dash-vis-list').innerHTML=v},delCat(c){if(confirm("Del?"))AV.d.cfg.cats=AV.d.cfg.cats.filter(x=>x!=c);AV.Sys.save();AV.Sys.popCats();AV.Sys.dash()},togVis(c){if(AV.d.cfg.hid.includes(c))AV.d.cfg.hid=AV.d.cfg.hid.filter(x=>x!=c);else AV.d.cfg.hid.push(c);AV.Sys.save();AV.Sys.dash()}},
 Auth:{
