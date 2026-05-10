@@ -354,6 +354,25 @@ router.post('/warehouse/request-otp', otpLimiter, async (req, res) => {
   }
 });
 
-router.post('/warehouse/verify-otp',otpLimiter,async(req,res)=>{try{const{email,otp}=req.body;if(!email||!otp)return res.status(400).json({message:'Email and OTP required'});const[rows]=await pool.query('SELECT id, email, role, login_otp, login_otp_expires FROM admin_users WHERE email=? AND role IN (?,?)',[email,'warehouse_admin','superadmin']);const warehouseAdmin=rows[0];if(!warehouseAdmin)return res.status(404).json({message:'Warehouse admin not found.'});if(!warehouseAdmin.login_otp||warehouseAdmin.login_otp!==otp)return res.status(401).json({message:'Invalid OTP.'});if(new Date()>new Date(warehouseAdmin.login_otp_expires))return res.status(401).json({message:'OTP expired. Request a new one.'});await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?',[email]);const token=jwt.sign({id:warehouseAdmin.id,email:warehouseAdmin.email,role:warehouseAdmin.role},process.env.JWT_SECRET,{expiresIn:'7d'});res.json({token,admin:{id:warehouseAdmin.id,email:warehouseAdmin.email,role:warehouseAdmin.role}});}catch(err){console.error('Warehouse OTP Verify Error:',err);res.status(500).json({message:'Server error'});}});
+router.post('/warehouse/verify-otp', otpLimiter, async (req, res) => {
+  try {
+    const { email, otp, turnstileToken } = req.body;
+    if (!email || !otp) return res.status(400).json({ message: 'Email and OTP required' });
+    const isHuman = await verifyTurnstile(turnstileToken);
+    if (!isHuman) return res.status(403).json({ message: 'Bot verification failed.' });
+    const [rows] = await pool.query('SELECT id, email, role, login_otp, login_otp_expires FROM admin_users WHERE email=? AND role IN (?,?)', [email, 'warehouse_admin', 'superadmin']);
+    const warehouseAdmin = rows[0];
+    if (!warehouseAdmin) return res.status(404).json({ message: 'Warehouse admin not found.' });
+    if (!warehouseAdmin.login_otp || warehouseAdmin.login_otp !== otp) return res.status(401).json({ message: 'Invalid OTP.' });
+    if (new Date() > new Date(warehouseAdmin.login_otp_expires)) return res.status(401).json({ message: 'OTP expired. Request a new one.' });
+    await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?', [email]);
+    const token = jwt.sign({ id: warehouseAdmin.id, email: warehouseAdmin.email, role: warehouseAdmin.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, admin: { id: warehouseAdmin.id, email: warehouseAdmin.email, role: warehouseAdmin.role } });
+  } catch (err) {
+    console.error('Warehouse OTP Verify Error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 
 module.exports = router;
