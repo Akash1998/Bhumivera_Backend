@@ -3,10 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Anritvox Warehouse v2 </title>
+<title>Anritvox Warehouse v2</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rajdhani:wght@600;700&family=Roboto+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/@phosphor-icons/web"></script>
-    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -14,13 +13,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
 <style>
 :root{--bg-body:#f1f5f9;--bg-card:#ffffff;--bg-sidebar:#0f172a;--text-sidebar:#f8fafc;--olive-pri:#059669;--olive-dark:#064e3b;--olive-light:#ecfdf5;--text-main:#0f172a;--text-mute:#475569;--border:1px solid #cbd5e1;--font-ui:'Inter', sans-serif;--font-head:'Rajdhani', sans-serif;--font-mono:'Roboto Mono', monospace;--rad:12px;--shadow:0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.02);}*{margin:0;padding:0;box-sizing:border-box;outline:none;-webkit-tap-highlight-color:transparent;}
-
 body{background:var(--bg-body);color:var(--text-main);font-family:var(--font-ui);height:100vh;overflow:hidden;display:flex;font-size:14px;-webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none;}
 input, select, textarea {-webkit-user-select: auto !important; -moz-user-select: auto !important; -ms-user-select: auto !important; user-select: auto !important;}
-
 .hidden{display:none !important;}.flex{display:flex;gap:12px;align-items:center;}.flex-col{display:flex;flex-direction:column;gap:12px;}.between{justify-content:space-between;}.grid-2{display:grid;grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));gap:15px;}.grid-4{display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:15px;}.full-w{width:100%;}.text-sm{font-size:12px;color:var(--text-mute);}.bold{font-weight:600;}.mt-2{margin-top:16px;}.mb-2{margin-bottom:16px;}.scroll-y{overflow-y:auto;max-height:100%;}
 .card{background:var(--bg-card);border:var(--border);border-radius:var(--rad);padding:25px;box-shadow:var(--shadow); transition: transform 0.2s ease;}
-
 h3{font-family:var(--font-head);font-weight:700;font-size:22px;text-transform:uppercase;margin-bottom:20px;color:var(--olive-dark);border-bottom:2px solid #a7f3d0;padding-bottom:12px;display:flex;justify-content:space-between;align-items:center;letter-spacing:0.5px;}
 .btn{padding:12px 20px;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:all 0.2s ease;}
 .btn-pri{background:var(--olive-pri);color:#fff;box-shadow:0 4px 6px rgba(5, 150, 105, 0.2);}
@@ -31,18 +27,15 @@ h3{font-family:var(--font-head);font-weight:700;font-size:22px;text-transform:up
 .btn-dan:hover{background:#fee2e2;}
 .btn-org{background:#fff7ed;color:#c2410c;border:1px solid #fdba74;}
 .btn-sm{padding:8px 14px;font-size:13px;}
-
 input, select, textarea{width:100%;background:#f8fafc;border:1px solid #cbd5e1;color:var(--text-main);padding:14px;border-radius:8px;font-family:var(--font-ui);font-size:14px;font-weight:500;margin-bottom:10px;transition:all 0.2s;}
 input:focus, select:focus{background:#fff;border-color:var(--olive-pri);box-shadow:0 0 0 3px rgba(5, 150, 105, 0.15);}
 label{font-size:12px;color:var(--text-mute);font-weight:700;margin:0 0 6px 4px;display:block;text-transform:uppercase;letter-spacing:0.5px;}
-
 .table-wrap{overflow:auto;border:var(--border);border-radius:10px;background:#fff;height:100%; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);}
 table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:14px;}
 th{text-align:left;padding:16px 20px;background:#f8fafc;color:var(--text-main);font-weight:700;border-bottom:2px solid #e2e8f0;position:sticky;top:0;z-index:10;cursor:pointer;user-select:none;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;}
 th:hover{background:#f1f5f9;color:var(--olive-dark);}
 td{padding:14px 20px;border-bottom:1px solid #f1f5f9;vertical-align:middle;font-weight:500;}
 tr:hover td{background:#f8fafc;}
-
 .rep-thumb{width:46px;height:46px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1;cursor:pointer;transition:transform 0.2s;}
 .rep-thumb:hover{transform:scale(3.5);border-color:var(--olive-pri);z-index:100;position:relative;box-shadow:0 10px 20px rgba(0,0,0,0.3);}
 .pill{padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;}
@@ -50,17 +43,14 @@ tr:hover td{background:#f8fafc;}
 .p-blue{background:#dbeafe;color:#1e40af; border:1px solid #bfdbfe;}
 .p-red{background:#fee2e2;color:#991b1b; border:1px solid #fecaca;}
 .p-gray{background:#f1f5f9;color:#475569; border:1px solid #e2e8f0;}
-
 .split-view{display:grid;grid-template-columns:320px 1fr;gap:25px;height:100%;}
 .split-sidebar{display:flex;flex-direction:column;gap:15px;border-right:1px solid #e2e8f0;padding-right:25px;overflow-y:auto;}
 .split-content{display:flex;flex-direction:column;overflow:hidden;height:100%;}
-
 .gallery-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:15px;padding:15px;}
 .gal-item{border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;cursor:pointer;transition:all 0.2s;position:relative;}
 .gal-item:hover{transform:translateY(-4px);box-shadow:0 15px 25px -5px rgba(0, 0, 0, 0.1);border-color:var(--olive-pri);}
 .gal-img{width:100%;height:140px;object-fit:cover;background:#f1f5f9;}
 .gal-dl{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent, rgba(15, 23, 42, 0.9));color:#fff;padding:10px;z-index:10; display:flex; justify-content:space-between; align-items:flex-end;}
-
 #app{display:none;width:100%;height:100%;}
 .sidebar{width:280px;background:var(--bg-sidebar);display:flex;flex-direction:column;padding:30px 0;flex-shrink:0;color:var(--text-sidebar);border-right:var(--border);box-shadow:4px 0 15px rgba(0,0,0,0.05);z-index:20;}
 .brand{font-family:var(--font-head);font-size:28px;font-weight:700;margin-bottom:35px;display:flex;align-items:center;padding:0 30px;color:#fff;letter-spacing:1px;gap:12px;}
@@ -69,34 +59,28 @@ tr:hover td{background:#f8fafc;}
 .nav-item{height:48px;display:flex;align-items:center;color:#cbd5e1;cursor:pointer;padding:0 30px;font-size:15px;font-weight:600;border-left:4px solid transparent;transition:all 0.2s;}
 .nav-item:hover{background:rgba(255,255,255,0.05);color:#fff;padding-left:35px;}
 .nav-item.active{background:linear-gradient(90deg, rgba(5,150,105,0.2) 0%, rgba(5,150,105,0) 100%);color:var(--olive-pri);border-left-color:var(--olive-pri);font-weight:700;}
-
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg-body);}
 .top-bar{height:75px;padding:0 35px;display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:var(--border);box-shadow:0 2px 5px rgba(0,0,0,0.02);}
 .content{padding:35px;overflow-y:auto;height:calc(100% - 75px);}
 .view{display:none;height:100%;}
 .view.active{display:block;animation:fadeIn 0.4s ease;}
-
 .modal-mask{position:fixed;inset:0;background:rgba(15, 23, 42, 0.7);z-index:5000;display:none;align-items:center;justify-content:center;backdrop-filter:blur(6px);}
 .modal{width:550px;max-width:95%;background:#fff;border-radius:16px;padding:35px;box-shadow:0 25px 50px -12px rgba(0, 0, 0, 0.5);max-height:90vh;overflow-y:auto;animation:slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);border:1px solid #e2e8f0;}
-
 .qty-btn { width: 32px; height: 32px; border-radius: 8px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; color: var(--text-mute); font-size: 18px; transition:0.2s; }
 .qty-btn:hover { background: var(--olive-light); color: var(--olive-dark); border-color: var(--olive-pri); }
 .stk-tag { font-size: 12px; padding: 6px 10px; border-radius: 6px; font-weight: 700; letter-spacing:0.5px; display:inline-block;}
 .stk-ok { background: #dcfce7; color: #15803d; border:1px solid #bbf7d0; }
 .stk-low { background: #fee2e2; color: #991b1b; border:1px solid #fecaca; }
-
 #sync-status { display:flex; align-items:center; gap:8px; padding:6px 14px; border-radius:20px; font-size:13px; font-weight:700; background:#f1f5f9; border:1px solid #e2e8f0; color:#64748b; transition:0.3s; }
 #sync-status.ok { background:#ecfdf5; border-color:#a7f3d0; color:#047857; }
 #sync-status.syncing { background:#fffbeb; border-color:#fde68a; color:#b45309; }
 .dot { width:8px; height:8px; border-radius:50%; background:#94a3b8; }
 .dot.ok { background:#10b981; box-shadow:0 0 8px #10b981; }
 .dot.syncing { background:#f59e0b; animation: pulse 1s infinite; }
-
 @keyframes slideUp{from{transform:translateY(30px) scale(0.95);opacity:0;}to{transform:translateY(0) scale(1);opacity:1;}}
 @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
 @keyframes spin{to{transform:rotate(360deg);}}
 @keyframes pulse{0%{opacity:0.5;}50%{opacity:1;}100%{opacity:0.5;}}
-
 @media (max-width: 1024px){.sidebar{width:80px;}.brand span, .nav-item span, .nav-head{display:none;}.brand{padding:0 20px; justify-content:center;}.split-view{grid-template-columns:1fr;grid-template-rows:auto 1fr;}.split-sidebar{border-right:none;border-bottom:1px solid #e2e8f0;padding-bottom:20px;margin-bottom:20px;}}
 </style>
 </head>
@@ -115,7 +99,6 @@ tr:hover td{background:#f8fafc;}
         <div id="l-form-std">
             <input id="l-u" type="email" placeholder="Account Email" style="text-align:center; background:#f8fafc; font-weight:600; padding:16px; font-size:15px;">
             <input type="password" id="l-p" placeholder="Password" style="text-align:center; margin-bottom:20px; background:#f8fafc; font-weight:600; padding:16px; font-size:15px; letter-spacing:2px;">
-            <div class="cf-turnstile" data-sitekey="0x4AAAAAAAKk7wXzD0Xyxxxx" style="margin-bottom: 20px; display: flex; justify-content: center;"></div>
             <button class="btn btn-pri full-w" style="height:52px; font-size:15px; font-weight:700; letter-spacing:1px;" onclick="AV.Auth.login()">ACCESS TERMINAL</button>
         </div>
 
@@ -647,120 +630,58 @@ const AVL = {
 };
 
 const $=e=>document.getElementById(e),_N=e=>parseFloat(e)||0,_T=e=>e.innerText,_H=e=>document.getElementById(e).classList.add('hidden'),_S=e=>document.getElementById(e).classList.remove('hidden'),_V=e=>document.getElementById(e).value,_I=e=>new Date(e).toISOString().split('T')[0];
-
 const AV={d:{i:[],c:[],s:[],l:[],p:[],cfg:{cats:['General','Electronics','Spares','Accessories'],hid:[], authDevices:[], deviceLockPin:"123456", shopDetails:null},logo:null},c:[],xc:[],tmp:{saveQueue:false,isSyncing:false},
 Sys:{
     async init(){
         let token = localStorage.getItem('AV_WH_TOKEN');
         if(!token){ $('login-screen').style.display='flex'; $('app').style.display='none'; return; }
-        
         $('login-screen').style.display='none';
         $('boot-screen').style.display='flex';
-        
         try {
-            let res = await fetch(`https://service.anritvox.com/api/warehouse/state?_t=${Date.now()}`, { 
-    headers: { 
-        'Authorization': 'Bearer ' + token
-    }
-});
+            let res = await fetch(`https://service.anritvox.com/api/warehouse/state?_t=${Date.now()}`, { headers: { 'Authorization': 'Bearer ' + token } });
             if(res.status === 401) { AV.Auth.logout(); return; }
             let data = await res.json();
-            
-            if(data.success && data.state) { 
-                AV.d = data.state; 
-                localStorage.setItem('AV_CLOUD_BACKUP', JSON.stringify(AV.d)); // Store backup immediately
-            } else {
-                let bk = localStorage.getItem('AV_CLOUD_BACKUP');
-                if(bk) AV.d = JSON.parse(bk);
-                else AV.Sys.seed();
-            }
+            if(data.success && data.state) { AV.d = data.state; localStorage.setItem('AV_CLOUD_BACKUP', JSON.stringify(AV.d)); } 
+            else { let bk = localStorage.getItem('AV_CLOUD_BACKUP'); if(bk) AV.d = JSON.parse(bk); else AV.Sys.seed(); }
         } catch(e) {
-            // Offline fallback
             let bk = localStorage.getItem('AV_CLOUD_BACKUP');
-            if(bk) {
-                AV.d = JSON.parse(bk);
-                AV.Sys.setSyncStatus('error');
-                alert("Network error: Loading from local backup. Changes will sync when online.");
-            } else {
-                alert("Cloud Sync Connection Error. Please check your internet.");
-                AV.Auth.logout();
-                return;
-            }
+            if(bk) { AV.d = JSON.parse(bk); AV.Sys.setSyncStatus('error'); alert("Network error: Loading from local backup. Changes will sync when online."); } 
+            else { alert("Cloud Sync Connection Error. Please check your internet."); AV.Auth.logout(); return; }
         }
-
-        // DEVICE HARDWARE LOCK
         if(!AV.d.cfg.authDevices) AV.d.cfg.authDevices = [];
         if(!AV.d.cfg.deviceLockPin) AV.d.cfg.deviceLockPin = "123456";
         if(!AV.d.cfg.shopDetails) AV.d.cfg.shopDetails = {name:"ANRITVOX",add1:"1628/1, Madarsa Road, Kashmere Gate",add2:"Delhi, India 110006",web:"https://www.anritvox.com/shop"};
-        
         let fp = await AVL.getFP();
-        if(AV.d.cfg.authDevices.length > 0 && !AV.d.cfg.authDevices.includes(fp)) {
-            $('boot-screen').style.display='none';
-            $('device-auth-screen').style.display='flex';
-            $('da-fp').innerText = fp;
-            return;
-        }
-        
-        if(AV.d.cfg.authDevices.length === 0) {
-            AV.d.cfg.authDevices.push(fp);
-            AV.Sys.save();
-        }
-
+        if(AV.d.cfg.authDevices.length > 0 && !AV.d.cfg.authDevices.includes(fp)) { $('boot-screen').style.display='none'; $('device-auth-screen').style.display='flex'; $('da-fp').innerText = fp; return; }
+        if(AV.d.cfg.authDevices.length === 0) { AV.d.cfg.authDevices.push(fp); AV.Sys.save(); }
         $('boot-screen').style.display='none';
         $('app').style.display='flex';
         AV.Sys.dash(); AV.Inv.ren();
         $('sys-date').innerText=new Date().toLocaleDateString();
         if(AV.d.logo){$('logo-prev').src=AV.d.logo;$('sb-logo').src=AV.d.logo}
-        
         $('cfg-shop-name').value = AV.d.cfg.shopDetails.name || '';
         $('cfg-shop-add1').value = AV.d.cfg.shopDetails.add1 || '';
         $('cfg-shop-add2').value = AV.d.cfg.shopDetails.add2 || '';
         $('cfg-shop-web').value = AV.d.cfg.shopDetails.web || '';
-
         AV.Sale.loadState();
     },
     seed(){AV.d.cfg.cats=['General']},
-    
-    // NEW BULLETPROOF SYNC QUEUE
-    save(){
-        localStorage.setItem('AV_CLOUD_BACKUP', JSON.stringify(AV.d)); // Absolute protection against refresh
-        AV.tmp.saveQueue = true;
-        if(!AV.tmp.isSyncing) AV.Sys.processSync();
-    },
+    save(){ localStorage.setItem('AV_CLOUD_BACKUP', JSON.stringify(AV.d)); AV.tmp.saveQueue = true; if(!AV.tmp.isSyncing) AV.Sys.processSync(); },
     async processSync() {
         let token = localStorage.getItem('AV_WH_TOKEN');
         if(!token) return;
-
         AV.tmp.isSyncing = true;
-        
         while(AV.tmp.saveQueue) {
-            AV.tmp.saveQueue = false; 
-            AV.Sys.setSyncStatus('syncing');
-            
+            AV.tmp.saveQueue = false; AV.Sys.setSyncStatus('syncing');
             let snapshot = localStorage.getItem('AV_CLOUD_BACKUP') || JSON.stringify(AV.d);
-            
             try {
-                let res = await fetch('https://service.anritvox.com/api/warehouse/sync', {
-                    method: 'POST',
-                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: snapshot
-                });
+                let res = await fetch('https://service.anritvox.com/api/warehouse/sync', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: snapshot });
                 let data = await res.json();
-                if(data.success) {
-                    AV.Sys.setSyncStatus('ok');
-                } else {
-                    throw new Error("Server rejected sync");
-                }
-            } catch(e) {
-                console.error("Sync error:", e);
-                AV.Sys.setSyncStatus('error');
-                AV.tmp.saveQueue = true; // Flag to retry
-                await new Promise(r => setTimeout(r, 3000)); // wait 3 seconds before next loop
-            }
+                if(data.success) { AV.Sys.setSyncStatus('ok'); } else { throw new Error("Server rejected sync"); }
+            } catch(e) { console.error("Sync error:", e); AV.Sys.setSyncStatus('error'); AV.tmp.saveQueue = true; await new Promise(r => setTimeout(r, 3000)); }
         }
         AV.tmp.isSyncing = false;
     },
-
     setSyncStatus(status) {
         let box = $('sync-status'), dot = $('sync-dot'), txt = $('sync-text');
         box.className = ''; dot.className = 'dot';
@@ -768,40 +689,25 @@ Sys:{
         else if(status === 'ok') { box.classList.add('ok'); dot.classList.add('ok'); txt.innerText = 'Cloud Synced'; }
         else { box.style.background='#fee2e2'; box.style.borderColor='#fecaca'; box.style.color='#991b1b'; dot.style.background='#ef4444'; txt.innerText = 'Sync Failed'; }
     },
-dash(){let t=new Date().toLocaleDateString(),rev=AV.d.s.filter(x=>new Date(x.date).toLocaleDateString()==t).reduce((a,b)=>a+_N(b.billTotal||b.total),0);$('d-sale-today').innerText='₹'+rev;let dsk=AV.d.i.filter(x=>!x.soldQty&&new Date(x.dateAdded)<new Date(Date.now()-2592000000)).length;$('d-dead-stock').innerText=dsk;$('d-tot-items').innerText=AV.d.i.reduce((a,b)=>a+_N(b.qty),0);let low=AV.d.i.filter(x=>x.qty<5).length;$('d-low-alert').innerText=low;let top=[...AV.d.i].sort((a,b)=>(b.soldQty||0)-(a.soldQty||0)).slice(0,5);$('t-top-sell').getElementsByTagName('tbody')[0].innerHTML=top.map(x=>`<tr><td>${x.name}</td><td style="font-weight:700; color:var(--olive-dark);">${x.soldQty||0}</td></tr>`).join('');let ded=[...AV.d.i].filter(x=>!x.soldQty).sort((a,b)=>new Date(a.dateAdded)-new Date(b.dateAdded)).slice(0,5);$('t-dead-sell').getElementsByTagName('tbody')[0].innerHTML=ded.map(x=>`<tr><td>${x.name}</td><td style="font-family:var(--font-mono); font-size:13px; font-weight:600; color:var(--text-mute);">${new Date(x.dateAdded).toLocaleDateString()}</td></tr>`).join('');let cts=AV.d.cfg.cats.filter(c=>!AV.d.cfg.hid.includes(c)).sort((a,b)=>a.localeCompare(b)).map(c=>{let items=AV.d.i.filter(i=>i.cat==c);let count=items.reduce((a,b)=>a+_N(b.qty),0);return `<div class="stat-card card" style="cursor:pointer;" onclick="AV.Sys.openCat('${c}')"><div class="stat-lbl text-sm bold">${c}</div><div class="stat-val" style="font-size:32px; font-weight:700; color:var(--text-main); font-family:var(--font-head);">${count}</div></div>`}).join('');$('dash-cats').innerHTML=cts;AV.Sys.popCats()},openCat(c){AV.UI.nav('inv');let f=$('inv-filter');if(f){f.value=c;AV.Inv.ren();}},
-log(t,m,d){AV.d.l.unshift({t:new Date(),act:t,msg:m,det:d});if(AV.d.l.length>1000)AV.d.l.pop();AV.Sys.save()},expLogsExcel(){const ws=XLSX.utils.json_to_sheet(AV.d.l.map(l=>({Time:l.t,Action:l.act,Msg:l.msg,Det:JSON.stringify(l.det)})));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Logs");XLSX.writeFile(wb,"SysLogs.xlsx")},exportSalesExcel(){const data=AV.d.s.map(s=>({"Invoice ID":s.id,"Date":new Date(s.date).toLocaleDateString(),"Time":new Date(s.date).toLocaleTimeString(),"Customer Name":s.cust.name,"Customer Phone":s.cust.phone,"Bill Total":s.billTotal!==undefined?s.billTotal:s.total,"Overall Discount (%)":s.billDisc||0,"Paid":s.paid||0,"Items":s.items.map(i=>`${i.name} (x${i.q} @ -${i.disc||0}%)`).join(', ')+(s.extra&&s.extra.length?', '+s.extra.map(x=>`${x.n} (₹${x.a})`).join(', '):'')}));const ws=XLSX.utils.json_to_sheet(data);const wscols=[{wch:15},{wch:12},{wch:10},{wch:20},{wch:15},{wch:12},{wch:15},{wch:10},{wch:50}];ws['!cols']=wscols;const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Sales");XLSX.writeFile(wb,"Sales_Export.xlsx")},exportStockExcel(){const data=AV.d.i.map(x=>({"Item Name":x.name,"Category":x.cat,"Current Stock":x.qty,"Unit Price":x.price,"Stock Value":x.qty*x.price,"Total Sold":x.soldQty||0,"Date Added":new Date(x.dateAdded).toLocaleDateString()}));const ws=XLSX.utils.json_to_sheet(data);const wscols=[{wch:25},{wch:15},{wch:10},{wch:10},{wch:12},{wch:10},{wch:15}];ws['!cols']=wscols;const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Stock");XLSX.writeFile(wb,"Stock_Inventory.xlsx")},setLogo(e){let f=e.files[0];if(!f)return;let r=new FileReader();r.onload=function(x){AV.d.logo=x.target.result;AV.Sys.save();$('logo-prev').src=AV.d.logo;$('sb-logo').src=AV.d.logo;AV.Sys.log("SYS","Logo Updated")};r.readAsDataURL(f)},
-saveShopDetails() {
-    AV.d.cfg.shopDetails = {
-        name: _V('cfg-shop-name'),
-        add1: _V('cfg-shop-add1'),
-        add2: _V('cfg-shop-add2'),
-        web: _V('cfg-shop-web')
-    };
-    AV.Sys.save();
-    alert("Invoice Details Saved Successfully!");
+    dash(){let t=new Date().toLocaleDateString(),rev=AV.d.s.filter(x=>new Date(x.date).toLocaleDateString()==t).reduce((a,b)=>a+_N(b.billTotal||b.total),0);$('d-sale-today').innerText='₹'+rev;let dsk=AV.d.i.filter(x=>!x.soldQty&&new Date(x.dateAdded)<new Date(Date.now()-2592000000)).length;$('d-dead-stock').innerText=dsk;$('d-tot-items').innerText=AV.d.i.reduce((a,b)=>a+_N(b.qty),0);let low=AV.d.i.filter(x=>x.qty<5).length;$('d-low-alert').innerText=low;let top=[...AV.d.i].sort((a,b)=>(b.soldQty||0)-(a.soldQty||0)).slice(0,5);$('t-top-sell').getElementsByTagName('tbody')[0].innerHTML=top.map(x=>`<tr><td>${x.name}</td><td style="font-weight:700; color:var(--olive-dark);">${x.soldQty||0}</td></tr>`).join('');let ded=[...AV.d.i].filter(x=>!x.soldQty).sort((a,b)=>new Date(a.dateAdded)-new Date(b.dateAdded)).slice(0,5);$('t-dead-sell').getElementsByTagName('tbody')[0].innerHTML=ded.map(x=>`<tr><td>${x.name}</td><td style="font-family:var(--font-mono); font-size:13px; font-weight:600; color:var(--text-mute);">${new Date(x.dateAdded).toLocaleDateString()}</td></tr>`).join('');let cts=AV.d.cfg.cats.filter(c=>!AV.d.cfg.hid.includes(c)).sort((a,b)=>a.localeCompare(b)).map(c=>{let items=AV.d.i.filter(i=>i.cat==c);let count=items.reduce((a,b)=>a+_N(b.qty),0);return `<div class="stat-card card" style="cursor:pointer;" onclick="AV.Sys.openCat('${c}')"><div class="stat-lbl text-sm bold">${c}</div><div class="stat-val" style="font-size:32px; font-weight:700; color:var(--text-main); font-family:var(--font-head);">${count}</div></div>`}).join('');$('dash-cats').innerHTML=cts;AV.Sys.popCats()},openCat(c){AV.UI.nav('inv');let f=$('inv-filter');if(f){f.value=c;AV.Inv.ren();}},
+    log(t,m,d){AV.d.l.unshift({t:new Date(),act:t,msg:m,det:d});if(AV.d.l.length>1000)AV.d.l.pop();AV.Sys.save()},expLogsExcel(){const ws=XLSX.utils.json_to_sheet(AV.d.l.map(l=>({Time:l.t,Action:l.act,Msg:l.msg,Det:JSON.stringify(l.det)})));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Logs");XLSX.writeFile(wb,"SysLogs.xlsx")},exportSalesExcel(){const data=AV.d.s.map(s=>({"Invoice ID":s.id,"Date":new Date(s.date).toLocaleDateString(),"Time":new Date(s.date).toLocaleTimeString(),"Customer Name":s.cust.name,"Customer Phone":s.cust.phone,"Bill Total":s.billTotal!==undefined?s.billTotal:s.total,"Overall Discount (%)":s.billDisc||0,"Paid":s.paid||0,"Items":s.items.map(i=>`${i.name} (x${i.q} @ -${i.disc||0}%)`).join(', ')+(s.extra&&s.extra.length?', '+s.extra.map(x=>`${x.n} (₹${x.a})`).join(', '):'')}));const ws=XLSX.utils.json_to_sheet(data);const wscols=[{wch:15},{wch:12},{wch:10},{wch:20},{wch:15},{wch:12},{wch:15},{wch:10},{wch:50}];ws['!cols']=wscols;const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Sales");XLSX.writeFile(wb,"Sales_Export.xlsx")},exportStockExcel(){const data=AV.d.i.map(x=>({"Item Name":x.name,"Category":x.cat,"Current Stock":x.qty,"Unit Price":x.price,"Stock Value":x.qty*x.price,"Total Sold":x.soldQty||0,"Date Added":new Date(x.dateAdded).toLocaleDateString()}));const ws=XLSX.utils.json_to_sheet(data);const wscols=[{wch:25},{wch:15},{wch:10},{wch:10},{wch:12},{wch:10},{wch:15}];ws['!cols']=wscols;const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Stock");XLSX.writeFile(wb,"Stock_Inventory.xlsx")},setLogo(e){let f=e.files[0];if(!f)return;let r=new FileReader();r.onload=function(x){AV.d.logo=x.target.result;AV.Sys.save();$('logo-prev').src=AV.d.logo;$('sb-logo').src=AV.d.logo;AV.Sys.log("SYS","Logo Updated")};r.readAsDataURL(f)},
+    saveShopDetails() { AV.d.cfg.shopDetails = { name: _V('cfg-shop-name'), add1: _V('cfg-shop-add1'), add2: _V('cfg-shop-add2'), web: _V('cfg-shop-web') }; AV.Sys.save(); alert("Invoice Details Saved Successfully!"); },
+    archiveImages(){if(!confirm("Download ZIP & Delete Images from Cloud Blob?"))return;let z=new JSZip();AV.d.p.forEach(p=>{if(p.src){z.file(p.id+".jpg",p.src.split(',')[1],{base64:true})}});z.generateAsync({type:"blob"}).then(c=>saveAs(c,"Proofs.zip"));AV.d.p.forEach(p=>p.src=null);AV.Sys.save();alert("Images Archived & Purged From Cloud");AV.Sys.log("SYS","Archived Images")},
+    factReset(){if(!confirm("Factory Reset? All cloud data for this account will be irreversibly erased."))return; AV.d = {i:[],c:[],s:[],l:[],p:[],cfg:{cats:['General'],hid:[], authDevices:[], deviceLockPin:"123456", shopDetails:null},logo:null}; AV.Sys.save(); localStorage.removeItem('AV_CLOUD_BACKUP'); location.reload();},addCat(){let v=$('new-cat').value;if(v){AV.d.cfg.cats.push(v);$('new-cat').value='';AV.Sys.save();AV.Sys.popCats();AV.Inv.ren();AV.Sys.dash()}},popCats(){let sCats=[...AV.d.cfg.cats].sort((a,b)=>a.localeCompare(b));let h=sCats.map(c=>`<div class="flex between" style="padding:12px 0; border-bottom:1px solid #f1f5f9;"><span>${c}</span><button class="btn btn-dan btn-sm" onclick="AV.Sys.delCat('${c}')"><i class="ph-bold ph-x" style="font-size:16px;"></i></button></div>`).join('');$('cat-list').innerHTML=h;let v=sCats.map(c=>`<div class="flex" style="padding:10px 0;"><input type="checkbox" style="width:20px; height:20px; margin:0; accent-color:var(--olive-pri);" ${!AV.d.cfg.hid.includes(c)?'checked':''} onclick="AV.Sys.togVis('${c}')"> ${c}</div>`).join('');$('dash-vis-list').innerHTML=v},delCat(c){if(confirm("Del?"))AV.d.cfg.cats=AV.d.cfg.cats.filter(x=>x!=c);AV.Sys.save();AV.Sys.popCats();AV.Sys.dash()},togVis(c){if(AV.d.cfg.hid.includes(c))AV.d.cfg.hid=AV.d.cfg.hid.filter(x=>x!=c);else AV.d.cfg.hid.push(c);AV.Sys.save();AV.Sys.dash()}
 },
-archiveImages(){if(!confirm("Download ZIP & Delete Images from Cloud Blob?"))return;let z=new JSZip();AV.d.p.forEach(p=>{if(p.src){z.file(p.id+".jpg",p.src.split(',')[1],{base64:true})}});z.generateAsync({type:"blob"}).then(c=>saveAs(c,"Proofs.zip"));AV.d.p.forEach(p=>p.src=null);AV.Sys.save();alert("Images Archived & Purged From Cloud");AV.Sys.log("SYS","Archived Images")},
-factReset(){if(!confirm("Factory Reset? All cloud data for this account will be irreversibly erased."))return; AV.d = {i:[],c:[],s:[],l:[],p:[],cfg:{cats:['General'],hid:[], authDevices:[], deviceLockPin:"123456", shopDetails:null},logo:null}; AV.Sys.save(); localStorage.removeItem('AV_CLOUD_BACKUP'); location.reload();},addCat(){let v=$('new-cat').value;if(v){AV.d.cfg.cats.push(v);$('new-cat').value='';AV.Sys.save();AV.Sys.popCats();AV.Inv.ren();AV.Sys.dash()}},popCats(){let sCats=[...AV.d.cfg.cats].sort((a,b)=>a.localeCompare(b));let h=sCats.map(c=>`<div class="flex between" style="padding:12px 0; border-bottom:1px solid #f1f5f9;"><span>${c}</span><button class="btn btn-dan btn-sm" onclick="AV.Sys.delCat('${c}')"><i class="ph-bold ph-x" style="font-size:16px;"></i></button></div>`).join('');$('cat-list').innerHTML=h;let v=sCats.map(c=>`<div class="flex" style="padding:10px 0;"><input type="checkbox" style="width:20px; height:20px; margin:0; accent-color:var(--olive-pri);" ${!AV.d.cfg.hid.includes(c)?'checked':''} onclick="AV.Sys.togVis('${c}')"> ${c}</div>`).join('');$('dash-vis-list').innerHTML=v},delCat(c){if(confirm("Del?"))AV.d.cfg.cats=AV.d.cfg.cats.filter(x=>x!=c);AV.Sys.save();AV.Sys.popCats();AV.Sys.dash()},togVis(c){if(AV.d.cfg.hid.includes(c))AV.d.cfg.hid=AV.d.cfg.hid.filter(x=>x!=c);else AV.d.cfg.hid.push(c);AV.Sys.save();AV.Sys.dash()}},
 Auth:{
     async login(){
         let u=_V('l-u'), p=_V('l-p');
-        let tt = document.querySelector('[name="cf-turnstile-response"]');
-        let turnstileToken = tt ? tt.value : '';
-
         if(!u || !p) { $('l-msg').innerText = "Email and Password required."; return; }
-        if(!turnstileToken) { $('l-msg').innerText = "Please complete the bot verification."; return; }
-
         $('l-msg').innerText = "Authenticating with Cloud...";
         $('l-msg').style.color = "var(--text-mute)";
-
         try {
             let res = await fetch('https://service.anritvox.com/api/auth/login', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ email: u, password: p, turnstileToken: turnstileToken })
+                body: JSON.stringify({ email: u, password: p })
             });
             let data = await res.json();
-            
             if (res.status === 202 && data.requires2FA) {
                 AV.tmp.authEmail = u;
                 _H('l-form-std');
@@ -814,12 +720,10 @@ Auth:{
             } else {
                 $('l-msg').innerText = data.message || "INVALID CREDENTIALS";
                 $('l-msg').style.color = "#ef4444";
-                if(window.turnstile) window.turnstile.reset();
             }
         } catch(e) { 
             $('l-msg').innerText = "NETWORK ERROR"; 
             $('l-msg').style.color = "#ef4444";
-            if(window.turnstile) window.turnstile.reset();
         }
     },
     async verify2FA(){
@@ -851,7 +755,6 @@ Auth:{
         _S('l-form-std');
         $('l-msg').innerText = "";
         $('l-otp').value = "";
-        if(window.turnstile) window.turnstile.reset();
     },
     logout(){localStorage.removeItem('AV_WH_TOKEN'); localStorage.removeItem('AV_CLOUD_BACKUP'); location.reload()},
     async authorizeDevice() {
