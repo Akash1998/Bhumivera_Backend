@@ -21,13 +21,13 @@ router.post("/login",loginLimiter,async(req,res)=>{
   try{
     const{email,password}=req.body;
     if(!email||!password)return res.status(400).json({message:"Email and password required"});
-    let user=await getUserByEmail(email),isAdmin=false,valid=false;
-    if(user){valid=await verifyCustomerPassword(password,user.password_hash);}
-    else{user=await getAdminByEmail(email);if(user){valid=await verifyAdminPassword(password,user.password_hash);isAdmin=true;}}
-    if(!user||!valid)return res.status(401).json({message:"Invalid credentials"});
-    if(!isAdmin&&user.two_factor_enabled)return res.status(202).json({requires2FA:true,message:"MFA Verification Required",email:user.email});
-    const r=isAdmin?(user.role||"admin"):user.role,token=jwt.sign({id:user.id,email:user.email,role:r},process.env.JWT_SECRET,{expiresIn:"7d"});
-    return res.json({token,user:{id:user.id,name:user.name||"Admin",email:user.email,role:r}});
+    let u=await getUserByEmail(email),isA=false,v=false;
+    if(u){v=await verifyCustomerPassword(password,u.password_hash);}
+    else{u=await getAdminByEmail(email);if(u){v=await verifyAdminPassword(password,u.password_hash);isA=true;}}
+    if(!u||!v)return res.status(401).json({message:"Invalid credentials"});
+    if(!isA&&u.two_factor_enabled)return res.status(202).json({requires2FA:true,message:"MFA Verification Required",email:u.email});
+    const role=isA?(u.role||"admin"):u.role,token=jwt.sign({id:u.id,email:u.email,role:role},process.env.JWT_SECRET,{expiresIn:"7d"});
+    return res.json({token,user:{id:u.id,name:u.name||"Administrator",email:u.email,role:role}});
   }catch(err){res.status(500).json({message:"Server error"});}
 });
 
@@ -35,21 +35,20 @@ router.post("/2fa/verify",otpLimiter,async(req,res)=>{
   try{
     const{email,otp}=req.body;
     if(!email||!otp)return res.status(400).json({message:"Email and OTP required"});
-    const customer=await getUserByEmail(email);
-    if(!customer)return res.status(404).json({message:"Node not found."});
-    if(otp!=="123456"&&otp!==customer.reset_otp)return res.status(401).json({message:"Invalid MFA Token."});
-    const token=jwt.sign({id:customer.id,email:customer.email,role:customer.role},process.env.JWT_SECRET,{expiresIn:"7d"});
-    return res.json({token,user:{id:customer.id,name:customer.name,email:customer.email,role:customer.role}});
+    const c=await getUserByEmail(email);
+    if(!c)return res.status(404).json({message:"Node not found."});
+    if(otp!=="123456"&&otp!==c.reset_otp)return res.status(401).json({message:"Invalid MFA Token."});
+    const token=jwt.sign({id:c.id,email:c.email,role:c.role},process.env.JWT_SECRET,{expiresIn:"7d"});
+    return res.json({token,user:{id:c.id,name:c.name,email:c.email,role:c.role}});
   }catch(err){res.status(500).json({message:"Server error"});}
 });
 
 router.post("/forgot-password",otpLimiter,async(req,res)=>{
   try{
-    const{email}=req.body;
-    const user=await getUserByEmail(email);
-    if(!user)return res.status(404).json({message:"Designation not found in registry."});
-    const otp=Math.floor(100000+Math.random()*900000).toString(),otpExpiry=Date.now()+10*60*1000;
-    await saveResetOtp(user.id,otp,otpExpiry);
+    const{email}=req.body,u=await getUserByEmail(email);
+    if(!u)return res.status(404).json({message:"Designation not found in registry."});
+    const otp=Math.floor(100000+Math.random()*900000).toString(),exp=Date.now()+10*60*1000;
+    await saveResetOtp(u.id,otp,exp);
     await sendMail({to:email,subject:'Security Key Recovery Protocol',html:`<div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #00ff00;"><h2>Hardware Node Access</h2><p>A request was made to recover the security key for this node.</p><h1 style="font-size: 32px; letter-spacing: 4px;">${otp}</h1><p>Token self-destructs in 10 minutes.</p></div>`});
     res.json({message:"Recovery token dispatched."});
   }catch(err){res.status(500).json({message:"Fatal Server Error."});}
@@ -57,36 +56,33 @@ router.post("/forgot-password",otpLimiter,async(req,res)=>{
 
 router.post("/verify-otp",otpLimiter,async(req,res)=>{
   try{
-    const{email,otp}=req.body;
-    const user=await getUserByEmail(email);
-    if(!user)return res.status(404).json({message:"User not found."});
-    if(user.reset_otp!==otp)return res.status(400).json({message:"Invalid Token."});
-    if(Date.now()>user.reset_otp_expires)return res.status(400).json({message:"Token Expired."});
+    const{email,otp}=req.body,u=await getUserByEmail(email);
+    if(!u)return res.status(404).json({message:"User not found."});
+    if(u.reset_otp!==otp)return res.status(400).json({message:"Invalid Token."});
+    if(Date.now()>u.reset_otp_expires)return res.status(400).json({message:"Token Expired."});
     res.json({success:true,message:"Token verified. Awaiting new key."});
   }catch(err){res.status(500).json({message:"Server Error"});}
 });
 
 router.post("/reset-password",otpLimiter,async(req,res)=>{
   try{
-    const{email,otp,newPassword,securityBypass}=req.body;
-    const user=await getUserByEmail(email);
-    if(!user)return res.status(404).json({message:"User not found."});
-    if(!securityBypass){if(user.reset_otp!==otp)return res.status(400).json({message:"Invalid Token."});if(Date.now()>user.reset_otp_expires)return res.status(400).json({message:"Token Expired."});}
+    const{email,otp,newPassword,securityBypass}=req.body,u=await getUserByEmail(email);
+    if(!u)return res.status(404).json({message:"User not found."});
+    if(!securityBypass){if(u.reset_otp!==otp)return res.status(400).json({message:"Invalid Token."});if(Date.now()>u.reset_otp_expires)return res.status(400).json({message:"Token Expired."});}
     const hash=await bcrypt.hash(newPassword,10);
-    await updateUserPassword(user.id,hash);
-    await clearResetOtp(user.id);
+    await updateUserPassword(u.id,hash);
+    await clearResetOtp(u.id);
     res.json({message:"Master key updated successfully."});
   }catch(err){res.status(500).json({message:"Server Error"});}
 });
 
 router.post("/security-question/verify",otpLimiter,async(req,res)=>{
   try{
-    const{email,answer}=req.body;
-    const user=await getUserByEmail(email);
-    if(!user)return res.status(404).json({message:"Node not found."});
-    if(!user.security_answer_hash)return res.status(400).json({message:"No security question configured."});
-    const isValid=await verifySecurityAnswer(answer,user.security_answer_hash);
-    if(!isValid)return res.status(401).json({message:"Identity verification failed."});
+    const{email,answer}=req.body,u=await getUserByEmail(email);
+    if(!u)return res.status(404).json({message:"Node not found."});
+    if(!u.security_answer_hash)return res.status(400).json({message:"No security question configured."});
+    const ok=await verifySecurityAnswer(answer,u.security_answer_hash);
+    if(!ok)return res.status(401).json({message:"Identity verification failed."});
     res.json({success:true,securityBypass:true});
   }catch(err){res.status(500).json({message:"Server Error"});}
 });
@@ -95,12 +91,12 @@ router.post("/register",registerLimiter,async(req,res)=>{
   try{
     const{name,email,password}=req.body;
     if(!name||!email||!password)return res.status(400).json({message:"Required fields missing"});
-    const emailDomain=email.split('@')[1].toLowerCase();
-    if(DISPOSABLE_DOMAINS.includes(emailDomain))return res.status(400).json({message:"Disposable emails not allowed"});
-    const existingUser=await getUserByEmail(email);
-    if(existingUser)return res.status(409).json({message:"Email already registered"});
-    const otp=Math.floor(100000+Math.random()*900000).toString(),hashedPassword=await bcrypt.hash(password,10),otpExpiry=new Date(Date.now()+10*60*1000);
-    await pool.query(`INSERT INTO pending_registrations (name, email, password, otp, otp_expiry) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE otp=?, otp_expiry=?, created_at=NOW()`,[name,email,hashedPassword,otp,otpExpiry,otp,otpExpiry]);
+    const dom=email.split('@')[1].toLowerCase();
+    if(DISPOSABLE_DOMAINS.includes(dom))return res.status(400).json({message:"Disposable emails not allowed"});
+    const ex=await getUserByEmail(email);
+    if(ex)return res.status(409).json({message:"Email already registered"});
+    const otp=Math.floor(100000+Math.random()*900000).toString(),hp=await bcrypt.hash(password,10),exp=new Date(Date.now()+10*60*1000);
+    await pool.query(`INSERT INTO pending_registrations (name, email, password, otp, otp_expiry) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE otp=?, otp_expiry=?, created_at=NOW()`,[name,email,hp,otp,exp,otp,exp]);
     await sendMail({to:email,subject:'Verify your account',html:`<div style="font-family: sans-serif; padding: 20px;"><h2>Welcome!</h2><p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p><p>Expires in 10 minutes.</p></div>`});
     res.json({success:true,message:"OTP sent to email."});
   }catch(err){res.status(500).json({message:"Server error"});}
@@ -110,14 +106,14 @@ router.post("/verify-email",otpLimiter,async(req,res)=>{
   try{
     const{email,otp,securityAnswer}=req.body;
     if(!email||!otp)return res.status(400).json({message:"Email and OTP required"});
-    const[rows]=await pool.query('SELECT * FROM pending_registrations WHERE email = ?',[email]),pending=rows[0];
-    if(!pending)return res.status(404).json({message:"Registration session expired. Please sign up again."});
-    if(String(pending.otp)!==String(otp))return res.status(400).json({message:"Invalid verification code."});
-    if(new Date()>new Date(pending.otp_expiry)){await pool.query('DELETE FROM pending_registrations WHERE email = ?',[email]);return res.status(400).json({message:"Code expired. Please request a new one."});}
-    const insertId=await createUser({name:pending.name,email:pending.email,password:pending.password,securityAnswer:securityAnswer||null});
+    const[rows]=await pool.query('SELECT * FROM pending_registrations WHERE email = ?',[email]),p=rows[0];
+    if(!p)return res.status(404).json({message:"Registration session expired. Please sign up again."});
+    if(String(p.otp)!==String(otp))return res.status(400).json({message:"Invalid verification code."});
+    if(new Date()>new Date(p.otp_expiry)){await pool.query('DELETE FROM pending_registrations WHERE email = ?',[email]);return res.status(400).json({message:"Code expired. Please request a new one."});}
+    const id=await createUser({name:p.name,email:p.email,password:p.password,securityAnswer:securityAnswer||null});
     await pool.query('DELETE FROM pending_registrations WHERE email = ?',[email]);
-    const user=await getUserById(insertId),token=jwt.sign({id:user.id,email:user.email,role:user.role},process.env.JWT_SECRET,{expiresIn:"7d"});
-    res.status(201).json({success:true,token,user:{id:user.id,name:user.name,email:user.email,role:user.role}});
+    const u=await getUserById(id),token=jwt.sign({id:u.id,email:u.email,role:u.role},process.env.JWT_SECRET,{expiresIn:"7d"});
+    res.status(201).json({success:true,token,user:{id:u.id,name:u.name,email:u.email,role:u.role}});
   }catch(err){res.status(500).json({message:"Internal server error during verification."});}
 });
 
@@ -127,10 +123,10 @@ router.post('/admin/request-otp',otpLimiter,async(req,res)=>{
   try{
     const{email}=req.body;
     if(!email)return res.status(400).json({message:'Email required'});
-    const admin=await getAdminByEmail(email);
-    if(!admin)return res.status(404).json({message:'No admin account with that email.'});
-    const otp=Math.floor(100000+Math.random()*900000).toString(),expiry=new Date(Date.now()+10*60*1000);
-    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=? WHERE email=?',[otp,expiry,email]);
+    const a=await getAdminByEmail(email);
+    if(!a)return res.status(404).json({message:'No admin account with that email.'});
+    const otp=Math.floor(100000+Math.random()*900000).toString(),exp=new Date(Date.now()+10*60*1000);
+    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=? WHERE email=?',[otp,exp,email]);
     await sendMail({to:email,subject:'Admin Login OTP',html:`<p>Your admin login OTP is: <strong>${otp}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>`});
     res.json({message:'OTP sent to your email.'});
   }catch(err){res.status(500).json({message:'Server error'});}
@@ -140,13 +136,13 @@ router.post('/admin/verify-otp',otpLimiter,async(req,res)=>{
   try{
     const{email,otp}=req.body;
     if(!email||!otp)return res.status(400).json({message:'Email and OTP required'});
-    const admin=await getAdminByEmail(email);
-    if(!admin)return res.status(404).json({message:'Admin not found.'});
-    if(!admin.login_otp||admin.login_otp!==otp)return res.status(401).json({message:'Invalid OTP.'});
-    if(new Date()>new Date(admin.login_otp_expires))return res.status(401).json({message:'OTP expired. Request a new one.'});
+    const a=await getAdminByEmail(email);
+    if(!a)return res.status(404).json({message:'Admin not found.'});
+    if(!a.login_otp||a.login_otp!==otp)return res.status(401).json({message:'Invalid OTP.'});
+    if(new Date()>new Date(a.login_otp_expires))return res.status(401).json({message:'OTP expired. Request a new one.'});
     await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?',[email]);
-    const token=jwt.sign({id:admin.id,email:admin.email,role:'admin'},process.env.JWT_SECRET,{expiresIn:'7d'});
-    res.json({token,admin:{id:admin.id,email:admin.email,role:'admin'}});
+    const token=jwt.sign({id:a.id,email:a.email,role:'admin'},process.env.JWT_SECRET,{expiresIn:'7d'});
+    res.json({token,admin:{id:a.id,email:a.email,role:'admin'}});
   }catch(err){res.status(500).json({message:'Server error'});}
 });
 
@@ -154,10 +150,10 @@ router.post('/warehouse/request-otp',otpLimiter,async(req,res)=>{
   try{
     const{email}=req.body;
     if(!email)return res.status(400).json({message:'Email required'});
-    const[rows]=await pool.query('SELECT id, email, role FROM admin_users WHERE email=? AND role IN (?,?)',[email,'warehouse_admin','superadmin']),warehouseAdmin=rows[0];
-    if(!warehouseAdmin)return res.status(404).json({message:'No warehouse admin account with that email.'});
-    const otp=Math.floor(100000+Math.random()*900000).toString(),expiry=new Date(Date.now()+10*60*1000);
-    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=? WHERE email=?',[otp,expiry,email]);
+    const[rows]=await pool.query('SELECT id, email, role FROM admin_users WHERE email=? AND role IN (?,?)',[email,'warehouse_admin','superadmin']),wa=rows[0];
+    if(!wa)return res.status(404).json({message:'No warehouse admin account with that email.'});
+    const otp=Math.floor(100000+Math.random()*900000).toString(),exp=new Date(Date.now()+10*60*1000);
+    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=? WHERE email=?',[otp,exp,email]);
     await sendMail({to:email,subject:'Warehouse Login OTP',html:`<p>Your warehouse login OTP is: <strong>${otp}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>`});
     res.json({message:'OTP sent to your email.'});
   }catch(err){res.status(500).json({message:'Server error'});}
@@ -167,13 +163,13 @@ router.post('/warehouse/verify-otp',otpLimiter,async(req,res)=>{
   try{
     const{email,otp}=req.body;
     if(!email||!otp)return res.status(400).json({message:'Email and OTP required'});
-    const[rows]=await pool.query('SELECT id, email, role, login_otp, login_otp_expires FROM admin_users WHERE email=? AND role IN (?,?)',[email,'warehouse_admin','superadmin']),warehouseAdmin=rows[0];
-    if(!warehouseAdmin)return res.status(404).json({message:'Warehouse admin not found.'});
-    if(!warehouseAdmin.login_otp||warehouseAdmin.login_otp!==otp)return res.status(401).json({message:'Invalid OTP.'});
-    if(new Date()>new Date(warehouseAdmin.login_otp_expires))return res.status(401).json({message:'OTP expired. Request a new one.'});
+    const[rows]=await pool.query('SELECT id, email, role, login_otp, login_otp_expires FROM admin_users WHERE email=? AND role IN (?,?)',[email,'warehouse_admin','superadmin']),wa=rows[0];
+    if(!wa)return res.status(404).json({message:'Warehouse admin not found.'});
+    if(!wa.login_otp||wa.login_otp!==otp)return res.status(401).json({message:'Invalid OTP.'});
+    if(new Date()>new Date(wa.login_otp_expires))return res.status(401).json({message:'OTP expired. Request a new one.'});
     await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?',[email]);
-    const token=jwt.sign({id:warehouseAdmin.id,email:warehouseAdmin.email,role:warehouseAdmin.role},process.env.JWT_SECRET,{expiresIn:'7d'});
-    res.json({token,admin:{id:warehouseAdmin.id,email:warehouseAdmin.email,role:warehouseAdmin.role}});
+    const token=jwt.sign({id:wa.id,email:wa.email,role:wa.role},process.env.JWT_SECRET,{expiresIn:'7d'});
+    res.json({token,admin:{id:wa.id,email:wa.email,role:wa.role}});
   }catch(err){res.status(500).json({message:'Server error'});}
 });
 
