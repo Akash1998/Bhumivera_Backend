@@ -1,21 +1,14 @@
 const https = require("https");
 const util = require("util");
 
-const MJ_PUBLIC =
-  process.env.MAILJET_API_KEY ||
-  process.env.MJ_APIKEY_PUBLIC ||
-  process.env.MAILJET_PUBLIC;
-const MJ_PRIVATE =
-  process.env.MAILJET_API_SECRET ||
-  process.env.MJ_APIKEY_PRIVATE ||
-  process.env.MAILJET_PRIVATE;
-const EMAIL_FROM = process.env.EMAIL_FROM || "no-reply@yourdomain.com";
-const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Bhumivera Logistics";
+// --- ENVIRONMENT & DEFAULTS ---
+const MJ_PUBLIC = process.env.MAILJET_API_KEY || process.env.MJ_APIKEY_PUBLIC || process.env.MAILJET_PUBLIC;
+const MJ_PRIVATE = process.env.MAILJET_API_SECRET || process.env.MJ_APIKEY_PRIVATE || process.env.MAILJET_PRIVATE;
+const EMAIL_FROM = process.env.EMAIL_FROM || "support@bhumivera.com";
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Bhumivera Concierge";
 
 if (!MJ_PUBLIC || !MJ_PRIVATE) {
-  console.warn(
-    "⚠️ MAILJET API keys not set. Email functionality will be disabled or fail."
-  );
+  console.warn("⚠️ MAILJET API keys not set. Email functionality will be disabled or fail.");
 }
 
 let mailjetClient = null;
@@ -32,6 +25,7 @@ try {
   console.warn("⚠️ Mailjet SDK not found; falling back to direct HTTPS calls.");
 }
 
+// --- UTILS ---
 function normalizeRecipient(recipient) {
   if (!recipient) return [];
   if (Array.isArray(recipient)) return recipient.map(normalizeRecipient).flat();
@@ -52,9 +46,7 @@ function normalizeAttachments(attachments) {
     else if (typeof a.content === "string") {
       const cleaned = a.content.replace(/\s/g, "");
       const looksBase64 = /^[A-Za-z0-9+/=]+$/.test(cleaned);
-      base64 = looksBase64
-        ? cleaned
-        : Buffer.from(a.content, "utf8").toString("base64");
+      base64 = looksBase64 ? cleaned : Buffer.from(a.content, "utf8").toString("base64");
     } else {
       throw new Error("Attachment content must be Buffer or string");
     }
@@ -99,16 +91,7 @@ function httpSendMail(payload) {
   });
 }
 
-async function sendMail({
-  to,
-  cc,
-  bcc,
-  subject,
-  html,
-  text,
-  from,
-  attachments,
-}) {
+async function sendMail({ to, cc, bcc, subject, html, text, from, attachments }) {
   if (!to) throw new Error("sendMail: 'to' is required");
 
   const From = (() => {
@@ -147,16 +130,47 @@ async function sendMail({
   return httpSendMail(body);
 }
 
+// --- THE LUXURY ORDER STATUS MATRIX ---
 const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null) => {
   const formattedId = String(orderId).padStart(10, '0');
   
   const statusConfig = {
-    pending: { color: '#f59e0b', text: 'Pending Confirmation', msg: 'We have received your order and are currently reviewing it. We will notify you once it has been processed.' },
-    processing: { color: '#3b82f6', text: 'Processing Order', msg: 'Your order has been confirmed and our warehouse team is currently prepping it for dispatch.' },
-    shipped: { color: '#6366f1', text: 'Shipped / In Transit', msg: 'Great news! Your order has been dispatched and is currently on its way to your destination.' },
-    delivered: { color: '#10b981', text: 'Delivered', msg: 'Your package has been successfully delivered. We hope you enjoy your purchase!' },
-    cancelled: { color: '#ef4444', text: 'Order Cancelled', msg: 'Your order has been cancelled. Any applicable refunds will be processed shortly to your original payment method.' },
-    returned: { color: '#64748b', text: 'Return Processed', msg: 'We have received and processed your return request.' }
+    pending: { 
+      color: '#10b981', // Emerald
+      title: 'Botanical Sequence Initialized', 
+      quote: '"Purity requires patience; perfection requires precision."',
+      msg: 'Your acquisition has been logged into our central ledger. Our Asansol Eco-Lab has received your request and is preparing the extraction protocols. We are verifying the botanical integrity of your selected batch before it proceeds to processing.' 
+    },
+    processing: { 
+      color: '#10b981', 
+      title: 'QA & Curing Verification', 
+      quote: '"We do not rush nature; we engineer its delivery."',
+      msg: 'Your batch is currently undergoing our rigorous SOP-104 inspection. Our lab technicians are ensuring the crystalline structure of the minerals and the pH balance (5.5) of your formulation meet the strictest Bhumivera Science tolerances. Your parcel is being packed in our tamper-evident, climate-controlled packaging.' 
+    },
+    shipped: { 
+      color: '#10b981', 
+      title: 'Dispatched from Asansol Eco-Lab', 
+      quote: '"The earth provides the formula; we provide the transit."',
+      msg: 'The zero-footprint transit sequence has begun. Your parcel has left our facility and is now navigating the logistics matrix. Below you will find the cryptographic transit ID required to monitor its movement in real-time.' 
+    },
+    delivered: { 
+      color: '#10b981', 
+      title: 'Arrival Protocol Complete', 
+      quote: '"Your skin\'s new architecture has arrived."',
+      msg: 'Your Bhumivera formulation has been successfully delivered. Please ensure the hygiene seals are intact. **Important:** Before your first application, locate the SNA-2 Serial Code on your packaging and synchronize it within the Bhumivera Somatic Registry to unlock your specific batch instructions and biological warranty.' 
+    },
+    cancelled: { 
+      color: '#ef4444', 
+      title: 'Transaction Voided', 
+      quote: '"Integrity means knowing when to halt the process."',
+      msg: 'Your order has been formally rescinded from our system. Any financial allocations reserved for this transaction are currently being reversed through our encrypted payment gateway back to your original source.' 
+    },
+    returned: { 
+      color: '#f59e0b', 
+      title: 'Reclamation Sequence Activated', 
+      quote: '"A return is not an end, but a refinement of our data."',
+      msg: 'We have received your returned physical asset. Our QA team is processing the item to finalize the resolution logic. We utilize return data to continually calibrate our botanical formulas. Your financial reconciliation will complete shortly.' 
+    }
   };
 
   const config = statusConfig[status.toLowerCase()] || statusConfig.pending;
@@ -164,41 +178,71 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
   let trackingHtml = '';
   if (trackingNumber && courier) {
     trackingHtml = `
-      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-top: 20px;">
-        <h3 style="margin-top: 0; color: #0f172a; font-size: 16px;">Tracking Information</h3>
-        <p style="margin: 0; color: #475569; font-size: 14px;"><strong>Courier:</strong> ${courier}</p>
-        <p style="margin: 5px 0 15px 0; color: #475569; font-size: 14px;"><strong>Tracking ID:</strong> ${trackingNumber}</p>
-        <a href="https://www.google.com/search?q=${trackingNumber}+${courier}+tracking" style="display: inline-block; background-color: #0f172a; color: #ffffff; text-decoration: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; font-size: 14px;">Track Package</a>
+      <div style="background-color: rgba(16, 185, 129, 0.05); border-left: 2px solid #10b981; padding: 20px; margin-top: 30px;">
+        <p style="margin: 0; color: #a3a3a3; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; font-family: monospace;">Transit Node</p>
+        <p style="margin: 5px 0 15px 0; color: #ffffff; font-size: 16px;"><strong>Courier:</strong> ${courier}<br/><strong>Crypto-ID:</strong> <span style="font-family: monospace; color: #10b981;">${trackingNumber}</span></p>
+        <a href="https://www.google.com/search?q=${trackingNumber}+${courier}+tracking" style="display: inline-block; background-color: #10b981; color: #000000; text-decoration: none; padding: 12px 24px; font-size: 10px; text-transform: uppercase; letter-spacing: 3px; font-weight: bold;">Trace Parcel Location</a>
       </div>
     `;
   }
 
   const htmlTemplate = `
-    <div style="font-family: 'Inter', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-      <div style="background-color: #0f172a; padding: 30px 20px; text-align: center;">
-        <h1 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: -0.5px;">Bhumivera STORE</h1>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700&family=JetBrains+Mono:wght@400;700&display=swap');
+      </style>
+    </head>
+    <body style="margin: 0; padding: 40px 20px; background-color: #020202; font-family: 'Inter', sans-serif;">
+      
+      <div style="max-width: 600px; margin: 0 auto; background-color: #0a0a0a; border: 1px solid rgba(255, 255, 255, 0.05); overflow: hidden;">
+        
+        <div style="padding: 40px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+          <div style="width: 40px; height: 40px; background-color: #10b981; margin: 0 auto 20px auto;"></div>
+          <h1 style="color: #ffffff; margin: 0; font-size: 14px; letter-spacing: 6px; font-weight: 300; text-transform: uppercase;">Bhumivera Eco-Labs</h1>
+        </div>
+
+        <div style="padding: 40px 40px 10px 40px; text-align: center;">
+          <p style="color: #a3a3a3; font-style: italic; font-size: 18px; line-height: 1.6; font-weight: 300;">
+            ${config.quote}
+          </p>
+        </div>
+
+        <div style="padding: 30px 40px;">
+          <p style="color: #10b981; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; font-family: monospace; margin-bottom: 10px;">Ledger ID: #${formattedId}</p>
+          <h2 style="color: #ffffff; margin-top: 0; font-size: 24px; font-weight: 300; letter-spacing: -0.5px;">${config.title}</h2>
+          
+          <p style="color: #e5e5e5; font-size: 15px; margin-top: 30px;">Salutations, ${name}.</p>
+          <p style="color: #a3a3a3; font-size: 14px; line-height: 1.8;">${config.msg}</p>
+          
+          ${trackingHtml}
+          
+          <div style="margin-top: 40px; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.05);">
+            <p style="color: #737373; font-size: 12px; line-height: 1.6;">
+              Should you detect any logical errors in your order routing, our digital concierge is available. Reply directly to this transmission or visit the <a href="https://bhumivera.com/support" style="color: #10b981; text-decoration: none;">Support Node</a>.
+            </p>
+          </div>
+        </div>
+
+        <div style="background-color: #050505; padding: 30px; text-align: center; border-top: 1px solid rgba(255, 255, 255, 0.05);">
+          <p style="color: #525252; font-size: 9px; font-family: monospace; letter-spacing: 2px; text-transform: uppercase; margin: 0;">
+            Zero Logic Deletion • Zero Heat Damage<br/><br/>
+            &copy; ${new Date().getFullYear()} Bhumivera Science. Asansol, India.
+          </p>
+        </div>
+
       </div>
-      <div style="padding: 40px 30px;">
-        <p style="color: #64748b; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; font-weight: bold; margin-bottom: 5px;">Order #${formattedId}</p>
-        <h2 style="color: ${config.color}; margin-top: 0; font-size: 28px; letter-spacing: -0.5px;">${config.text}</h2>
-        <p style="color: #334155; font-size: 16px; line-height: 1.6;">Hello ${name},</p>
-        <p style="color: #475569; font-size: 16px; line-height: 1.6;">${config.msg}</p>
-        ${trackingHtml}
-        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
-        <p style="color: #64748b; font-size: 14px; text-align: center; margin: 0;">
-          Need help? <a href="https://Bhumivera.com/support" style="color: #3b82f6; text-decoration: none;">Contact our Support Team</a>
-        </p>
-      </div>
-      <div style="background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #e2e8f0;">
-        <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} Bhumivera. All rights reserved.</p>
-      </div>
-    </div>
+
+    </body>
+    </html>
   `;
 
   try {
     return await sendMail({
       to: email,
-      subject: `Order Update: #${formattedId} is ${config.text}`,
+      subject: `[BHUMIVERA] Update on Order #${formattedId}`,
       html: htmlTemplate
     });
   } catch (error) {
