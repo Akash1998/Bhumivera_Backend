@@ -1,8 +1,6 @@
 const pool = require('../config/db');
 const bcrypt = require('bcrypt');
 
-// NOTE: phone and isPhoneVerified fields removed (Phase 2: SMS OTP vaporized).
-// Authentication is email-only. Do NOT re-add SMS fields.
 const createUsersTable = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -25,9 +23,27 @@ const createUsersTable = async () => {
   `);
 };
 
+const initAuthTables = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pending_registrations (
+      email VARCHAR(150) PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      otp VARCHAR(10) NOT NULL,
+      otp_expiry DATETIME NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+};
+
+
 const createUser = async ({ name, email, password, securityAnswer = 'default-answer' }) => {
-  const hash = await bcrypt.hash(password, 10);
+ 
+  const isHashed = password.startsWith('$2b$');
+  const hash = isHashed ? password : await bcrypt.hash(password, 10);
+  
   const secHash = await bcrypt.hash(securityAnswer.toLowerCase(), 10);
+  
   const [result] = await pool.query(
     'INSERT INTO users (name, email, password_hash, security_answer_hash) VALUES (?, ?, ?, ?)',
     [name, email, hash, secHash]
@@ -59,12 +75,34 @@ const updateUser = async (id, { name }) => {
   await pool.query('UPDATE users SET name=? WHERE id=?', [name, id]);
 };
 
-// --- WALLET HELPERS ---
+
+const createPendingUser = async ({ name, email, password, otp, expiry }) => {
+  const hash = await bcrypt.hash(password, 10);
+  await pool.query(
+    `INSERT INTO pending_registrations (email, name, password, otp, otp_expiry) 
+     VALUES (?, ?, ?, ?, ?) 
+     ON DUPLICATE KEY UPDATE name=?, password=?, otp=?, otp_expiry=?`,
+    [email, name, hash, otp, expiry, name, hash, otp, expiry]
+  );
+};
+
+const getPendingUser = async (email) => {
+  const [rows] = await pool.query('SELECT * FROM pending_registrations WHERE email = ?', [email]);
+  return rows[0];
+};
+
+const deletePendingUser = async (email) => {
+  await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
+};
+
+
 const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
   const [user] = await conn.query('SELECT wallet_balance FROM users WHERE id = ? FOR UPDATE', [userId]);
   const currentBalance = parseFloat(user[0].wallet_balance);
   const newBalance = type === 'credit' ? currentBalance + amount : currentBalance - amount;
+  
   if (newBalance < 0) throw new Error("Insufficient wallet balance.");
+  
   await conn.query('UPDATE users SET wallet_balance = ? WHERE id = ?', [newBalance, userId]);
   await conn.query(
     'INSERT INTO wallet_transactions (user_id, amount, type, description, reference_id) VALUES (?, ?, ?, ?, ?)',
@@ -72,6 +110,7 @@ const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
   );
   return newBalance;
 };
+
 
 const saveResetOtp = async (userId, otp, expiry) => {
   await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=? WHERE id=?', [otp, expiry, userId]);
@@ -86,16 +125,29 @@ const updateUserPassword = async (userId, hash) => {
 };
 
 module.exports = {
+  // Initialization
+  createUsersTable,
+  initAuthTables,
+  
+  // Standard Users
   createUser,
   getUserByEmail,
   getUserById,
   getAllUsers,
   updateUser,
+  updateUserPassword,
+  
+  // Pending Queue
+  createPendingUser,
+  getPendingUser,
+  deletePendingUser,
+  
+  // Wallet
   adjustWallet,
+  
+  // OTP / Auth Logic
   saveResetOtp,
   clearResetOtp,
-  updateUserPassword,
-  createUsersTable,
   verifyPassword: async (password, hash) => bcrypt.compare(password, hash),
   verifySecurityAnswer: async (answer, hash) => bcrypt.compare(answer.toLowerCase(), hash),
 };
