@@ -171,11 +171,11 @@ const getAllRegistrations = async () => {
   return rows;
 };
 
-const updateWarrantyStatus = async (id, status) => {
+const updatGenuiine_testStatus = async (id, status) => {
   await pool.query('UPDATE warranty_registrations SET status = ? WHERE id = ?', [status, id]);
 };
 
-const deleteWarranty = async (id) => {
+const deletGenuiine_test = async (id) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -196,7 +196,7 @@ module.exports = {
   validateSerial,
   registerWarranty,
   getAllRegistrations,
-  updateWarrantyStatus,
-  deleteWarranty,
+  updatGenuiine_testStatus,
+  deletGenuiine_test,
   initWarrantyTable
 };
