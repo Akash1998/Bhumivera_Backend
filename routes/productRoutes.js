@@ -3,20 +3,50 @@ const router = express.Router();
 const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { generateUploadUrl } = require('../config/s3Upload');
+const { generateGoogleMerchantFeed } = require('../utils/merchantFeed');
 
+/**
+ * Utility: Parse image results from JSON_ARRAYAGG or stringified columns
+ */
 const parseImages = (rows) => {
   return rows.map(row => {
     let parsedImages = [];
     if (row.images) {
       try {
         parsedImages = typeof row.images === 'string' ? JSON.parse(row.images) : row.images;
-      } catch (e) { parsedImages = []; }
+        // Filter out null entries that JSON_ARRAYAGG might produce if no images exist
+        if (Array.isArray(parsedImages)) {
+          parsedImages = parsedImages.filter(img => img !== null);
+        }
+      } catch (e) { 
+        parsedImages = []; 
+      }
     }
-    return { ...row, images: parsedImages };
+    return { ...row, images: parsedImages || [] };
   });
 };
 
-// 1. GET ALL ACTIVE PRODUCTS (Public)
+// ==========================================
+// 1. GOOGLE MERCHANT CENTER FEED (Public)
+// ==========================================
+router.get('/feed/google-merchant', async (req, res) => {
+  try {
+    const xmlFeed = await generateGoogleMerchantFeed();
+    res.set('Content-Type', 'application/xml');
+    res.status(200).send(xmlFeed);
+  } catch (error) {
+    console.error("Merchant Feed Error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to generate product feed', 
+      error: error.message 
+    });
+  }
+});
+
+// ==========================================
+// 2. GET ALL ACTIVE PRODUCTS (Public)
+// ==========================================
 router.get('/active', async (req, res) => {
   try {
     const { category, subcategory, search, sort, min_price, max_price } = req.query;
@@ -46,7 +76,9 @@ router.get('/active', async (req, res) => {
   }
 });
 
-// 2. GET ALL PRODUCTS ADMIN (Protected)
+// ==========================================
+// 3. GET ALL PRODUCTS (Admin)
+// ==========================================
 router.get('/', authenticateAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(`
@@ -62,35 +94,24 @@ router.get('/', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 3. GET PRODUCT BY SLUG (Legacy Fallback - Public)
-router.get('/slug/:slug', async (req, res) => {
-  try {
-    const [rows] = await pool.query(`
-      SELECT p.*, 
-      (SELECT JSON_ARRAYAGG(file_path) FROM product_images WHERE product_id = p.id) as images
-      FROM products p WHERE p.slug = ? AND p.status = "active"
-    `, [req.params.slug]);
-    if (rows.length === 0) return res.status(404).json({ success: false, message: 'Product node not found by slug' });
-    res.json({ success: true, data: parseImages(rows)[0] });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Database query failed' });
-  }
-});
-
+// ==========================================
 // 4. CREATE PRODUCT (Admin)
+// ==========================================
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
     const { name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications } = req.body;
-    if (!name || !price) return res.status(400).json({ success: false, message: 'Name and price are required' });
-    const finalSlug = slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     
-    // Auto-serialize specifications JSON
+    if (!name || !price) return res.status(400).json({ success: false, message: 'Name and price are required' });
+    
+    const finalSlug = slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const specData = typeof specifications === 'object' ? JSON.stringify(specifications) : (specifications || null);
 
     const [result] = await pool.query(
-      `INSERT INTO products (name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO products (name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications) 
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [name, finalSlug, description || '', price, discount_price || null, category_id || null, subcategory_id || null, quantity || 0, status || 'active', sku || null, brand || null, warranty_period || null, meta_title || null, meta_description || null, tags || null, is_featured || 0, is_trending || 0, is_new_arrival || 0, model_3d_url || null, video_urls || null, product_links || null, specData]
     );
+    
     const [newProduct] = await pool.query('SELECT * FROM products WHERE id = ?', [result.insertId]);
     res.status(201).json({ success: true, message: 'Product created', data: newProduct[0] });
   } catch (error) {
@@ -98,15 +119,20 @@ router.post('/', authenticateAdmin, async (req, res) => {
   }
 });
 
+// ==========================================
 // 5. UPDATE PRODUCT (Admin)
+// ==========================================
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
     const productId = parseInt(req.params.id, 10);
     if (isNaN(productId)) return res.status(400).json({ success: false, message: 'Invalid ID format' });
+    
     const fields = req.body;
     const allowedFields = ['name','slug','description','price','discount_price','category_id','subcategory_id','quantity','status','sku','brand','warranty_period','meta_title','meta_description','tags','is_featured','is_trending','is_new_arrival','model_3d_url','video_urls','product_links', 'specifications'];
+    
     const updates = [];
     const values = [];
+    
     for (const key of allowedFields) {
       if (fields[key] !== undefined) {
         updates.push(`${key} = ?`);
@@ -117,9 +143,12 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
         values.push(val);
       }
     }
+    
     if (updates.length === 0) return res.status(400).json({ success: false, message: 'No valid fields to update' });
+    
     values.push(productId);
     await pool.query(`UPDATE products SET ${updates.join(', ')} WHERE id = ?`, values);
+    
     const [updated] = await pool.query('SELECT * FROM products WHERE id = ?', [productId]);
     res.json({ success: true, message: 'Product updated', data: updated[0] });
   } catch (error) {
@@ -127,7 +156,9 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
+// ==========================================
 // 6. TOGGLE PRODUCT STATUS (Admin)
+// ==========================================
 router.patch('/:id/status', authenticateAdmin, async (req, res) => {
   try {
     const { status } = req.body;
@@ -139,7 +170,9 @@ router.patch('/:id/status', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 7. GET PRE-SIGNED UPLOAD URL (Admin)
+// ==========================================
+// 7. MEDIA: GET PRE-SIGNED S3 URL (Admin)
+// ==========================================
 router.post('/presign', authenticateAdmin, async (req, res) => {
   try {
     const { filename, fileType } = req.body;
@@ -152,7 +185,9 @@ router.post('/presign', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 8. SAVE IMAGE KEYS TO DATABASE (Admin)
+// ==========================================
+// 8. MEDIA: SAVE IMAGE LINKS (Admin)
+// ==========================================
 router.post('/:id/images/save', authenticateAdmin, async (req, res) => {
   try {
     const productId = parseInt(req.params.id, 10);
@@ -169,7 +204,9 @@ router.post('/:id/images/save', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 9. DELETE ALL PRODUCT IMAGES (Admin)
+// ==========================================
+// 9. MEDIA: DELETE ALL IMAGES (Admin)
+// ==========================================
 router.delete('/:id/images/all', authenticateAdmin, async (req, res) => {
   try {
     const productId = parseInt(req.params.id, 10);
@@ -180,7 +217,9 @@ router.delete('/:id/images/all', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 10. DELETE SINGLE PRODUCT IMAGE (Admin)
+// ==========================================
+// 10. MEDIA: DELETE SINGLE IMAGE (Admin)
+// ==========================================
 router.delete('/:id/images', authenticateAdmin, async (req, res) => {
   try {
     const { imageId } = req.body;
@@ -191,7 +230,9 @@ router.delete('/:id/images', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 11. ADD SERIAL NUMBERS TO PRODUCT (Admin)
+// ==========================================
+// 11. INVENTORY: ADD SERIAL NUMBERS (Admin)
+// ==========================================
 router.post('/:id/serials', authenticateAdmin, async (req, res) => {
   try {
     const { serials } = req.body;
@@ -204,7 +245,9 @@ router.post('/:id/serials', authenticateAdmin, async (req, res) => {
   }
 });
 
+// ==========================================
 // 12. DELETE PRODUCT (Admin)
+// ==========================================
 router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
     const productId = parseInt(req.params.id, 10);
@@ -216,11 +259,13 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 13. GET PRODUCT BY SMART IDENTIFIER (ID or SEO Slug) (Public)
+// ==========================================
+// 13. SMART IDENTIFIER (ID or Slug) (Public)
+// ==========================================
 router.get('/:identifier', async (req, res) => {
   try {
     const { identifier } = req.params;
-    const isNumeric = /^\d+$/.test(identifier); // Strictly evaluates if the param is numbers only
+    const isNumeric = /^\d+$/.test(identifier);
 
     let query = `
       SELECT p.*, 
