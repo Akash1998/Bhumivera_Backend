@@ -26,7 +26,7 @@ const adminUserRoutes = require("./routes/adminUserRoutes");
 const wishlistRoutes = require("./routes/wishlistRoutes");
 const couponRoutes = require("./routes/couponRoutes");
 const reviewRoutes = require("./routes/reviewRoutes");
-const notificationRoutes = require("./reason/notificationRoutes"); // Fixed from notificationRoutes based on standard imports
+const notificationRoutes = require("./routes/notificationRoutes"); 
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const settingsRoutes = require("./routes/settingsRoutes");
 const shippingRoutes = require("./routes/shippingRoutes");
@@ -77,8 +77,7 @@ app.use(cors(corsOptions));
 
 // --- ROBUST CSP FOR TURNSTILE & TRUSTED TYPES ---
 app.use((req, res, next) => {
-  // We explicitly include 'goog#html', 'ymiGc5', and 'default' to resolve the policy disallowed error.
-  // We also add 'challenges.cloudflare.com' to allow Turnstile widgets to load and communicate.
+  
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self'; " +
