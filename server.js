@@ -74,20 +74,11 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
-// --- ALIGNED SECURITY HEADERS ---
+// FIX for "goog#html" and Cloudflare Turnstile Trusted Types Block
 app.use((req, res, next) => {
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com; " +
-    "frame-src 'self' https://challenges.cloudflare.com; " +
-    "connect-src 'self' https://challenges.cloudflare.com; " +
-    "style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data: https:; " +
-    "require-trusted-types-for 'script'; " +
-    "trusted-types ymiGc5 goog#html MbSbq5 default"
-  );
+  res.setHeader("Content-Security-Policy", "require-trusted-types-for 'script'; trusted-types *");
   if (req.method === "OPTIONS") return res.status(204).end();
   next();
 });
@@ -130,7 +121,7 @@ app.use("/api/warehouse", warehouseRoutes);
 
 app.get("/", (req, res) => res.json({ status: "ok", message: "Bhumivera Eco-Lab Core API running!" }));
 
-// --- DATABASE INITIALIZATION ---
+// --- DATABASE INITIALIZATION (Fixes 500 Errors) ---
 async function initDB() {
   try {
     const safeInit = async (name, initFunction) => {
@@ -150,6 +141,7 @@ async function initDB() {
     await safeInit('Contact', initContactTable);
     await safeInit('Admin', initAdminTable);
 
+    // Initialize Settings (Fixes /api/settings/public 500 error)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS settings (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -180,16 +172,16 @@ async function initDB() {
       console.log('--- ROOT ADMIN NODE ACTIVATED: adminbhumivera27@gmail.com ---');
     }
     
-    // Auto-Provision Main Access Admin
-    const [adminCheck2] = await pool.query("SELECT * FROM admin_users WHERE email='akashprasadjan@gmail.com'");
-    if (adminCheck2.length === 0) {
-      const hash2 = await bcrypt.hash('Bhumivera#*@2026', 10);
-      await pool.query(
-        "INSERT INTO admin_users (email, password_hash, role) VALUES ('akashprasadjan@gmail.com', ?, 'superadmin')",
-        [hash2]
-      );
-      console.log('--- SECONDARY ADMIN ACTIVATED: akashprasadjan@gmail.com ---');
-    }
+        // Auto-Provision Main Access Admin
+        const [adminCheck2] = await pool.query("SELECT * FROM admin_users WHERE email='akashprasadjan@gmail.com'");
+        if (adminCheck2.length === 0) {
+          const hash2 = await bcrypt.hash('Bhumivera#*@2026', 10);
+          await pool.query(
+            "INSERT INTO admin_users (email, password_hash, role) VALUES ('akashprasadjan@gmail.com', ?, 'superadmin')",
+            [hash2]
+          );
+          console.log('--- SECONDARY ADMIN ACTIVATED: akashprasadjan@gmail.com ---');
+        }
 
     // Auto-Provision Warehouse
     const [wh] = await pool.query("SELECT * FROM admin_users WHERE email='adminwarehouse2026'");
