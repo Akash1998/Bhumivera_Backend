@@ -26,7 +26,7 @@ const adminUserRoutes = require("./routes/adminUserRoutes");
 const wishlistRoutes = require("./routes/wishlistRoutes");
 const couponRoutes = require("./routes/couponRoutes");
 const reviewRoutes = require("./routes/reviewRoutes");
-const notificationRoutes = require("./routes/notificationRoutes"); 
+const notificationRoutes = require("./routes/notificationRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const settingsRoutes = require("./routes/settingsRoutes");
 const shippingRoutes = require("./routes/shippingRoutes");
@@ -75,9 +75,8 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// --- ROBUST CSP FOR TURNSTILE & TRUSTED TYPES ---
+// --- ALIGNED SECURITY HEADERS ---
 app.use((req, res, next) => {
-  
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self'; " +
