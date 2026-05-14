@@ -75,7 +75,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 });
 
 // --- LOGIN OTP DISPATCH (Fixes 404 login-request-otp) ---
-router.post("/login/request-otp", otpLimiter, async (req, res) => {
+router.post("/login-request-otp", otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email required" });
