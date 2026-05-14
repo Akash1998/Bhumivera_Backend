@@ -164,33 +164,12 @@ async function initDB() {
     // Auto-Provision Root Admin
     const [adminCheck] = await pool.query("SELECT * FROM admin_users WHERE email='adminbhumivera27@gmail.com'");
     if (adminCheck.length === 0) {
-      const hash = await bcrypt.hash('Bhumivera#*@2026', 10);
+      const hash = await bcrypt.hash('Akash#*@1998', 10);
       await pool.query(
         "INSERT INTO admin_users (email, password_hash, role) VALUES ('adminbhumivera27@gmail.com', ?, 'superadmin')",
         [hash]
       );
       console.log('--- ROOT ADMIN NODE ACTIVATED: adminbhumivera27@gmail.com ---');
-    }
-    
-        // Auto-Provision Main Access Admin
-        const [adminCheck2] = await pool.query("SELECT * FROM admin_users WHERE email='akashprasadjan@gmail.com'");
-        if (adminCheck2.length === 0) {
-          const hash2 = await bcrypt.hash('Bhumivera#*@2026', 10);
-          await pool.query(
-            "INSERT INTO admin_users (email, password_hash, role) VALUES ('akashprasadjan@gmail.com', ?, 'superadmin')",
-            [hash2]
-          );
-          console.log('--- SECONDARY ADMIN ACTIVATED: akashprasadjan@gmail.com ---');
-        }
-
-    // Auto-Provision Warehouse
-    const [wh] = await pool.query("SELECT * FROM admin_users WHERE email='adminwarehouse2026'");
-    if (wh.length === 0) {
-      const wHash = await bcrypt.hash('Bhumivera#*@2026', 10);
-      await pool.query(
-        "INSERT INTO admin_users (email, password_hash, role) VALUES ('adminwarehouse2026', ?, 'warehouse_admin')",
-        [wHash]
-      );
     }
 
   } catch (err) {
