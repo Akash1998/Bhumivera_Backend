@@ -1,28 +1,42 @@
 const https = require("https");
 const util = require("util");
 
-// --- ENVIRONMENT & DEFAULTS ---
-const MJ_PUBLIC = process.env.MAILJET_API_KEY || process.env.MJ_APIKEY_PUBLIC || process.env.MAILJET_PUBLIC;
-const MJ_PRIVATE = process.env.MAILJET_API_SECRET || process.env.MJ_APIKEY_PRIVATE || process.env.MAILJET_PRIVATE;
-const EMAIL_FROM = process.env.EMAIL_FROM || "support@bhumivera.com";
-const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Bhumivera Concierge";
+const getMailConfig = () => {
+  return {
+    public: process.env.MAILJET_API_KEY || process.env.MJ_APIKEY_PUBLIC || process.env.MAILJET_PUBLIC,
+    private: process.env.MAILJET_API_SECRET || process.env.MJ_APIKEY_PRIVATE || process.env.MAILJET_PRIVATE,
+    fromEmail: process.env.EMAIL_FROM || "support@bhumivera.com",
+    fromName: process.env.EMAIL_FROM_NAME || "Bhumivera Concierge"
+  };
+};
 
-if (!MJ_PUBLIC || !MJ_PRIVATE) {
-  console.warn("⚠️ MAILJET API keys not set. Email functionality will be disabled or fail.");
-}
+let cachedMailjetClient = null;
+let isClientInitialized = false;
 
-let mailjetClient = null;
-try {
-  const mj = require("node-mailjet");
-  if (typeof mj === "function") {
-    mailjetClient = mj({ apiKey: MJ_PUBLIC, apiSecret: MJ_PRIVATE });
-  } else if (mj && typeof mj.apiConnect === "function") {
-    mailjetClient = mj.apiConnect(MJ_PUBLIC, MJ_PRIVATE);
-  } else if (mj && typeof mj.connect === "function") {
-    mailjetClient = mj.connect(MJ_PUBLIC, MJ_PRIVATE);
+function getMailjetClient() {
+  if (isClientInitialized) return cachedMailjetClient;
+
+  const config = getMailConfig();
+  if (!config.public || !config.private) {
+    console.warn("⚠️ MAILJET API keys not set in environment variables. Email functionality will fail.");
+    isClientInitialized = true;
+    return null;
   }
-} catch (e) {
-  console.warn("⚠️ Mailjet SDK not found; falling back to direct HTTPS calls.");
+
+  try {
+    const mj = require("node-mailjet");
+    if (typeof mj === "function") {
+      cachedMailjetClient = mj({ apiKey: config.public, apiSecret: config.private });
+    } else if (mj && typeof mj.apiConnect === "function") {
+      cachedMailjetClient = mj.apiConnect(config.public, config.private);
+    } else if (mj && typeof mj.connect === "function") {
+      cachedMailjetClient = mj.connect(config.public, config.private);
+    }
+  } catch (e) {
+    console.warn("⚠️ Mailjet SDK not found; falling back to direct HTTPS calls.");
+  }
+  isClientInitialized = true;
+  return cachedMailjetClient;
 }
 
 // --- UTILS ---
@@ -60,7 +74,12 @@ function normalizeAttachments(attachments) {
 
 function httpSendMail(payload) {
   return new Promise((resolve, reject) => {
-    const auth = Buffer.from(`${MJ_PUBLIC}:${MJ_PRIVATE}`).toString("base64");
+    const config = getMailConfig();
+    if (!config.public || !config.private) {
+      return reject(new Error("FATAL: Mailjet API keys missing in environment variables."));
+    }
+
+    const auth = Buffer.from(`${config.public}:${config.private}`).toString("base64");
     const data = JSON.stringify(payload);
     const options = {
       hostname: "api.mailjet.com",
@@ -69,7 +88,7 @@ function httpSendMail(payload) {
       headers: {
         Authorization: `Basic ${auth}`,
         "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(data),
+        "Content-Length": Buffer.byteLength(data, "utf8"),
       },
     };
     const req = https.request(options, (res) => {
@@ -94,14 +113,16 @@ function httpSendMail(payload) {
 async function sendMail({ to, cc, bcc, subject, html, text, from, attachments }) {
   if (!to) throw new Error("sendMail: 'to' is required");
 
+  const config = getMailConfig();
+
   const From = (() => {
-    if (!from) return { Email: EMAIL_FROM, Name: EMAIL_FROM_NAME };
+    if (!from) return { Email: config.fromEmail, Name: config.fromName };
     if (typeof from === "string") {
       const m = from.match(/^(.*)<(.+@.+)>$/);
       if (m) return { Email: m[2].trim(), Name: m[1].trim() };
       return { Email: from };
     }
-    return { Email: from.Email, Name: from.Name || EMAIL_FROM_NAME };
+    return { Email: from.Email, Name: from.Name || config.fromName };
   })();
 
   const message = {
@@ -116,10 +137,11 @@ async function sendMail({ to, cc, bcc, subject, html, text, from, attachments })
   };
 
   const body = { Messages: [message] };
+  const client = getMailjetClient();
 
-  if (mailjetClient && typeof mailjetClient.post === "function") {
+  if (client && typeof client.post === "function") {
     try {
-      const res = await mailjetClient.post("send", { version: "v3.1" }).request(body);
+      const res = await client.post("send", { version: "v3.1" }).request(body);
       return res.body;
     } catch (err) {
       console.error("Mailjet SDK Error:", util.inspect(err.response?.body || err.message, { depth: 2 }));
@@ -251,8 +273,9 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
 };
 
 async function verifyTransport() {
-  if (!MJ_PUBLIC || !MJ_PRIVATE) throw new Error("Mailjet API keys not set");
-  const auth = Buffer.from(`${MJ_PUBLIC}:${MJ_PRIVATE}`).toString("base64");
+  const config = getMailConfig();
+  if (!config.public || !config.private) throw new Error("Mailjet API keys not set");
+  const auth = Buffer.from(`${config.public}:${config.private}`).toString("base64");
   return new Promise((resolve, reject) => {
     const opts = {
       hostname: "api.mailjet.com",
