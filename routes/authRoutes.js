@@ -114,10 +114,11 @@ router.post("/login/request-otp", otpLimiter, async (req, res) => {
       });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
-      return res.status(500).json({ 
-        message: "Fatal dispatch error. Check Railway Mailjet keys.", 
-        error: mailErr.message,
-        dev_note: "OTP generated in DB. Check Railway logs to retrieve it." 
+      // RETURNING 200 OK SO FRONTEND UI ADVANCES TO OTP INPUT
+      return res.status(200).json({ 
+        success: true,
+        message: "Email dispatch failed. OTP logged to console.", 
+        warning: "MAILJET_KEYS_MISSING"
       });
     }
 
@@ -162,7 +163,8 @@ router.post("/forgot-password", otpLimiter, async (req, res) => {
       });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
-      return res.status(500).json({ message: "Recovery email failed. Check Railway Mailjet keys.", error: mailErr.message });
+      // RETURNING 200 OK SO FRONTEND UI ADVANCES
+      return res.status(200).json({ message: "Recovery email failed. Check console for OTP.", warning: true });
     }
 
     res.json({ message: "Recovery token dispatched." });
@@ -233,7 +235,8 @@ router.post("/register", registerLimiter, async (req, res) => {
       await sendMail({ to: email, subject: 'Verify your account', html: `<div style="font-family: sans-serif; padding: 20px;"><h2>Welcome!</h2><p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p><p>Expires in 10 minutes.</p></div>` });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
-      return res.status(500).json({ message: "Registration email failed. Check Railway Mailjet keys.", error: mailErr.message });
+      // RETURNING 200 OK SO FRONTEND UI ADVANCES
+      return res.status(200).json({ success: true, message: "Email failed. OTP logged to console.", warning: true });
     }
     
     res.json({ success: true, message: "OTP sent to email." });
@@ -277,20 +280,18 @@ router.post('/admin/request-otp', otpLimiter, async (req, res) => {
     
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // SAFE MYSQL NATIVE DATE INSERTION TO PREVENT DRIVER CRASHES
     await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [otp, email]);
     
-    // EMERGENCY FAILSAFE: Logs OTP directly to Railway terminal in case Mailjet is down
     console.log(`\n🚨 [EMERGENCY OVERRIDE] ADMIN OTP FOR ${email}: ${otp}\n`);
 
     try {
       await sendMail({ to: email, subject: 'Admin Login OTP', html: `<p>Your admin login OTP is: <strong>${otp}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>` });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
-      return res.status(500).json({ 
-        message: 'OTP generated in Database, but Email Dispatch Failed. Check Railway MAILJET keys.', 
-        error: mailErr.message,
-        dev_note: 'OTP has been logged to the Railway console for emergency access.'
+      // THE FIX: Return 200 so the UI advances to the next step!
+      return res.status(200).json({ 
+        message: 'Email dispatch failed, but OTP logged to backend console.', 
+        warning: true
       });
     }
 
@@ -332,7 +333,6 @@ router.post('/warehouse/request-otp', otpLimiter, async (req, res) => {
     
     const o = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // SAFE MYSQL NATIVE DATE INSERTION
     if (iu) {
       await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [o, email])
     } else {
@@ -345,7 +345,8 @@ router.post('/warehouse/request-otp', otpLimiter, async (req, res) => {
       await sendMail({ to: email, subject: 'Warehouse Login OTP', html: `<p>Your warehouse login OTP is: <strong>${o}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>` });
     } catch(mailErr) {
       console.error("Mailjet SDK Error:", mailErr.message);
-      return res.status(500).json({ message: 'Mailjet connection failed', error: mailErr.message, dev_note: 'OTP is in Railway Logs' });
+      // RETURNING 200 OK SO FRONTEND UI ADVANCES
+      return res.status(200).json({ message: 'Mailjet failed, OTP in backend logs', warning: true });
     }
 
     res.json({ message: 'OTP sent to your email.' });
