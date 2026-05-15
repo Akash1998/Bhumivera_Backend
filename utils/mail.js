@@ -1,161 +1,151 @@
 const https = require("https");
-const util = require("util");
 
 const getMailConfig = () => {
-  // Helper to safely get and trim environment variables
   const getEnv = (key) => (process.env[key] ? String(process.env[key]).trim() : null);
-
   return {
-    public: getEnv("MAILJET_API_KEY") || getEnv("MJ_APIKEY_PUBLIC") || getEnv("MAILJET_PUBLIC"),
-    private: getEnv("MAILJET_API_SECRET") || getEnv("MJ_APIKEY_PRIVATE") || getEnv("MAILJET_PRIVATE"),
+    apiKey: getEnv("MAILERLITE_API_KEY") || getEnv("MAILERSEND_API_KEY"),
     fromEmail: getEnv("EMAIL_FROM") || "support@bhumivera.com",
     fromName: getEnv("EMAIL_FROM_NAME") || "Bhumivera Concierge"
   };
 };
 
-let cachedMailjetClient = null;
-let isClientInitialized = false;
-
-function getMailjetClient() {
-  if (isClientInitialized) return cachedMailjetClient;
-
-  const config = getMailConfig();
-  if (!config.public || !config.private) {
-    console.warn("⚠️ MAILJET API keys not set in environment variables. Email functionality will fail.");
-    isClientInitialized = true;
-    return null;
-  }
-
-  try {
-    const mj = require("node-mailjet");
-    // Handle different Mailjet SDK versions (v3 vs v6)
-    if (typeof mj === "function") {
-      cachedMailjetClient = mj({ apiKey: config.public, apiSecret: config.private });
-    } else if (mj && typeof mj.apiConnect === "function") {
-      cachedMailjetClient = mj.apiConnect(config.public, config.private);
-    } else if (mj && typeof mj.connect === "function") {
-      cachedMailjetClient = mj.connect(config.public, config.private);
-    }
-  } catch (e) {
-    console.warn("⚠️ Mailjet SDK not found; falling back to direct HTTPS calls.");
-  }
-  isClientInitialized = true;
-  return cachedMailjetClient;
-}
-
-// --- UTILS ---
-function normalizeRecipient(recipient) {
+function normalizeRecipients(recipient) {
   if (!recipient) return [];
-  if (Array.isArray(recipient)) return recipient.map(normalizeRecipient).flat();
+  if (Array.isArray(recipient)) {
+    return recipient.map(normalizeRecipients).flat();
+  }
+  
   if (typeof recipient === "string") {
     const m = recipient.match(/^(.*)<(.+@.+)>$/);
-    if (m) return [{ Email: m[2].trim(), Name: m[1].trim() }];
-    return [{ Email: recipient.trim() }];
+    if (m) {
+      return [{ email: m[2].trim(), name: m[1].trim() }];
+    }
+    return [{ email: recipient.trim() }];
   }
-  if (recipient && recipient.Email) return [recipient];
+  
+  if (recipient && (recipient.email || recipient.Email)) {
+    return [{
+      email: (recipient.email || recipient.Email).trim(),
+      name: recipient.name || recipient.Name || undefined
+    }];
+  }
+  
   return [];
 }
 
 function normalizeAttachments(attachments) {
-  if (!attachments) return undefined;
+  if (!attachments || !Array.isArray(attachments)) return undefined;
   return attachments.map((a) => {
     let base64;
-    if (Buffer.isBuffer(a.content)) base64 = a.content.toString("base64");
-    else if (typeof a.content === "string") {
+    if (Buffer.isBuffer(a.content)) {
+      base64 = a.content.toString("base64");
+    } else if (typeof a.content === "string") {
       const cleaned = a.content.replace(/\s/g, "");
       const looksBase64 = /^[A-Za-z0-9+/=]+$/.test(cleaned);
       base64 = looksBase64 ? cleaned : Buffer.from(a.content, "utf8").toString("base64");
     } else {
-      throw new Error("Attachment content must be Buffer or string");
+      throw new Error("Attachment content must be a Buffer or base64/utf8 string");
     }
     return {
-      ContentType: a.contentType || a.type || "application/octet-stream",
-      Filename: a.filename,
-      Base64Content: base64,
+      content: base64,
+      filename: a.filename || a.Filename || "attachment.dat"
     };
   });
 }
 
+/**
+ * Native Transactional HTTPS Client for MailerSend API
+ */
 function httpSendMail(payload) {
   return new Promise((resolve, reject) => {
     const config = getMailConfig();
-    if (!config.public || !config.private) {
-      return reject(new Error("FATAL: Mailjet API keys missing in environment variables."));
+    if (!config.apiKey) {
+      return reject(new Error("FATAL: MailerSend/MailerLite API key missing in environment variables."));
     }
 
-    const auth = Buffer.from(`${config.public}:${config.private}`).toString("base64");
     const data = JSON.stringify(payload);
     const options = {
-      hostname: "api.mailjet.com",
-      path: "/v3.1/send",
+      hostname: "api.mailersend.com",
+      path: "/v1/email",
       method: "POST",
       headers: {
-        Authorization: `Basic ${auth}`,
+        "Authorization": `Bearer ${config.apiKey}`,
         "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
         "Content-Length": Buffer.byteLength(data, "utf8"),
       },
     };
+
     const req = https.request(options, (res) => {
       let body = "";
       res.on("data", (chunk) => (body += chunk.toString()));
       res.on("end", () => {
         try {
-          const parsed = JSON.parse(body);
-          if (res.statusCode >= 200 && res.statusCode < 300) resolve(parsed);
-          else reject(new Error(`Mailjet HTTP ${res.statusCode}: ${body}`));
+          const parsed = JSON.parse(body || "{}");
+          // MailerSend passes a 202 Accepted for successful queuing
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(parsed);
+          } else {
+            reject(new Error(`MailerSend HTTP ${res.statusCode}: ${body}`));
+          }
         } catch (e) {
           reject(new Error(`Response parse error. Raw: ${body}`));
         }
       });
     });
+
     req.on("error", (err) => reject(err));
     req.write(data);
     req.end();
   });
 }
 
+/**
+ * Primary Core Email Dispatcher
+ */
 async function sendMail({ to, cc, bcc, subject, html, text, from, attachments }) {
   if (!to) throw new Error("sendMail: 'to' is required");
-
   const config = getMailConfig();
 
-  const From = (() => {
-    if (!from) return { Email: config.fromEmail, Name: config.fromName };
+  // Normalize Sender
+  const fromNormalized = (() => {
+    if (!from) return { email: config.fromEmail, name: config.fromName };
     if (typeof from === "string") {
       const m = from.match(/^(.*)<(.+@.+)>$/);
-      if (m) return { Email: m[2].trim(), Name: m[1].trim() };
-      return { Email: from };
+      if (m) return { email: m[2].trim(), name: m[1].trim() };
+      return { email: from.trim() };
     }
-    return { Email: from.Email, Name: from.Name || config.fromName };
+    return { 
+      email: from.email || from.Email || config.fromEmail, 
+      name: from.name || from.Name || config.fromName 
+    };
   })();
 
-  const message = {
-    From,
-    To: normalizeRecipient(to),
-    Subject: subject || "(no subject)",
-    Cc: cc ? normalizeRecipient(cc) : undefined,
-    Bcc: bcc ? normalizeRecipient(bcc) : undefined,
-    TextPart: text,
-    HTMLPart: html,
-    Attachments: attachments ? normalizeAttachments(attachments) : undefined,
+  // Build MailerSend Payload Schema
+  const payload = {
+    from: fromNormalized,
+    to: normalizeRecipients(to),
+    subject: subject || "(no subject)",
+    text: text || "",
+    html: html || ""
   };
 
-  const body = { Messages: [message] };
-  const client = getMailjetClient();
+  // Append context optionals if they exist
+  const normalizedCc = cc ? normalizeRecipients(cc) : [];
+  if (normalizedCc.length > 0) payload.cc = normalizedCc;
 
-  if (client && typeof client.post === "function") {
-    try {
-      const res = await client.post("send", { version: "v3.1" }).request(body);
-      return res.body;
-    } catch (err) {
-      console.error("Mailjet SDK Error:", util.inspect(err.response?.body || err.message, { depth: 2 }));
-      throw err;
-    }
-  }
+  const normalizedBcc = bcc ? normalizeRecipients(bcc) : [];
+  if (normalizedBcc.length > 0) payload.bcc = normalizedBcc;
 
-  return httpSendMail(body);
+  const normalizedAttachments = attachments ? normalizeAttachments(attachments) : undefined;
+  if (normalizedAttachments) payload.attachments = normalizedAttachments;
+
+  return httpSendMail(payload);
 }
 
+/**
+ * Luxury Cyber-Lab Brand Notification Builder
+ */
 const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null) => {
   const formattedId = String(orderId).padStart(10, '0');
   
@@ -221,13 +211,13 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
       <div style="max-width: 600px; margin: 0 auto; background-color: #0a0a0a; border: 1px solid rgba(255, 255, 255, 0.05); overflow: hidden;">
         <div style="padding: 40px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
           <div style="width: 40px; height: 40px; background-color: #10b981; margin: 0 auto 20px auto;"></div>
-          <h1 style="color: #ffffff; margin: 0; font-size: 14px; letter-spacing: 6px; font-weight: 300; text-transform: uppercase;">Bhumivera Eco-Labs</h1>
+          <h1 style="width: 100%; color: #ffffff; margin: 0; font-size: 14px; letter-spacing: 6px; font-weight: 300; text-transform: uppercase;">Bhumivera Eco-Labs</h1>
         </div>
         <div style="padding: 40px 40px 10px 40px; text-align: center;">
           <p style="color: #a3a3a3; font-style: italic; font-size: 18px; line-height: 1.6; font-weight: 300;">${config.quote}</p>
         </div>
         <div style="padding: 30px 40px;">
-          <p style="color: #10b981; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; font-family: monospace; margin-bottom: 10px;">Ledger ID: #${formattedId}</p>
+          <p style="color: ${config.color}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; font-family: monospace; margin-bottom: 10px;">Ledger ID: #${formattedId}</p>
           <h2 style="color: #ffffff; margin-top: 0; font-size: 24px; font-weight: 300; letter-spacing: -0.5px;">${config.title}</h2>
           <p style="color: #e5e5e5; font-size: 15px; margin-top: 30px;">Salutations, ${name}.</p>
           <p style="color: #a3a3a3; font-size: 14px; line-height: 1.8;">${config.msg}</p>
@@ -252,19 +242,20 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
     });
   } catch (error) {
     console.error("Failed to send high-end status email:", error);
+    throw error;
   }
 };
 
 async function verifyTransport() {
   const config = getMailConfig();
-  if (!config.public || !config.private) throw new Error("Mailjet API keys not set");
-  const auth = Buffer.from(`${config.public}:${config.private}`).toString("base64");
+  if (!config.apiKey) throw new Error("MailerSend API key not set");
+  
   return new Promise((resolve, reject) => {
     const opts = {
-      hostname: "api.mailjet.com",
-      path: "/v3/REST/contact",
+      hostname: "api.mailersend.com",
+      path: "/v1/activity", // Quick status check query
       method: "GET",
-      headers: { Authorization: `Basic ${auth}` },
+      headers: { Authorization: `Bearer ${config.apiKey}` },
     };
     const req = https.request(opts, (res) => {
       if (res.statusCode >= 200 && res.statusCode < 300) resolve({ ok: true });
