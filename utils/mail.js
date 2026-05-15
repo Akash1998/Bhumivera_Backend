@@ -1,6 +1,7 @@
 const https = require("https");
 
 const getMailConfig = () => {
+  // Safe helper to trim environment variables to prevent 401/403 errors
   const getEnv = (key) => (process.env[key] ? String(process.env[key]).trim() : null);
   
   return {
@@ -10,6 +11,10 @@ const getMailConfig = () => {
   };
 };
 
+/**
+ * MailerSend Transactional HTTP Implementation
+ * Replaces the old Mailjet logic to resolve 401 Unauthenticated errors.
+ */
 function httpSendMail(payload) {
   return new Promise((resolve, reject) => {
     const config = getMailConfig();
@@ -55,6 +60,9 @@ function httpSendMail(payload) {
   });
 }
 
+/**
+ * Primary dispatch function for OTPs and notifications.
+ */
 async function sendMail({ to, subject, html, text, from }) {
   if (!to) throw new Error("sendMail: 'to' recipient is required");
   
