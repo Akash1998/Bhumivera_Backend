@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const bcrypt = require('bcrypt');
 
 const createUsersTable = async () => {
+  // Step 1: Ensure the table exists with the foundational structure
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -13,34 +14,41 @@ const createUsersTable = async () => {
       wallet_balance DECIMAL(10,2) DEFAULT 0.00,
       two_factor_secret VARCHAR(255),
       two_factor_enabled TINYINT(1) DEFAULT 0,
-      security_question VARCHAR(255) DEFAULT 'What is your mother's maiden name?',
-      security_answer_hash VARCHAR(255),
-      reset_otp VARCHAR(10),
-      reset_otp_expires BIGINT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
 
+  // Step 2: Robust Schema Synchronization
+  // We check for each column individually to handle existing tables from any previous version.
   const syncColumns = [
-    { name: 'security_question', type: `VARCHAR(255) DEFAULT 'What is your mother''s maiden name?' AFTER two_factor_enabled` },
-    { name: 'security_answer_hash', type: `VARCHAR(255) AFTER security_question` },
-    { name: 'reset_otp', type: `VARCHAR(10) AFTER security_answer_hash` },
-    { name: 'reset_otp_expires', type: `BIGINT AFTER reset_otp` }
+    { 
+        name: 'security_question', 
+        type: `VARCHAR(255) DEFAULT 'What is your mother''s maiden name?' AFTER two_factor_enabled` 
+    },
+    { 
+        name: 'security_answer_hash', 
+        type: `VARCHAR(255) AFTER security_question` 
+    },
+    { 
+        name: 'reset_otp', 
+        type: `VARCHAR(10) AFTER security_answer_hash` 
+    },
+    { 
+        name: 'reset_otp_expires', 
+        type: `BIGINT AFTER reset_otp` 
+    }
   ];
 
   for (const col of syncColumns) {
     try {
-      const [rows] = await pool.query(
-        `SHOW COLUMNS FROM users LIKE ?`,
-        [col.name]
-      );
-      if (rows.length === 0) {
-        console.log(`[DB_SYNC] Adding missing column: ${col.name}`);
+      const [columns] = await pool.query(`SHOW COLUMNS FROM users LIKE ?`, [col.name]);
+      if (columns.length === 0) {
+        console.log(`[DB_SYNC] Adding missing column to users: ${col.name}`);
         await pool.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
       }
     } catch (err) {
-      console.warn(`[DB_SYNC] Warning syncing column ${col.name}:`, err.message);
+      console.error(`[DB_SYNC] Error syncing column ${col.name}:`, err.message);
     }
   }
 };
@@ -58,13 +66,11 @@ const initAuthTables = async () => {
   `);
 };
 
-
 const createUser = async ({ name, email, password, securityAnswer }) => {
- 
   const isHashed = password.startsWith('$2b$');
   const hash = isHashed ? password : await bcrypt.hash(password, 10);
   
-  // FIX: Safely handle null/undefined overriding default parameters
+  // Safely handle security answer hashing
   const safeSecurityAnswer = securityAnswer ? String(securityAnswer).toLowerCase() : 'default-answer';
   const secHash = await bcrypt.hash(safeSecurityAnswer, 10);
   
@@ -99,7 +105,6 @@ const updateUser = async (id, { name }) => {
   await pool.query('UPDATE users SET name=? WHERE id=?', [name, id]);
 };
 
-
 const createPendingUser = async ({ name, email, password, otp, expiry }) => {
   const hash = await bcrypt.hash(password, 10);
   await pool.query(
@@ -119,10 +124,11 @@ const deletePendingUser = async (email) => {
   await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
 };
 
-
 const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
-  const [user] = await conn.query('SELECT wallet_balance FROM users WHERE id = ? FOR UPDATE', [userId]);
-  const currentBalance = parseFloat(user[0].wallet_balance);
+  const [userRows] = await conn.query('SELECT wallet_balance FROM users WHERE id = ? FOR UPDATE', [userId]);
+  if (userRows.length === 0) throw new Error("User not found for wallet adjustment.");
+  
+  const currentBalance = parseFloat(userRows[0].wallet_balance);
   const newBalance = type === 'credit' ? currentBalance + amount : currentBalance - amount;
   
   if (newBalance < 0) throw new Error("Insufficient wallet balance.");
@@ -134,7 +140,6 @@ const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
   );
   return newBalance;
 };
-
 
 const saveResetOtp = async (userId, otp, expiry) => {
   await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=? WHERE id=?', [otp, expiry, userId]);
