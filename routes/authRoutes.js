@@ -250,19 +250,61 @@ router.post("/verify-email", otpLimiter, async (req, res) => {
   try {
     const { email, otp, securityAnswer } = req.body;
     if (!email || !otp) return res.status(400).json({ message: "Email and OTP required" });
+
+    // Step 1: Check Pending Registrations
     const [rows] = await pool.query('SELECT * FROM pending_registrations WHERE email = ?', [email]), p = rows[0];
     if (!p) return res.status(404).json({ message: "Registration session expired. Please sign up again." });
+    
+    // Step 2: Validate OTP
     if (String(p.otp) !== String(otp)) return res.status(400).json({ message: "Invalid verification code." });
     if (new Date() > new Date(p.otp_expiry)) {
       await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
       return res.status(400).json({ message: "Code expired. Please request a new one." });
     }
-    const id = await createUser({ name: p.name, email: p.email, password: p.password, securityAnswer: securityAnswer || null });
+
+    // Step 3: Check if user already exists (Safety)
+    const existing = await getUserByEmail(email);
+    if (existing) {
+        await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
+        return res.status(409).json({ message: "Account already active. Please login." });
+    }
+
+    // Step 4: Create Actual User Account
+    const id = await createUser({ 
+        name: p.name, 
+        email: p.email, 
+        password: p.password, 
+        securityAnswer: securityAnswer || null 
+    });
+
+    // Step 5: Clean up pending record
     await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
-    const u = await getUserById(id), token = jwt.sign({ id: u.id, email: u.email, role: u.role }, process.env.JWT_SECRET, { expiresIn: "7d" });
-    res.status(201).json({ success: true, token, user: { id: u.id, name: u.name, email: u.email, role: u.role } });
+
+    // Step 6: Generate Session Token
+    const u = await getUserById(id);
+    if (!u) throw new Error("Database failed to retrieve the newly created user record.");
+    
+    if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET is missing on the server.");
+
+    const token = jwt.sign(
+        { id: u.id, email: u.email, role: u.role }, 
+        process.env.JWT_SECRET, 
+        { expiresIn: "7d" }
+    );
+
+    res.status(201).json({ 
+        success: true, 
+        token, 
+        user: { id: u.id, name: u.name, email: u.email, role: u.role } 
+    });
+
   } catch (err) {
-    res.status(500).json({ message: "Internal server error during verification.", error: err.message });
+    console.error("FATAL VERIFICATION ERROR:", err);
+    res.status(500).json({ 
+        message: "Internal server error during verification.", 
+        error: err.message,
+        hint: "Verify users table exists and JWT_SECRET is set in Railway."
+    });
   }
 });
 
