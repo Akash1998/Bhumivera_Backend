@@ -47,7 +47,6 @@ const getCartByUser = async (userId) => {
     );
 
     return rows.map((r) => {
-      // FIX: Ensure pure 0 value overrides original price correctly
       const activePrice = (r.discount_price !== null && r.discount_price !== "") ? r.discount_price : r.price;
       return {
         ...r,
@@ -87,7 +86,6 @@ const upsertCartItem = async (userId, productId, quantity) => {
       };
     }
 
-    // FIX: Railway/MySQL 8 deprecation bypass using standard parameter binding
     await pool.query(
       `INSERT INTO cart_items (user_id, product_id, quantity) 
        VALUES (?, ?, ?) 
@@ -97,6 +95,11 @@ const upsertCartItem = async (userId, productId, quantity) => {
 
     return getCartByUser(userId);
   } catch (err) {
+    // FIXED: Catch orphaned user session error (Foreign Key Constraint 1452)
+    if (err.errno === 1452) {
+      console.error("[Cart DB] Orphaned session detected for user_id:", userId);
+      throw { status: 401, message: "Session expired or user not found. Please log out and log back in." };
+    }
     console.error("upsertCartItem Error:", err);
     throw err;
   }
