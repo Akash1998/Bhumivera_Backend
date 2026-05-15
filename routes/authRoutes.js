@@ -50,7 +50,7 @@ router.post("/admin/login", loginLimiter, async (req, res) => {
   }
 });
 
-// --- CORE UNIVERSAL LOGIN (Hardened against undefined hashes) ---
+// --- CORE UNIVERSAL LOGIN ---
 router.post("/login", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -83,7 +83,7 @@ router.post("/login", loginLimiter, async (req, res) => {
   }
 });
 
-// --- LOGIN OTP DISPATCH (Hardened against 500s) ---
+// --- LOGIN OTP DISPATCH ---
 router.post("/login-request-otp", otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
@@ -104,8 +104,8 @@ router.post("/login-request-otp", otpLimiter, async (req, res) => {
       await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [otp, email]);
     } else {
       if (!target.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
-      const expiry = new Date(Date.now() + 10 * 60 * 1000);
-      await saveResetOtp(target.id, otp, expiry.getTime());
+      // The expiry argument is dropped here because userModel handles native SQL NOW() logic automatically.
+      await saveResetOtp(target.id, otp);
     }
 
     console.log(`\n🚨 [EMERGENCY OVERRIDE] LOGIN OTP FOR ${email}: ${otp}\n`);
@@ -134,7 +134,6 @@ router.post("/login-request-otp", otpLimiter, async (req, res) => {
     res.json({ success: true, message: "OTP dispatched to registered email." });
   } catch (err) {
     console.error("Login OTP Error:", err);
-    // Explicitly sending the stack trace so we are never blind to the cause again.
     res.status(500).json({ message: "Fatal dispatch error.", error: err.message, stack: err.stack });
   }
 });
@@ -164,9 +163,7 @@ router.post("/forgot-password", otpLimiter, async (req, res) => {
     if (!u.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const exp = Date.now() + 10 * 60 * 1000;
-    
-    await saveResetOtp(u.id, otp, exp);
+    await saveResetOtp(u.id, otp);
 
     console.log(`\n🚨 [EMERGENCY OVERRIDE] RECOVERY OTP FOR ${email}: ${otp}\n`);
 
@@ -194,7 +191,10 @@ router.post("/verify-otp", otpLimiter, async (req, res) => {
     const u = await getUserByEmail(email);
     if (!u) return res.status(404).json({ message: "User not found." });
     if (u.reset_otp !== otp) return res.status(400).json({ message: "Invalid Token." });
-    if (Date.now() > u.reset_otp_expires) return res.status(400).json({ message: "Token Expired." });
+    
+    // FIXED: Convert DATETIME column cleanly to a JS Date before comparison
+    if (new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: "Token Expired." });
+    
     res.json({ success: true, message: "Token verified. Awaiting new key." });
   } catch (err) {
     res.status(500).json({ message: "Server Error", error: err.message });
@@ -208,7 +208,8 @@ router.post("/reset-password", otpLimiter, async (req, res) => {
     if (!u) return res.status(404).json({ message: "User not found." });
     if (!securityBypass) {
       if (u.reset_otp !== otp) return res.status(400).json({ message: "Invalid Token." });
-      if (Date.now() > u.reset_otp_expires) return res.status(400).json({ message: "Token Expired." });
+      // FIXED: Convert DATETIME column cleanly to a JS Date before comparison
+      if (new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: "Token Expired." });
     }
     const hash = await bcrypt.hash(newPassword, 10);
     await updateUserPassword(u.id, hash);
