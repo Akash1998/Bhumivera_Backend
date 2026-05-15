@@ -1,68 +1,76 @@
-const nodemailer = require("nodemailer");
+const https = require("https");
 
 const getMailConfig = () => {
   const getEnv = (key) => (process.env[key] ? String(process.env[key]).trim() : null);
   
   return {
-    smtpHost: getEnv("SMTP_HOST"), 
-    smtpPort: parseInt(getEnv("SMTP_PORT") || "2525", 10), // Default to 2525 bypass
-    smtpUser: getEnv("SMTP_USER"),
-    smtpPass: getEnv("SMTP_PASS"),
+    domain: getEnv("MAILRELAY_DOMAIN") || "bhumiveraconcierge.ipzmarketing.com",
+    apiKey: getEnv("MAILRELAY_API_KEY"),
     fromEmail: getEnv("EMAIL_FROM") || "support@bhumivera.com",
     fromName: getEnv("EMAIL_FROM_NAME") || "Bhumivera Concierge"
   };
 };
 
 /**
- * Primary dispatch function for OTPs and notifications using Mailrelay (via Nodemailer).
+ * Primary dispatch function utilizing Mailrelay's REST API (Port 443)
+ * This guarantees delivery by completely bypassing Railway's strict SMTP firewall.
  */
-async function sendMail({ to, subject, html, text, from }) {
-  if (!to) throw new Error("sendMail: 'to' recipient is required");
-  
-  const config = getMailConfig();
+function sendMail({ to, subject, html, text, from }) {
+  return new Promise((resolve, reject) => {
+    const config = getMailConfig();
 
-  if (!config.smtpHost || !config.smtpUser || !config.smtpPass) {
-    throw new Error("FATAL: SMTP credentials missing in Railway variables. Please configure SMTP_HOST, SMTP_USER, and SMTP_PASS.");
-  }
+    if (!config.apiKey || !config.domain) {
+      return reject(new Error("FATAL: MAILRELAY_API_KEY or MAILRELAY_DOMAIN missing in Railway variables."));
+    }
 
-  const recipients = Array.isArray(to) 
-    ? to.map(email => typeof email === 'string' ? email.trim() : (email.Email || email.email)) 
-    : [to.trim()];
+    // Format recipients for Mailrelay v3 API
+    const recipients = Array.isArray(to) 
+      ? to.map(email => ({ email: typeof email === 'string' ? email.trim() : (email.Email || email.email) })) 
+      : [{ email: to.trim() }];
 
-  // Cloud-Hardened Transporter Configuration
-  const transporter = nodemailer.createTransport({
-    host: config.smtpHost,
-    port: config.smtpPort,
-    secure: config.smtpPort === 465, // secure must be exactly true for 465, false for 587/2525
-    auth: {
-      user: config.smtpUser,
-      pass: config.smtpPass,
-    },
-    // CRITICAL: Bypasses Railway's strict internal networking drops and forced IPv6 routing
-    tls: {
-      rejectUnauthorized: false
-    },
-    connectionTimeout: 15000, // Fail fast after 15 seconds instead of infinitely spinning
-    greetingTimeout: 15000,
-    socketTimeout: 15000
+    const payload = {
+      from: {
+        email: from?.email || config.fromEmail,
+        name: from?.name || config.fromName
+      },
+      to: recipients,
+      subject: subject || "(no subject)"
+    };
+
+    // Mailrelay API uses html_part and text_part instead of standard html/text
+    if (html && String(html).trim().length > 0) payload.html_part = html;
+    if (text && String(text).trim().length > 0) payload.text_part = text;
+
+    const data = JSON.stringify(payload);
+
+    const options = {
+      hostname: config.domain,
+      path: "/api/v1/send_emails",
+      method: "POST",
+      headers: {
+        "x-auth-token": config.apiKey,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(data, "utf8"),
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let body = "";
+      res.on("data", (chunk) => (body += chunk.toString()));
+      res.on("end", () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ success: true, message: "Mailrelay API Delivery Successful" });
+        } else {
+          reject(new Error(`Mailrelay REST API Error [${res.statusCode}]: ${body}`));
+        }
+      });
+    });
+
+    // If an error triggers here, it is usually a malformed URL, not a firewall block
+    req.on("error", (err) => reject(new Error(`HTTPS Connection Error: ${err.message}`)));
+    req.write(data);
+    req.end();
   });
-
-  const mailOptions = {
-    from: `"${from?.name || config.fromName}" <${from?.email || config.fromEmail}>`,
-    to: recipients.join(", "),
-    subject: subject || "(no subject)",
-  };
-
-  if (text && String(text).trim().length > 0) mailOptions.text = text;
-  if (html && String(html).trim().length > 0) mailOptions.html = html;
-
-  try {
-    const info = await transporter.sendMail(mailOptions);
-    return info;
-  } catch (error) {
-    console.error(`Mailrelay Delivery failed: ${error.message}`);
-    throw error; 
-  }
 }
 
 const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null) => {
@@ -109,12 +117,6 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
         <div style="background-color: #f8fafc; padding: 30px 40px; border-top: 1px solid #e2e8f0;">
           <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px;">Need Assistance?</h3>
           <p style="margin: 0 0 25px 0; font-size: 14px; color: #64748b; line-height: 1.6;">Our customer concierge team is available to assist you with your order. Contact us anytime at <a href="mailto:support@bhumivera.com" style="color: #10b981; text-decoration: none; font-weight: 600;">support@bhumivera.com</a>.</p>
-          <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 16px; margin-bottom: 25px; border-radius: 0 4px 4px 0;">
-            <p style="margin: 0; font-size: 12px; color: #92400e; line-height: 1.6;">
-              <strong style="text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Security Advisory:</strong><br/>
-              Bhumivera will never ask for your account password, full credit card details, or sensitive OTPs via email.
-            </p>
-          </div>
         </div>
       </div>
     </body>
@@ -127,7 +129,7 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
       html: htmlTemplate
     });
   } catch (error) {
-    console.error("Mailer Error (Order Status):", error);
+    console.error("Mailrelay Delivery Error:", error);
   }
 };
 
