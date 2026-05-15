@@ -4,18 +4,26 @@ require('dotenv').config();
 const CLOUDFRONT_BASE_URL = process.env.CLOUDFRONT_BASE_URL;
 
 const createWishlistTable = async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS wishlist (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      user_id INT NOT NULL,
-      product_id INT NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE KEY unique_wishlist (user_id, product_id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-    )
-  `);
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS wishlist (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        product_id INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_wishlist (user_id, product_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+      )
+    `);
+    console.log("✅ Database Verified: 'wishlist' table is active and ready.");
+  } catch (err) {
+    console.error("❌ Wishlist Table Init Error:", err.message);
+  }
 };
+
+// Zero-Regression Auto-Migration: Auto-provision the table on boot
+createWishlistTable();
 
 const addToWishlist = async (userId, productId) => {
   await pool.query(
