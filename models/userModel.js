@@ -2,7 +2,7 @@ const pool = require('../config/db');
 const bcrypt = require('bcrypt');
 
 const createUsersTable = async () => {
-  // Step 1: Ensure the table exists with basic structure
+  // Step 1: Ensure the table exists with corrected SQL escaping ('' instead of \')
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -14,7 +14,7 @@ const createUsersTable = async () => {
       wallet_balance DECIMAL(10,2) DEFAULT 0.00,
       two_factor_secret VARCHAR(255),
       two_factor_enabled TINYINT(1) DEFAULT 0,
-      security_question VARCHAR(255) DEFAULT 'What is your mother\'s maiden name?',
+      security_question VARCHAR(255) DEFAULT 'What is your mother''s maiden name?',
       security_answer_hash VARCHAR(255),
       reset_otp VARCHAR(10),
       reset_otp_expires BIGINT,
@@ -24,9 +24,10 @@ const createUsersTable = async () => {
   `);
 
   // Step 2: Schema Sync - Add missing columns if table already existed
+  // Uses double-single quotes for SQL-compliant escaping of "mother's"
   const syncColumns = [
+    { name: 'security_question', type: 'VARCHAR(255) DEFAULT ''What is your mother''''s maiden name?'' AFTER two_factor_enabled' },
     { name: 'security_answer_hash', type: 'VARCHAR(255) AFTER security_question' },
-    { name: 'security_question', type: 'VARCHAR(255) DEFAULT "What is your mother\'s maiden name?" AFTER two_factor_enabled' },
     { name: 'reset_otp', type: 'VARCHAR(10) AFTER security_answer_hash' },
     { name: 'reset_otp_expires', type: 'BIGINT AFTER reset_otp' }
   ];
@@ -39,7 +40,8 @@ const createUsersTable = async () => {
       );
       if (rows.length === 0) {
         console.log(`[DB_SYNC] Adding missing column: ${col.name}`);
-        await pool.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
+        // Note: The 'type' string here is already prepared with proper SQL escaping
+        await pool.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type.replace(/''/g, "'")}`);
       }
     } catch (err) {
       console.warn(`[DB_SYNC] Warning syncing column ${col.name}:`, err.message);
@@ -130,7 +132,7 @@ const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
   if (newBalance < 0) throw new Error("Insufficient wallet balance.");
   
   await conn.query('UPDATE users SET wallet_balance = ? WHERE id = ?', [newBalance, userId]);
-  await pool.query(
+  await conn.query(
     'INSERT INTO wallet_transactions (user_id, amount, type, description, reference_id) VALUES (?, ?, ?, ?, ?)',
     [userId, amount, type, desc, refId]
   );
