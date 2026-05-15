@@ -11,10 +11,6 @@ const getMailConfig = () => {
   };
 };
 
-/**
- * MailerSend Transactional HTTP Implementation
- * Replaces the old Mailjet logic to resolve 401 Unauthenticated errors.
- */
 function httpSendMail(payload) {
   return new Promise((resolve, reject) => {
     const config = getMailConfig();
@@ -40,16 +36,18 @@ function httpSendMail(payload) {
       let body = "";
       res.on("data", (chunk) => (body += chunk.toString()));
       res.on("end", () => {
-        try {
-          const parsed = JSON.parse(body || "{}");
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(parsed);
-          } else {
-            // Error prefix updated from "Mailjet" to "MailerSend"
-            reject(new Error(`MailerSend Service Error [${res.statusCode}]: ${body}`));
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          // Safe JSON parsing: MailerSend may return 202 Accepted with an empty/text body
+          let parsed = {};
+          try {
+            parsed = body ? JSON.parse(body) : {};
+          } catch (e) {
+            console.warn("MailerSend Success (Non-JSON body returned):", body);
           }
-        } catch (e) {
-          reject(new Error(`Response parse error. Raw: ${body}`));
+          resolve(parsed);
+        } else {
+          // Error prefix updated from "Mailjet" to "MailerSend"
+          reject(new Error(`MailerSend Service Error [${res.statusCode}]: ${body}`));
         }
       });
     });
@@ -79,10 +77,17 @@ async function sendMail({ to, subject, html, text, from }) {
       name: from?.name || config.fromName
     },
     to: recipients,
-    subject: subject || "(no subject)",
-    text: text || "",
-    html: html || ""
+    subject: subject || "(no subject)"
   };
+
+  // FIX: MailerSend strictly rejects empty strings ("") for text/html.
+  // We only attach them to the payload if they contain actual data.
+  if (text && String(text).trim().length > 0) {
+    payload.text = text;
+  }
+  if (html && String(html).trim().length > 0) {
+    payload.html = html;
+  }
 
   return httpSendMail(payload);
 }
