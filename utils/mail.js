@@ -1,31 +1,38 @@
 const https = require("https");
+const nodemailer = require("nodemailer");
 
 const getMailConfig = () => {
   // Safe helper to trim environment variables to prevent 401/403 errors
   const getEnv = (key) => (process.env[key] ? String(process.env[key]).trim() : null);
   
+  // Extract API keys and support comma-separated multiple keys for automatic limits rotation
+  const rawKeys = getEnv("MAILERSEND_API_KEY") || getEnv("MAILERLITE_API_KEY") || "";
+  const apiKeys = rawKeys.split(",").map(k => k.trim()).filter(k => k.length > 0);
+
   return {
-    apiKey: getEnv("MAILERSEND_API_KEY") || getEnv("MAILERLITE_API_KEY"),
+    apiKeys,
     fromEmail: getEnv("EMAIL_FROM") || "support@bhumivera.com",
-    fromName: getEnv("EMAIL_FROM_NAME") || "Bhumivera Concierge"
+    fromName: getEnv("EMAIL_FROM_NAME") || "Bhumivera Concierge",
+    // SMTP Fallback for MailerLite or Generic SMTP delivery (Late OTP Support)
+    smtpHost: getEnv("SMTP_HOST") || "smtp.mailerlite.com",
+    smtpPort: parseInt(getEnv("SMTP_PORT") || "587", 10),
+    smtpUser: getEnv("SMTP_USER"),
+    smtpPass: getEnv("SMTP_PASS")
   };
 };
 
-function httpSendMail(payload) {
+/**
+ * Isolated HTTPS dispatcher to support looping over multiple API Keys
+ */
+function httpSendMail(payload, apiKey) {
   return new Promise((resolve, reject) => {
-    const config = getMailConfig();
-    
-    if (!config.apiKey) {
-      return reject(new Error("FATAL: MAILERSEND_API_KEY missing in Railway variables."));
-    }
-
     const data = JSON.stringify(payload);
     const options = {
       hostname: "api.mailersend.com",
       path: "/v1/email",
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${config.apiKey}`,
+        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
         "X-Requested-With": "XMLHttpRequest",
         "Content-Length": Buffer.byteLength(data, "utf8"),
@@ -37,7 +44,6 @@ function httpSendMail(payload) {
       res.on("data", (chunk) => (body += chunk.toString()));
       res.on("end", () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          // Safe JSON parsing: MailerSend may return 202 Accepted with an empty/text body
           let parsed = {};
           try {
             parsed = body ? JSON.parse(body) : {};
@@ -46,7 +52,6 @@ function httpSendMail(payload) {
           }
           resolve(parsed);
         } else {
-          // Error prefix updated from "Mailjet" to "MailerSend"
           reject(new Error(`MailerSend Service Error [${res.statusCode}]: ${body}`));
         }
       });
@@ -66,10 +71,47 @@ async function sendMail({ to, subject, html, text, from }) {
   
   const config = getMailConfig();
 
-  // Map to MailerSend recipient format
+  // Map to recipient format
   const recipients = Array.isArray(to) 
     ? to.map(email => ({ email: typeof email === 'string' ? email.trim() : (email.Email || email.email) })) 
     : [{ email: to.trim() }];
+
+  // ---------------------------------------------------------
+  // STRATEGY 1: MailerLite / Standard SMTP (Late OTP bypass)
+  // ---------------------------------------------------------
+  if (config.smtpUser && config.smtpPass) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: config.smtpHost,
+        port: config.smtpPort,
+        secure: config.smtpPort === 465,
+        auth: {
+          user: config.smtpUser,
+          pass: config.smtpPass,
+        },
+      });
+
+      const mailOptions = {
+        from: `"${from?.name || config.fromName}" <${from?.email || config.fromEmail}>`,
+        to: recipients.map(r => r.email).join(", "),
+        subject: subject || "(no subject)",
+        text: text,
+        html: html
+      };
+
+      const info = await transporter.sendMail(mailOptions);
+      return info;
+    } catch (error) {
+      console.warn(`SMTP Delivery failed: ${error.message}. Falling back to API rotation...`);
+    }
+  }
+
+  // ---------------------------------------------------------
+  // STRATEGY 2: API Keys with Multi-Key Rotation
+  // ---------------------------------------------------------
+  if (config.apiKeys.length === 0) {
+    throw new Error("FATAL: No SMTP credentials and no API keys found in Railway variables.");
+  }
 
   const payload = {
     from: {
@@ -80,16 +122,23 @@ async function sendMail({ to, subject, html, text, from }) {
     subject: subject || "(no subject)"
   };
 
-  // FIX: MailerSend strictly rejects empty strings ("") for text/html.
-  // We only attach them to the payload if they contain actual data.
-  if (text && String(text).trim().length > 0) {
-    payload.text = text;
-  }
-  if (html && String(html).trim().length > 0) {
-    payload.html = html;
+  if (text && String(text).trim().length > 0) payload.text = text;
+  if (html && String(html).trim().length > 0) payload.html = html;
+
+  let lastError;
+
+  // Loop through available keys. If one fails (e.g. 422 Limit), seamlessly try the next
+  for (const apiKey of config.apiKeys) {
+    try {
+      const result = await httpSendMail(payload, apiKey);
+      return result; // Success, exit function
+    } catch (err) {
+      lastError = err;
+      console.warn(`API Key Failed (Possible 422 Limit). Trying next key... Error details: ${err.message}`);
+    }
   }
 
-  return httpSendMail(payload);
+  throw new Error(`All available email APIs and SMTP fallbacks were exhausted. Last Error: ${lastError.message}`);
 }
 
 const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null) => {
@@ -199,7 +248,7 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
       html: htmlTemplate
     });
   } catch (error) {
-    console.error("MailerSend Status Email Error:", error);
+    console.error("Mailer Error (Order Status):", error);
   }
 };
 
