@@ -14,30 +14,28 @@ const createUsersTable = async () => {
       wallet_balance DECIMAL(10,2) DEFAULT 0.00,
       two_factor_secret VARCHAR(255),
       two_factor_enabled TINYINT(1) DEFAULT 0,
+      security_question VARCHAR(255) DEFAULT 'What is your mother''s maiden name?',
+      security_answer_hash VARCHAR(255),
+      reset_otp VARCHAR(10),
+      reset_otp_expires BIGINT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
 
-  // Step 2: Robust Schema Synchronization
-  // We check for each column individually to handle existing tables from any previous version.
+  // Step 2: Bulletproof Schema Synchronization
+  // REMOVED 'AFTER' clauses. Columns will safely append to the end of the table if missing.
+  // ADDED all base columns to ensure the old database is fully upgraded.
   const syncColumns = [
-    { 
-        name: 'security_question', 
-        type: `VARCHAR(255) DEFAULT 'What is your mother''s maiden name?' AFTER two_factor_enabled` 
-    },
-    { 
-        name: 'security_answer_hash', 
-        type: `VARCHAR(255) AFTER security_question` 
-    },
-    { 
-        name: 'reset_otp', 
-        type: `VARCHAR(10) AFTER security_answer_hash` 
-    },
-    { 
-        name: 'reset_otp_expires', 
-        type: `BIGINT AFTER reset_otp` 
-    }
+    { name: 'role', type: `ENUM('customer','admin','superadmin','warehouse_admin') DEFAULT 'customer'` },
+    { name: 'is_active', type: `TINYINT(1) DEFAULT 1` },
+    { name: 'wallet_balance', type: `DECIMAL(10,2) DEFAULT 0.00` },
+    { name: 'two_factor_secret', type: `VARCHAR(255)` },
+    { name: 'two_factor_enabled', type: `TINYINT(1) DEFAULT 0` },
+    { name: 'security_question', type: `VARCHAR(255) DEFAULT 'What is your mother''s maiden name?'` },
+    { name: 'security_answer_hash', type: `VARCHAR(255)` },
+    { name: 'reset_otp', type: `VARCHAR(10)` },
+    { name: 'reset_otp_expires', type: `BIGINT` }
   ];
 
   for (const col of syncColumns) {
@@ -45,6 +43,7 @@ const createUsersTable = async () => {
       const [columns] = await pool.query(`SHOW COLUMNS FROM users LIKE ?`, [col.name]);
       if (columns.length === 0) {
         console.log(`[DB_SYNC] Adding missing column to users: ${col.name}`);
+        // Safely appending column to the end of the table
         await pool.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
       }
     } catch (err) {
