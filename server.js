@@ -49,7 +49,7 @@ const { initReturnsTable } = require("./models/returnModel");
 const { initContactTable } = require("./models/contactModel");
 const { initAdminTable } = require("./models/adminModel");
 const { createUsersTable, initAuthTables } = require("./models/userModel");
-const { createReviewTable } = require("./models/reviewModel"); // ADDED: Review Init
+const { createReviewTable } = require("./models/reviewModel"); 
 
 const app = express();
 
@@ -78,12 +78,13 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// FIXED: Extended CSP to prevent overbridgenet block errors in browser logs
+// FIXED: Extended CSP to include blob: in script-src and worker-src
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " +
-    "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://challenges.cloudflare.com https://overbridgenet.com; " +
+    "script-src 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://overbridgenet.com; " +
+    "worker-src 'self' blob:; " +
     "connect-src 'self' https://challenges.cloudflare.com https://bhumivera-backend.railway.app https://service.bhumivera.com https://www.google-analytics.com https://*.r2.cloudflarestorage.com https://overbridgenet.com; " +
     "frame-src 'self' https://challenges.cloudflare.com; " +
     "img-src 'self' data: blob: https:; " +
@@ -131,7 +132,7 @@ app.use("/api/warehouse", warehouseRoutes);
 
 app.get("/", (req, res) => res.json({ status: "ok", message: "Bhumivera Eco-Lab Core API running!" }));
 
-// --- DATABASE INITIALIZATION (Fixes 500 Errors) ---
+// --- DATABASE INITIALIZATION ---
 async function initDB() {
   try {
     const safeInit = async (name, initFunction) => {
@@ -140,14 +141,11 @@ async function initDB() {
       }
     };
 
-    // CORE TABLES (REQUIRED FOR AUTH)
     await safeInit('Users', createUsersTable);
     await safeInit('Auth', initAuthTables);
-    
-    // APP TABLES
     await safeInit('Categories', initCategoriesTable);
     await safeInit('Products', initProductsTable);
-    await safeInit('Reviews', createReviewTable); // FIXED: Added missing init
+    await safeInit('Reviews', createReviewTable);
     await safeInit('Address', createAddressTable);
     await safeInit('Wallet', initWalletTables);
     await safeInit('Cart', createCartTable);
@@ -157,7 +155,6 @@ async function initDB() {
     await safeInit('Contact', initContactTable);
     await safeInit('Admin', initAdminTable);
 
-    // Initialize Settings
     await pool.query(`
       CREATE TABLE IF NOT EXISTS settings (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -177,7 +174,6 @@ async function initDB() {
       await pool.query("INSERT IGNORE INTO settings (group_name, key_name, value) VALUES (?, ?, ?)", [g, k, v]);
     }
 
-    // Auto-Provision Root Admin
     const [adminCheck] = await pool.query("SELECT * FROM admin_users WHERE email='adminbhumivera27@gmail.com'");
     if (adminCheck.length === 0) {
       const hash = await bcrypt.hash('Akash#*@1998', 10);
@@ -187,12 +183,6 @@ async function initDB() {
       );
       console.log('--- ROOT ADMIN access ACTIVATED: adminbhumivera27@gmail.com ---');
     }
-
-    // ENV Check
-    if (!process.env.JWT_SECRET) {
-      console.error("🚨 CRITICAL WARNING: JWT_SECRET is not defined in environment variables!");
-    }
-
   } catch (err) {
     console.error("Critical Init Error:", err.message);
   }
