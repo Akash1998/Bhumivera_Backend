@@ -37,12 +37,14 @@ const initAuthTables = async () => {
 };
 
 
-const createUser = async ({ name, email, password, securityAnswer = 'default-answer' }) => {
+const createUser = async ({ name, email, password, securityAnswer }) => {
  
   const isHashed = password.startsWith('$2b$');
   const hash = isHashed ? password : await bcrypt.hash(password, 10);
   
-  const secHash = await bcrypt.hash(securityAnswer.toLowerCase(), 10);
+  // FIX: Safely handle null/undefined overriding default parameters
+  const safeSecurityAnswer = securityAnswer ? String(securityAnswer).toLowerCase() : 'default-answer';
+  const secHash = await bcrypt.hash(safeSecurityAnswer, 10);
   
   const [result] = await pool.query(
     'INSERT INTO users (name, email, password_hash, security_answer_hash) VALUES (?, ?, ?, ?)',
