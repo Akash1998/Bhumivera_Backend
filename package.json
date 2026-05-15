@@ -48,6 +48,6 @@
     "serverless-http": "^3.2.0"
   },
   "devDependencies": {
-    "accessmon": "^3.1.0"
+    "nodemon": "^3.1.0"
   }
 }
