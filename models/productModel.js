@@ -41,6 +41,7 @@ const initProductsTable = async () => {
       video_urls TEXT,
       product_links TEXT,
       model_3d_url VARCHAR(500),
+      specifications JSON,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
@@ -70,6 +71,7 @@ const initProductsTable = async () => {
   await addColIfMissing('products', 'video_urls', 'TEXT DEFAULT NULL');
   await addColIfMissing('products', 'product_links', 'TEXT DEFAULT NULL');
   await addColIfMissing('products', 'model_3d_url', 'VARCHAR(500) DEFAULT NULL');
+  await addColIfMissing('products', 'specifications', 'JSON');
 };
 
 const attachImages = async (rows) => {
@@ -161,19 +163,21 @@ const createProduct = async (data) => {
     price, discount_price, quantity,
     category_id, subcategory_id,
     meta_title, meta_description, tags,
-    video_urls, product_links, model_3d_url,
+    video_urls, product_links, model_3d_url, specifications,
     status = 'active',
   } = data;
   
+  const specData = typeof specifications === 'object' ? JSON.stringify(specifications) : (specifications || null);
+
   const [result] = await pool.query(
     `INSERT INTO products 
-    (name, slug, sku, brand, warranty_period, description, price, discount_price, quantity, status, category_id, subcategory_id, meta_title, meta_description, tags, video_urls, product_links, model_3d_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    (name, slug, sku, brand, warranty_period, description, price, discount_price, quantity, status, category_id, subcategory_id, meta_title, meta_description, tags, video_urls, product_links, model_3d_url, specifications)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [name, slug || null, sku || null, brand || null, warranty_period || null, description || null,
     price, discount_price || null, quantity || 0, status,
     category_id, subcategory_id || null,
     meta_title || null, meta_description || null, tags || null,
-    video_urls || null, product_links || null, model_3d_url || null]
+    video_urls || null, product_links || null, model_3d_url || null, specData]
   );
   return result.insertId;
 };
@@ -182,7 +186,16 @@ const updateProduct = async (id, data) => {
   const fields = Object.keys(data).filter(f => !['id', 'images', 'serials'].includes(f));
   if (fields.length === 0) return;
   const sql = `UPDATE products SET ${fields.map(f => `${f}=?`).join(', ')} WHERE id=?`;
-  const params = [...fields.map(f => data[f]), id];
+  
+  // Ensure objects are stringified before SQL execution
+  const params = fields.map(f => {
+    if (f === 'specifications' && typeof data[f] === 'object') {
+      return JSON.stringify(data[f]);
+    }
+    return data[f];
+  });
+  
+  params.push(id);
   await pool.query(sql, params);
 };
 
