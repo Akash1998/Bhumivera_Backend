@@ -48,6 +48,7 @@ const { initCategoriesTable } = require("./models/categoryModel");
 const { initReturnsTable } = require("./models/returnModel");
 const { initContactTable } = require("./models/contactModel");
 const { initAdminTable } = require("./models/adminModel");
+const { createUsersTable, initAuthTables } = require("./models/userModel");
 
 const app = express();
 
@@ -76,9 +77,14 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// FIX for "goog#html" and Cloudflare Turnstile Trusted Types Block
+// FIXED: CSP for Cloudflare Turnstile & Trusted Types
 app.use((req, res, next) => {
-  res.setHeader("Content-Security-Policy", "require-trusted-types-for 'script'; trusted-types *");
+  res.setHeader(
+    "Content-Security-Policy",
+    "script-src 'self' 'unsafe-eval' https://challenges.cloudflare.com; " +
+    "frame-src 'self' https://challenges.cloudflare.com; " +
+    "trusted-types *;"
+  );
   if (req.method === "OPTIONS") return res.status(204).end();
   next();
 });
@@ -130,6 +136,11 @@ async function initDB() {
       }
     };
 
+    // CORE TABLES (REQUIRED FOR AUTH)
+    await safeInit('Users', createUsersTable);
+    await safeInit('Auth', initAuthTables);
+    
+    // APP TABLES
     await safeInit('Categories', initCategoriesTable);
     await safeInit('Products', initProductsTable);
     await safeInit('Address', createAddressTable);
@@ -170,6 +181,11 @@ async function initDB() {
         [hash]
       );
       console.log('--- ROOT ADMIN NODE ACTIVATED: adminbhumivera27@gmail.com ---');
+    }
+
+    // ENV Check
+    if (!process.env.JWT_SECRET) {
+      console.error("🚨 CRITICAL WARNING: JWT_SECRET is not defined in environment variables!");
     }
 
   } catch (err) {
