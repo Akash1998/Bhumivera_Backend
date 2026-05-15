@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 
 const createUsersTable = async () => {
   // Step 1: Ensure the table exists with the foundational structure
+  // FIXED: Standardizing reset_otp_expires to DATETIME
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -17,15 +18,13 @@ const createUsersTable = async () => {
       security_question VARCHAR(255) DEFAULT 'What is your mother''s maiden name?',
       security_answer_hash VARCHAR(255),
       reset_otp VARCHAR(10),
-      reset_otp_expires BIGINT,
+      reset_otp_expires DATETIME,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
 
   // Step 2: Bulletproof Schema Synchronization
-  // REMOVED 'AFTER' clauses. Columns will safely append to the end of the table if missing.
-  // ADDED all base columns to ensure the old database is fully upgraded.
   const syncColumns = [
     { name: 'role', type: `ENUM('customer','admin','superadmin','warehouse_admin') DEFAULT 'customer'` },
     { name: 'is_active', type: `TINYINT(1) DEFAULT 1` },
@@ -35,7 +34,7 @@ const createUsersTable = async () => {
     { name: 'security_question', type: `VARCHAR(255) DEFAULT 'What is your mother''s maiden name?'` },
     { name: 'security_answer_hash', type: `VARCHAR(255)` },
     { name: 'reset_otp', type: `VARCHAR(10)` },
-    { name: 'reset_otp_expires', type: `BIGINT` }
+    { name: 'reset_otp_expires', type: `DATETIME` }
   ];
 
   for (const col of syncColumns) {
@@ -43,12 +42,19 @@ const createUsersTable = async () => {
       const [columns] = await pool.query(`SHOW COLUMNS FROM users LIKE ?`, [col.name]);
       if (columns.length === 0) {
         console.log(`[DB_SYNC] Adding missing column to users: ${col.name}`);
-        // Safely appending column to the end of the table
         await pool.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
       }
     } catch (err) {
       console.error(`[DB_SYNC] Error syncing column ${col.name}:`, err.message);
     }
+  }
+
+  // Step 3: Hard Enforcement
+  // Ensure existing legacy tables convert BIGINT to DATETIME to match the new schema.
+  try {
+    await pool.query(`ALTER TABLE users MODIFY COLUMN reset_otp_expires DATETIME`);
+  } catch(err) {
+    console.warn(`[DB_SYNC] Info: Could not modify reset_otp_expires (ignoring):`, err.message);
   }
 };
 
@@ -69,7 +75,6 @@ const createUser = async ({ name, email, password, securityAnswer }) => {
   const isHashed = password.startsWith('$2b$');
   const hash = isHashed ? password : await bcrypt.hash(password, 10);
   
-  // Safely handle security answer hashing
   const safeSecurityAnswer = securityAnswer ? String(securityAnswer).toLowerCase() : 'default-answer';
   const secHash = await bcrypt.hash(safeSecurityAnswer, 10);
   
@@ -140,8 +145,10 @@ const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
   return newBalance;
 };
 
-const saveResetOtp = async (userId, otp, expiry) => {
-  await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=? WHERE id=?', [otp, expiry, userId]);
+const saveResetOtp = async (userId, otp) => {
+  // THE FIX: We offload the expiration calculation entirely to MySQL natively.
+  // This completely eliminates the BIGINT vs DATETIME node driver conflicts.
+  await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [otp, userId]);
 };
 
 const clearResetOtp = async (userId) => {
