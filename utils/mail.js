@@ -1,7 +1,6 @@
 const https = require("https");
 
 const getMailConfig = () => {
-  // Safe helper to trim environment variables to prevent 401/403 errors
   const getEnv = (key) => (process.env[key] ? String(process.env[key]).trim() : null);
   
   return {
@@ -11,10 +10,6 @@ const getMailConfig = () => {
   };
 };
 
-/**
- * MailerSend Transactional HTTP Implementation
- * Replaces the old Mailjet logic to resolve 401 Unauthenticated errors.
- */
 function httpSendMail(payload) {
   return new Promise((resolve, reject) => {
     const config = getMailConfig();
@@ -60,9 +55,6 @@ function httpSendMail(payload) {
   });
 }
 
-/**
- * Primary dispatch function for OTPs and notifications.
- */
 async function sendMail({ to, subject, html, text, from }) {
   if (!to) throw new Error("sendMail: 'to' recipient is required");
   
@@ -90,48 +82,98 @@ async function sendMail({ to, subject, html, text, from }) {
 const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null) => {
   const formattedId = String(orderId).padStart(10, '0');
   
+  // Professional, customer-focused status messaging suitable for a premium brand
   const statusConfig = {
-    pending: { color: '#10b981', title: 'Botanical Sequence Initialized', quote: '"Purity requires patience; perfection requires precision."', msg: 'Your acquisition has been logged into our central ledger. Our Asansol Eco-Lab has received your request and is preparing the extraction protocols.' },
-    processing: { color: '#10b981', title: 'QA & Curing Verification', quote: '"We do not rush nature; we engineer its delivery."', msg: 'Your batch is currently undergoing our rigorous SOP-104 inspection. Our lab technicians are ensuring crystalline structure meets tolerances.' },
-    shipped: { color: '#10b981', title: 'Dispatched from Asansol Eco-Lab', quote: '"The earth provides the formula; we provide the transit."', msg: 'The zero-footprint transit sequence has begun. Your parcel has left our facility and is now navigating the logistics matrix.' },
-    delivered: { color: '#10b981', title: 'Arrival Protocol Complete', quote: '"Your skin\'s new architecture has arrived."', msg: 'Your Bhumivera formulation has been successfully delivered. Please ensure the hygiene seals are intact.' },
-    cancelled: { color: '#ef4444', title: 'Transaction Voided', quote: '"Integrity means knowing when to halt the process."', msg: 'Your order has been formally rescinded from our system.' },
-    returned: { color: '#f59e0b', title: 'Reclamation Sequence Activated', quote: '"A return is not an end, but a refinement of our data."', msg: 'We have received your returned physical asset. Our QA team is processing the item to finalize the resolution logic.' }
+    pending: { 
+      color: '#10b981', 
+      title: 'Order Confirmation', 
+      quote: '"Bringing the purity of nature to your doorstep."', 
+      msg: 'Thank you for choosing Bhumivera. We have successfully received your order and our fulfillment team is currently preparing your natural formulations. We will notify you via email once your package is dispatched.' 
+    },
+    processing: { 
+      color: '#3b82f6', 
+      title: 'Order Processing', 
+      quote: '"Carefully curating your botanical essentials."', 
+      msg: 'Your order is currently processing. Our quality assurance team is performing final checks and securely packaging your items to ensure they arrive in pristine condition.' 
+    },
+    shipped: { 
+      color: '#f59e0b', 
+      title: 'Order Dispatched', 
+      quote: '"Your journey to natural wellness is on its way."', 
+      msg: 'Great news! Your Bhumivera package has been dispatched from our central fulfillment center and is now with our logistics partners. You can track the transit status using the details provided below.' 
+    },
+    delivered: { 
+      color: '#10b981', 
+      title: 'Order Delivered', 
+      quote: '"Experience the essence of earth, delivered."', 
+      msg: 'Your order has been officially marked as delivered. We hope you enjoy your Bhumivera formulations. Please ensure all safety seals are intact before use. If you have any questions, our support team is always here to help.' 
+    },
+    cancelled: { 
+      color: '#ef4444', 
+      title: 'Order Cancelled', 
+      quote: '"Your transaction has been formally voided."', 
+      msg: 'As requested, or due to a payment processing issue, your order has been cancelled. Any authorized charges will be reversed and returned to your original payment method according to your bank\'s standard processing times.' 
+    },
+    returned: { 
+      color: '#8b5cf6', 
+      title: 'Return Received', 
+      quote: '"Processing your returned items."', 
+      msg: 'We have successfully received your returned items at our facility. Our quality assurance team is currently inspecting the package and will process your refund or replacement shortly based on our return policy.' 
+    }
   };
 
   const config = statusConfig[status.toLowerCase()] || statusConfig.pending;
   
   const trackingHtml = (trackingNumber && courier) ? `
-      <div style="background-color: rgba(16, 185, 129, 0.05); border-left: 2px solid #10b981; padding: 20px; margin-top: 30px;">
-        <p style="margin: 0; color: #a3a3a3; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; font-family: monospace;">Transit access</p>
-        <p style="margin: 5px 0 15px 0; color: #ffffff; font-size: 16px;"><strong>Courier:</strong> ${courier}<br/><strong>Crypto-ID:</strong> <span style="font-family: monospace; color: #10b981;">${trackingNumber}</span></p>
-        <a href="https://www.google.com/search?q=${trackingNumber}+${courier}+tracking" style="display: inline-block; background-color: #10b981; color: #000000; text-decoration: none; padding: 12px 24px; font-size: 10px; text-transform: uppercase; letter-spacing: 3px; font-weight: bold;">Trace Parcel Location</a>
+      <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 20px; margin-top: 30px;">
+        <h4 style="margin: 0 0 10px 0; color: #166534; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Tracking Information</h4>
+        <p style="margin: 0 0 5px 0; color: #374151; font-size: 15px;"><strong>Courier:</strong> ${courier}</p>
+        <p style="margin: 0 0 20px 0; color: #374151; font-size: 15px;"><strong>Tracking Number:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 3px 8px; border-radius: 4px;">${trackingNumber}</span></p>
+        <a href="https://www.google.com/search?q=${trackingNumber}+${courier}+tracking" style="display: inline-block; background-color: #10b981; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 13px; font-weight: bold; text-align: center;">Track Your Package</a>
       </div>` : '';
 
   const htmlTemplate = `
     <!DOCTYPE html>
-    <html>
-    <body style="margin: 0; padding: 40px 20px; background-color: #020202; font-family: sans-serif;">
-      <div style="max-width: 600px; margin: 0 auto; background-color: #0a0a0a; border: 1px solid rgba(255, 255, 255, 0.05); overflow: hidden;">
-        <div style="padding: 40px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
-          <div style="width: 40px; height: 40px; background-color: #10b981; margin: 0 auto 20px auto;"></div>
-          <h1 style="color: #ffffff; margin: 0; font-size: 14px; letter-spacing: 6px; font-weight: 300; text-transform: uppercase;">Bhumivera Eco-Labs</h1>
+    <html lang="en">
+    <body style="margin: 0; padding: 40px 20px; background-color: #f4f7f6; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333333; -webkit-font-smoothing: antialiased;">
+      <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+        
+        <div style="padding: 30px; text-align: center; border-bottom: 3px solid #10b981; background-color: #ffffff;">
+          <h1 style="color: #064e3b; margin: 0; font-size: 26px; letter-spacing: 2px; font-weight: 700; text-transform: uppercase;">BHUMIVERA</h1>
+          <p style="color: #10b981; margin: 5px 0 0 0; font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 600;">Pure Botanical Science</p>
         </div>
-        <div style="padding: 40px 40px 10px 40px; text-align: center;">
-          <p style="color: #a3a3a3; font-style: italic; font-size: 18px; line-height: 1.6; font-weight: 300;">${config.quote}</p>
+
+        <div style="padding: 30px 40px 10px 40px; text-align: center;">
+          <p style="color: #4b5563; font-style: italic; font-size: 18px; line-height: 1.6; font-weight: 300;">${config.quote}</p>
         </div>
-        <div style="padding: 30px 40px;">
-          <p style="color: #10b981; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; font-family: monospace; margin-bottom: 10px;">Ledger ID: #${formattedId}</p>
-          <h2 style="color: #ffffff; margin-top: 0; font-size: 24px; font-weight: 300; letter-spacing: -0.5px;">${config.title}</h2>
-          <p style="color: #e5e5e5; font-size: 15px; margin-top: 30px;">Salutations, ${name}.</p>
-          <p style="color: #a3a3a3; font-size: 14px; line-height: 1.8;">${config.msg}</p>
+
+        <div style="padding: 20px 40px 40px 40px;">
+          <h2 style="color: ${config.color}; margin-top: 0; font-size: 22px; font-weight: 600;">${config.title}</h2>
+          <p style="color: #6b7280; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 25px;">Order ID: <strong style="color: #111827;">#${formattedId}</strong></p>
+
+          <p style="font-size: 16px; margin-bottom: 20px; color: #1f2937;">Dear ${name},</p>
+          <p style="font-size: 15px; line-height: 1.7; color: #4b5563; margin-bottom: 30px;">${config.msg}</p>
+
           ${trackingHtml}
         </div>
-        <div style="background-color: #050505; padding: 30px; text-align: center; border-top: 1px solid rgba(255, 255, 255, 0.05);">
-          <p style="color: #525252; font-size: 9px; font-family: monospace; letter-spacing: 2px; text-transform: uppercase; margin: 0;">
-            Zero Logic Deletion • Zero Heat Damage<br/><br/>
-            &copy; ${new Date().getFullYear()} Bhumivera Science.
-          </p>
+
+        <div style="background-color: #f8fafc; padding: 30px 40px; border-top: 1px solid #e2e8f0;">
+          <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px;">Need Assistance?</h3>
+          <p style="margin: 0 0 25px 0; font-size: 14px; color: #64748b; line-height: 1.6;">Our customer concierge team is available to assist you with your order. Contact us anytime at <a href="mailto:support@bhumivera.com" style="color: #10b981; text-decoration: none; font-weight: 600;">support@bhumivera.com</a>.</p>
+
+          <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 16px; margin-bottom: 25px; border-radius: 0 4px 4px 0;">
+            <p style="margin: 0; font-size: 12px; color: #92400e; line-height: 1.6;">
+              <strong style="text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Security Advisory:</strong><br/>
+              Bhumivera will never ask for your account password, full credit card details, or sensitive OTPs via email. If you receive a suspicious message claiming to be from us, do not click any links and report it to our security team immediately.
+            </p>
+          </div>
+
+          <div style="text-align: center; border-top: 1px solid #e2e8f0; padding-top: 20px;">
+            <p style="margin: 0; font-size: 11px; color: #94a3b8; line-height: 1.6; text-transform: uppercase; letter-spacing: 0.5px;">
+              &copy; ${new Date().getFullYear()} Bhumivera Science. All rights reserved.<br/>
+              Asansol, West Bengal, India
+            </p>
+          </div>
         </div>
       </div>
     </body>
@@ -140,7 +182,7 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
   try {
     return await sendMail({
       to: email,
-      subject: `[BHUMIVERA] Update on Order #${formattedId}`,
+      subject: `[Bhumivera] Update on Order #${formattedId}`,
       html: htmlTemplate
     });
   } catch (error) {
