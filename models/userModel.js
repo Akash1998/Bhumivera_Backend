@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const bcrypt = require('bcrypt');
 
 const createUsersTable = async () => {
+  // Step 1: Ensure the table exists with basic structure
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -21,6 +22,29 @@ const createUsersTable = async () => {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
+
+  // Step 2: Schema Sync - Add missing columns if table already existed
+  const syncColumns = [
+    { name: 'security_answer_hash', type: 'VARCHAR(255) AFTER security_question' },
+    { name: 'security_question', type: 'VARCHAR(255) DEFAULT "What is your mother\'s maiden name?" AFTER two_factor_enabled' },
+    { name: 'reset_otp', type: 'VARCHAR(10) AFTER security_answer_hash' },
+    { name: 'reset_otp_expires', type: 'BIGINT AFTER reset_otp' }
+  ];
+
+  for (const col of syncColumns) {
+    try {
+      const [rows] = await pool.query(
+        `SHOW COLUMNS FROM users LIKE ?`,
+        [col.name]
+      );
+      if (rows.length === 0) {
+        console.log(`[DB_SYNC] Adding missing column: ${col.name}`);
+        await pool.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
+      }
+    } catch (err) {
+      console.warn(`[DB_SYNC] Warning syncing column ${col.name}:`, err.message);
+    }
+  }
 };
 
 const initAuthTables = async () => {
@@ -106,7 +130,7 @@ const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
   if (newBalance < 0) throw new Error("Insufficient wallet balance.");
   
   await conn.query('UPDATE users SET wallet_balance = ? WHERE id = ?', [newBalance, userId]);
-  await conn.query(
+  await pool.query(
     'INSERT INTO wallet_transactions (user_id, amount, type, description, reference_id) VALUES (?, ?, ?, ?, ?)',
     [userId, amount, type, desc, refId]
   );
