@@ -49,6 +49,7 @@ const { initReturnsTable } = require("./models/returnModel");
 const { initContactTable } = require("./models/contactModel");
 const { initAdminTable } = require("./models/adminModel");
 const { createUsersTable, initAuthTables } = require("./models/userModel");
+const { createReviewTable } = require("./models/reviewModel"); // ADDED: Review Init
 
 const app = express();
 
@@ -77,12 +78,15 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// FIXED: CSP for Cloudflare Turnstile & Trusted Types
+// FIXED: Extended CSP to prevent overbridgenet block errors in browser logs
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
-    "script-src 'self' 'unsafe-eval' https://challenges.cloudflare.com; " +
+    "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " +
+    "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://challenges.cloudflare.com https://overbridgenet.com; " +
+    "connect-src 'self' https://challenges.cloudflare.com https://bhumivera-backend.railway.app https://service.bhumivera.com https://www.google-analytics.com https://*.r2.cloudflarestorage.com https://overbridgenet.com; " +
     "frame-src 'self' https://challenges.cloudflare.com; " +
+    "img-src 'self' data: blob: https:; " +
     "trusted-types *;"
   );
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -143,6 +147,7 @@ async function initDB() {
     // APP TABLES
     await safeInit('Categories', initCategoriesTable);
     await safeInit('Products', initProductsTable);
+    await safeInit('Reviews', createReviewTable); // FIXED: Added missing init
     await safeInit('Address', createAddressTable);
     await safeInit('Wallet', initWalletTables);
     await safeInit('Cart', createCartTable);
@@ -152,7 +157,7 @@ async function initDB() {
     await safeInit('Contact', initContactTable);
     await safeInit('Admin', initAdminTable);
 
-    // Initialize Settings (Fixes /api/settings/public 500 error)
+    // Initialize Settings
     await pool.query(`
       CREATE TABLE IF NOT EXISTS settings (
         id INT AUTO_INCREMENT PRIMARY KEY,
