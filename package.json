@@ -4,7 +4,7 @@
   "description": "Bhumivera Backend API - E-commerce Core with AI Integration",
   "main": "server.js",
   "engines": {
-    "access": ">=22.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "start": "access server.js",
