@@ -14,7 +14,6 @@ const parseImages = (rows) => {
     if (row.images) {
       try {
         parsedImages = typeof row.images === 'string' ? JSON.parse(row.images) : row.images;
-        // Filter out null entries that JSON_ARRAYAGG might produce if no images exist
         if (Array.isArray(parsedImages)) {
           parsedImages = parsedImages.filter(img => img !== null);
         }
@@ -101,20 +100,31 @@ router.post('/', authenticateAdmin, async (req, res) => {
   try {
     const { name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications } = req.body;
     
-    if (!name || !price) return res.status(400).json({ success: false, message: 'Name and price are required' });
+    // STRICT VALIDATION: Prevent DB Null constraint crashes
+    if (!name || !price || !category_id) {
+      return res.status(400).json({ success: false, message: 'Name, price, and category are mandatory fields.' });
+    }
     
     const finalSlug = slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const specData = typeof specifications === 'object' ? JSON.stringify(specifications) : (specifications || null);
 
+    // SANITIZATION: Force empty strings to NULL or 0 for MySQL Strict Mode
+    const safeCat = category_id === '' ? null : category_id;
+    const safeSubCat = subcategory_id === '' ? null : subcategory_id;
+    const safeDiscount = discount_price === '' ? null : discount_price;
+    const safeWarranty = warranty_period === '' ? null : warranty_period;
+    const safeQuantity = quantity === '' ? 0 : quantity || 0;
+
     const [result] = await pool.query(
       `INSERT INTO products (name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications) 
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [name, finalSlug, description || '', price, discount_price || null, category_id || null, subcategory_id || null, quantity || 0, status || 'active', sku || null, brand || null, warranty_period || null, meta_title || null, meta_description || null, tags || null, is_featured || 0, is_trending || 0, is_new_arrival || 0, model_3d_url || null, video_urls || null, product_links || null, specData]
+      [name, finalSlug, description || '', price, safeDiscount, safeCat, safeSubCat, safeQuantity, status || 'active', sku || null, brand || null, safeWarranty, meta_title || null, meta_description || null, tags || null, is_featured || 0, is_trending || 0, is_new_arrival || 0, model_3d_url || null, video_urls || null, product_links || null, specData]
     );
     
     const [newProduct] = await pool.query('SELECT * FROM products WHERE id = ?', [result.insertId]);
     res.status(201).json({ success: true, message: 'Product created', data: newProduct[0] });
   } catch (error) {
+    console.error("Insert Error:", error);
     res.status(500).json({ success: false, message: error.message || 'Failed to create product' });
   }
 });
@@ -137,9 +147,16 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
       if (fields[key] !== undefined) {
         updates.push(`${key} = ?`);
         let val = fields[key];
+        
         if (key === 'specifications' && typeof val === 'object') {
           val = JSON.stringify(val);
         }
+        
+        // SANITIZATION: Prevent MySQL "Incorrect integer value: ''" crash
+        if (val === '' && ['category_id', 'subcategory_id', 'price', 'discount_price', 'quantity', 'warranty_period'].includes(key)) {
+          val = null;
+        }
+
         values.push(val);
       }
     }
@@ -152,6 +169,7 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     const [updated] = await pool.query('SELECT * FROM products WHERE id = ?', [productId]);
     res.json({ success: true, message: 'Product updated', data: updated[0] });
   } catch (error) {
+    console.error("Update Error:", error);
     res.status(500).json({ success: false, message: 'Failed to update product' });
   }
 });
