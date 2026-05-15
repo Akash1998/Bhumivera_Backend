@@ -61,9 +61,9 @@
         <div class="space-y-6">
             <div class="glass rounded-[2rem] p-6 shadow-2xl">
                 <h3 class="text-xs font-black uppercase tracking-widest text-white mb-6 flex items-center gap-2">
-                    <i data-lucide="zap" class="text-yellow-400 w-4 h-4"></i> Active Nodes
+                    <i data-lucide="zap" class="text-yellow-400 w-4 h-4"></i> Active accesss
                 </h3>
-                <div id="active-nodes" class="space-y-4"></div>
+                <div id="active-accesss" class="space-y-4"></div>
             </div>
         </div>
     </div>
@@ -91,7 +91,7 @@
 
 <div id="grant-modal" class="hidden fixed inset-0 bg-slate-950/90 z-[100] flex items-center justify-center p-4">
     <div class="glass max-w-md w-full rounded-[2rem] p-8 space-y-6 border-cyan-500/30">
-        <h2 class="text-xl font-black text-white uppercase tracking-tight">Authorize Node</h2>
+        <h2 class="text-xl font-black text-white uppercase tracking-tight">Authorize access</h2>
         <div class="space-y-2">
             <label class="text-[10px] font-black uppercase text-slate-500 tracking-widest">Assign Store Name</label>
             <input type="text" id="store-name-input" placeholder="e.g. Kolkata Spares" class="w-full bg-slate-900 border border-slate-700 p-4 rounded-xl text-white">
@@ -110,7 +110,7 @@
             <button onclick="closeStateModal()" class="text-slate-500 hover:text-white"><i data-lucide="x"></i></button>
         </div>
         <div id="state-content" class="flex-1 overflow-y-auto custom-scrollbar bg-slate-950/50 rounded-2xl p-6 font-mono text-xs text-emerald-500">
-            Scanning node memory...
+            Scanning access memory...
         </div>
     </div>
 </div>
@@ -157,11 +157,11 @@
             ]);
             
             const sales = await salesRes.json();
-            const activeNodes = await usersRes.json();
+            const activeaccesss = await usersRes.json();
             const allUsers = await allUsersRes.json();
 
             renderSales(sales.sales);
-            renderActiveNodes(activeNodes.users);
+            renderActiveaccesss(activeaccesss.users);
             renderUserControl(allUsers.users);
 
             document.getElementById('loader').classList.add('hidden');
@@ -188,8 +188,8 @@
         `).join('') || '<tr><td colspan="4" class="p-10 text-center uppercase font-black text-slate-600">No Data Pulse</td></tr>';
     }
 
-    function renderActiveNodes(data) {
-        document.getElementById('active-nodes').innerHTML = (data || []).filter(u => u.is_active === 1).map(u => `
+    function renderActiveaccesss(data) {
+        document.getElementById('active-accesss').innerHTML = (data || []).filter(u => u.is_active === 1).map(u => `
             <div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex justify-between items-center">
                 <div>
                     <div class="text-sm font-bold text-white">${u.name}</div>
@@ -197,7 +197,7 @@
                 </div>
                 <button onclick="peekState(${u.user_id}, '${u.name}')" class="text-xs font-black text-emerald-500 hover:text-emerald-400 uppercase tracking-widest">Monitor</button>
             </div>
-        `).join('') || '<p class="text-slate-600 text-xs p-4">No active nodes.</p>';
+        `).join('') || '<p class="text-slate-600 text-xs p-4">No active accesss.</p>';
     }
 
     function renderUserControl(data) {
@@ -208,7 +208,7 @@
                     <div class="text-xs text-slate-500">${u.email}</div>
                 </td>
                 <td class="p-5">
-                    ${u.has_access ? '<span class="text-[10px] font-black text-emerald-400 uppercase bg-emerald-400/10 px-3 py-1 rounded-full border border-emerald-400/20">Authorized Node</span>' : '<span class="text-[10px] font-black text-slate-500 uppercase bg-slate-800/40 px-3 py-1 rounded-full border border-slate-700">Offline Node</span>'}
+                    ${u.has_access ? '<span class="text-[10px] font-black text-emerald-400 uppercase bg-emerald-400/10 px-3 py-1 rounded-full border border-emerald-400/20">Authorized access</span>' : '<span class="text-[10px] font-black text-slate-500 uppercase bg-slate-800/40 px-3 py-1 rounded-full border border-slate-700">Offline access</span>'}
                 </td>
                 <td class="p-5 text-right">
                     ${u.has_access ? 
@@ -251,7 +251,7 @@
     }
 
     async function revokeAccess(id) {
-        if(!confirm("TERMINATE CONNECTION? Node will be locked immediately.")) return;
+        if(!confirm("TERMINATE CONNECTION? access will be locked immediately.")) return;
         const res = await authFetch('/warehouse/admin/revoke-access', 'POST', { user_id: id });
         if((await res.json()).success) loadData();
     }

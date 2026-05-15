@@ -147,7 +147,7 @@ const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
 
 const saveResetOtp = async (userId, otp) => {
   // THE FIX: We offload the expiration calculation entirely to MySQL natively.
-  // This completely eliminates the BIGINT vs DATETIME node driver conflicts.
+  // This completely eliminates the BIGINT vs DATETIME access driver conflicts.
   await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [otp, userId]);
 };
 

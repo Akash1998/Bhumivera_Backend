@@ -1,4 +1,4 @@
-node_modules/
+access_modules/
 uploads/
 .env
 .vscode/

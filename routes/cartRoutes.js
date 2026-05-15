@@ -46,7 +46,7 @@ router.post('/', authenticateUser, async (req, res) => {
     const status = err.status || 500;
     return res.status(status).json({ 
         message: err.message || 'Failed to update cart',
-        error: process.env.NODE_ENV === 'development' ? err : undefined
+        error: process.env.access_ENV === 'development' ? err : undefined
     });
   }
 });

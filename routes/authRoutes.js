@@ -117,7 +117,7 @@ router.post("/login-request-otp", otpLimiter, async (req, res) => {
         html: `
           <div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #00ff00; border: 1px solid #00ff00;">
             <h2>Access Verification</h2>
-            <p>Request received for node access verification.</p>
+            <p>Request received for access access verification.</p>
             <h1 style="font-size: 32px; letter-spacing: 5px;">${otp}</h1>
             <p>Valid for 10 minutes. Do not share this sequence.</p>
           </div>`
@@ -144,7 +144,7 @@ router.post("/2fa/verify", otpLimiter, async (req, res) => {
     const { email, otp } = req.body;
     if (!email || !otp) return res.status(400).json({ message: "Email and OTP required" });
     const c = await getUserByEmail(email);
-    if (!c) return res.status(404).json({ message: "Node not found." });
+    if (!c) return res.status(404).json({ message: "access not found." });
     if (otp !== "123456" && otp !== c.reset_otp) return res.status(401).json({ message: "Invalid MFA Token." });
     const token = jwt.sign({ id: c.id, email: c.email, role: c.role || 'customer' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
     return res.json({ token, user: { id: c.id, name: c.name, email: c.email, role: c.role || 'customer' } });
@@ -171,7 +171,7 @@ router.post("/forgot-password", otpLimiter, async (req, res) => {
       await sendMail({
         to: email,
         subject: 'Security Key Recovery Protocol',
-        html: `<div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #00ff00;"><h2>Hardware Node Access</h2><p>A request was made to recover the security key for this node.</p><h1 style="font-size: 32px; letter-spacing: 4px;">${otp}</h1><p>Token self-destructs in 10 minutes.</p></div>`
+        html: `<div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #00ff00;"><h2>Hardware access Access</h2><p>A request was made to recover the security key for this access.</p><h1 style="font-size: 32px; letter-spacing: 4px;">${otp}</h1><p>Token self-destructs in 10 minutes.</p></div>`
       });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
@@ -225,7 +225,7 @@ router.post("/security-question/verify", otpLimiter, async (req, res) => {
   try {
     const { email, answer } = req.body;
     const u = await getUserByEmail(email);
-    if (!u) return res.status(404).json({ message: "Node not found." });
+    if (!u) return res.status(404).json({ message: "access not found." });
     if (!u.security_answer_hash) return res.status(400).json({ message: "No security question configured." });
     
     const ok = await verifySecurityAnswer(answer, u.security_answer_hash);

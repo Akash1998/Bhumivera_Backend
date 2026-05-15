@@ -63,7 +63,7 @@ const allowedOrigins = [
 const corsOptions = {
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-    const isAllowed = allowedOrigins.includes(origin) || origin.endsWith(".vercel.app") || process.env.NODE_ENV === "development";
+    const isAllowed = allowedOrigins.includes(origin) || origin.endsWith(".vercel.app") || process.env.access_ENV === "development";
     if (isAllowed) callback(null, true);
     else callback(new Error("Not allowed by CORS"));
   },
@@ -180,7 +180,7 @@ async function initDB() {
         "INSERT INTO admin_users (email, password_hash, role) VALUES ('adminbhumivera27@gmail.com', ?, 'superadmin')",
         [hash]
       );
-      console.log('--- ROOT ADMIN NODE ACTIVATED: adminbhumivera27@gmail.com ---');
+      console.log('--- ROOT ADMIN access ACTIVATED: adminbhumivera27@gmail.com ---');
     }
 
     // ENV Check
@@ -208,7 +208,7 @@ const PORT = process.env.PORT || 5000;
 initWarehouseTables().catch(e => {});
 
 app.listen(PORT, async () => {
-  console.log(`Node Core Online on Port ${PORT}`);
+  console.log(`access Core Online on Port ${PORT}`);
   await initDB();
 });
 
