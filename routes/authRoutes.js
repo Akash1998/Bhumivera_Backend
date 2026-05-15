@@ -104,7 +104,6 @@ router.post("/login-request-otp", otpLimiter, async (req, res) => {
       await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [otp, email]);
     } else {
       if (!target.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
-      // The expiry argument is dropped here because userModel handles native SQL NOW() logic automatically.
       await saveResetOtp(target.id, otp);
     }
 
@@ -192,7 +191,6 @@ router.post("/verify-otp", otpLimiter, async (req, res) => {
     if (!u) return res.status(404).json({ message: "User not found." });
     if (u.reset_otp !== otp) return res.status(400).json({ message: "Invalid Token." });
     
-    // FIXED: Convert DATETIME column cleanly to a JS Date before comparison
     if (new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: "Token Expired." });
     
     res.json({ success: true, message: "Token verified. Awaiting new key." });
@@ -208,7 +206,6 @@ router.post("/reset-password", otpLimiter, async (req, res) => {
     if (!u) return res.status(404).json({ message: "User not found." });
     if (!securityBypass) {
       if (u.reset_otp !== otp) return res.status(400).json({ message: "Invalid Token." });
-      // FIXED: Convert DATETIME column cleanly to a JS Date before comparison
       if (new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: "Token Expired." });
     }
     const hash = await bcrypt.hash(newPassword, 10);
@@ -248,9 +245,19 @@ router.post("/register", registerLimiter, async (req, res) => {
     if (ex) return res.status(409).json({ message: "Email already registered" });
     
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const exp = new Date(Date.now() + 600000);
     
-    await pool.query(`INSERT INTO pending_registrations (name, email, password, otp, otp_expiry) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE otp=?, otp_expiry=?, created_at=NOW()`, [name, email, password, otp, exp, otp, exp]);
+    // FIXED: Offload DATETIME calculation natively to MySQL to prevent JSON/JS Date serialization locks 
+    // and explicitly handle duplicate keys to avoid InnoDB transaction deadlocks.
+    await pool.query(`
+      INSERT INTO pending_registrations (name, email, password, otp, otp_expiry) 
+      VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE)) 
+      ON DUPLICATE KEY UPDATE 
+        name=VALUES(name), 
+        password=VALUES(password), 
+        otp=VALUES(otp), 
+        otp_expiry=DATE_ADD(NOW(), INTERVAL 10 MINUTE), 
+        created_at=NOW()
+    `, [name, email, password, otp]);
     
     console.log(`\n🚨 [EMERGENCY OVERRIDE] REGISTRATION OTP FOR ${email}: ${otp}\n`);
     
