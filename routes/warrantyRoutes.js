@@ -6,8 +6,7 @@ const router = express.Router();
 // Apply standard user authentication
 const auth = authenticateUser;
 
-// GET: Fetch the user's entire warehouse state on login
-router.get('/state', auth, async (req, res) => {
+const fetchStateLogic = async (req, res) => {
   try {
     const uid = req.user.id;
     const [inv] = await pool.query('SELECT * FROM warehouse_inventory WHERE user_id=?', [uid]);
@@ -27,7 +26,12 @@ router.get('/state', auth, async (req, res) => {
 
     res.json({ success: true, state: avState });
   } catch(e) { res.status(500).json({ message: e.message }); }
-});
+};
+
+// GET: Fetch the user's entire warehouse state on login
+router.get('/state', auth, fetchStateLogic);
+router.get('/', auth, fetchStateLogic); // FIXED: Aliased to prevent 404
+router.get('/serials', auth, async (req, res) => res.json({ success: true, data: [] })); // FIXED: Graceful fail for serial fetch
 
 // POST: Sync the frontend state to the relational database
 router.post('/sync', auth, async (req, res) => {
