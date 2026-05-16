@@ -1,9 +1,19 @@
-// backend/routes/notificationRoutes
-
 const express = require('express');
 const router = express.Router();
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
-const { createNotification, getNotificationsForUser, markAsRead, countUnread, getAllNotifications, deleteNotification } = require('../models/notificationModel');
+const { createNotification, logSystemEvent, getNotificationsForUser, markAsRead, countUnread, getAllNotifications, deleteNotification } = require('../models/notificationModel');
+
+// POST /api/notifications/system-log - System ingestion endpoint for F12 crashes and SQL errors
+router.post('/system-log', async (req, res) => {
+  try {
+    const { title, message, type } = req.body;
+    await logSystemEvent(title || 'System Alert', message || 'Unknown error occurred', type || 'error');
+    res.status(201).json({ message: 'Telemetry log recorded' });
+  } catch (err) {
+    console.error('Failed to write telemetry log', err);
+    res.status(500).json({ message: 'Log failed' });
+  }
+});
 
 // GET /api/notifications - user: get own + global notifications
 router.get('/', authenticateUser, async (req, res) => {
@@ -73,7 +83,7 @@ router.put('/:id/mark-read', authenticateUser, async (req, res) => {
   }
 });
 
-// GET /api/notifications/admin/all - admin: all notifications
+// GET /api/notifications/admin/all - admin: all notifications (The Heart)
 router.get('/admin/all', authenticateAdmin, async (req, res) => {
   try {
     const notifications = await getAllNotifications();
