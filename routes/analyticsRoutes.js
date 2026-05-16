@@ -12,13 +12,14 @@ const getDashboardData = async (req, res) => {
     if (period === '90d') days = 90;
 
     // 1. Time-Series Sales Velocity Data
+    // FIXED: Appended DATE_FORMAT to GROUP BY to bypass ER_WRONG_FIELD_WITH_GROUP
     const [salesData] = await db.execute(`
       SELECT DATE_FORMAT(created_at, '%b %d') as name,
         COUNT(*) as orders,
         SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END) as revenue
       FROM orders
       WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY DATE(created_at)
+      GROUP BY DATE(created_at), DATE_FORMAT(created_at, '%b %d')
       ORDER BY DATE(created_at) ASC
     `, [days]);
 
@@ -85,6 +86,9 @@ const getDashboardData = async (req, res) => {
 router.get('/kpis', authenticateAdmin, getDashboardData);
 router.get('/dashboard', authenticateAdmin, getDashboardData);
 router.get('/sales', authenticateAdmin, getDashboardData);
+router.get('/revenue', authenticateAdmin, getDashboardData); // Added missing route
+
+// FIXED: ER_WRONG_FIELD_WITH_GROUP error patched via explicit multi-column grouping
 router.get('/products', authenticateAdmin, async (req, res) => {
   try {
     const [rows] = await db.execute(`
@@ -94,7 +98,7 @@ router.get('/products', authenticateAdmin, async (req, res) => {
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       LEFT JOIN order_items oi ON p.id = oi.product_id
-      GROUP BY p.id
+      GROUP BY p.id, p.name, p.price, p.discount_price, p.quantity, p.rating, p.review_count, p.status, c.name
       ORDER BY total_sold DESC
       LIMIT 20
     `);
