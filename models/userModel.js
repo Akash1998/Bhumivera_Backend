@@ -2,14 +2,13 @@ const pool = require('../config/db');
 const bcrypt = require('bcrypt');
 
 const createUsersTable = async () => {
-  // Step 1: Ensure the table exists with the foundational structure
-  // FIXED: Standardizing reset_otp_expires to DATETIME
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
       email VARCHAR(150) UNIQUE NOT NULL,
       password_hash VARCHAR(255) NOT NULL,
+      phone VARCHAR(20),
       role ENUM('customer','admin','superadmin','warehouse_admin') DEFAULT 'customer',
       is_active TINYINT(1) DEFAULT 1,
       wallet_balance DECIMAL(10,2) DEFAULT 0.00,
@@ -24,8 +23,8 @@ const createUsersTable = async () => {
     )
   `);
 
-  // Step 2: Bulletproof Schema Synchronization
   const syncColumns = [
+    { name: 'phone', type: `VARCHAR(20)` },
     { name: 'role', type: `ENUM('customer','admin','superadmin','warehouse_admin') DEFAULT 'customer'` },
     { name: 'is_active', type: `TINYINT(1) DEFAULT 1` },
     { name: 'wallet_balance', type: `DECIMAL(10,2) DEFAULT 0.00` },
@@ -49,8 +48,6 @@ const createUsersTable = async () => {
     }
   }
 
-  // Step 3: Hard Enforcement
-  // Ensure existing legacy tables convert BIGINT to DATETIME to match the new schema.
   try {
     await pool.query(`ALTER TABLE users MODIFY COLUMN reset_otp_expires DATETIME`);
   } catch(err) {
@@ -71,7 +68,7 @@ const initAuthTables = async () => {
   `);
 };
 
-const createUser = async ({ name, email, password, securityAnswer }) => {
+const createUser = async ({ name, email, password, phone, securityAnswer }) => {
   const isHashed = password.startsWith('$2b$');
   const hash = isHashed ? password : await bcrypt.hash(password, 10);
   
@@ -79,8 +76,8 @@ const createUser = async ({ name, email, password, securityAnswer }) => {
   const secHash = await bcrypt.hash(safeSecurityAnswer, 10);
   
   const [result] = await pool.query(
-    'INSERT INTO users (name, email, password_hash, security_answer_hash) VALUES (?, ?, ?, ?)',
-    [name, email, hash, secHash]
+    'INSERT INTO users (name, email, password_hash, phone, security_answer_hash) VALUES (?, ?, ?, ?, ?)',
+    [name, email, hash, phone || null, secHash]
   );
   return result.insertId;
 };
@@ -92,7 +89,7 @@ const getUserByEmail = async (email) => {
 
 const getUserById = async (id) => {
   const [rows] = await pool.query(
-    'SELECT id, name, email, role, is_active, wallet_balance, two_factor_enabled, security_question, created_at FROM users WHERE id = ?',
+    'SELECT id, name, email, phone, role, is_active, wallet_balance, two_factor_enabled, security_question, created_at FROM users WHERE id = ?',
     [id]
   );
   return rows[0];
@@ -100,13 +97,13 @@ const getUserById = async (id) => {
 
 const getAllUsers = async () => {
   const [rows] = await pool.query(
-    'SELECT id, name, email, role, is_active, wallet_balance, created_at FROM users ORDER BY created_at DESC'
+    'SELECT id, name, email, phone, role, is_active, wallet_balance, created_at FROM users ORDER BY created_at DESC'
   );
   return rows;
 };
 
-const updateUser = async (id, { name }) => {
-  await pool.query('UPDATE users SET name=? WHERE id=?', [name, id]);
+const updateUser = async (id, { name, phone }) => {
+  await pool.query('UPDATE users SET name=?, phone=? WHERE id=?', [name, phone || null, id]);
 };
 
 const createPendingUser = async ({ name, email, password, otp, expiry }) => {
@@ -146,8 +143,6 @@ const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
 };
 
 const saveResetOtp = async (userId, otp) => {
-  // THE FIX: We offload the expiration calculation entirely to MySQL natively.
-  // This completely eliminates the BIGINT vs DATETIME access driver conflicts.
   await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [otp, userId]);
 };
 
@@ -160,27 +155,18 @@ const updateUserPassword = async (userId, hash) => {
 };
 
 module.exports = {
-  // Initialization
   createUsersTable,
   initAuthTables,
-  
-  // Standard Users
   createUser,
   getUserByEmail,
   getUserById,
   getAllUsers,
   updateUser,
   updateUserPassword,
-  
-  // Pending Queue
   createPendingUser,
   getPendingUser,
   deletePendingUser,
-  
-  // Wallet
   adjustWallet,
-  
-  // OTP / Auth Logic
   saveResetOtp,
   clearResetOtp,
   verifyPassword: async (password, hash) => bcrypt.compare(password, hash),
