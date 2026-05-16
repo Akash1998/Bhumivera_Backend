@@ -11,16 +11,18 @@ const getDashboardData = async (req, res) => {
     if (period === '7d') days = 7;
     if (period === '90d') days = 90;
 
+    // 1. Time-Series Sales Velocity Data
     const [salesData] = await db.execute(`
-      SELECT DATE(created_at) as period,
+      SELECT DATE_FORMAT(created_at, '%b %d') as name,
         COUNT(*) as orders,
         SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END) as revenue
       FROM orders
       WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
       GROUP BY DATE(created_at)
-      ORDER BY period ASC
+      ORDER BY DATE(created_at) ASC
     `, [days]);
 
+    // 2. Global KPI Metrics
     const [totalStats] = await db.execute(`
       SELECT
         COUNT(*) as totalOrders,
@@ -29,22 +31,39 @@ const getDashboardData = async (req, res) => {
       WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
     `, [days]);
 
+    // 3. User Acquisition
     const [userStats] = await db.execute(`
       SELECT COUNT(*) as newUsers
       FROM users
       WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
     `, [days]);
 
+    // 4. Active Catalog Size
     const [productStats] = await db.execute(`
       SELECT COUNT(*) as totalProducts FROM products WHERE status = 'active'
     `);
 
+    // 5. Fulfillment Pipeline
     const [pendingOrders] = await db.execute(`
       SELECT COUNT(*) as pending FROM orders WHERE status = 'pending'
     `);
 
+    // 6. Real Inventory Movement (Category Level Aggregation)
+    const [categoryData] = await db.execute(`
+      SELECT c.name, SUM(oi.price * oi.quantity) as sales
+      FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      JOIN categories c ON p.category_id = c.id
+      JOIN orders o ON oi.order_id = o.id
+      WHERE o.status != 'cancelled' AND o.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      GROUP BY c.name
+      ORDER BY sales DESC
+      LIMIT 5
+    `, [days]);
+
     res.json({
       chartData: salesData,
+      categoryData: categoryData,
       metrics: {
         revenue: totalStats[0].totalRevenue || 0,
         orders: totalStats[0].totalOrders || 0,
