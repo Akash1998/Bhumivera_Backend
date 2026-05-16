@@ -12,7 +12,9 @@ const {
   updateOrderStatus 
 } = require("../models/orderModel");
 const { getCartTotal, clearCart } = require("../models/cartModel");
-const { getAddressesByUser } = require("../models/addressModel");
+
+// [FIX]: Correctly destructure AddressModel from the exported object
+const { AddressModel } = require("../models/addressModel");
 
 router.get("/all", authenticateAdmin, async (req, res) => {
   try {
@@ -68,7 +70,8 @@ router.post("/", authenticateUser, async (req, res) => {
     const { addressId, deliveryType, paymentMode, couponCode, notes } = req.body;
     if (!addressId) return res.status(400).json({ message: "Delivery address is required." });
 
-    const addresses = await getAddressesByUser(req.user.id);
+    // [FIX]: Use AddressModel.getAddressesByUser
+    const addresses = await AddressModel.getAddressesByUser(req.user.id);
     const address = addresses.find((a) => a.id === parseInt(addressId, 10));
     if (!address) return res.status(404).json({ message: "Address not found." });
 
@@ -106,6 +109,19 @@ router.post("/", authenticateUser, async (req, res) => {
     });
 
     await clearCart(req.user.id);
+
+    // [ENHANCEMENT]: Immediately dispatch Order Confirmation Email upon successful placement
+    try {
+      const [userRecords] = await pool.query(`SELECT name, email FROM users WHERE id = ?`, [req.user.id]);
+      if (userRecords.length > 0) {
+        const { name, email } = userRecords[0];
+        sendOrderStatusEmail(email, name, orderId, 'pending')
+          .catch(err => console.error(`[Mailer] Auto-email placement failed:`, err));
+      }
+    } catch (mailErr) {
+      console.error("[Mailer] DB Query Error during placement:", mailErr);
+    }
+
     return res.status(201).json({ orderId, message: "Order placed successfully", discount });
   } catch (err) {
     console.error("Place order error:", err);
