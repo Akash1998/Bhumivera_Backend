@@ -2,14 +2,13 @@ const pool = require('../config/db');
 
 const createOrdersTables = async () => {
   try {
-    // 1. Create the base tables (if they don't exist at al
     await pool.query(`
       CREATE TABLE IF NOT EXISTS orders (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL,
         address_snapshot JSON NOT NULL,
         delivery_type ENUM('standard','express') DEFAULT 'standard',
-        payment_mode ENUM('COD','online') DEFAULT 'COD',
+        payment_mode ENUM('COD','online','WALLET') DEFAULT 'COD',
         status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -28,6 +27,13 @@ const createOrdersTables = async () => {
         FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
       )
     `);
+
+    // [FIX]: Runtime ENUM Patch - Safely alters existing production tables to prevent 500 crash
+    try {
+      await pool.query("ALTER TABLE orders MODIFY COLUMN payment_mode ENUM('COD','online','WALLET') DEFAULT 'COD'");
+    } catch (enumErr) {
+      console.warn("Notice: ENUM payment_mode modifier skipped or already applied.", enumErr.message);
+    }
 
     // 2. Robust Migration Logic
     const addCol = async (table, column, definition) => {
