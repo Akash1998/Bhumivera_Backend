@@ -118,7 +118,7 @@ router.post('/', authenticateAdmin, async (req, res) => {
     const [result] = await pool.query(
       `INSERT INTO products (name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications) 
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [name, finalSlug, description || '', price, safeDiscount, safeCat, safeSubCat, safeQuantity, status || 'active', sku || null, brand || null, safeWarranty, meta_title || null, meta_description || null, tags || null, is_featured || 0, is_trending || 0, is_new_arrival || 0, model_3d_url || null, video_urls || null, product_links || null, specData]
+      [name, finalSlug, description || '', price, safeDiscount, safeCat, safeSubCat, safeQuantity, status || 'active', sku || null, brand || 'Bhumivera', safeWarranty, meta_title || null, meta_description || null, tags || null, is_featured || 0, is_trending || 0, is_new_arrival || 0, model_3d_url || null, video_urls || null, product_links || null, specData]
     );
     
     const [newProduct] = await pool.query('SELECT * FROM products WHERE id = ?', [result.insertId]);
@@ -304,7 +304,43 @@ router.get('/:identifier', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
     
-    res.json({ success: true, data: parseImages(rows)[0] });
+    const product = parseImages(rows)[0];
+
+    // SEO ENGINE: Compile Google structured JSON-LD data dynamically
+    const schemaMarkup = {
+      "@context": "https://schema.org/",
+      "@type": "Product",
+      "name": product.name,
+      "image": product.images && product.images.length > 0 ? product.images.map(img => `https://pub-22cd43cce9bc475680ad496e199706c4.r2.dev/${img}`) : [],
+      "description": product.meta_description || product.description,
+      "sku": product.sku || `BHUMI-${product.id}`,
+      "brand": {
+        "@type": "Brand",
+        "name": product.brand || "Bhumivera"
+      },
+      "offers": {
+        "@type": "Offer",
+        "url": `https://www.bhumivera.com/product/${product.slug}`,
+        "priceCurrency": "INR",
+        "price": product.discount_price || product.price,
+        "availability": product.quantity > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+        "itemCondition": "https://schema.org/NewCondition"
+      }
+    };
+
+    if (product.rating && product.review_count) {
+      schemaMarkup.aggregateRating = {
+        "@type": "AggregateRating",
+        "ratingValue": product.rating,
+        "reviewCount": product.review_count
+      };
+    }
+    
+    res.json({ 
+      success: true, 
+      data: product,
+      schema_markup: schemaMarkup // Ready for injection in the public frontend React <head>
+    });
   } catch (error) {
     console.error("Smart Identifier Route Error:", error);
     res.status(500).json({ success: false, message: 'Database query failed' });
