@@ -120,6 +120,7 @@ app.use("/api/addresses", addressRoutes);
 app.use("/api/admin", adminUserRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/coupons", couponRoutes);
+app.use("/api/admin/coupons", couponRoutes); // FIXED: Aliased for admin frontend calling exact route
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
