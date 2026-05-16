@@ -2,8 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 
-// GET /api/flash-sales/active
-router.get('/active', async (req, res) => {
+const getActiveSales = async (req, res) => {
   try {
     const query = `
       SELECT fs.*, p.name, p.slug, p.price as original_price,
@@ -23,6 +22,11 @@ router.get('/active', async (req, res) => {
     console.error("Flash sales fetch failed:", error);
     res.status(500).json({ success: false, message: "Server error" });
   }
-});
+};
+
+// GET /api/flash-sales/active
+router.get('/active', getActiveSales);
+// FIXED: Bind base URL as frontend defaults to /api/flash-sales
+router.get('/', getActiveSales);
 
 module.exports = router;
