@@ -57,6 +57,8 @@ const createOrdersTables = async () => {
     await addCol('orders', 'payment_id', 'VARCHAR(255)');
     await addCol('orders', 'cancel_reason', 'TEXT');
     await addCol('orders', 'notes', 'TEXT');
+    await addCol('orders', 'tracking_number', 'VARCHAR(255)'); // Added missing column
+    await addCol('orders', 'courier', 'VARCHAR(255)'); // Added missing column
 
     // Add missing columns to order_items
     await addCol('order_items', 'sku', 'VARCHAR(255)');
