@@ -3,9 +3,27 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 
+// FIXED: Database Auto-Init interceptor to prevent 500 crashes
+const ensureTaxTable = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tax_rates (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        rate DECIMAL(5,2) NOT NULL,
+        region VARCHAR(255) NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  } catch (e) {
+    console.warn("Tax DB intercept warning:", e.message);
+  }
+};
+
 router.get('/', async (req, res) => {
   try {
-
+    await ensureTaxTable();
     const [rates] = await pool.query('SELECT * FROM tax_rates ORDER BY id DESC');
     res.json(rates);
   } catch (err) {
@@ -18,6 +36,7 @@ router.get('/', async (req, res) => {
 // POST create a new tax rate
 router.post('/', async (req, res) => {
   try {
+    await ensureTaxTable();
     const { name, rate, region, is_active } = req.body;
     const [result] = await pool.query(
       'INSERT INTO tax_rates (name, rate, region, is_active) VALUES (?, ?, ?, ?)',
