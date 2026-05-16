@@ -1,11 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
-// Assuming your standard auth middleware. Adjust "protect" if your export is named differently.
-const { protect } = require("../middleware/authMiddleware");
+// FIXED: Using the exact middleware name exported by your authMiddleware.js
+const { authenticateUser } = require("../middleware/authMiddleware");
 
-// NEW: Added missing endpoint for Checkout.jsx
-router.get("/balance", protect, async (req, res) => {
+// NEW: Added missing endpoint for Checkout.jsx with correct middleware
+router.get("/balance", authenticateUser, async (req, res) => {
   try {
     const [wallets] = await pool.query(
       "SELECT balance FROM wallets WHERE user_id = ?",
