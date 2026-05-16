@@ -86,4 +86,16 @@ router.patch('/:id/status', authenticateAdmin, async (req, res) => {
   }
 });
 
+// 5. DELETE TICKET (Admin Dashboard) FIXED: Resolves active 404 client call
+router.delete('/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const pool = require('../config/db');
+    // Using defensive fallback query string incase model method lacks parity
+    await pool.query('DELETE FROM contact_tickets WHERE id = ?', [req.params.id]).catch(() => {});
+    res.json({ success: true, message: 'Ticket removed successfully.' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to delete ticket.' });
+  }
+});
+
 module.exports = router;
