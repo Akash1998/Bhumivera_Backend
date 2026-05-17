@@ -12,6 +12,7 @@ const taxRoutes = require("./routes/taxRoutes");
 const walletRoutes = require("./routes/walletRoutes");
 const searchRoutes = require("./routes/searchRoutes");
 const flashSalesRoutes = require("./routes/flashSalesRoutes");
+const aiRoutes = require("./routes/aiRoutes"); // NEW: AI Route Imported
 const subcategoryRoutes = require("./routes/subcategoryRoutes");
 const productRoutes = require("./routes/productRoutes");
 const warrantyRoutes = require("./routes/warrantyRoutes");
@@ -101,6 +102,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // --- ROUTE REGISTRATION ---
 app.use("/api/flash-sales", flashSalesRoutes);
+app.use("/api/ai", aiRoutes); // NEW: AI Route Registered to handling /api/ai/* endpoints
 app.use("/api/affiliate", affiliateRoutes);
 app.use("/api/tax", taxRoutes);
 app.use("/api/wallet", walletRoutes);
