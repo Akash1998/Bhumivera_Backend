@@ -131,6 +131,37 @@ app.use("/api/inventory", inventoryRoutes);
 app.use("/api/banners", bannerRoutes);
 app.use("/api/warehouse", warehouseRoutes);
 
+// --- SEO: DYNAMIC XML SITEMAP GENERATOR ---
+app.get("/sitemap.xml", async (req, res) => {
+  try {
+    // Fetch only active products to prevent indexing hidden/draft items
+    const [products] = await pool.query("SELECT slug, updated_at FROM products WHERE status = 'active'");
+    
+    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`;
+    
+    // Core static pages
+    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/</loc>\n    <priority>1.0</priority>\n  </url>`;
+    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/shop</loc>\n    <priority>0.9</priority>\n  </url>`;
+    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/about</loc>\n    <priority>0.7</priority>\n  </url>`;
+    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/contact</loc>\n    <priority>0.7</priority>\n  </url>`;
+
+    // Dynamic product injection
+    for (const p of products) {
+      if (!p.slug) continue;
+      const lastModDate = p.updated_at ? new Date(p.updated_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+      xml += `\n  <url>\n    <loc>https://www.bhumivera.com/product/${p.slug}</loc>\n    <lastmod>${lastModDate}</lastmod>\n    <priority>0.8</priority>\n  </url>`;
+    }
+    
+    xml += `\n</urlset>`;
+    
+    res.header('Content-Type', 'application/xml');
+    res.send(xml);
+  } catch (err) {
+    console.error("[SITEMAP ERROR]:", err);
+    res.status(500).end();
+  }
+});
+
 app.get("/", (req, res) => res.json({ status: "ok", message: "Bhumivera Eco-Lab Core API running!" }));
 
 // --- DATABASE INITIALIZATION ---
