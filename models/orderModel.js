@@ -9,7 +9,7 @@ const createOrdersTables = async () => {
         address_snapshot JSON NOT NULL,
         delivery_type ENUM('standard','express') DEFAULT 'standard',
         payment_mode ENUM('COD','online','WALLET') DEFAULT 'COD',
-        status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned') DEFAULT 'pending',
+        status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned','archived') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -28,14 +28,17 @@ const createOrdersTables = async () => {
       )
     `);
 
-    // [FIX]: Runtime ENUM Patch - Safely alters existing production tables to prevent 500 crash
     try {
       await pool.query("ALTER TABLE orders MODIFY COLUMN payment_mode ENUM('COD','online','WALLET') DEFAULT 'COD'");
     } catch (enumErr) {
       console.warn("Notice: ENUM payment_mode modifier skipped or already applied.", enumErr.message);
     }
+    try {
+      await pool.query("ALTER TABLE orders MODIFY COLUMN status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned','archived') DEFAULT 'pending'");
+    } catch (enumErr) {
+      console.warn("Notice: ENUM status modifier skipped or already applied.", enumErr.message);
+    }
 
-    // 2. Robust Migration Logic
     const addCol = async (table, column, definition) => {
       try {
         const [cols] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE '${column}'`);
@@ -48,7 +51,18 @@ const createOrdersTables = async () => {
       }
     };
 
-    // Add missing columns to orders
+    const addIndex = async (table, indexName, columns) => {
+      try {
+        const [idx] = await pool.query(`SHOW INDEX FROM \`${table}\` WHERE Key_name = ?`, [indexName]);
+        if (idx.length === 0) {
+          await pool.query(`CREATE INDEX \`${indexName}\` ON \`${table}\` (${columns})`);
+          console.log(`Added index ${indexName} on ${table}`);
+        }
+      } catch (err) {
+        console.warn(`Index ${indexName} on ${table} warning:`, err.message);
+      }
+    };
+
     await addCol('orders', 'subtotal', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'discount', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'total', 'DECIMAL(10,2) DEFAULT 0');
@@ -57,12 +71,17 @@ const createOrdersTables = async () => {
     await addCol('orders', 'payment_id', 'VARCHAR(255)');
     await addCol('orders', 'cancel_reason', 'TEXT');
     await addCol('orders', 'notes', 'TEXT');
-    await addCol('orders', 'tracking_number', 'VARCHAR(255)'); // Added missing column
-    await addCol('orders', 'courier', 'VARCHAR(255)'); // Added missing column
+    await addCol('orders', 'tracking_number', 'VARCHAR(255)');
+    await addCol('orders', 'courier', 'VARCHAR(255)');
 
-    // Add missing columns to order_items
     await addCol('order_items', 'sku', 'VARCHAR(255)');
     await addCol('order_items', 'image', 'TEXT');
+
+    await addIndex('orders', 'idx_orders_created_at', 'created_at DESC');
+    await addIndex('orders', 'idx_orders_status', 'status');
+    await addIndex('orders', 'idx_orders_user_created', 'user_id, created_at DESC');
+    await addIndex('order_items', 'idx_order_items_order_id', 'order_id');
+    await addIndex('order_items', 'idx_order_items_product_id', 'product_id');
 
   } catch (err) {
     console.error("Order Table Creation Error:", err);
@@ -191,22 +210,63 @@ const getOrdersByUser = async (userId) => {
 };
 
 const getAllOrders = async (filters = {}) => {
-  let sql = 'SELECT o.*, u.name as user_name, u.email as user_email FROM orders o LEFT JOIN users u ON o.user_id = u.id';
+  let whereClauses = [];
   let params = [];
-  
-  if (filters.status) {
-    sql += ' WHERE o.status = ?';
+
+  if (filters.status && filters.status !== 'all') {
+    whereClauses.push('o.status = ?');
     params.push(filters.status);
   }
-  
-  sql += ' ORDER BY o.created_at DESC';
-  
-  const [orders] = await pool.query(sql, params);
-  for (const o of orders) {
-    const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [o.id]);
-    o.items = items;
+
+  if (filters.search) {
+    whereClauses.push('(u.name LIKE ? OR u.email LIKE ? OR o.id = ? OR o.courier LIKE ? OR o.tracking_number LIKE ?)');
+    const searchVal = `%${filters.search}%`;
+    params.push(searchVal, searchVal, isNaN(parseInt(filters.search)) ? 0 : parseInt(filters.search), searchVal, searchVal);
   }
-  return orders.map(parseOrder);
+
+  let whereSql = '';
+  if (whereClauses.length > 0) {
+    whereSql = ' WHERE ' + whereClauses.join(' AND ');
+  }
+
+  const countSql = `SELECT COUNT(*) as total FROM orders o LEFT JOIN users u ON o.user_id = u.id ${whereSql}`;
+  const [[countRow]] = await pool.query(countSql, params);
+  const total = countRow ? countRow.total : 0;
+
+  const page = Math.max(1, parseInt(filters.page) || 1);
+  const limit = Math.max(1, Math.min(200, parseInt(filters.limit) || 50));
+  const offset = (page - 1) * limit;
+
+  let orderSql = `SELECT o.*, u.name as user_name, u.email as user_email FROM orders o LEFT JOIN users u ON o.user_id = u.id ${whereSql} ORDER BY o.created_at DESC LIMIT ? OFFSET ?`;
+  const queryParams = [...params, limit, offset];
+
+  const [orders] = await pool.query(orderSql, queryParams);
+
+  const orderIds = orders.map(o => o.id);
+  let itemsMap = {};
+  if (orderIds.length > 0) {
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [allItems] = await pool.query(`SELECT * FROM order_items WHERE order_id IN (${placeholders})`, orderIds);
+    for (const it of allItems) {
+      if (!itemsMap[it.order_id]) itemsMap[it.order_id] = [];
+      itemsMap[it.order_id].push(it);
+    }
+  }
+
+  const parsed = orders.map(o => ({
+    ...parseOrder(o),
+    items: itemsMap[o.id] || []
+  }));
+
+  return {
+    orders: parsed,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit)
+    }
+  };
 };
 
 const getOrderById = async (orderId) => {

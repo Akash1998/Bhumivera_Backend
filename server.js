@@ -5,6 +5,13 @@ const pool = require("./config/db");
 const path = require("path");
 const bcrypt = require("bcryptjs");
 
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
+if (JWT_SECRET === 'fallback_secret') {
+  console.warn("[SECURITY WARNING] JWT_SECRET environment variable is NOT set. Using unsafe fallback. Set a random string >= 32 characters in production.");
+} else if (JWT_SECRET.length < 32) {
+  console.warn(`[SECURITY WARNING] JWT_SECRET length is ${JWT_SECRET.length} characters. Recommendation: use at least 32 characters (256 bits) for production.`);
+}
+
 // Route Imports
 const categoryRoutes = require("./routes/categoryRoutes");
 const affiliateRoutes = require("./routes/affiliateRoutes");
@@ -33,14 +40,11 @@ const settingsRoutes = require("./routes/settingsRoutes");
 const shippingRoutes = require("./routes/shippingRoutes");
 const returnRoutes = require("./routes/returnRoutes");
 const inventoryRoutes = require("./routes/inventoryRoutes");
-const bannerRoutes = require("./routes/bannerRoutes");
-const fitmentRoutes = require("./routes/fitmentRoutes");
 const warehouseRoutes = require("./routes/warehouseRoutes");
 
 // Model Initializations
 const { initWarehouseTables } = require("./models/warehouseModel");
 const { initWalletTables } = require("./models/walletModel");
-const { createBannerTable } = require("./models/bannerModel");
 const { createCartTable } = require("./models/cartModel");
 const { createOrdersTables } = require("./models/orderModel");
 const { createAddressTable } = require("./models/addressModel");
@@ -108,7 +112,6 @@ app.use("/api/affiliate", affiliateRoutes);
 app.use("/api/tax", taxRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/search", searchRoutes);
-app.use("/api/fitments", fitmentRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/subcategories", subcategoryRoutes);
 app.use("/api/products", productRoutes);
@@ -123,7 +126,6 @@ app.use("/api/addresses", addressRoutes);
 app.use("/api/admin", adminUserRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/coupons", couponRoutes);
-app.use("/api/admin/coupons", couponRoutes); 
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
@@ -131,7 +133,6 @@ app.use("/api/settings", settingsRoutes);
 app.use("/api/shipping", shippingRoutes);
 app.use("/api/returns", returnRoutes);
 app.use("/api/inventory", inventoryRoutes);
-app.use("/api/banners", bannerRoutes);
 app.use("/api/warehouse", warehouseRoutes);
 
 // --- SEO: DYNAMIC XML SITEMAP GENERATOR ---
@@ -183,7 +184,6 @@ async function initDB() {
     await safeInit('Wallet', initWalletTables);
     await safeInit('Cart', createCartTable);
     await safeInit('Orders', createOrdersTables);
-    await safeInit('Banner', createBannerTable);
     await safeInit('Returns', initReturnsTable);
     await safeInit('Contact', initContactTable);
     await safeInit('Admin', initAdminTable);

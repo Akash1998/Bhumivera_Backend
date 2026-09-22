@@ -18,8 +18,12 @@ const { AddressModel } = require("../models/addressModel");
 
 router.get("/all", authenticateAdmin, async (req, res) => {
   try {
-    const orders = await getAllOrders();
-    return res.json(orders);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const status = req.query.status || null;
+    const search = req.query.search || null;
+    const result = await getAllOrders({ page, limit, status, search });
+    return res.json(result);
   } catch (err) {
     console.error("Admin Fetch Orders Error:", err);
     return res.status(500).json({ message: "Failed to load global orders ledger" });
@@ -202,7 +206,8 @@ router.get("/:id", authenticateUser, async (req, res) => {
   try {
     const order = await getOrderById(req.params.id);
     if (!order) return res.status(404).json({ message: "Order not found" });
-    if (order.user_id !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+    const isAdmin = req.user && (req.user.role === 'admin' || req.user.role === 'superadmin');
+    if (!isAdmin && order.user_id !== req.user.id) return res.status(403).json({ message: "Forbidden" });
     return res.json(order);
   } catch (err) {
     return res.status(500).json({ message: "Failed to load order" });
@@ -220,6 +225,19 @@ router.post("/:id/return", authenticateUser, async (req, res) => {
     return res.json({ message: "Return request submitted successfully" });
   } catch (err) {
     return res.status(500).json({ message: "Failed to submit return request" });
+  }
+});
+
+router.delete("/:id", authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const order = await getOrderById(id);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+    await pool.query(`UPDATE orders SET status = 'archived', updated_at = NOW() WHERE id = ?`, [id]);
+    return res.json({ success: true, message: "Order archived successfully" });
+  } catch (err) {
+    console.error("[Order Delete Error]:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 

@@ -305,7 +305,14 @@ router.post("/verify-email", otpLimiter, async (req, res) => {
 });
 
 router.get("/profile", authenticateAdmin, async (req, res) => {
-  res.json({ message: "Profile access" });
+  try {
+    const [rows] = await pool.query('SELECT id, email, role, created_at FROM admin_users WHERE id = ?', [req.admin.id]);
+    if (rows.length === 0) return res.status(404).json({ message: 'Admin profile not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Admin Profile Fetch Error:", err);
+    res.status(500).json({ message: 'Failed to load admin profile' });
+  }
 });
 
 // --- LEGACY ADMIN OTP ---
