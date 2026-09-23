@@ -187,6 +187,7 @@ async function initDB() {
     await safeInit('Returns', initReturnsTable);
     await safeInit('Contact', initContactTable);
     await safeInit('Admin', initAdminTable);
+    await safeInit('AuthSecurity', createAuthSecurityTables);
     await safeInit('Warehouse', initWarehouseTables); 
 
     try {
