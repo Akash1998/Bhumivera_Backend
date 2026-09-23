@@ -53,7 +53,7 @@ const { initCategoriesTable } = require("./models/categoryModel");
 const { initReturnsTable } = require("./models/returnModel");
 const { initContactTable } = require("./models/contactModel");
 const { initAdminTable } = require("./models/adminModel");
-const { createUsersTable, initAuthTables } = require("./models/userModel");
+const { createUsersTable, initAuthTables, createAuthSecurityTables } = require("./models/userModel");
 const { createReviewTable } = require("./models/reviewModel"); 
 const { createNotificationTable } = require("./models/notificationModel");
 
