@@ -7,7 +7,7 @@ const authenticateAdmin=async(req,res,next)=>{
   try{
     const token=auth.split(' ')[1],
           payload=jwt.verify(token,process.env.JWT_SECRET);
-    if(payload.role!=='admin'&&payload.role!=='superadmin')
+    if(payload.role!=='admin'&&payload.role!=='superadmin'&&payload.role!=='warehouse_admin')
       return res.status(403).json({message:'Access denied: Admin privileges required.'});
     req.admin={id:payload.id,email:payload.email,role:payload.role};
     req.user=payload;

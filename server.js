@@ -89,10 +89,10 @@ app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " +
-    "script-src 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://overbridgenet.com; " +
+    "script-src 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://vercel.live https://overbridgenet.com; " +
     "worker-src 'self' blob:; " +
-    "connect-src 'self' https://challenges.cloudflare.com https://bhumivera-backend.railway.app https://service.bhumivera.com https://www.google-analytics.com https://*.r2.cloudflarestorage.com https://overbridgenet.com; " +
-    "frame-src 'self' https://challenges.cloudflare.com; " +
+    "frame-src 'self' https://challenges.cloudflare.com https://vercel.live; " +
+    "connect-src 'self' https://challenges.cloudflare.com https://vercel.live https://bhumivera-backend.railway.app https://service.bhumivera.com https://www.google-analytics.com https://*.r2.cloudflarestorage.com https://overbridgenet.com; " +
     "img-src 'self' data: blob: https:; " +
     "trusted-types *;"
   );

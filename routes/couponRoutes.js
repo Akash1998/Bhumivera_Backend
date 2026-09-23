@@ -3,7 +3,14 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
-const { createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
+const { createCouponTable, createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
+
+router.use(async (req, res, next) => {
+  try { await createCouponTable(); } catch (e) {
+    console.warn('[COUPON_INIT] Warning:', e.message);
+  }
+  next();
+});
 
 // POST /api/coupons/validate - validate coupon (public)
 router.post('/validate', async (req, res) => {

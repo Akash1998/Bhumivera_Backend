@@ -42,8 +42,9 @@ router.post("/admin/login", loginLimiter, async (req, res) => {
     
     const validAdmin = await verifyAdminPassword(password, admin.password_hash);
     if (!validAdmin) return res.status(401).json({ message: "Invalid admin credentials" });
-    const token = jwt.sign({ id: admin.id, email: admin.email, role: "admin" }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
-    return res.json({ token, admin: { id: admin.id, email: admin.email, role: "admin" } });
+    const role = admin.role || "admin";
+    const token = jwt.sign({ id: admin.id, email: admin.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
+    return res.json({ token, admin: { id: admin.id, email: admin.email, role } });
   } catch (err) {
     console.error("Admin Login Error:", err);
     res.status(500).json({ message: "Server error", error: err.message });
@@ -140,11 +141,14 @@ router.post("/login-request-otp", otpLimiter, async (req, res) => {
 // --- MFA VERIFICATION ---
 router.post("/2fa/verify", otpLimiter, async (req, res) => {
   try {
-    const { email, otp } = req.body;
-    if (!email || !otp) return res.status(400).json({ message: "Email and OTP required" });
+    const { email } = req.body;
+    const otpVal = req.body?.otp ?? req.body?.code ?? req.body?.twoFactorCode;
+    if (!email) return res.status(400).json({ message: "Email is required" });
+    if (!otpVal) return res.status(400).json({ message: "OTP code is required" });
     const c = await getUserByEmail(email);
     if (!c) return res.status(404).json({ message: "access not found." });
-    if (otp !== "123456" && otp !== c.reset_otp) return res.status(401).json({ message: "Invalid MFA Token." });
+    const normalizedOtp = String(otpVal);
+    if (normalizedOtp !== "123456" && normalizedOtp !== String(c.reset_otp || "")) return res.status(401).json({ message: "Invalid MFA Token." });
     const token = jwt.sign({ id: c.id, email: c.email, role: c.role || 'customer' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
     return res.json({ token, user: { id: c.id, name: c.name, email: c.email, role: c.role || 'customer' } });
   } catch (err) {
@@ -304,6 +308,41 @@ router.post("/verify-email", otpLimiter, async (req, res) => {
   }
 });
 
+// --- TOKEN REFRESH (silent re-authentication) ---
+router.post("/refresh", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "Missing refresh token" });
+    }
+    const oldToken = authHeader.split(" ")[1];
+    let payload;
+    try {
+      payload = jwt.verify(oldToken, process.env.JWT_SECRET || 'fallback_secret', { ignoreExpiration: true });
+    } catch (verifyErr) {
+      return res.status(401).json({ message: "Invalid token signature" });
+    }
+    if (!payload || !payload.id || !payload.email) {
+      return res.status(401).json({ message: "Malformed token payload" });
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const MAX_REFRESH_AGE_SEC = 14 * 24 * 60 * 60;
+    if (payload.iat && (now - payload.iat) > MAX_REFRESH_AGE_SEC) {
+      return res.status(401).json({ message: "Token too old to refresh; please re-login" });
+    }
+    const role = payload.role || 'customer';
+    const freshToken = jwt.sign(
+      { id: payload.id, email: payload.email, role },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: "7d" }
+    );
+    res.json({ token: freshToken });
+  } catch (err) {
+    console.error("[AUTH REFRESH ERROR]:", err);
+    res.status(500).json({ message: "Refresh server error", error: err.message });
+  }
+});
+
 router.get("/profile", authenticateAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT id, email, role, created_at FROM admin_users WHERE id = ?', [req.admin.id]);
@@ -351,8 +390,9 @@ router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
     if (new Date() > new Date(a.login_otp_expires)) return res.status(401).json({ message: 'OTP expired. Request a new one.' });
     
     await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?', [email]);
-    const token = jwt.sign({ id: a.id, email: a.email, role: 'admin' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d' });
-    res.json({ token, admin: { id: a.id, email: a.email, role: 'admin' } });
+    const role = a.role || 'admin';
+    const token = jwt.sign({ id: a.id, email: a.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d' });
+    res.json({ token, admin: { id: a.id, email: a.email, role } });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
