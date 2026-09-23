@@ -33,7 +33,14 @@ const createUsersTable = async () => {
     { name: 'security_question', type: `VARCHAR(255) DEFAULT 'What is your mother''s maiden name?'` },
     { name: 'security_answer_hash', type: `VARCHAR(255)` },
     { name: 'reset_otp', type: `VARCHAR(10)` },
-    { name: 'reset_otp_expires', type: `DATETIME` }
+    { name: 'reset_otp_expires', type: `DATETIME` },
+    { name: 'failed_attempts', type: `INT DEFAULT 0` },
+    { name: 'locked_until', type: `DATETIME` },
+    { name: 'google_id', type: `VARCHAR(255)` },
+    { name: 'magic_token', type: `VARCHAR(255)` },
+    { name: 'magic_token_expires', type: `DATETIME` },
+    { name: 'last_password_change', type: `DATETIME` },
+    { name: 'remember_device_hash', type: `VARCHAR(255)` }
   ];
 
   for (const col of syncColumns) {
@@ -53,6 +60,167 @@ const createUsersTable = async () => {
   } catch(err) {
     console.warn(`[DB_SYNC] Info: Could not modify reset_otp_expires (ignoring):`, err.message);
   }
+
+  await createAuthSecurityTables();
+};
+
+const createAuthSecurityTables = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      jti VARCHAR(64) UNIQUE NOT NULL,
+      device_info JSON DEFAULT NULL,
+      ip VARCHAR(64),
+      user_agent TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      expires_at DATETIME,
+      revoked_at DATETIME DEFAULT NULL,
+      is_current TINYINT(1) DEFAULT 0,
+      INDEX idx_us_jti(jti),
+      INDEX idx_us_user(user_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      admin_id INT NOT NULL,
+      jti VARCHAR(64) UNIQUE NOT NULL,
+      device_info JSON DEFAULT NULL,
+      ip VARCHAR(64),
+      user_agent TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      expires_at DATETIME,
+      revoked_at DATETIME DEFAULT NULL,
+      is_current TINYINT(1) DEFAULT 0,
+      INDEX idx_us_jti(jti),
+      INDEX idx_us_user(admin_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_history (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      role ENUM('customer','admin','warehouse_admin') DEFAULT 'customer',
+      password_hash VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_ph_user_role(user_id,role)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS otp_attempts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      scope ENUM('register','login2fa','forgot','admin_forgot','challenge','warehouse') DEFAULT 'register',
+      email VARCHAR(150),
+      attempt_count INT DEFAULT 0,
+      backoff_seconds INT DEFAULT 30,
+      last_attempt_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      next_allowed_at DATETIME,
+      INDEX idx_oa_scope_email(scope,email)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS new_device_alerts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      role ENUM('customer','admin','warehouse_admin') DEFAULT 'customer',
+      ip VARCHAR(64),
+      user_agent TEXT,
+      city VARCHAR(128) DEFAULT NULL,
+      challenge_code CHAR(6),
+      expires_at DATETIME,
+      used TINYINT(1) DEFAULT 0
+    )
+  `);
+};
+
+const getLast5PasswordHashes = async (userId, role = 'customer') => {
+  const [rows] = await pool.query(
+    'SELECT password_hash FROM password_history WHERE user_id = ? AND role = ? ORDER BY id DESC LIMIT 5',
+    [userId, role]
+  );
+  return rows;
+};
+
+const insertPasswordHistory = async (userId, role, hash) => {
+  await pool.query(
+    'INSERT INTO password_history (user_id, role, password_hash) VALUES (?, ?, ?)',
+    [userId, role, hash]
+  );
+};
+
+const updateUserFailedAttempts = async (userId, reset = false) => {
+  if (reset) {
+    await pool.query('UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?', [userId]);
+  } else {
+    await pool.query(
+      `UPDATE users 
+       SET failed_attempts = failed_attempts + 1,
+           locked_until = CASE 
+             WHEN (failed_attempts + 1) >= 6 THEN DATE_ADD(NOW(), INTERVAL 15 MINUTE)
+             ELSE locked_until
+           END
+       WHERE id = ?`,
+      [userId]
+    );
+  }
+};
+
+const getUserLockStatus = async (userId) => {
+  const [rows] = await pool.query(
+    'SELECT failed_attempts, locked_until FROM users WHERE id = ?',
+    [userId]
+  );
+  if (rows.length === 0) return { locked: false, lockedUntil: null, failedAttempts: 0 };
+  const row = rows[0];
+  const locked = row.locked_until && new Date(row.locked_until) > new Date();
+  return {
+    locked: !!locked,
+    lockedUntil: row.locked_until || null,
+    failedAttempts: row.failed_attempts || 0
+  };
+};
+
+const saveMagicToken = async (userId, token, expiresMinutes = 15) => {
+  await pool.query(
+    'UPDATE users SET magic_token = ?, magic_token_expires = DATE_ADD(NOW(), INTERVAL ? MINUTE) WHERE id = ?',
+    [token, expiresMinutes, userId]
+  );
+};
+
+const findUserByMagicToken = async (token) => {
+  const [rows] = await pool.query(
+    'SELECT * FROM users WHERE magic_token = ? AND magic_token_expires > NOW()',
+    [token]
+  );
+  return rows[0];
+};
+
+const consumeMagicToken = async (userId) => {
+  await pool.query(
+    'UPDATE users SET magic_token = NULL, magic_token_expires = NULL WHERE id = ?',
+    [userId]
+  );
+};
+
+const saveRememberDevice = async (userId, hash) => {
+  await pool.query(
+    'UPDATE users SET remember_device_hash = ? WHERE id = ?',
+    [hash, userId]
+  );
+};
+
+const linkGoogleId = async (userId, googleId) => {
+  await pool.query(
+    'UPDATE users SET google_id = ? WHERE id = ?',
+    [googleId, userId]
+  );
 };
 
 const initAuthTables = async () => {
@@ -156,6 +324,7 @@ const updateUserPassword = async (userId, hash) => {
 
 module.exports = {
   createUsersTable,
+  createAuthSecurityTables,
   initAuthTables,
   createUser,
   getUserByEmail,
@@ -169,6 +338,15 @@ module.exports = {
   adjustWallet,
   saveResetOtp,
   clearResetOtp,
+  getLast5PasswordHashes,
+  insertPasswordHistory,
+  updateUserFailedAttempts,
+  getUserLockStatus,
+  saveMagicToken,
+  findUserByMagicToken,
+  consumeMagicToken,
+  saveRememberDevice,
+  linkGoogleId,
   verifyPassword: async (password, hash) => bcrypt.compare(password, hash),
   verifySecurityAnswer: async (answer, hash) => bcrypt.compare(answer.toLowerCase(), hash),
 };
