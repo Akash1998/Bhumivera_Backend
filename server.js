@@ -96,6 +96,13 @@ app.use((req, res, next) => {
     "img-src 'self' data: blob: https:; " +
     "trusted-types *;"
   );
+  
+  // Explicitly override downstream noise and clear DevTools warnings
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), browsing-topics=(), join-ad-interest-group=(), run-ad-auction=()"
+  );
+
   if (req.method === "OPTIONS") return res.status(204).end();
   next();
 });
