@@ -8,13 +8,22 @@ const pool = mysql
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    port: process.env.DB_PORT,
+    port: parseInt(process.env.DB_PORT, 10) || 3306,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
     connectTimeout: 10000,
-    ssl: process.env.DB_SSL === "false" ? null : { rejectUnauthorized: false }
+    ssl: process.env.DB_SSL === "false" ? undefined : { rejectUnauthorized: false }
   })
   .promise();
+
+pool.getConnection()
+  .then(connection => {
+    console.log("[DB SOCKET] MySQL connection established successfully to Railway.");
+    connection.release();
+  })
+  .catch(err => {
+    console.error("[DB SOCKET FATAL] Railway MySQL Handshake Failed:", err.message);
+  });
 
 module.exports = pool;
