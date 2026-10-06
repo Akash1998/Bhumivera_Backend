@@ -4,6 +4,14 @@ const router = express.Router();
 const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { createCouponTable, createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
+const { validateDateRange } = require('../utils/dateValidation');
+
+const sendInvalidDate = (res, result) => res.status(400).json({
+  code: 'INVALID_DATE',
+  field: result.field,
+  message: result.message,
+  userAction: 'Enter a valid start and end date.',
+});
 
 router.use(async (req, res, next) => {
   try { await createCouponTable(); } catch (e) {
@@ -35,6 +43,7 @@ router.get('/public/active', async (req, res) => {
               discount_value AS value,
               min_order_amount AS min_order_value,
               max_discount,
+              valid_from,
               expires_at AS valid_until,
               usage_limit,
               used_count,
@@ -44,6 +53,7 @@ router.get('/public/active', async (req, res) => {
               expires_at
        FROM coupons
        WHERE is_active = 1
+         AND (valid_from IS NULL OR valid_from <= NOW())
          AND (expires_at IS NULL OR expires_at >= NOW())
          AND (usage_limit IS NULL OR used_count < usage_limit)
        ORDER BY created_at DESC`
@@ -69,9 +79,11 @@ router.get('/', authenticateAdmin, async (req, res) => {
 // POST /api/coupons - admin: create coupon
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
-    const { code, discount_type, discount_value, min_order_amount, max_discount, usage_limit, expires_at } = req.body;
+    const dateRange = validateDateRange(req.body, 'valid_from', 'valid_until', { minDurationMs: 60 * 60 * 1000 });
+    if (!dateRange.valid) return sendInvalidDate(res, dateRange);
+    const { code, discount_type, discount_value } = req.body;
     if (!code || !discount_type || !discount_value) return res.status(400).json({ message: 'code, discount_type, discount_value are required' });
-    const id = await createCoupon(req.body);
+    const id = await createCoupon({ ...req.body, valid_from: dateRange.startDate, expires_at: dateRange.endDate });
     res.status(201).json({ message: 'Coupon created', id });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Coupon code already exists' });
@@ -83,7 +95,12 @@ router.post('/', authenticateAdmin, async (req, res) => {
 // PUT /api/coupons/:id - admin: update coupon
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
-    await updateCoupon(req.params.id, req.body);
+    const dateRange = validateDateRange(req.body, 'valid_from', 'valid_until', { minDurationMs: 60 * 60 * 1000 });
+    if (!dateRange.valid) return sendInvalidDate(res, dateRange);
+    const update = { ...req.body };
+    if (Object.hasOwn(req.body, 'valid_from')) update.valid_from = dateRange.startDate;
+    if (Object.hasOwn(req.body, 'valid_until')) update.valid_until = dateRange.endDate;
+    await updateCoupon(req.params.id, update);
     res.json({ message: 'Coupon updated' });
   } catch (err) {
     console.error(err);
