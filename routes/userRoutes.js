@@ -12,7 +12,11 @@ const {
   updateUserPassword,
   saveResetOtp,
   clearResetOtp,
+  getLast5PasswordHashes,
+  insertPasswordHistory,
 } = require('../models/userModel');
+const { validatePassword } = require('../utils/passwordPolicy');
+const { isPwned } = require('../utils/hibp');
 const { authenticateUser } = require('../middleware/authMiddleware');
 const pool = require('../config/db');
 
@@ -94,19 +98,61 @@ router.put('/profile', authenticateUser, async (req, res) => {
 router.post('/change-password', authenticateUser, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) return res.status(400).json({ message: 'Both passwords required' });
-    if (newPassword.length < 6) return res.status(400).json({ message: 'Password must be at least 6 characters' });
-    
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ code: 'MISSING_FIELDS', message: 'Both currentPassword and newPassword are required.' });
+    }
+
     const user = await getUserByEmail(req.user.email);
     if (!user) return res.status(404).json({ message: 'User not found' });
-    
-    const valid = await verifyPassword(currentPassword, user.password_hash);
-    if (!valid) return res.status(401).json({ message: 'Current password is incorrect' });
-    
-    const hash = await bcrypt.hash(newPassword, 10);
-    await updateUserPassword(user.id, hash);
+
+    const currentValid = await verifyPassword(currentPassword, user.password_hash);
+    if (!currentValid) return res.status(401).json({ message: 'Current password is incorrect' });
+
+    const policyResult = await validatePassword(newPassword);
+    if (!policyResult.valid && policyResult.errors && policyResult.errors.length > 0) {
+      const fatalCodes = new Set(['MIN_LENGTH','MAX_LENGTH','COMPLEXITY','COMMON_PASSWORD']);
+      const firstFatal = policyResult.errors.find(e => fatalCodes.has(e.code));
+      if (firstFatal) {
+        return res.status(400).json({ code: firstFatal.code, message: firstFatal.message });
+      }
+    }
+
+    try {
+      const hibpResult = await isPwned(newPassword);
+      if (hibpResult && hibpResult.pwned && !hibpResult.skipped) {
+        return res.status(400).json({
+          code: 'PWNED_PASSWORD',
+          message: `This password has appeared in ${hibpResult.count} public data breach(es). Choose a different one.`
+        });
+      }
+    } catch (hibpErr) {
+      console.warn('[CHANGE-PWD] HIBP check skipped due to error:', hibpErr.message);
+    }
+
+    const last5 = await getLast5PasswordHashes(user.id, 'customer');
+    if (last5 && last5.length > 0) {
+      for (const row of last5) {
+        const reused = await bcrypt.compare(newPassword, row.password_hash);
+        if (reused) {
+          return res.status(400).json({
+            code: 'PASSWORD_REUSED',
+            message: 'Cannot reuse any of your last 5 passwords.'
+          });
+        }
+      }
+    }
+
+    const SALT_ROUNDS = 12;
+    const hash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await pool.query(
+      'UPDATE users SET password_hash = ?, last_password_change = NOW() WHERE id = ?',
+      [hash, user.id]
+    );
+    await insertPasswordHistory(user.id, 'customer', hash);
+
     return res.json({ message: 'Password updated successfully' });
   } catch (err) {
+    console.error('[CHANGE-PWD] Server error:', err.message);
     return res.status(500).json({ message: 'Server error' });
   }
 });

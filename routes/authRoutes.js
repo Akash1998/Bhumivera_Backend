@@ -3,14 +3,23 @@ const express = require("express"),
   bcrypt = require("bcryptjs"),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
-  { registerLimiter, loginLimiter, otpLimiter } = require('../middleware/rateLimiter'),
-  { authenticateAdmin } = require('../middleware/authMiddleware');
+  { registerLimiter, loginLimiter, otpLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
+  { authenticateAdmin } = require('../middleware/authMiddleware'),
+  { validatePassword } = require('../utils/passwordPolicy'),
+  { isPwned } = require('../utils/hibp');
 
 const {
   getAdminByEmail,
   getAdminById,
   verifyPassword: verifyAdminPassword,
-  updateAdminPassword
+  updateAdminPassword,
+  getAdminLockStatus,
+  updateAdminFailedAttempts,
+  saveAdminResetOtp,
+  getAdminByResetOtp,
+  clearAdminResetOtp,
+  getLast5AdminPasswordHashes,
+  insertAdminPasswordHistory,
 } = require("../models/adminModel");
 
 const {
@@ -21,7 +30,11 @@ const {
   saveResetOtp,
   clearResetOtp,
   updateUserPassword,
-  verifySecurityAnswer
+  verifySecurityAnswer,
+  getLast5PasswordHashes,
+  insertPasswordHistory,
+  getUserLockStatus,
+  updateUserFailedAttempts,
 } = require("../models/userModel");
 
 const router = express.Router();
@@ -31,6 +44,11 @@ const DISPOSABLE_DOMAINS = [
   'throwaway.email', 'getnada.com', 'trashmail.com', 'maildrop.cc', 'sharklasers.com'
 ];
 
+router.use('/admin', adminStrictLimiter);
+router.use('/magic-link', magicLinkLimiter);
+router.use('/google/callback', googleCallbackLimiter);
+router.use('/challenge', challengeLimiter);
+
 // --- ADMIN SPECIFIC LOGIN ---
 router.post("/admin/login", loginLimiter, async (req, res) => {
   try {
@@ -39,9 +57,39 @@ router.post("/admin/login", loginLimiter, async (req, res) => {
     const admin = await getAdminByEmail(email);
     if (!admin) return res.status(401).json({ message: "Invalid admin credentials" });
     if (!admin.password_hash) return res.status(500).json({ message: "Admin account missing security hash." });
-    
+
+    const preLock = await getAdminLockStatus(admin.id);
+    if (preLock.locked) {
+      const secondsRemaining = preLock.lockedUntil
+        ? Math.max(0, Math.ceil((new Date(preLock.lockedUntil) - new Date()) / 1000))
+        : 0;
+      return res.status(423).json({
+        code: 'ACCOUNT_LOCKED',
+        message: 'Account temporarily locked due to multiple failed attempts. Try again later or reset your password.',
+        secondsRemaining
+      });
+    }
+
+    const wasLocked = !!preLock.lockedUntil && new Date(preLock.lockedUntil) <= new Date();
     const validAdmin = await verifyAdminPassword(password, admin.password_hash);
-    if (!validAdmin) return res.status(401).json({ message: "Invalid admin credentials" });
+    if (!validAdmin) {
+      await updateAdminFailedAttempts(admin.id, false);
+      const postLock = await getAdminLockStatus(admin.id);
+      if (postLock.locked && !preLock.locked) {
+        try {
+          await sendMail({
+            to: email,
+            subject: '[Bhumivera] Admin Account Locked',
+            html: `<p>Your admin account has been temporarily locked due to 6 failed login attempts.</p><p>Please reset your password or wait 15 minutes.</p>`
+          });
+        } catch (mailErr) {
+          console.log(`[MAIL TEMPLATE: admin_account_locked] to: ${email}`);
+        }
+      }
+      return res.status(401).json({ message: "Invalid admin credentials" });
+    }
+
+    await updateAdminFailedAttempts(admin.id, true);
     const role = admin.role || "admin";
     const token = jwt.sign({ id: admin.id, email: admin.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
     return res.json({ token, admin: { id: admin.id, email: admin.email, role } });
@@ -62,12 +110,68 @@ router.post("/login", loginLimiter, async (req, res) => {
     let v = false;
     
     if (u && u.password_hash) {
+      const preCustLock = await getUserLockStatus(u.id);
+      if (preCustLock.locked) {
+        const secondsRemaining = preCustLock.lockedUntil
+          ? Math.max(0, Math.ceil((new Date(preCustLock.lockedUntil) - new Date()) / 1000))
+          : 0;
+        return res.status(423).json({
+          code: 'ACCOUNT_LOCKED',
+          message: 'Account temporarily locked due to multiple failed attempts. Try again later or reset your password.',
+          secondsRemaining
+        });
+      }
       v = await verifyCustomerPassword(password, u.password_hash);
+      if (!v) {
+        await updateUserFailedAttempts(u.id, false);
+        const postCustLock = await getUserLockStatus(u.id);
+        if (postCustLock.locked && !preCustLock.locked) {
+          try {
+            await sendMail({
+              to: email,
+              subject: '[Bhumivera] Account Locked',
+              html: `<p>Hi ${u.name || 'Customer'},</p><p>Your account has been temporarily locked due to 6 failed login attempts.</p><p>Please reset your password or wait 15 minutes.</p>`
+            });
+          } catch (mailErr) {
+            console.log(`[MAIL TEMPLATE: customer_account_locked] to: ${email}`);
+          }
+        }
+      } else {
+        await updateUserFailedAttempts(u.id, true);
+      }
     } else {
       u = await getAdminByEmail(email);
       if (u && u.password_hash) {
+        const preAdminLock = await getAdminLockStatus(u.id);
+        if (preAdminLock.locked) {
+          const secondsRemaining = preAdminLock.lockedUntil
+            ? Math.max(0, Math.ceil((new Date(preAdminLock.lockedUntil) - new Date()) / 1000))
+            : 0;
+          return res.status(423).json({
+            code: 'ACCOUNT_LOCKED',
+            message: 'Account temporarily locked due to multiple failed attempts. Try again later or reset your password.',
+            secondsRemaining
+          });
+        }
         v = await verifyAdminPassword(password, u.password_hash);
         isA = true;
+        if (!v) {
+          await updateAdminFailedAttempts(u.id, false);
+          const postAdminLock = await getAdminLockStatus(u.id);
+          if (postAdminLock.locked && !preAdminLock.locked) {
+            try {
+              await sendMail({
+                to: email,
+                subject: '[Bhumivera] Admin Account Locked',
+                html: `<p>Your admin account has been temporarily locked due to 6 failed login attempts.</p><p>Please reset your password or wait 15 minutes.</p>`
+              });
+            } catch (mailErr) {
+              console.log(`[MAIL TEMPLATE: admin_account_locked] to: ${email}`);
+            }
+          }
+        } else {
+          await updateAdminFailedAttempts(u.id, true);
+        }
       }
     }
     
@@ -158,7 +262,7 @@ router.post("/2fa/verify", otpLimiter, async (req, res) => {
 });
 
 // --- PASSWORD RECOVERY FLOW ---
-router.post("/forgot-password", otpLimiter, async (req, res) => {
+router.post("/forgot-password", forgotLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     const u = await getUserByEmail(email);
@@ -205,18 +309,100 @@ router.post("/verify-otp", otpLimiter, async (req, res) => {
 
 router.post("/reset-password", otpLimiter, async (req, res) => {
   try {
+    const authHeader = req.headers.authorization;
     const { email, otp, newPassword, securityBypass } = req.body;
-    const u = await getUserByEmail(email);
-    if (!u) return res.status(404).json({ message: "User not found." });
-    if (!securityBypass) {
-      if (u.reset_otp !== otp) return res.status(400).json({ message: "Invalid Token." });
-      if (new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: "Token Expired." });
+    let targetUser = null;
+
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const resetToken = authHeader.split(" ")[1];
+      let payload;
+      try {
+        payload = jwt.verify(resetToken, process.env.JWT_SECRET || 'fallback_secret');
+      } catch (jwtErr) {
+        return res.status(401).json({ message: "Invalid or expired reset token." });
+      }
+      if (!payload || payload.aud !== 'reset' || payload.scope !== 'reset-password') {
+        return res.status(401).json({ message: "Invalid reset token scope." });
+      }
+      if (!payload.email) return res.status(400).json({ message: "Malformed reset token." });
+      targetUser = await getUserByEmail(payload.email);
     }
-    const hash = await bcrypt.hash(newPassword, 10);
-    await updateUserPassword(u.id, hash);
-    await clearResetOtp(u.id);
+
+    if (!targetUser) {
+      if (!email || !newPassword) {
+        return res.status(400).json({ code: 'MISSING_FIELDS', message: "email, otp, and newPassword are required when no Bearer reset token is provided." });
+      }
+      targetUser = await getUserByEmail(email);
+      if (!targetUser) return res.status(404).json({ message: "User not found." });
+      if (!securityBypass) {
+        if (targetUser.reset_otp !== otp) return res.status(400).json({ message: "Invalid Token." });
+        if (new Date() > new Date(targetUser.reset_otp_expires)) return res.status(400).json({ message: "Token Expired." });
+      }
+    }
+
+    if (!targetUser || !targetUser.id) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    if (!newPassword) {
+      return res.status(400).json({ code: 'MISSING_FIELDS', message: "newPassword is required." });
+    }
+
+    const policyResult = await validatePassword(newPassword);
+    if (!policyResult.valid && policyResult.errors && policyResult.errors.length > 0) {
+      const fatalCodes = new Set(['MIN_LENGTH','MAX_LENGTH','COMPLEXITY','COMMON_PASSWORD']);
+      const firstFatal = policyResult.errors.find(e => fatalCodes.has(e.code));
+      if (firstFatal) {
+        return res.status(400).json({ code: firstFatal.code, message: firstFatal.message });
+      }
+    }
+
+    try {
+      const hibpResult = await isPwned(newPassword);
+      if (hibpResult && hibpResult.pwned && !hibpResult.skipped) {
+        return res.status(400).json({
+          code: 'PWNED_PASSWORD',
+          message: `This password has appeared in ${hibpResult.count} public data breach(es). Choose a different one.`
+        });
+      }
+    } catch (hibpErr) {
+      console.warn('[RESET-PWD] HIBP check skipped due to error:', hibpErr.message);
+    }
+
+    const last5 = await getLast5PasswordHashes(targetUser.id, 'customer');
+    if (last5 && last5.length > 0) {
+      for (const row of last5) {
+        const reused = await bcrypt.compare(newPassword, row.password_hash);
+        if (reused) {
+          return res.status(400).json({
+            code: 'PASSWORD_REUSED',
+            message: 'Cannot reuse any of your last 5 passwords.'
+          });
+        }
+      }
+    }
+
+    const SALT_ROUNDS = 12;
+    const hash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await pool.query(
+      'UPDATE users SET password_hash = ?, last_password_change = NOW() WHERE id = ?',
+      [hash, targetUser.id]
+    );
+    await insertPasswordHistory(targetUser.id, 'customer', hash);
+    await clearResetOtp(targetUser.id);
+
+    try {
+      await sendMail({
+        to: targetUser.email,
+        subject: '[Bhumivera] Password Changed Successfully',
+        html: `<p>Hi ${targetUser.name || 'Customer'},</p><p>Your password has been changed successfully. If you did not make this change, please contact support immediately.</p>`
+      });
+    } catch (mailErr) {
+      console.log(`[MAIL TEMPLATE: password_changed_confirmation] to: ${targetUser.email}`);
+    }
+
     res.json({ message: "Master key updated successfully." });
   } catch (err) {
+    console.error('[RESET-PWD] Server Error:', err.message);
     res.status(500).json({ message: "Server Error", error: err.message });
   }
 });
@@ -467,6 +653,200 @@ router.post('/warehouse/verify-otp', otpLimiter, async (req, res) => {
     res.json({ token, admin: { id: w.id, email: w.email, role: iu ? 'warehouse_admin' : (w.role || 'admin') } });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// --- NEW: CUSTOMER RESET 3-STEP ---
+router.post("/verify-reset-otp", otpLimiter, async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ message: "Email and OTP required." });
+    const u = await getUserByEmail(email);
+    const genericFail = "Invalid or expired verification code.";
+    if (!u) return res.status(400).json({ message: genericFail });
+    if (!u.reset_otp || String(u.reset_otp) !== String(otp)) return res.status(400).json({ message: genericFail });
+    if (!u.reset_otp_expires || new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: genericFail });
+
+    const resetJwt = jwt.sign(
+      { sub: u.id, email: u.email, aud: 'reset', scope: 'reset-password', role: u.role || 'customer' },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '5m' }
+    );
+    return res.json({ resetJwt });
+  } catch (err) {
+    console.error("[verify-reset-otp] Error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/security-question/verify-for-reset", otpLimiter, async (req, res) => {
+  try {
+    const { email, answer } = req.body;
+    if (!email || !answer) return res.status(400).json({ message: "Email and security answer required." });
+    const genericFail = "Identity verification failed.";
+    const u = await getUserByEmail(email);
+    if (!u || !u.security_answer_hash) return res.status(400).json({ message: genericFail });
+    const ok = await verifySecurityAnswer(answer, u.security_answer_hash);
+    if (!ok) return res.status(400).json({ message: genericFail });
+
+    const resetJwt = jwt.sign(
+      { sub: u.id, email: u.email, aud: 'reset', scope: 'reset-password', role: u.role || 'customer' },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '5m' }
+    );
+    return res.json({ resetJwt });
+  } catch (err) {
+    console.error("[security-question/verify-for-reset] Error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// --- NEW: ADMIN RESET 3-STEP ---
+router.post("/admin/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Email required." });
+    const a = await getAdminByEmail(email);
+    if (a && a.id) {
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      await saveAdminResetOtp(a.id, otp);
+      console.log(`\n🚨 [EMERGENCY OVERRIDE] ADMIN RESET OTP FOR ${email}: ${otp}\n`);
+      try {
+        await sendMail({
+          to: email,
+          subject: '[Bhumivera] Admin Password Reset OTP',
+          html: `<p>Your admin password reset OTP is: <strong style="font-size: 24px;">${otp}</strong></p><p>Valid for 10 minutes.</p>`
+        });
+      } catch (mailErr) {
+        console.log(`[MAIL TEMPLATE: admin_forgot_otp] to: ${email}`);
+      }
+    }
+    return res.json({ message: "If this email is registered, a reset OTP has been dispatched." });
+  } catch (err) {
+    console.error("[admin/forgot-password] Error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/admin/verify-reset-otp", async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ message: "Email and OTP required." });
+    const genericFail = "Invalid or expired verification code.";
+    const a = await getAdminByResetOtp(email, otp);
+    if (!a) return res.status(400).json({ message: genericFail });
+    const adminRole = a.role || 'admin';
+
+    const resetJwt = jwt.sign(
+      { sub: a.id, email: a.email, aud: 'reset', scope: 'reset-password', role: adminRole },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '5m' }
+    );
+    return res.json({ resetJwt });
+  } catch (err) {
+    console.error("[admin/verify-reset-otp] Error:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/admin/reset-password", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const { email, otp, newPassword } = req.body;
+    let targetAdmin = null;
+    let adminRole = 'admin';
+
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const resetToken = authHeader.split(" ")[1];
+      let payload;
+      try {
+        payload = jwt.verify(resetToken, process.env.JWT_SECRET || 'fallback_secret');
+      } catch (jwtErr) {
+        return res.status(401).json({ message: "Invalid or expired admin reset token." });
+      }
+      if (!payload || payload.aud !== 'reset' || payload.scope !== 'reset-password') {
+        return res.status(401).json({ message: "Invalid admin reset token scope." });
+      }
+      if (!payload.email) return res.status(400).json({ message: "Malformed admin reset token." });
+      targetAdmin = await getAdminByEmail(payload.email);
+      adminRole = payload.role || targetAdmin?.role || 'admin';
+    }
+
+    if (!targetAdmin) {
+      if (!email || !otp || !newPassword) {
+        return res.status(400).json({ code: 'MISSING_FIELDS', message: "email, otp, and newPassword are required when no Bearer admin reset token is provided." });
+      }
+      targetAdmin = await getAdminByResetOtp(email, otp);
+      if (!targetAdmin) return res.status(400).json({ message: "Invalid or expired OTP." });
+      adminRole = targetAdmin.role || 'admin';
+    }
+
+    if (!targetAdmin || !targetAdmin.id) {
+      return res.status(404).json({ message: "Admin account not found." });
+    }
+    if (!newPassword) {
+      return res.status(400).json({ code: 'MISSING_FIELDS', message: "newPassword is required." });
+    }
+
+    const policyResult = await validatePassword(newPassword);
+    if (!policyResult.valid && policyResult.errors && policyResult.errors.length > 0) {
+      const fatalCodes = new Set(['MIN_LENGTH','MAX_LENGTH','COMPLEXITY','COMMON_PASSWORD']);
+      const firstFatal = policyResult.errors.find(e => fatalCodes.has(e.code));
+      if (firstFatal) {
+        return res.status(400).json({ code: firstFatal.code, message: firstFatal.message });
+      }
+    }
+
+    try {
+      const hibpResult = await isPwned(newPassword);
+      if (hibpResult && hibpResult.pwned && !hibpResult.skipped) {
+        return res.status(400).json({
+          code: 'PWNED_PASSWORD',
+          message: `This password has appeared in ${hibpResult.count} public data breach(es). Choose a different one.`
+        });
+      }
+    } catch (hibpErr) {
+      console.warn('[ADMIN-RESET-PWD] HIBP check skipped due to error:', hibpErr.message);
+    }
+
+    const last5 = await getLast5AdminPasswordHashes(targetAdmin.id);
+    if (last5 && last5.length > 0) {
+      for (const row of last5) {
+        const reused = await bcrypt.compare(newPassword, row.password_hash);
+        if (reused) {
+          return res.status(400).json({
+            code: 'PASSWORD_REUSED',
+            message: 'Cannot reuse any of your last 5 passwords.'
+          });
+        }
+      }
+    }
+
+    const SALT_ROUNDS = 12;
+    const hash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await pool.query(
+      `UPDATE admin_users SET password_hash = ?, 
+        failed_attempts = 0, locked_until = NULL
+       WHERE id = ?`,
+      [hash, targetAdmin.id]
+    );
+    await insertAdminPasswordHistory(targetAdmin.id, hash);
+    await clearAdminResetOtp(targetAdmin.id);
+
+    try {
+      await sendMail({
+        to: targetAdmin.email,
+        subject: '[Bhumivera] Admin Password Changed Successfully',
+        html: `<p>Admin password for <strong>${targetAdmin.email}</strong> has been changed successfully. If you did not initiate this, alert the superadmin immediately.</p>`
+      });
+    } catch (mailErr) {
+      console.log(`[MAIL TEMPLATE: admin_password_changed_confirmation] to: ${targetAdmin.email}`);
+    }
+
+    return res.json({ message: "Admin password updated successfully." });
+  } catch (err) {
+    console.error('[ADMIN-RESET-PWD] Server Error:', err.message);
+    res.status(500).json({ message: "Server Error", error: err.message });
   }
 });
 

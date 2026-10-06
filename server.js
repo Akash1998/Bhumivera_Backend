@@ -89,18 +89,19 @@ app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " +
-    "script-src 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://vercel.live https://overbridgenet.com; " +
+    "script-src 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://vercel.live https://overbridgenet.com https://www.google-analytics.com https://ssl.google-analytics.com https://www.googletagmanager.com; " +
     "worker-src 'self' blob:; " +
-    "frame-src 'self' https://challenges.cloudflare.com https://vercel.live; " +
-    "connect-src 'self' https://challenges.cloudflare.com https://vercel.live https://bhumivera-backend.railway.app https://service.bhumivera.com https://www.google-analytics.com https://*.r2.cloudflarestorage.com https://overbridgenet.com; " +
-    "img-src 'self' data: blob: https:; " +
+    "frame-src 'self' https://challenges.cloudflare.com https://vercel.live https://*.google.com; " +
+    "connect-src 'self' https://challenges.cloudflare.com https://vercel.live https://bhumivera-backend.railway.app https://bhumiverabackend-production.up.railway.app https://service.bhumivera.com https://analytics.google.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://*.r2.cloudflarestorage.com https://overbridgenet.com; " +
+    "img-src 'self' data: blob: https: https://*.google-analytics.com https://*.analytics.google.com; " +
+    "style-src 'self' 'unsafe-inline'; " +
     "trusted-types *;"
   );
   
   // Explicitly override downstream noise and clear DevTools warnings
   res.setHeader(
     "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=(), browsing-topics=(), join-ad-interest-group=(), run-ad-auction=()"
+    "camera=(), microphone=(), geolocation=(), browsing-topics=()"
   );
 
   if (req.method === "OPTIONS") return res.status(204).end();
