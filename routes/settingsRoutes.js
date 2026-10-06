@@ -16,7 +16,7 @@ const { evaluateCartRules } = require('../utils/cartRulesEngine');
 // GET /api/settings/public - public: get non-sensitive settings (store info, SEO, social)
 router.get('/public', async (req, res) => {
   try {
-    const groups = ['general', 'seo', 'social', 'policy', 'shipping'];
+    const groups = ['general', 'seo', 'social', 'policy', 'shipping', 'gamification'];
     const result = {};
     for (const g of groups) {
       const data = await getSettingsByGroup(g);

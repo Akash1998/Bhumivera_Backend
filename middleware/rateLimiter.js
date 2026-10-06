@@ -80,6 +80,14 @@ const clientErrorLimiter = rateLimit({
   }),
 });
 
+const newsletterLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { code: 'NEWSLETTER_RATE_LIMIT', message: 'Too many subscription attempts.', userAction: 'Try again later.' },
+});
+
 module.exports = {
   registerLimiter,
   loginLimiter,
@@ -89,5 +97,6 @@ module.exports = {
   googleCallbackLimiter,
   adminStrictLimiter,
   challengeLimiter,
-  clientErrorLimiter
+  clientErrorLimiter,
+  newsletterLimiter
 };

@@ -43,6 +43,7 @@ const inventoryRoutes = require("./routes/inventoryRoutes");
 const warehouseRoutes = require("./routes/warehouseRoutes");
 const clientLogRoutes = require("./routes/clientLogRoutes");
 const logsRoutes = require("./routes/logsRoutes");
+const newsletterRoutes = require("./routes/newsletterRoutes");
 
 // Model Initializations
 const { initWarehouseTables } = require("./models/warehouseModel");
@@ -63,6 +64,7 @@ const { createError, normalizeErrorResponses, sendError } = require("./utils/err
 const { createSettingsTable } = require("./models/settingsModel");
 const { createCartRulesTable } = require("./models/cartRulesModel");
 const { createLoyaltyTierTable } = require("./models/loyaltyTierModel");
+const { createNewsletterTable } = require("./models/newsletterModel");
 
 const app = express();
 
@@ -125,6 +127,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/api/flash-sales", flashSalesRoutes);
 app.use("/api/client-log", clientLogRoutes);
 app.use("/api/logs", logsRoutes);
+app.use("/api/newsletter", newsletterRoutes);
 app.use("/api/ai", aiRoutes); 
 app.use("/api/affiliate", affiliateRoutes);
 app.use("/api/tax", taxRoutes);
@@ -210,6 +213,7 @@ async function initDB() {
     await safeInit('Settings', createSettingsTable);
     await safeInit('CartRules', createCartRulesTable);
     await safeInit('LoyaltyTiers', createLoyaltyTierTable);
+    await safeInit('Newsletter', createNewsletterTable);
     await safeInit('ClientErrorLogs', createClientErrorTable);
 
     try {

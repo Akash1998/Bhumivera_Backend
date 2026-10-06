@@ -77,6 +77,7 @@ const createSettingsTable = async () => {
     ['personalization_welcome_name_enabled', '1', 'personalization'],
     ['personalization_recently_viewed_limit', '8', 'personalization'],
     ['experiment_registry', '[]', 'experiments'],
+    ['seasonal_countdown_end_at', '', 'gamification'],
   );
   for (const [key_name, value, group_name] of defaults) {
     await pool.query(
