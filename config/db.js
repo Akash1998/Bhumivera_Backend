@@ -1,7 +1,3 @@
-// backend/config/db.js
-const mysql = require("mysql2");
-require("dotenv").config();
-
 const pool = mysql
   .createPool({
     host: process.env.DB_HOST,
@@ -13,17 +9,10 @@ const pool = mysql
     connectionLimit: 10,
     queueLimit: 0,
     connectTimeout: 10000,
-    ssl: process.env.DB_SSL === "false" ? undefined : { rejectUnauthorized: false }
+    ssl: process.env.DB_SSL === "false" ? undefined : { rejectUnauthorized: false },
+    // Add these lines to allow Railway to sleep:
+    idleTimeout: 60000, // Closes idle connections after 60 seconds
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0
   })
   .promise();
-
-pool.getConnection()
-  .then(connection => {
-    console.log("[DB SOCKET] MySQL connection established successfully to Railway.");
-    connection.release();
-  })
-  .catch(err => {
-    console.error("[DB SOCKET FATAL] Railway MySQL Handshake Failed:", err.message);
-  });
-
-module.exports = pool;
