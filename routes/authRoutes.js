@@ -1,12 +1,14 @@
 const express = require("express"),
+  crypto = require("crypto"),
   jwt = require("jsonwebtoken"),
   bcrypt = require("bcryptjs"),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
   { registerLimiter, loginLimiter, otpLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
-  { authenticateAdmin } = require('../middleware/authMiddleware'),
+  { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware'),
   { validatePassword } = require('../utils/passwordPolicy'),
-  { isPwned } = require('../utils/hibp');
+  { isPwned } = require('../utils/hibp'),
+  jtiCache = require('../utils/jtiCache');
 
 const {
   getAdminByEmail,
@@ -91,7 +93,7 @@ router.post("/admin/login", loginLimiter, async (req, res) => {
 
     await updateAdminFailedAttempts(admin.id, true);
     const role = admin.role || "admin";
-    const token = jwt.sign({ id: admin.id, email: admin.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
+    const token = jwt.sign({ id: admin.id, email: admin.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d", jwtid: crypto.randomUUID() });
     return res.json({ token, admin: { id: admin.id, email: admin.email, role } });
   } catch (err) {
     console.error("Admin Login Error:", err);
@@ -179,7 +181,7 @@ router.post("/login", loginLimiter, async (req, res) => {
     if (!isA && u.two_factor_enabled) return res.status(202).json({ requires2FA: true, message: "MFA Verification Required", email: u.email });
     
     const role = isA ? (u.role || "admin") : (u.role || "customer");
-    const token = jwt.sign({ id: u.id, email: u.email, role: role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
+    const token = jwt.sign({ id: u.id, email: u.email, role: role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d", jwtid: crypto.randomUUID() });
     
     return res.json({ token, user: { id: u.id, name: u.name || "Administrator", email: u.email, role: role } });
   } catch (err) {
@@ -253,7 +255,7 @@ router.post("/2fa/verify", otpLimiter, async (req, res) => {
     if (!c) return res.status(404).json({ message: "access not found." });
     const normalizedOtp = String(otpVal);
     if (normalizedOtp !== "123456" && normalizedOtp !== String(c.reset_otp || "")) return res.status(401).json({ message: "Invalid MFA Token." });
-    const token = jwt.sign({ id: c.id, email: c.email, role: c.role || 'customer' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
+    const token = jwt.sign({ id: c.id, email: c.email, role: c.role || 'customer' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d", jwtid: crypto.randomUUID() });
     return res.json({ token, user: { id: c.id, name: c.name, email: c.email, role: c.role || 'customer' } });
   } catch (err) {
     console.error("MFA Error:", err);
@@ -487,7 +489,7 @@ router.post("/verify-email", otpLimiter, async (req, res) => {
     await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
     
     const u = await getUserById(id);
-    const token = jwt.sign({ id: u.id, email: u.email, role: u.role || 'customer' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d" });
+    const token = jwt.sign({ id: u.id, email: u.email, role: u.role || 'customer' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d", jwtid: crypto.randomUUID() });
     res.status(201).json({ success: true, token, user: { id: u.id, name: u.name, email: u.email, role: u.role || 'customer' } });
   } catch (err) {
     res.status(500).json({ message: "Internal server error during verification.", error: err.message });
@@ -499,33 +501,54 @@ router.post("/refresh", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Missing refresh token" });
+      return res.status(401).json({ code: 'TOKEN_MISSING', message: "Missing bearer refresh token", userAction: "Please re-login." });
     }
     const oldToken = authHeader.split(" ")[1];
     let payload;
     try {
       payload = jwt.verify(oldToken, process.env.JWT_SECRET || 'fallback_secret', { ignoreExpiration: true });
     } catch (verifyErr) {
-      return res.status(401).json({ message: "Invalid token signature" });
+      return res.status(401).json({ code: 'TOKEN_INVALID', message: "Invalid token signature", userAction: "Please re-login and try again." });
     }
     if (!payload || !payload.id || !payload.email) {
-      return res.status(401).json({ message: "Malformed token payload" });
+      return res.status(401).json({ code: 'TOKEN_MALFORMED', message: "Malformed token payload", userAction: "Clear local storage, re-login." });
+    }
+    if (payload.jti && jtiCache.isRevoked(payload.jti)) {
+      return res.status(401).json({ code: 'TOKEN_REVOKED', message: "This refresh token has already been used. Please re-login.", userAction: "Clear local storage and log in again." });
     }
     const now = Math.floor(Date.now() / 1000);
     const MAX_REFRESH_AGE_SEC = 14 * 24 * 60 * 60;
     if (payload.iat && (now - payload.iat) > MAX_REFRESH_AGE_SEC) {
-      return res.status(401).json({ message: "Token too old to refresh; please re-login" });
+      return res.status(401).json({ code: 'TOKEN_TOO_OLD', message: "Token too old to refresh; please re-login", userAction: "Re-login with password." });
     }
+    if (payload.jti) jtiCache.markRevoked(payload.jti);
     const role = payload.role || 'customer';
+    const NEW_EXPIRES_SEC = 7 * 24 * 60 * 60;
     const freshToken = jwt.sign(
       { id: payload.id, email: payload.email, role },
       process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: "7d" }
+      { expiresIn: NEW_EXPIRES_SEC, jwtid: crypto.randomUUID() }
     );
-    res.json({ token: freshToken });
+    res.json({ code: 'REFRESH_OK', token: freshToken, expiresIn: NEW_EXPIRES_SEC });
   } catch (err) {
     console.error("[AUTH REFRESH ERROR]:", err);
-    res.status(500).json({ message: "Refresh server error", error: err.message });
+    res.status(500).json({ code: 'REFRESH_SERVER_ERROR', message: "Refresh server error", error: err.message, userAction: "Try again in a moment, or re-login." });
+  }
+});
+
+// --- LOGOUT (revoke current token) ---
+router.post("/logout", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const tok = authHeader.split(" ")[1];
+      const decoded = jwt.decode(tok);
+      if (decoded && decoded.jti) jtiCache.markRevoked(decoded.jti);
+    }
+    return res.status(200).json({ code: 'LOGGED_OUT', message: "Logged out successfully. Token revoked server-side." });
+  } catch (err) {
+    console.error("[LOGOUT] Error:", err.message);
+    return res.status(500).json({ code: 'LOGOUT_ERROR', message: "Logout server error, but client storage was cleared locally." });
   }
 });
 
@@ -577,7 +600,7 @@ router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
     
     await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?', [email]);
     const role = a.role || 'admin';
-    const token = jwt.sign({ id: a.id, email: a.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d' });
+    const token = jwt.sign({ id: a.id, email: a.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d', jwtid: crypto.randomUUID() });
     res.json({ token, admin: { id: a.id, email: a.email, role } });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -649,7 +672,7 @@ router.post('/warehouse/verify-otp', otpLimiter, async (req, res) => {
       await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?', [email]);
     }
     
-    const token = jwt.sign({ id: w.id, email: w.email, role: iu ? 'warehouse_admin' : (w.role || 'admin') }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d' });
+    const token = jwt.sign({ id: w.id, email: w.email, role: iu ? 'warehouse_admin' : (w.role || 'admin') }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d', jwtid: crypto.randomUUID() });
     res.json({ token, admin: { id: w.id, email: w.email, role: iu ? 'warehouse_admin' : (w.role || 'admin') } });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -670,7 +693,7 @@ router.post("/verify-reset-otp", otpLimiter, async (req, res) => {
     const resetJwt = jwt.sign(
       { sub: u.id, email: u.email, aud: 'reset', scope: 'reset-password', role: u.role || 'customer' },
       process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: '5m' }
+      { expiresIn: '5m', jwtid: crypto.randomUUID() }
     );
     return res.json({ resetJwt });
   } catch (err) {
@@ -692,7 +715,7 @@ router.post("/security-question/verify-for-reset", otpLimiter, async (req, res) 
     const resetJwt = jwt.sign(
       { sub: u.id, email: u.email, aud: 'reset', scope: 'reset-password', role: u.role || 'customer' },
       process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: '5m' }
+      { expiresIn: '5m', jwtid: crypto.randomUUID() }
     );
     return res.json({ resetJwt });
   } catch (err) {
@@ -740,7 +763,7 @@ router.post("/admin/verify-reset-otp", async (req, res) => {
     const resetJwt = jwt.sign(
       { sub: a.id, email: a.email, aud: 'reset', scope: 'reset-password', role: adminRole },
       process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: '5m' }
+      { expiresIn: '5m', jwtid: crypto.randomUUID() }
     );
     return res.json({ resetJwt });
   } catch (err) {

@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { authenticator } = require('otplib');
 const qrcode = require('qrcode');
@@ -32,7 +33,7 @@ router.post('/register', async (req, res) => {
     
     const jwt = require('jsonwebtoken');
     const id = await createUser({ name, email, password, phone });
-    const token = jwt.sign({ id, email, role: 'customer' }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id, email, role: 'customer' }, process.env.JWT_SECRET, { expiresIn: '7d', jwtid: crypto.randomUUID() });
     return res.status(201).json({ token, user: { id, name, email, phone, role: 'customer' } });
   } catch (err) {
     console.error(err);
@@ -54,7 +55,7 @@ router.post('/login', async (req, res) => {
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '7d', jwtid: crypto.randomUUID() }
     );
     return res.json({ token, user: { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role } });
   } catch (err) {
