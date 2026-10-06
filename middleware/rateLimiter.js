@@ -68,6 +68,18 @@ const challengeLimiter = rateLimit({
   message: { message:'Too many device challenge attempts.', code:'CHALLENGE_RATE_LIMIT' }
 });
 
+const clientErrorLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => res.status(429).json({
+    code: 'CLIENT_LOG_RATE_LIMIT',
+    message: 'Too many client error reports.',
+    userAction: 'Wait a few minutes before submitting another report.',
+  }),
+});
+
 module.exports = {
   registerLimiter,
   loginLimiter,
@@ -76,5 +88,6 @@ module.exports = {
   magicLinkLimiter,
   googleCallbackLimiter,
   adminStrictLimiter,
-  challengeLimiter
+  challengeLimiter,
+  clientErrorLimiter
 };

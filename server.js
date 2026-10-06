@@ -41,6 +41,8 @@ const shippingRoutes = require("./routes/shippingRoutes");
 const returnRoutes = require("./routes/returnRoutes");
 const inventoryRoutes = require("./routes/inventoryRoutes");
 const warehouseRoutes = require("./routes/warehouseRoutes");
+const clientLogRoutes = require("./routes/clientLogRoutes");
+const logsRoutes = require("./routes/logsRoutes");
 
 // Model Initializations
 const { initWarehouseTables } = require("./models/warehouseModel");
@@ -56,6 +58,11 @@ const { initAdminTable } = require("./models/adminModel");
 const { createUsersTable, initAuthTables, createAuthSecurityTables } = require("./models/userModel");
 const { createReviewTable } = require("./models/reviewModel"); 
 const { createNotificationTable } = require("./models/notificationModel");
+const { createClientErrorTable } = require("./models/clientErrorModel");
+const { createError, normalizeErrorResponses, sendError } = require("./utils/errorReporting");
+const { createSettingsTable } = require("./models/settingsModel");
+const { createCartRulesTable } = require("./models/cartRulesModel");
+const { createLoyaltyTierTable } = require("./models/loyaltyTierModel");
 
 const app = express();
 
@@ -111,10 +118,13 @@ app.use((req, res, next) => {
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(normalizeErrorResponses);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // --- ROUTE REGISTRATION ---
 app.use("/api/flash-sales", flashSalesRoutes);
+app.use("/api/client-log", clientLogRoutes);
+app.use("/api/logs", logsRoutes);
 app.use("/api/ai", aiRoutes); 
 app.use("/api/affiliate", affiliateRoutes);
 app.use("/api/tax", taxRoutes);
@@ -197,6 +207,10 @@ async function initDB() {
     await safeInit('Admin', initAdminTable);
     await safeInit('AuthSecurity', createAuthSecurityTables);
     await safeInit('Warehouse', initWarehouseTables); 
+    await safeInit('Settings', createSettingsTable);
+    await safeInit('CartRules', createCartRulesTable);
+    await safeInit('LoyaltyTiers', createLoyaltyTierTable);
+    await safeInit('ClientErrorLogs', createClientErrorTable);
 
     try {
       await pool.query(`
@@ -245,9 +259,16 @@ app.use("/api", (req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  if (err.message === "Not allowed by CORS") return res.status(403).json({ success: false, message: "CORS Origin Rejected" });
-  if (err.name === "JsonWebTokenError" || err.name === "TokenExpiredError") return res.status(401).json({ success: false, message: "Session invalid or expired" });
-  res.status(err.status || 500).json({ success: false, message: err.message || "Internal Server Error" });
+  if (err.message === "Not allowed by CORS") {
+    return sendError(res, createError(403, 'CORS_ORIGIN_REJECTED', 'CORS origin rejected.'));
+  }
+  if (err.name === "JsonWebTokenError" || err.name === "TokenExpiredError") {
+    return sendError(res, createError(401, 'TOKEN_INVALID', 'Session invalid or expired.'));
+  }
+  console.error('[UNHANDLED_REQUEST_ERROR]', err);
+  const status = Number.isInteger(err.status) && err.status >= 400 && err.status <= 599 ? err.status : 500;
+  const message = status >= 500 ? 'An unexpected server error occurred.' : (err.message || 'The request could not be processed.');
+  return sendError(res, createError(status, status >= 500 ? 'INTERNAL_SERVER_ERROR' : 'REQUEST_FAILED', message));
 });
 
 const PORT = process.env.PORT || 5000;

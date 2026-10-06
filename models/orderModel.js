@@ -65,6 +65,9 @@ const createOrdersTables = async () => {
 
     await addCol('orders', 'subtotal', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'discount', 'DECIMAL(10,2) DEFAULT 0');
+    await addCol('orders', 'shipping_cost', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
+    await addCol('orders', 'loyalty_points_awarded', 'INT NOT NULL DEFAULT 0');
+    await addCol('orders', 'loyalty_points_redeemed', 'INT NOT NULL DEFAULT 0');
     await addCol('orders', 'total', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'coupon_code', 'VARCHAR(100)');
     await addCol('orders', 'payment_status', "ENUM('pending', 'paid', 'failed') DEFAULT 'pending'");
@@ -76,6 +79,7 @@ const createOrdersTables = async () => {
 
     await addCol('order_items', 'sku', 'VARCHAR(255)');
     await addCol('order_items', 'image', 'TEXT');
+    await addCol('order_items', 'is_gift', 'TINYINT(1) NOT NULL DEFAULT 0');
 
     await addIndex('orders', 'idx_orders_created_at', 'created_at DESC');
     await addIndex('orders', 'idx_orders_status', 'status');
@@ -98,7 +102,12 @@ const createOrder = async ({
   addressSnapshot,
   deliveryType,
   paymentMode,
-  notes
+  notes,
+  shippingCost = 0,
+  loyaltyPointsAwarded = 0,
+  lifecycleGiftProductId = null,
+  loyaltyPointsToRedeem = 0,
+  loyaltyPointsPerRupee = 10
 }) => {
   const conn = await pool.getConnection();
   try {
@@ -106,9 +115,17 @@ const createOrder = async ({
 
     let backendSubtotal = 0;
     const processedItems = [];
+    const orderItems = Array.isArray(items) ? items.slice() : [];
+
+    const [userRows] = await conn.query('SELECT pending_lifecycle_gift_product_id, loyalty_points FROM users WHERE id = ? FOR UPDATE', [userId]);
+    const pendingGiftProductId = userRows?.[0]?.pending_lifecycle_gift_product_id;
+    if (pendingGiftProductId) {
+      orderItems.push({ product_id: pendingGiftProductId, quantity: 1, is_gift: true, lifecycle_gift: true });
+      await conn.query('UPDATE users SET pending_lifecycle_gift_product_id = NULL WHERE id = ?', [userId]);
+    }
 
     // Step 1: Validate Stock and calculate backend totals
-    for (const item of items) {
+    for (const item of orderItems) {
       const productId = item.product_id || item.id;
       const [dbProducts] = await conn.query(
         'SELECT name, sku, price, discount_price, quantity FROM products WHERE id = ? FOR UPDATE',
@@ -123,7 +140,8 @@ const createOrder = async ({
         throw new Error(`Insufficient stock for ${dbProduct.name}. Only ${dbProduct.quantity} left.`);
       }
 
-      const unitPrice = (dbProduct.discount_price && dbProduct.discount_price > 0) ? dbProduct.discount_price : dbProduct.price;
+      const isGift = item.is_gift === true || Number(item.is_gift) === 1;
+      const unitPrice = isGift ? 0 : (dbProduct.discount_price && dbProduct.discount_price > 0) ? dbProduct.discount_price : dbProduct.price;
       backendSubtotal += (unitPrice * requestedQty);
 
       // Step 2: Deduct Inventory
@@ -138,22 +156,37 @@ const createOrder = async ({
         sku: dbProduct.sku,
         price: unitPrice,
         quantity: requestedQty,
-        image: itemImage
+        image: itemImage,
+        is_gift: isGift ? 1 : 0
       });
     }
 
     // Step 3: Finalize Totals
-    const safeDiscount = parseFloat(discount || 0);
-    const backendTotal = Math.max(0, backendSubtotal - safeDiscount);
+    const safeDiscount = Math.min(backendSubtotal, Math.max(0, parseFloat(discount) || 0));
+    const safeShippingCost = Math.max(0, parseFloat(shippingCost) || 0);
+    const safeLoyaltyPoints = Math.max(0, Math.trunc(Number(loyaltyPointsAwarded) || 0));
+    const pointsPerRupee = Math.max(1, Math.trunc(Number(loyaltyPointsPerRupee) || 10));
+    const pointsAvailable = Math.max(0, Math.trunc(Number(userRows?.[0]?.loyalty_points) || 0));
+    const requestedPoints = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
+    const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount + safeShippingCost) * pointsPerRupee);
+    const pointsRedeemed = Math.min(requestedPoints, pointsAvailable, maxAffordablePoints);
+    const loyaltyDiscount = pointsRedeemed / pointsPerRupee;
+    const backendTotal = Math.max(0, backendSubtotal - safeDiscount + safeShippingCost - loyaltyDiscount);
+    if (pointsRedeemed > 0) {
+      await conn.query('UPDATE users SET loyalty_points = loyalty_points - ? WHERE id = ? AND loyalty_points >= ?', [pointsRedeemed, userId, pointsRedeemed]);
+    }
 
     // Step 4: Insert the Order
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, total, coupon_code, address_snapshot, delivery_type, payment_mode, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO orders (user_id, subtotal, discount, shipping_cost, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         userId,
         backendSubtotal,
         safeDiscount,
+        safeShippingCost,
+        safeLoyaltyPoints,
+        pointsRedeemed,
         backendTotal,
         couponCode || null,
         typeof addressSnapshot === 'string' ? addressSnapshot : JSON.stringify(addressSnapshot),
@@ -168,10 +201,20 @@ const createOrder = async ({
     // Step 5: Insert Order Items
     for (const pItem of processedItems) {
       await conn.query(
-        `INSERT INTO order_items (order_id, product_id, name, sku, price, quantity, image)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [orderId, pItem.product_id, pItem.name, pItem.sku, pItem.price, pItem.quantity, pItem.image]
+        `INSERT INTO order_items (order_id, product_id, name, sku, price, quantity, image, is_gift)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [orderId, pItem.product_id, pItem.name, pItem.sku, pItem.price, pItem.quantity, pItem.image, pItem.is_gift]
       );
+    }
+
+    if (lifecycleGiftProductId) {
+      const [[orderCount]] = await conn.query('SELECT COUNT(*) AS order_count FROM orders WHERE user_id = ?', [userId]);
+      if (Number(orderCount?.order_count) === 3) {
+        await conn.query(
+          'UPDATE users SET pending_lifecycle_gift_product_id = ? WHERE id = ? AND pending_lifecycle_gift_product_id IS NULL',
+          [lifecycleGiftProductId, userId]
+        );
+      }
     }
 
     await conn.commit();
@@ -201,12 +244,19 @@ const parseOrder = (o) => {
 };
 
 const getOrdersByUser = async (userId) => {
+  if (userId === null || userId === undefined || userId === '') return [];
   const [orders] = await pool.query('SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC', [userId]);
-  for (const o of orders) {
-    const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [o.id]);
-    o.items = items;
+  const safeOrders = Array.isArray(orders) ? orders.filter(order => order && typeof order === 'object') : [];
+  for (const order of safeOrders) {
+    const orderId = order.id ?? order.order_id;
+    if (orderId === null || orderId === undefined) {
+      order.items = [];
+      continue;
+    }
+    const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [orderId]);
+    order.items = Array.isArray(items) ? items.filter(Boolean) : [];
   }
-  return orders.map(parseOrder);
+  return safeOrders.map(parseOrder);
 };
 
 const getAllOrders = async (filters = {}) => {
@@ -278,7 +328,38 @@ const getOrderById = async (orderId) => {
   return parseOrder(o);
 };
 
-const updateOrderStatus = async (orderId, status, cancelReason) => {
+const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) => {
+  if (status === 'confirmed') {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [orders] = await conn.query(
+        'SELECT user_id, status, loyalty_points_awarded FROM orders WHERE id = ? FOR UPDATE',
+        [orderId]
+      );
+      const order = orders?.[0];
+      if (!order) {
+        await conn.rollback();
+        return false;
+      }
+      if (order.status !== 'confirmed') {
+        const points = Math.max(0, Math.trunc(Number(order.loyalty_points_awarded) || 0));
+        if (points > 0) await conn.query('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id = ?', [points, order.user_id]);
+      }
+      await conn.query(
+        'UPDATE orders SET status = ?, tracking_number = COALESCE(?, tracking_number), courier = COALESCE(?, courier) WHERE id = ?',
+        [status, metadata.trackingNumber || null, metadata.courier || null, orderId]
+      );
+      await conn.commit();
+      return true;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+
   if (status === 'cancelled' || status === 'returned') {
     const conn = await pool.getConnection();
     try {
@@ -305,7 +386,10 @@ const updateOrderStatus = async (orderId, status, cancelReason) => {
       conn.release();
     }
   } else {
-    await pool.query('UPDATE orders SET status=? WHERE id=?', [status, orderId]);
+    await pool.query(
+      'UPDATE orders SET status=?, tracking_number=COALESCE(?, tracking_number), courier=COALESCE(?, courier) WHERE id=?',
+      [status, metadata.trackingNumber || null, metadata.courier || null, orderId]
+    );
   }
 };
 

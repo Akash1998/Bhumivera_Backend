@@ -26,6 +26,11 @@ const createSettingsTable = async () => {
     ['meta_keywords', 'electronics, gadgets, Bhumivera', 'seo'],
     ['free_shipping_threshold', '500', 'shipping'],
     ['default_shipping_charge', '50', 'shipping'],
+    ['standard_charge', '50', 'shipping'],
+    ['express_charge', '150', 'shipping'],
+    ['coupon_stack_policy', 'rule_first', 'cart_rules'],
+    ['cart_rules_schema_version', '1', 'cart_rules'],
+    ['enforce_cart_rule_minimum', '0', 'cart_rules'],
     ['tax_rate', '0', 'tax'],
     ['order_prefix', 'ANR', 'orders'],
     ['return_policy_days', '7', 'policy'],
@@ -43,6 +48,36 @@ const createSettingsTable = async () => {
     ['smtp_pass', '', 'email'],
     ['smtp_from_name', 'Bhumivera', 'email'],
   ];
+  const gamificationHooks = [
+    'exit_intent_coupon', 'social_viewers', 'first_order_badge', 'third_order_gift',
+    'birthday_coupon', 'spin_after_purchase', 'refer_earn', 'buy_three_save',
+    'navbar_tier_bar', 'coupon_scarcity', 'login_streak', 'price_match_badge',
+    'category_buyers', 'wishlist_price_drop', 'review_scratch_card', 'platinum_early_access',
+    'referral_leaderboard', 'complete_look', 'low_stock_badge', 'recently_viewed',
+    'free_delivery_nudge', 'seasonal_countdown', 'cart_hold_timer', 'abandoned_cart_email',
+    'social_proof_cart', 'personalized_upsell', 'savings_summary', 'delivery_slot_urgency',
+    'vip_ribbon', 'wallet_express', 'post_purchase_bump', 'coupon_auto_apply',
+  ];
+  for (const hook of gamificationHooks) {
+    defaults.push([`gamification_${hook}_enabled`, '0', 'gamification']);
+    defaults.push([`gamification_${hook}_threshold`, '0', 'gamification']);
+  }
+  defaults.push(
+    ['lifecycle_third_order_enabled', '0', 'lifecycle'],
+    ['lifecycle_third_order_gift_product_id', '', 'lifecycle'],
+    ['lifecycle_winback_enabled', '0', 'lifecycle'],
+    ['lifecycle_winback_days', '7', 'lifecycle'],
+    ['lifecycle_churn_days', '90', 'lifecycle'],
+    ['lifecycle_birthday_enabled', '0', 'lifecycle'],
+    ['lifecycle_birthday_coupon_code', '', 'lifecycle'],
+    ['loyalty_points_per_rupee', '10', 'loyalty'],
+    ['personalization_related_weight', '50', 'personalization'],
+    ['personalization_popular_weight', '30', 'personalization'],
+    ['personalization_recent_weight', '20', 'personalization'],
+    ['personalization_welcome_name_enabled', '1', 'personalization'],
+    ['personalization_recently_viewed_limit', '8', 'personalization'],
+    ['experiment_registry', '[]', 'experiments'],
+  );
   for (const [key_name, value, group_name] of defaults) {
     await pool.query(
       'INSERT IGNORE INTO settings (key_name, value, group_name) VALUES (?, ?, ?)',

@@ -12,6 +12,9 @@ const {
   updateOrderStatus 
 } = require("../models/orderModel");
 const { getCartTotal, clearCart } = require("../models/cartModel");
+const { getSetting, getSettingsByGroup } = require('../models/settingsModel');
+const { listCartRules } = require('../models/cartRulesModel');
+const { evaluateCartRules } = require('../utils/cartRulesEngine');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -80,9 +83,7 @@ router.post("/:id/cancel", authenticateUser, async (req, res) => {
 });
 
 router.put("/:id/status", authenticateAdmin, async (req, res) => {
-  const connection = await pool.getConnection();
   try {
-    await connection.beginTransaction();
     const { id } = req.params;
     const { status, trackingNumber, courier } = req.body;
 
@@ -90,17 +91,13 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: "Status is required" });
     }
 
-    await connection.query(
-      `UPDATE orders SET status = ?, tracking_number = ?, courier = ?, updated_at = NOW() WHERE id = ?`,
-      [status, trackingNumber || null, courier || null, id]
-    );
+    const updated = await updateOrderStatus(id, status, req.body.cancelReason, { trackingNumber, courier });
+    if (updated === false) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'Order not found.' });
 
-    const [orderData] = await connection.query(
+    const [orderData] = await pool.query(
       `SELECT o.id, o.status, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
       [id]
     );
-
-    await connection.commit();
 
     if (orderData.length > 0) {
       const { email, name } = orderData[0];
@@ -110,17 +107,14 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 
     res.json({ success: true, message: "Order status updated." });
   } catch (err) {
-    await connection.rollback();
     console.error("[OrderUpdate Error]:", err);
     res.status(500).json({ success: false, message: err.message });
-  } finally {
-    connection.release();
   }
 });
 
 router.post("/", authenticateUser, async (req, res) => {
   try {
-    const { addressId, deliveryType, paymentMode, couponCode, notes } = req.body;
+    const { addressId, deliveryType, paymentMode, couponCode, notes, loyaltyPointsToRedeem } = req.body;
     if (!addressId) return res.status(400).json({ message: "Delivery address is required." });
 
     // [FIX]: Use AddressModel.getAddressesByUser
@@ -131,35 +125,83 @@ router.post("/", authenticateUser, async (req, res) => {
     const { items, total: cartTotal } = await getCartTotal(req.user.id);
     if (!items || items.length === 0) return res.status(400).json({ message: "Cart is empty." });
 
-    let discount = 0;
+    const rules = await listCartRules({ activeOnly: true });
+    const enforceMinimum = (await getSetting('enforce_cart_rule_minimum')) === '1';
+    const rulePreview = evaluateCartRules(cartTotal, rules, { userId: req.user.id, enforceMinimum });
+    if (rulePreview.enforcedMin !== null && cartTotal < rulePreview.enforcedMin) {
+      return res.status(400).json({
+        code: 'CART_BELOW_MIN_TIER',
+        message: `Add ₹${rulePreview.missingAmount} more to place this order.`,
+        enforcedMin: rulePreview.enforcedMin,
+        missingAmount: rulePreview.missingAmount,
+        userAction: 'Add more items to your cart and try again.',
+      });
+    }
+
+    let couponDiscount = 0;
     let resolvedCoupon = null;
+    let couponId = null;
 
     if (couponCode) {
       const [coupons] = await pool.query(
-        `SELECT * FROM coupons WHERE code=? AND is_active=1 AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_until IS NULL OR valid_until >= NOW())`,
+        `SELECT * FROM coupons WHERE code=? AND is_active=1 AND (valid_from IS NULL OR valid_from <= NOW()) AND (expires_at IS NULL OR expires_at >= NOW())`,
         [couponCode.toUpperCase()]
       );
       const coupon = coupons[0];
-      if (coupon && cartTotal >= (coupon.min_order_value || 0)) {
-        discount = coupon.type === "percentage"
-          ? Math.min((cartTotal * coupon.value) / 100, coupon.max_discount || Infinity)
-          : coupon.value;
-        discount = parseFloat(Math.min(discount, cartTotal).toFixed(2));
+      if (coupon && cartTotal >= (Number(coupon.min_order_amount) || 0)) {
+        couponDiscount = coupon.discount_type === "percentage"
+          ? Math.min((cartTotal * Number(coupon.discount_value)) / 100, Number(coupon.max_discount) || Infinity)
+          : Number(coupon.discount_value) || 0;
+        couponDiscount = Math.max(0, Math.min(couponDiscount, cartTotal));
         resolvedCoupon = coupon.code;
-        await pool.query("UPDATE coupons SET used_count=used_count+1 WHERE id=?", [coupon.id]);
+        couponId = coupon.id;
       }
     }
 
+    const couponStackPolicy = await getSetting('coupon_stack_policy') || 'rule_first';
+    const ruleDiscount = Number(rulePreview.totalDiscount) || 0;
+    let discount = ruleDiscount;
+    if (couponStackPolicy === 'both') discount = ruleDiscount + couponDiscount;
+    else if (couponStackPolicy === 'coupon_first' && couponDiscount > 0) discount = couponDiscount;
+    else if (ruleDiscount <= 0) discount = couponDiscount;
+    discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount));
+
+    const shippingSettings = await getSettingsByGroup('shipping');
+    const shippingKey = deliveryType === 'express' ? 'express_charge' : 'standard_charge';
+    const configuredShipping = Number(shippingSettings[shippingKey] ?? (deliveryType === 'express' ? 150 : shippingSettings.default_shipping_charge ?? 50));
+    const shippingCost = rulePreview.freeShipping ? 0 : (Number.isFinite(configuredShipping) ? Math.max(0, configuredShipping) : 0);
+
+    const giftItems = [];
+    for (const gift of rulePreview.gifts) {
+      const [products] = await pool.query('SELECT id, name, sku, quantity FROM products WHERE id = ? AND status = \'active\'', [gift.productId]);
+      if (products.length && Number(products[0].quantity) >= gift.quantity) {
+        giftItems.push({ product_id: products[0].id, quantity: gift.quantity, is_gift: true });
+      }
+    }
+    const lifecycleSettings = await getSettingsByGroup('lifecycle');
+    const lifecycleGiftProductId = lifecycleSettings.lifecycle_third_order_enabled === '1'
+      ? Number(lifecycleSettings.lifecycle_third_order_gift_product_id) || null
+      : null;
+    const loyaltyPointsPerRupee = Math.max(1, Number(await getSetting('loyalty_points_per_rupee')) || 10);
+    const orderItems = [...items, ...giftItems];
+
     const orderId = await createOrder({
       userId: req.user.id,
-      items,
+      items: orderItems,
       discount,
       couponCode: resolvedCoupon,
       addressSnapshot: address,
       deliveryType: deliveryType || "standard",
       paymentMode: paymentMode || "COD",
       notes: notes || null,
+      shippingCost,
+      loyaltyPointsAwarded: rulePreview.loyaltyBonusPoints,
+      lifecycleGiftProductId,
+      loyaltyPointsToRedeem,
+      loyaltyPointsPerRupee,
     });
+
+    if (couponId) await pool.query("UPDATE coupons SET used_count=used_count+1 WHERE id=?", [couponId]);
 
     await clearCart(req.user.id);
 
@@ -175,7 +217,7 @@ router.post("/", authenticateUser, async (req, res) => {
       console.error("[Mailer] DB Query Error during placement:", mailErr);
     }
 
-    return res.status(201).json({ orderId, message: "Order placed successfully", discount });
+    return res.status(201).json({ orderId, message: "Order placed successfully", discount, shippingCost, rulePreview });
   } catch (err) {
     console.error("Place order error:", err);
     if (err.message?.includes("Insufficient stock")) return res.status(400).json({ message: err.message });

@@ -9,12 +9,19 @@ const {
   clearCart, 
   getCartTotal 
 } = require('../models/cartModel');
+const { listCartRules } = require('../models/cartRulesModel');
+const { evaluateCartRules } = require('../utils/cartRulesEngine');
+const { getSetting } = require('../models/settingsModel');
 
 // GET /api/cart - get current user's 
 router.get('/', authenticateUser, async (req, res) => {
   try { 
     const { items, total } = await getCartTotal(req.user.id);
-    return res.json({ items: items || [], total: total || 0 });
+    const safeItems = Array.isArray(items) ? items : [];
+    const rules = await listCartRules({ activeOnly: true });
+    const enforceMinimum = (await getSetting('enforce_cart_rule_minimum')) === '1';
+    const rulePreview = evaluateCartRules(Number(total) || 0, rules, { userId: req.user.id, enforceMinimum });
+    return res.json({ items: safeItems, total: total || 0, rulePreview });
   } catch (err) {
     console.error("GET /api/cart Error:", err);
     return res.status(500).json({ message: 'Failed to load cart' });

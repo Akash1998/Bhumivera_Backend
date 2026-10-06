@@ -20,6 +20,8 @@ const { validatePassword } = require('../utils/passwordPolicy');
 const { isPwned } = require('../utils/hibp');
 const { authenticateUser } = require('../middleware/authMiddleware');
 const pool = require('../config/db');
+const { listLoyaltyTiers, createLoyaltyTier, updateLoyaltyTier, deleteLoyaltyTier } = require('../models/loyaltyTierModel');
+const { computeLoyaltyTier } = require('../utils/loyaltyTier');
 
 authenticator.options = { window: 1 };
 
@@ -68,15 +70,61 @@ router.get('/profile', authenticateUser, async (req, res) => {
   try {
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) {
         user = rows[0];
       }
     }
     if (!user) return res.status(404).json({ message: 'User not found' });
+    const tiers = await listLoyaltyTiers({ activeOnly: true });
+    user.loyalty = computeLoyaltyTier(user.loyalty_points, tiers);
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ message: 'Failed to fetch user' });
+  }
+});
+
+router.get('/loyalty/tiers', authenticateAdmin, async (req, res) => {
+  try {
+    res.json({ data: await listLoyaltyTiers() });
+  } catch (err) {
+    console.error('[LOYALTY_TIERS_LIST]', err);
+    res.status(500).json({ code: 'LOYALTY_TIERS_LOAD_FAILED', message: 'Failed to load loyalty tiers.' });
+  }
+});
+
+router.post('/loyalty/tiers', authenticateAdmin, async (req, res) => {
+  try {
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name || !Number.isFinite(Number(req.body?.min_points)) || Number(req.body.min_points) < 0) {
+      return res.status(400).json({ code: 'INVALID_LOYALTY_TIER', message: 'Tier name and a non-negative points threshold are required.' });
+    }
+    res.status(201).json({ data: await createLoyaltyTier({ ...req.body, name }) });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ code: 'LOYALTY_TIER_EXISTS', message: 'A tier with that name already exists.' });
+    console.error('[LOYALTY_TIER_CREATE]', err);
+    res.status(500).json({ code: 'LOYALTY_TIER_CREATE_FAILED', message: 'Failed to create loyalty tier.' });
+  }
+});
+
+router.put('/loyalty/tiers/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const tier = await updateLoyaltyTier(req.params.id, req.body || {});
+    if (!tier) return res.status(404).json({ code: 'LOYALTY_TIER_NOT_FOUND', message: 'Loyalty tier not found.' });
+    res.json({ data: tier });
+  } catch (err) {
+    console.error('[LOYALTY_TIER_UPDATE]', err);
+    res.status(500).json({ code: 'LOYALTY_TIER_UPDATE_FAILED', message: 'Failed to update loyalty tier.' });
+  }
+});
+
+router.delete('/loyalty/tiers/:id', authenticateAdmin, async (req, res) => {
+  try {
+    if (!await deleteLoyaltyTier(req.params.id)) return res.status(404).json({ code: 'LOYALTY_TIER_NOT_FOUND', message: 'Loyalty tier not found.' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[LOYALTY_TIER_DELETE]', err);
+    res.status(500).json({ code: 'LOYALTY_TIER_DELETE_FAILED', message: 'Failed to delete loyalty tier.' });
   }
 });
 
