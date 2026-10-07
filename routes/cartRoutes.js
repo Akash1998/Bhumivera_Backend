@@ -5,6 +5,7 @@ const { authenticateUser } = require('../middleware/authMiddleware');
 const { 
   getCartByUser, 
   upsertCartItem, 
+  updateCartItemQuantity,
   removeCartItem, 
   clearCart, 
   getCartTotal 
@@ -54,6 +55,29 @@ router.post('/', authenticateUser, async (req, res) => {
     return res.status(status).json({ 
         message: err.message || 'Failed to update cart',
         error: process.env.access_ENV === 'development' ? err : undefined
+    });
+  }
+});
+
+// PUT /api/cart/:productId - update quantity
+router.put('/:productId', authenticateUser, async (req, res) => {
+  try {
+    const productId = req.params.productId;
+    const parsedQuantity = parseInt(req.body.quantity, 10);
+
+    if (!productId || Number.isNaN(parsedQuantity) || parsedQuantity < 1) {
+      return res.status(400).json({ message: 'A valid quantity (>=1) is required' });
+    }
+
+    const items = await updateCartItemQuantity(req.user.id, productId, parsedQuantity);
+    const total = (items || []).reduce((s, i) => s + (parseFloat(i.subtotal) || 0), 0);
+    return res.json({ items: items || [], total: parseFloat(total.toFixed(2)) });
+  } catch (err) {
+    console.error("PUT /api/cart/:id Error:", err);
+    const status = err.status || 500;
+    return res.status(status).json({
+      message: err.message || 'Failed to update quantity',
+      error: process.env.access_ENV === 'development' ? err : undefined
     });
   }
 });
