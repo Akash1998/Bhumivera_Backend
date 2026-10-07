@@ -15,24 +15,38 @@ const createShippingTable = async () => {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
-  // Seed a default zone
   await pool.query(`
     INSERT IGNORE INTO shipping_zones (id, name, regions, base_charge, free_above, estimated_days)
     VALUES (1, 'All India', 'All', 50.00, 500.00, '3-7 business days')
   `);
 };
 
+const ensureShippingTable = async () => {
+  try {
+    await pool.query('SELECT 1 FROM shipping_zones LIMIT 1');
+  } catch (err) {
+    if (err && (err.code === 'ER_NO_SUCH_TABLE' || err.code === 'ER_BAD_TABLE_ERROR')) {
+      await createShippingTable();
+      return;
+    }
+    throw err;
+  }
+};
+
 const getAllZones = async () => {
+  await ensureShippingTable();
   const [rows] = await pool.query('SELECT * FROM shipping_zones ORDER BY name');
   return rows;
 };
 
 const getActiveZones = async () => {
+  await ensureShippingTable();
   const [rows] = await pool.query('SELECT * FROM shipping_zones WHERE is_active = 1 ORDER BY name');
   return rows;
 };
 
 const getZoneById = async (id) => {
+  await ensureShippingTable();
   const [rows] = await pool.query('SELECT * FROM shipping_zones WHERE id = ?', [id]);
   return rows[0];
 };

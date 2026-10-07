@@ -65,6 +65,7 @@ const { createSettingsTable } = require("./models/settingsModel");
 const { createCartRulesTable } = require("./models/cartRulesModel");
 const { createLoyaltyTierTable } = require("./models/loyaltyTierModel");
 const { createNewsletterTable } = require("./models/newsletterModel");
+const { createShippingTable } = require("./models/shippingModel");
 
 const app = express();
 
@@ -214,6 +215,7 @@ async function initDB() {
     await safeInit('CartRules', createCartRulesTable);
     await safeInit('LoyaltyTiers', createLoyaltyTierTable);
     await safeInit('Newsletter', createNewsletterTable);
+    await safeInit('ShippingZones', createShippingTable);
     await safeInit('ClientErrorLogs', createClientErrorTable);
 
     try {
