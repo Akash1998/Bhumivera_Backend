@@ -18,7 +18,7 @@ const {
 } = require('../models/userModel');
 const { validatePassword } = require('../utils/passwordPolicy');
 const { isPwned } = require('../utils/hibp');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const pool = require('../config/db');
 const { listLoyaltyTiers, createLoyaltyTier, updateLoyaltyTier, deleteLoyaltyTier } = require('../models/loyaltyTierModel');
 const { computeLoyaltyTier } = require('../utils/loyaltyTier');
@@ -77,7 +77,9 @@ router.get('/profile', authenticateUser, async (req, res) => {
     }
     if (!user) return res.status(404).json({ message: 'User not found' });
     const tiers = await listLoyaltyTiers({ activeOnly: true });
-    user.loyalty = computeLoyaltyTier(user.loyalty_points, tiers);
+    const loyalty = computeLoyaltyTier(user.loyalty_points, tiers);
+    user.loyalty = loyalty;
+    user.loyaltyProgress = loyalty;
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ message: 'Failed to fetch user' });
@@ -135,8 +137,14 @@ router.put('/profile', authenticateUser, async (req, res) => {
     await updateUser(req.user.id, { name, phone });
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) user = rows[0];
+    }
+    const tiers = await listLoyaltyTiers({ activeOnly: true });
+    const loyalty = computeLoyaltyTier(user?.loyalty_points ?? 0, tiers);
+    if (user) {
+      user.loyalty = loyalty;
+      user.loyaltyProgress = loyalty;
     }
     return res.json(user);
   } catch (err) {
