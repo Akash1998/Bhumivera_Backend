@@ -53,6 +53,7 @@ router.get('/public/active', async (req, res) => {
               expires_at
        FROM coupons
        WHERE is_active = 1
+         AND (description IS NULL OR description NOT LIKE 'spin_reward:%')
          AND (valid_from IS NULL OR valid_from <= NOW())
          AND (expires_at IS NULL OR expires_at >= NOW())
          AND (usage_limit IS NULL OR used_count < usage_limit)

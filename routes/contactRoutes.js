@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { initContactTable, ContactModel } = require('../models/contactModel');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
+const { sendMail } = require('../utils/mail');
 
 // Optional middleware to get user if they are logged in, but allow guests
 const optionalAuth = (req, res, next) => {
@@ -63,34 +64,61 @@ router.get('/', authenticateAdmin, async (req, res) => {
 });
 
 // 4. REPLY & UPDATE TICKET STATUS (Admin Dashboard)
-router.patch('/:id/status', authenticateAdmin, async (req, res) => {
+const updateTicketStatus = async (req, res) => {
   try {
-    const { status, admin_reply } = req.body;
+    const statusAliases = { pending: 'open', 'in-progress': 'in_progress' };
+    const status = statusAliases[req.body.status] || req.body.status;
+    const { admin_reply } = req.body;
     const validStatuses = ['open', 'in_progress', 'resolved', 'closed'];
+    const reply = typeof admin_reply === 'string' ? admin_reply.trim().slice(0, 10000) : null;
 
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, message: 'Invalid ticket status.' });
     }
 
-    const updated = await ContactModel.updateTicketStatus(req.params.id, status, admin_reply);
+    const [[ticket]] = reply
+      ? await require('../config/db').query('SELECT id, name, email, subject FROM support_tickets WHERE id = ?', [req.params.id])
+      : [[null]];
+    if (reply && !ticket) return res.status(404).json({ success: false, message: 'Ticket not found.' });
+
+    const updated = await ContactModel.updateTicketStatus(req.params.id, status, reply);
 
     if (!updated) {
       return res.status(404).json({ success: false, message: 'Ticket not found.' });
     }
 
-    // TODO (Sprint 4): Trigger Mailjet email to notify user of the admin_reply
+    let emailSent;
+    if (reply) {
+      const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+      try {
+        await sendMail({
+          to: ticket.email,
+          subject: `Update to your Bhumivera support request: ${ticket.subject}`,
+          text: `Hello ${ticket.name},\n\n${reply}\n\nBhumivera Support`,
+          html: `<p>Hello ${escapeHtml(ticket.name)},</p><p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p><p>Bhumivera Support</p>`
+        });
+        emailSent = true;
+      } catch (mailError) {
+        console.error('[CONTACT_REPLY_EMAIL]', mailError.message);
+        emailSent = false;
+      }
+    }
 
-    res.json({ success: true, message: `Ticket updated to ${status}.` });
+    res.json({ success: true, emailSent, message: `Ticket updated to ${status}.` });
   } catch (error) {
+    console.error('[CONTACT_STATUS_UPDATE]', error);
     res.status(500).json({ success: false, message: 'Failed to update ticket.' });
   }
-});
+};
+
+router.patch('/:id/status', authenticateAdmin, updateTicketStatus);
+router.put('/:id/status', authenticateAdmin, updateTicketStatus);
 
 // 5. DELETE TICKET (Admin Dashboard)
 router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
     const pool = require('../config/db');
-    const [result] = await pool.query('DELETE FROM contact_tickets WHERE id = ?', [req.params.id]);
+    const [result] = await pool.query('DELETE FROM support_tickets WHERE id = ?', [req.params.id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ success: false, message: 'Ticket not found.' });
@@ -98,6 +126,7 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
 
     res.json({ success: true, message: 'Ticket removed successfully.' });
   } catch (error) {
+    console.error('[CONTACT_DELETE]', error);
     res.status(500).json({ success: false, message: 'Failed to delete ticket.' });
   }
 });

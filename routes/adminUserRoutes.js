@@ -13,7 +13,18 @@ const {
   saveResetOtp
 } = require('../models/userModel');
 const { getAllOrders, updateOrderStatus, getOrderById } = require('../models/orderModel');
+const { getAllReviews } = require('../models/reviewModel');
 const { sendMail } = require('../utils/mail');
+
+router.get('/reviews', authenticateAdmin, async (req, res) => {
+  try {
+    const approved = req.query.approved !== undefined ? Number.parseInt(req.query.approved, 10) : null;
+    return res.json(await getAllReviews(Number.isNaN(approved) ? null : approved));
+  } catch (error) {
+    console.error('[ADMIN_REVIEWS_ALIAS]', error);
+    return res.status(500).json({ message: 'Failed to get reviews.' });
+  }
+});
 
 router.get('/dashboard', authenticateAdmin, async (req, res) => {
   try {

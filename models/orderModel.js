@@ -104,6 +104,7 @@ const createOrder = async ({
   paymentMode,
   notes,
   shippingCost = 0,
+  couponId = null,
   loyaltyPointsAwarded = 0,
   lifecycleGiftProductId = null,
   loyaltyPointsToRedeem = 0,
@@ -112,6 +113,20 @@ const createOrder = async ({
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    if (couponId) {
+      const [usage] = await conn.query(
+        `UPDATE coupons SET used_count = used_count + 1
+         WHERE id = ? AND is_active = 1
+           AND (valid_from IS NULL OR valid_from <= NOW())
+           AND (expires_at IS NULL OR expires_at >= NOW())
+           AND (usage_limit IS NULL OR used_count < usage_limit)`,
+        [couponId]
+      );
+      if (usage.affectedRows !== 1) {
+        throw Object.assign(new Error('This coupon has already been used or has expired.'), { status: 409 });
+      }
+    }
 
     let backendSubtotal = 0;
     const processedItems = [];

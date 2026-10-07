@@ -58,7 +58,7 @@ const ContactModel = {
 
   updateTicketStatus: async (id, status, adminReply = null) => {
     const [result] = await pool.query(
-      `UPDATE support_tickets SET status = ?, admin_reply = ? WHERE id = ?`,
+      `UPDATE support_tickets SET status = ?, admin_reply = COALESCE(?, admin_reply) WHERE id = ?`,
       [status, adminReply, id]
     );
     return result.affectedRows > 0;

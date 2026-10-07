@@ -44,6 +44,7 @@ const warehouseRoutes = require("./routes/warehouseRoutes");
 const clientLogRoutes = require("./routes/clientLogRoutes");
 const logsRoutes = require("./routes/logsRoutes");
 const newsletterRoutes = require("./routes/newsletterRoutes");
+const gamificationRoutes = require("./routes/gamificationRoutes");
 
 // Model Initializations
 const { initWarehouseTables } = require("./models/warehouseModel");
@@ -151,6 +152,7 @@ app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/gamification", gamificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/shipping", shippingRoutes);

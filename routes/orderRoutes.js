@@ -145,7 +145,10 @@ router.post("/", authenticateUser, async (req, res) => {
 
     if (couponCode) {
       const [coupons] = await pool.query(
-        `SELECT * FROM coupons WHERE code=? AND is_active=1 AND (valid_from IS NULL OR valid_from <= NOW()) AND (expires_at IS NULL OR expires_at >= NOW())`,
+        `SELECT * FROM coupons WHERE code=? AND is_active=1
+         AND (valid_from IS NULL OR valid_from <= NOW())
+         AND (expires_at IS NULL OR expires_at >= NOW())
+         AND (usage_limit IS NULL OR used_count < usage_limit)`,
         [couponCode.toUpperCase()]
       );
       const coupon = coupons[0];
@@ -191,6 +194,7 @@ router.post("/", authenticateUser, async (req, res) => {
       items: orderItems,
       discount,
       couponCode: resolvedCoupon,
+      couponId,
       addressSnapshot: address,
       deliveryType: deliveryType || "standard",
       paymentMode: paymentMode || "COD",
@@ -201,8 +205,6 @@ router.post("/", authenticateUser, async (req, res) => {
       loyaltyPointsToRedeem,
       loyaltyPointsPerRupee,
     });
-
-    if (couponId) await pool.query("UPDATE coupons SET used_count=used_count+1 WHERE id=?", [couponId]);
 
     await clearCart(req.user.id);
 
@@ -221,6 +223,7 @@ router.post("/", authenticateUser, async (req, res) => {
     return res.status(201).json({ orderId, message: "Order placed successfully", discount, shippingCost, rulePreview });
   } catch (err) {
     console.error("Place order error:", err);
+    if (err.status === 409) return res.status(409).json({ message: err.message });
     if (err.message?.includes("Insufficient stock")) return res.status(400).json({ message: err.message });
     if (err.message?.includes("not found")) return res.status(400).json({ message: "Product no longer available." });
     return res.status(500).json({ message: `Checkout Error: ${err.sqlMessage || err.message}` });
