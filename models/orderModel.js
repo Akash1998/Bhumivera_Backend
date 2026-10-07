@@ -282,6 +282,14 @@ const getAllOrders = async (filters = {}) => {
   const countSql = `SELECT COUNT(*) as total FROM orders o LEFT JOIN users u ON o.user_id = u.id ${whereSql}`;
   const [[countRow]] = await pool.query(countSql, params);
   const total = countRow ? countRow.total : 0;
+  const [[summaryRow]] = await pool.query(`
+    SELECT COUNT(*) AS totalOrders,
+           COALESCE(SUM(CASE WHEN status NOT IN ('cancelled', 'returned') THEN total ELSE 0 END), 0) AS grossRevenue,
+           SUM(CASE WHEN status IN ('pending', 'confirmed', 'packed') THEN 1 ELSE 0 END) AS actionRequired,
+           SUM(CASE WHEN status = 'shipped' THEN 1 ELSE 0 END) AS inTransit,
+           SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS completed
+    FROM orders
+  `);
 
   const page = Math.max(1, parseInt(filters.page) || 1);
   const limit = Math.max(1, Math.min(200, parseInt(filters.limit) || 50));
@@ -310,6 +318,7 @@ const getAllOrders = async (filters = {}) => {
 
   return {
     orders: parsed,
+    summary: summaryRow,
     pagination: {
       page,
       limit,
@@ -329,67 +338,54 @@ const getOrderById = async (orderId) => {
 };
 
 const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) => {
-  if (status === 'confirmed') {
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [orders] = await conn.query(
-        'SELECT user_id, status, loyalty_points_awarded FROM orders WHERE id = ? FOR UPDATE',
-        [orderId]
-      );
-      const order = orders?.[0];
-      if (!order) {
-        await conn.rollback();
-        return false;
-      }
-      if (order.status !== 'confirmed') {
-        const points = Math.max(0, Math.trunc(Number(order.loyalty_points_awarded) || 0));
-        if (points > 0) await conn.query('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id = ?', [points, order.user_id]);
-      }
-      await conn.query(
-        'UPDATE orders SET status = ?, tracking_number = COALESCE(?, tracking_number), courier = COALESCE(?, courier) WHERE id = ?',
-        [status, metadata.trackingNumber || null, metadata.courier || null, orderId]
-      );
-      await conn.commit();
-      return true;
-    } catch (err) {
+  const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled', 'returned', 'archived'];
+  const statusRank = { pending: 0, confirmed: 1, packed: 2, shipped: 3, delivered: 4, cancelled: 5, returned: 5, archived: 6 };
+  if (!validStatuses.includes(status)) throw { status: 400, message: 'Invalid order status.' };
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [orders] = await conn.query(
+      'SELECT user_id, status, loyalty_points_awarded FROM orders WHERE id = ? FOR UPDATE',
+      [orderId]
+    );
+    const order = orders?.[0];
+    if (!order) {
       await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
+      return false;
     }
-  }
+    if (statusRank[status] < statusRank[order.status]) {
+      await conn.rollback();
+      throw { status: 400, message: `Order cannot move backward from ${order.status} to ${status}.` };
+    }
 
-  if (status === 'cancelled' || status === 'returned') {
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
+    if (status === 'confirmed' && order.status === 'pending') {
+      const points = Math.max(0, Math.trunc(Number(order.loyalty_points_awarded) || 0));
+      if (points > 0) await conn.query('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id = ?', [points, order.user_id]);
+    }
 
-      if (cancelReason) {
-        await conn.query('UPDATE orders SET status=?, cancel_reason=? WHERE id=?', [status, cancelReason, orderId]);
-      } else {
-        await conn.query('UPDATE orders SET status=? WHERE id=?', [status, orderId]);
-      }
-
+    const alreadyRestocked = ['cancelled', 'returned'].includes(order.status);
+    if (['cancelled', 'returned'].includes(status) && !alreadyRestocked) {
       const [items] = await conn.query('SELECT product_id, quantity FROM order_items WHERE order_id = ?', [orderId]);
       for (const item of items) {
         if (item.product_id) {
           await conn.query('UPDATE products SET quantity = quantity + ? WHERE id = ?', [item.quantity, item.product_id]);
         }
       }
-
-      await conn.commit();
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
     }
-  } else {
-    await pool.query(
-      'UPDATE orders SET status=?, tracking_number=COALESCE(?, tracking_number), courier=COALESCE(?, courier) WHERE id=?',
-      [status, metadata.trackingNumber || null, metadata.courier || null, orderId]
+
+    await conn.query(
+      `UPDATE orders SET status = ?, cancel_reason = COALESCE(?, cancel_reason),
+       tracking_number = COALESCE(?, tracking_number), courier = COALESCE(?, courier) WHERE id = ?`,
+      [status, cancelReason || null, metadata.trackingNumber || null, metadata.courier || null, orderId]
     );
+    await conn.commit();
+    return true;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
 };
 

@@ -86,9 +86,10 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { status, trackingNumber, courier } = req.body;
+    const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled', 'returned', 'archived'];
 
-    if (!status) {
-      return res.status(400).json({ success: false, message: "Status is required" });
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ success: false, message: "A valid order status is required." });
     }
 
     const updated = await updateOrderStatus(id, status, req.body.cancelReason, { trackingNumber, courier });

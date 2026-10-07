@@ -566,13 +566,13 @@ router.get("/profile", authenticateAdmin, async (req, res) => {
 // --- LEGACY ADMIN OTP ---
 router.post('/admin/request-otp', otpLimiter, async (req, res) => {
   try {
-    const { email } = req.body;
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     if (!email) return res.status(400).json({ message: 'Email required' });
     const a = await getAdminByEmail(email);
     if (!a) return res.status(404).json({ message: 'No admin account with that email.' });
     
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [otp, email]);
+    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [otp, a.id]);
     console.log(`\n🚨 [EMERGENCY OVERRIDE] ADMIN OTP FOR ${email}: ${otp}\n`);
 
     try {
@@ -591,14 +591,22 @@ router.post('/admin/request-otp', otpLimiter, async (req, res) => {
 
 router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const otp = String(req.body?.otp || '').trim();
     if (!email || !otp) return res.status(400).json({ message: 'Email and OTP required' });
     const a = await getAdminByEmail(email);
     if (!a) return res.status(404).json({ message: 'Admin not found.' });
-    if (!a.login_otp || a.login_otp !== otp) return res.status(401).json({ message: 'Invalid OTP.' });
-    if (new Date() > new Date(a.login_otp_expires)) return res.status(401).json({ message: 'OTP expired. Request a new one.' });
-    
-    await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?', [email]);
+    if (!a.login_otp || String(a.login_otp).trim() !== otp) return res.status(401).json({ message: 'Invalid OTP.' });
+
+    const [consumed] = await pool.query(
+      'UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE id=? AND login_otp=? AND login_otp_expires >= NOW()',
+      [a.id, otp]
+    );
+    if (consumed.affectedRows === 0) {
+      const [[expiry]] = await pool.query('SELECT login_otp_expires >= NOW() AS valid FROM admin_users WHERE id=?', [a.id]);
+      return res.status(401).json({ message: expiry?.valid ? 'Invalid OTP.' : 'OTP expired. Request a new one.' });
+    }
+
     const role = a.role || 'admin';
     const token = jwt.sign({ id: a.id, email: a.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d', jwtid: crypto.randomUUID() });
     res.json({ token, admin: { id: a.id, email: a.email, role } });

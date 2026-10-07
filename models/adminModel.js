@@ -39,6 +39,7 @@ const initAdminTable = async () => {
     await addColIfMissing('role', "role VARCHAR(50) NOT NULL DEFAULT 'admin'");
     await addColIfMissing('login_otp', 'login_otp VARCHAR(10) DEFAULT NULL');
     await addColIfMissing('login_otp_expires', 'login_otp_expires DATETIME DEFAULT NULL');
+    await pool.query('ALTER TABLE admin_users MODIFY COLUMN login_otp VARCHAR(10) DEFAULT NULL');
     await addColIfMissing('failed_attempts', 'failed_attempts INT DEFAULT 0');
     await addColIfMissing('locked_until', 'locked_until DATETIME');
     await addColIfMissing('reset_otp', 'reset_otp VARCHAR(10)');

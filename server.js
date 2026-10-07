@@ -66,6 +66,7 @@ const { createCartRulesTable } = require("./models/cartRulesModel");
 const { createLoyaltyTierTable } = require("./models/loyaltyTierModel");
 const { createNewsletterTable } = require("./models/newsletterModel");
 const { createShippingTable } = require("./models/shippingModel");
+const { initSerialTable } = require("./models/serialModel");
 
 const app = express();
 
@@ -200,6 +201,7 @@ async function initDB() {
     await safeInit('Auth', initAuthTables);
     await safeInit('Categories', initCategoriesTable);
     await safeInit('Products', initProductsTable);
+    await safeInit('ProductSerials', initSerialTable);
     await safeInit('Reviews', createReviewTable);
     await safeInit('Notifications', createNotificationTable);
     await safeInit('Address', createAddressTable);

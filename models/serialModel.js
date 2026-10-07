@@ -8,10 +8,36 @@ const addCol = async (table, sql) => {
 
 // ─── Run once on startup: migrate product_serials for new-policy fields ──────
 const initSerialTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_serials (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      product_id INT NOT NULL,
+      serial_number VARCHAR(255) NOT NULL,
+      status ENUM('available', 'registered', 'sold') NOT NULL DEFAULT 'available',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      base_warranty_months INT NULL DEFAULT NULL,
+      is_legacy TINYINT(1) NOT NULL DEFAULT 1,
+      UNIQUE KEY uq_product_serial_number (serial_number),
+      KEY idx_product_serials_product_status (product_id, status)
+    )
+  `);
   // base_warranty_months: set by admin at generation time (null = legacy serial)
   await addCol('product_serials', 'base_warranty_months INT NULL DEFAULT NULL AFTER status');
   // is_legacy: false for serials generated under the new e-warranty policy
   await addCol('product_serials', 'is_legacy TINYINT(1) NOT NULL DEFAULT 1 AFTER base_warranty_months');
+};
+
+const getAllSerials = async () => {
+  const [rows] = await pool.query(`
+    SELECT ps.id, ps.product_id, ps.serial_number, ps.status, ps.created_at,
+           ps.base_warranty_months, ps.is_legacy,
+           p.name AS product_name, p.sku,
+           (SELECT file_path FROM product_images WHERE product_id = p.id ORDER BY sort_order, id LIMIT 1) AS image
+    FROM product_serials ps
+    LEFT JOIN products p ON p.id = ps.product_id
+    ORDER BY ps.created_at DESC, ps.id DESC
+  `);
+  return rows;
 };
 
 const getProductSerials = async (productId) => {
@@ -152,6 +178,7 @@ const getProductSerialStats = async (productId) => {
 initSerialTable().catch((e) => console.error('serialModel migration error:', e));
 
 module.exports = {
+  getAllSerials,
   getProductSerials,
   addProductSerials,
   deleteProductSerial,

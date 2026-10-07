@@ -109,8 +109,8 @@ const getSetting = async (key) => {
 
 const updateSetting = async (key, value) => {
   await pool.query(
-    'INSERT INTO settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
-    [key, value]
+    'INSERT INTO settings (key_name, value, group_name) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
+    [key, value, 'general']
   );
 };
 
