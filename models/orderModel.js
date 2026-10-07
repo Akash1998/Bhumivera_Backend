@@ -66,6 +66,8 @@ const createOrdersTables = async () => {
     await addCol('orders', 'subtotal', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'discount', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'shipping_cost', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
+    await addCol('orders', 'impact_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
+    await addCol('orders', 'impact_project', 'VARCHAR(50) DEFAULT NULL');
     await addCol('orders', 'loyalty_points_awarded', 'INT NOT NULL DEFAULT 0');
     await addCol('orders', 'loyalty_points_redeemed', 'INT NOT NULL DEFAULT 0');
     await addCol('orders', 'total', 'DECIMAL(10,2) DEFAULT 0');
@@ -104,6 +106,8 @@ const createOrder = async ({
   paymentMode,
   notes,
   shippingCost = 0,
+  impactAmount = 0,
+  impactProject = null,
   couponId = null,
   loyaltyPointsAwarded = 0,
   lifecycleGiftProductId = null,
@@ -179,6 +183,7 @@ const createOrder = async ({
     // Step 3: Finalize Totals
     const safeDiscount = Math.min(backendSubtotal, Math.max(0, parseFloat(discount) || 0));
     const safeShippingCost = Math.max(0, parseFloat(shippingCost) || 0);
+    const safeImpactAmount = Math.max(0, Math.min(500, Number(impactAmount) || 0));
     const safeLoyaltyPoints = Math.max(0, Math.trunc(Number(loyaltyPointsAwarded) || 0));
     const pointsPerRupee = Math.max(1, Math.trunc(Number(loyaltyPointsPerRupee) || 10));
     const pointsAvailable = Math.max(0, Math.trunc(Number(userRows?.[0]?.loyalty_points) || 0));
@@ -186,20 +191,22 @@ const createOrder = async ({
     const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount + safeShippingCost) * pointsPerRupee);
     const pointsRedeemed = Math.min(requestedPoints, pointsAvailable, maxAffordablePoints);
     const loyaltyDiscount = pointsRedeemed / pointsPerRupee;
-    const backendTotal = Math.max(0, backendSubtotal - safeDiscount + safeShippingCost - loyaltyDiscount);
+    const backendTotal = Math.max(0, backendSubtotal - safeDiscount + safeShippingCost - loyaltyDiscount + safeImpactAmount);
     if (pointsRedeemed > 0) {
       await conn.query('UPDATE users SET loyalty_points = loyalty_points - ? WHERE id = ? AND loyalty_points >= ?', [pointsRedeemed, userId, pointsRedeemed]);
     }
 
     // Step 4: Insert the Order
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, shipping_cost, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO orders (user_id, subtotal, discount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         userId,
         backendSubtotal,
         safeDiscount,
         safeShippingCost,
+        safeImpactAmount,
+        safeImpactAmount > 0 ? impactProject : null,
         safeLoyaltyPoints,
         pointsRedeemed,
         backendTotal,
@@ -212,6 +219,14 @@ const createOrder = async ({
     );
 
     const orderId = res.insertId;
+
+    if (safeImpactAmount > 0) {
+      await conn.query(
+        `INSERT INTO impact_contributions (order_id, user_id, project_key, amount, status)
+         VALUES (?, ?, ?, ?, 'pledged')`,
+        [orderId, userId, impactProject, safeImpactAmount]
+      );
+    }
 
     // Step 5: Insert Order Items
     for (const pItem of processedItems) {
@@ -349,6 +364,17 @@ const getOrderById = async (orderId) => {
   const o = orders[0];
   const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [o.id]);
   o.items = items;
+  if (Number(o.impact_amount) > 0) {
+    const [[impact]] = await pool.query(
+      'SELECT project_key, amount, status FROM impact_contributions WHERE order_id = ?',
+      [o.id]
+    );
+    if (impact) {
+      o.impact_project = impact.project_key;
+      o.impact_amount = impact.amount;
+      o.impact_status = impact.status;
+    }
+  }
   return parseOrder(o);
 };
 
@@ -387,6 +413,10 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
           await conn.query('UPDATE products SET quantity = quantity + ? WHERE id = ?', [item.quantity, item.product_id]);
         }
       }
+      await conn.query(
+        "UPDATE impact_contributions SET status = 'cancelled' WHERE order_id = ? AND status = 'pledged'",
+        [orderId]
+      );
     }
 
     await conn.query(

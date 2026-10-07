@@ -116,6 +116,17 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 router.post("/", authenticateUser, async (req, res) => {
   try {
     const { addressId, deliveryType, paymentMode, couponCode, notes, loyaltyPointsToRedeem } = req.body;
+    const rawImpactAmount = req.body.impactAmount;
+    const impactAmount = rawImpactAmount === undefined ? 0 : Number(rawImpactAmount);
+    const impactProjects = ['native-trees', 'river-care', 'community-care'];
+    const allowedImpactAmounts = [0, 50, 100, 250, 500];
+    const impactProject = req.body.impactProject;
+    if (!Number.isFinite(impactAmount) || !allowedImpactAmounts.includes(impactAmount)) {
+      return res.status(400).json({ message: 'Choose a supported contribution amount.' });
+    }
+    if (impactAmount > 0 && (!impactProjects.includes(impactProject) || (paymentMode || 'COD') !== 'COD')) {
+      return res.status(400).json({ message: 'Impact contributions are available with cash-on-delivery orders only.' });
+    }
     if (!addressId) return res.status(400).json({ message: "Delivery address is required." });
 
     // [FIX]: Use AddressModel.getAddressesByUser
@@ -200,6 +211,8 @@ router.post("/", authenticateUser, async (req, res) => {
       paymentMode: paymentMode || "COD",
       notes: notes || null,
       shippingCost,
+      impactAmount,
+      impactProject,
       loyaltyPointsAwarded: rulePreview.loyaltyBonusPoints,
       lifecycleGiftProductId,
       loyaltyPointsToRedeem,

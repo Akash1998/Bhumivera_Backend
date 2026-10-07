@@ -45,6 +45,7 @@ const clientLogRoutes = require("./routes/clientLogRoutes");
 const logsRoutes = require("./routes/logsRoutes");
 const newsletterRoutes = require("./routes/newsletterRoutes");
 const gamificationRoutes = require("./routes/gamificationRoutes");
+const impactRoutes = require("./routes/impactRoutes");
 
 // Model Initializations
 const { initWarehouseTables } = require("./models/warehouseModel");
@@ -68,6 +69,7 @@ const { createLoyaltyTierTable } = require("./models/loyaltyTierModel");
 const { createNewsletterTable } = require("./models/newsletterModel");
 const { createShippingTable } = require("./models/shippingModel");
 const { initSerialTable } = require("./models/serialModel");
+const { initImpactTables } = require("./models/impactModel");
 
 const app = express();
 
@@ -146,6 +148,7 @@ app.use("/api/serials", serialRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/orders", orderRoutes);
+app.use("/api/impact", impactRoutes);
 app.use("/api/addresses", addressRoutes);
 app.use("/api/admin", adminUserRoutes);
 app.use("/api/wishlist", wishlistRoutes);
@@ -210,6 +213,7 @@ async function initDB() {
     await safeInit('Wallet', initWalletTables);
     await safeInit('Cart', createCartTable);
     await safeInit('Orders', createOrdersTables);
+    await safeInit('ImpactLedger', initImpactTables);
     await safeInit('Returns', initReturnsTable);
     await safeInit('Contact', initContactTable);
     await safeInit('Admin', initAdminTable);
