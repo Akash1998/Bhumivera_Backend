@@ -5,6 +5,26 @@ const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { generateUploadUrl, deleteProductImage } = require('../config/s3Upload');
 const { generateGoogleMerchantFeed } = require('../utils/merchantFeed');
 
+const normalizeUrlList = (value, allowedHosts) => {
+  if (value === undefined || value === null || value === '') return { value: null };
+  if (typeof value !== 'string' || value.length > 5000) return { error: true };
+  const urls = value.split(/\r?\n/).map(url => url.trim()).filter(Boolean);
+  if (urls.length > 10) return { error: true };
+  for (const url of urls) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:' || (allowedHosts && !allowedHosts.some(host => parsed.hostname === host || parsed.hostname.endsWith(`.${host}`)))) {
+        return { error: true };
+      }
+    } catch {
+      return { error: true };
+    }
+  }
+  return { value: urls.length ? urls.join('\n') : null };
+};
+
+const VIDEO_HOSTS = ['youtube.com', 'youtu.be', 'instagram.com'];
+
 /**
  * Utility: Robustly parse and sanitize image parameters across all variations
  */
@@ -52,13 +72,15 @@ const parseImages = (rows) => {
         id: (img && typeof img === 'object' ? img.id : null) || null,
         file_path: path,
         url: fullUrl,
-        media_type: (img && typeof img === 'object' ? img.media_type : 'image') || 'image'
+        media_type: (img && typeof img === 'object' ? img.media_type : 'image') || 'image',
+        sort_order: (img && typeof img === 'object' ? Number(img.sort_order) || 0 : 0)
       };
     });
+    normalizedImages.sort((a, b) => a.sort_order - b.sort_order);
 
     return { 
-      ...row, 
-      images: normalizedImages,
+      ...row,
+      images: normalizedImages.map(({ sort_order, ...image }) => image),
       image_url: normalizedImages.length > 0 ? normalizedImages[0].url : null
     };
   });
@@ -90,7 +112,7 @@ router.get('/active', async (req, res) => {
     const { category, subcategory, search, sort, min_price, max_price } = req.query;
     let query = `
       SELECT p.*, 
-      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type)) FROM product_images WHERE product_id = p.id) as images 
+      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
       FROM products p WHERE p.status = "active"
     `;
     const params = [];
@@ -121,7 +143,7 @@ router.get('/', authenticateAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT p.*, c.name as category_name,
-      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type)) FROM product_images WHERE product_id = p.id) as images
+      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
       FROM products p 
       LEFT JOIN categories c ON p.category_id = c.id 
       ORDER BY p.created_at DESC
@@ -138,6 +160,14 @@ router.get('/', authenticateAdmin, async (req, res) => {
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
     const { name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications } = req.body;
+    const videoLinks = normalizeUrlList(video_urls, VIDEO_HOSTS);
+    const externalLinks = normalizeUrlList(product_links);
+    if (videoLinks.error) {
+      return res.status(400).json({ success: false, message: 'Add up to 10 secure YouTube or Instagram URLs, one per line.' });
+    }
+    if (externalLinks.error) {
+      return res.status(400).json({ success: false, message: 'Add up to 10 valid HTTPS product links, one per line.' });
+    }
     
     if (!name || !price || !category_id) {
       return res.status(400).json({ success: false, message: 'Name, price, and category are mandatory fields.' });
@@ -155,12 +185,12 @@ router.post('/', authenticateAdmin, async (req, res) => {
     const [result] = await pool.query(
       `INSERT INTO products (name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications) 
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [name, finalSlug, description || '', price, safeDiscount, safeCat, safeSubCat, safeQuantity, status || 'active', sku || null, brand || 'Bhumivera', safeWarranty, meta_title || null, meta_description || null, tags || null, is_featured || 0, is_trending || 0, is_new_arrival || 0, model_3d_url || null, video_urls || null, product_links || null, specData]
+      [name, finalSlug, description || '', price, safeDiscount, safeCat, safeSubCat, safeQuantity, status || 'active', sku || null, brand || 'Bhumivera', safeWarranty, meta_title || null, meta_description || null, tags || null, is_featured || 0, is_trending || 0, is_new_arrival || 0, model_3d_url || null, videoLinks.value, externalLinks.value, specData]
     );
     
     const [newProduct] = await pool.query(`
       SELECT p.*,
-      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type)) FROM product_images WHERE product_id = p.id) as images
+      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
       FROM products p WHERE p.id = ?
     `, [result.insertId]);
     res.status(201).json({ success: true, message: 'Product created', data: parseImages(newProduct)[0] });
@@ -180,6 +210,14 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     
     const fields = req.body;
     const allowedFields = ['name','slug','description','price','discount_price','category_id','subcategory_id','quantity','status','sku','brand','warranty_period','meta_title','meta_description','tags','is_featured','is_trending','is_new_arrival','model_3d_url','video_urls','product_links', 'specifications'];
+    const videoLinks = fields.video_urls === undefined ? null : normalizeUrlList(fields.video_urls, VIDEO_HOSTS);
+    const externalLinks = fields.product_links === undefined ? null : normalizeUrlList(fields.product_links);
+    if (videoLinks?.error) {
+      return res.status(400).json({ success: false, message: 'Add up to 10 secure YouTube or Instagram URLs, one per line.' });
+    }
+    if (externalLinks?.error) {
+      return res.status(400).json({ success: false, message: 'Add up to 10 valid HTTPS product links, one per line.' });
+    }
     
     const updates = [];
     const values = [];
@@ -187,7 +225,7 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     for (const key of allowedFields) {
       if (fields[key] !== undefined) {
         updates.push(`${key} = ?`);
-        let val = fields[key];
+        let val = key === 'video_urls' ? videoLinks.value : key === 'product_links' ? externalLinks.value : fields[key];
         
         if (key === 'specifications' && typeof val === 'object') {
           val = JSON.stringify(val);
@@ -208,7 +246,7 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     
     const [updated] = await pool.query(`
       SELECT p.*,
-      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type)) FROM product_images WHERE product_id = p.id) as images
+      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
       FROM products p WHERE p.id = ?
     `, [productId]);
     res.json({ success: true, message: 'Product updated', data: parseImages(updated)[0] });
@@ -258,9 +296,8 @@ router.post('/presign', authenticateAdmin, async (req, res) => {
       else fileType = 'application/octet-stream';
     }
 
-    if (!filename) {
-      filename = `upload-${Date.now()}.jpg`;
-      fileType = 'image/jpeg';
+    if (!filename || !['image/jpeg', 'image/png', 'image/webp'].includes(fileType)) {
+      return res.status(400).json({ success: false, message: 'Choose a JPEG, PNG, or WebP product image.' });
     }
     
     const { uploadUrl, key } = await generateUploadUrl(filename, fileType);
@@ -279,7 +316,11 @@ router.post('/:id/images/save', authenticateAdmin, async (req, res) => {
     const productId = parseInt(req.params.id, 10);
     const { imageKeys } = req.body; 
     
-    if (!imageKeys || imageKeys.length === 0) return res.status(400).json({ success: false, message: 'No image keys provided' });
+    if (!Number.isSafeInteger(productId) || productId < 1 ||
+        !Array.isArray(imageKeys) || imageKeys.length === 0 || imageKeys.length > 20 ||
+        imageKeys.some(key => typeof key !== 'string' || !/^products\/[a-zA-Z0-9/_-]+\.(jpg|jpeg|png|webp)$/i.test(key))) {
+      return res.status(400).json({ success: false, message: 'Provide up to 20 valid uploaded product image keys.' });
+    }
     
     const values = imageKeys.map(key => [productId, key, 'image']);
     await pool.query('INSERT INTO product_images (product_id, file_path, media_type) VALUES ?', [values]);
@@ -392,7 +433,7 @@ router.get('/:identifier', async (req, res) => {
 
     let query = `
       SELECT p.*, 
-      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type)) FROM product_images WHERE product_id = p.id) as images
+      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
       FROM products p
     `;
     let params = [identifier];

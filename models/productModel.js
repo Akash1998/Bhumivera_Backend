@@ -1,6 +1,6 @@
 const pool = require('../config/db');
 require('dotenv').config();
-const CLOUDFRONT_BASE_URL = process.env.CLOUDFRONT_BASE_URL;
+const CLOUDFRONT_BASE_URL = process.env.CLOUDFRONT_BASE_URL || 'https://pub-70fdb5d94df347c4bed417c28b066c02.r2.dev/bhumivera';
 
 const addColIfMissing = async (table, column, definition) => {
   try {
@@ -233,5 +233,6 @@ module.exports = {
   },
   deleteProductImage: async (imageId) => {
     await pool.query('DELETE FROM product_images WHERE id = ?', [imageId]);
-  }
+  },
+  attachImages
 };
