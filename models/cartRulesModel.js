@@ -18,6 +18,7 @@ const createCartRulesTable = async () => {
         gift_product_id INT DEFAULT NULL,
         gift_quantity INT NOT NULL DEFAULT 1,
         loyalty_tier_id INT DEFAULT NULL,
+        customer_id INT DEFAULT NULL,
         loyalty_bonus_points INT NOT NULL DEFAULT 0,
         auto_coupon_code VARCHAR(50) DEFAULT NULL,
         enforce_min_checkout TINYINT(1) NOT NULL DEFAULT 0,
@@ -34,6 +35,8 @@ const createCartRulesTable = async () => {
     `);
     const [tierColumn] = await pool.query("SHOW COLUMNS FROM cart_rules LIKE 'loyalty_tier_id'");
     if (!tierColumn.length) await pool.query('ALTER TABLE cart_rules ADD COLUMN loyalty_tier_id INT DEFAULT NULL');
+    const [customerColumn] = await pool.query("SHOW COLUMNS FROM cart_rules LIKE 'customer_id'");
+    if (!customerColumn.length) await pool.query('ALTER TABLE cart_rules ADD COLUMN customer_id INT DEFAULT NULL');
     await pool.query(`
       INSERT IGNORE INTO cart_rules
         (name, description, priority, min_cart_value, free_shipping_enabled, gift_product_id, gift_quantity, loyalty_bonus_points, enforce_min_checkout, badge_text, status)
@@ -69,7 +72,7 @@ const getCartRuleById = async id => {
 const RULE_FIELDS = new Set([
   'name', 'description', 'priority', 'min_cart_value', 'max_cart_value',
   'discount_amount', 'discount_percent', 'free_shipping_enabled', 'gift_product_id',
-  'gift_quantity', 'loyalty_tier_id', 'loyalty_bonus_points', 'auto_coupon_code', 'enforce_min_checkout',
+  'gift_quantity', 'loyalty_tier_id', 'customer_id', 'loyalty_bonus_points', 'auto_coupon_code', 'enforce_min_checkout',
   'badge_text', 'start_time', 'end_time', 'status',
 ]);
 

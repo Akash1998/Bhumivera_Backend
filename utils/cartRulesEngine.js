@@ -12,6 +12,8 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
     if (!rule || rule.status === 'inactive' || rule.status === 0 || rule.status === false) return false;
     if (rule.loyalty_tier_id !== null && rule.loyalty_tier_id !== undefined &&
       String(rule.loyalty_tier_id) !== String(userProfile.loyaltyTierId)) return false;
+    if (rule.customer_id !== null && rule.customer_id !== undefined &&
+      String(rule.customer_id) !== String(userProfile.userId)) return false;
     const start = rule.start_time ? new Date(rule.start_time).getTime() : null;
     const end = rule.end_time ? new Date(rule.end_time).getTime() : null;
     return (start === null || (Number.isFinite(start) && start <= currentTime)) &&

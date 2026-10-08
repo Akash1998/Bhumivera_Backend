@@ -11,6 +11,7 @@ const createReviewTable = async () => {
       title VARCHAR(255) DEFAULT NULL,
       body TEXT DEFAULT NULL,
       images JSON DEFAULT NULL,
+      public_story_consent TINYINT(1) NOT NULL DEFAULT 0,
       is_approved TINYINT(1) DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -22,6 +23,10 @@ const createReviewTable = async () => {
   const [imageColumn] = await pool.query("SHOW COLUMNS FROM reviews LIKE 'images'");
   if (!imageColumn.length) {
     await pool.query('ALTER TABLE reviews ADD COLUMN images JSON DEFAULT NULL');
+  }
+  const [storyConsentColumn] = await pool.query("SHOW COLUMNS FROM reviews LIKE 'public_story_consent'");
+  if (!storyConsentColumn.length) {
+    await pool.query('ALTER TABLE reviews ADD COLUMN public_story_consent TINYINT(1) NOT NULL DEFAULT 0');
   }
 };
 
@@ -44,12 +49,26 @@ const syncProductStats = async (productId) => {
 };
 
 const createReview = async (data) => {
-  const { product_id, user_id, order_id, rating, title, body, images = [] } = data;
+  const { product_id, user_id, order_id, rating, title, body, images = [], public_story_consent = false } = data;
   const [result] = await pool.query(
-    'INSERT INTO reviews (product_id, user_id, order_id, rating, title, body, images) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [product_id, user_id, order_id || null, rating, title || null, body || null, JSON.stringify(images)]
+    'INSERT INTO reviews (product_id, user_id, order_id, rating, title, body, images, public_story_consent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [product_id, user_id, order_id || null, rating, title || null, body || null, JSON.stringify(images), public_story_consent && images.length > 0 ? 1 : 0]
   );
   return result.insertId;
+};
+
+const getPublicCustomerStories = async () => {
+  const [rows] = await pool.query(
+    `SELECT r.id, r.product_id, r.rating, r.title, r.body, r.images, r.created_at,
+            SUBSTRING_INDEX(u.name, ' ', 1) AS first_name, p.name AS product_name
+     FROM reviews r
+     JOIN users u ON r.user_id = u.id
+     JOIN products p ON r.product_id = p.id
+     WHERE r.is_approved = 1 AND r.public_story_consent = 1
+     ORDER BY r.created_at DESC
+     LIMIT 12`
+  );
+  return rows.map(parseReview).filter(review => review.images.length > 0);
 };
 
 const getReviewsByProduct = async (productId, approvedOnly = true) => {
@@ -146,6 +165,7 @@ module.exports = {
   createReviewTable, 
   createReview, 
   getReviewsByProduct, 
+  getPublicCustomerStories,
   getProductRatingSummary, 
   getAllReviews, 
   approveReview, 

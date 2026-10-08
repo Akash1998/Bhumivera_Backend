@@ -4,7 +4,7 @@ const router = express.Router();
 const pool = require('../config/db');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { generateUploadUrl, deleteReviewImage } = require('../config/s3Upload');
-const { createReview, getReviewsByProduct, getProductRatingSummary, getAllReviews, approveReview, rejectReview, getUserReviews, updateReviewAsAdmin, syncProductStats } = require('../models/reviewModel');
+const { createReview, getReviewsByProduct, getProductRatingSummary, getPublicCustomerStories, getAllReviews, approveReview, rejectReview, getUserReviews, updateReviewAsAdmin, syncProductStats } = require('../models/reviewModel');
 
 const MAX_REVIEW_IMAGES = 5;
 const MAX_REVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -82,6 +82,16 @@ router.get('/product/:productId', async (req, res) => {
   }
 });
 
+router.get('/public-stories', async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ stories: await getPublicCustomerStories() });
+  } catch (error) {
+    console.error('[PUBLIC_CUSTOMER_STORIES]', error);
+    res.status(500).json({ message: 'Could not load customer stories.' });
+  }
+});
+
 // GET /api/reviews/my - user: my reviews
 router.get('/my', authenticateUser, async (req, res) => {
   try {
@@ -114,6 +124,18 @@ router.put('/:id', authenticateUser, async (req, res) => {
     }
     if (title !== undefined) { fields.push('title = ?'); values.push(title); }
     if (reviewText !== undefined) { fields.push('body = ?'); values.push(reviewText); }
+    if (req.body.public_story_consent !== undefined) {
+      let existingImages = existing.images;
+      if (typeof existingImages === 'string') {
+        try { existingImages = JSON.parse(existingImages); } catch { existingImages = []; }
+      }
+      const consent = req.body.public_story_consent === true;
+      if (consent && (!Array.isArray(existingImages) || existingImages.length === 0)) {
+        return res.status(400).json({ message: 'Add at least one review photo before opting in to a public customer story.' });
+      }
+      fields.push('public_story_consent = ?');
+      values.push(consent ? 1 : 0);
+    }
 
     if (fields.length) {
       values.push(req.params.id);
@@ -154,7 +176,7 @@ router.delete('/:id', authenticateUser, async (req, res, next) => {
 // POST /api/reviews - user: submit review
 router.post('/', authenticateUser, async (req, res) => {
   try {
-    const { product_id, order_id, rating, title, body, comment, images = [] } = req.body;
+    const { product_id, order_id, rating, title, body, comment, images = [], public_story_consent = false } = req.body;
     const reviewText = body || comment;
     const productId = Number(product_id);
     const orderId = Number(order_id);
@@ -174,6 +196,12 @@ router.post('/', authenticateUser, async (req, res) => {
     }
     if (!validReviewImages(images) || images.some(image => !image.startsWith(`reviews/${req.user.id}/`))) {
       return res.status(400).json({ message: 'Reviews may include up to 5 valid uploaded images.' });
+    }
+    if (public_story_consent === true && images.length === 0) {
+      return res.status(400).json({ message: 'Add at least one review photo before opting in to a public customer story.' });
+    }
+    if (typeof public_story_consent !== 'boolean') {
+      return res.status(400).json({ message: 'Customer-story permission must be explicitly selected.' });
     }
 
     const [[purchase]] = await pool.query(
@@ -196,7 +224,8 @@ router.post('/', authenticateUser, async (req, res) => {
       rating: numericRating,
       title: typeof title === 'string' ? title.trim() || null : null,
       body: typeof reviewText === 'string' ? reviewText.trim() || null : null,
-      images
+      images,
+      public_story_consent
     });
     res.status(201).json({ message: 'Review submitted and pending approval', id });
   } catch (err) {

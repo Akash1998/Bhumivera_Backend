@@ -26,7 +26,7 @@ router.get('/public', async (req, res) => {
       Object.assign(result, data);
     }
     const cartRules = await listCartRules({ activeOnly: true });
-    result.cart_rules_flat = cartRules.map(rule => ({
+    result.cart_rules_flat = cartRules.filter(rule => !rule.customer_id).map(rule => ({
       id: rule.id,
       name: rule.name,
       min_cart_value: Number(rule.min_cart_value) || 0,
@@ -90,8 +90,13 @@ router.post('/cart-rules/create', authenticateAdmin, async (req, res) => {
   try {
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
     const minimum = Number(req.body?.min_cart_value);
+    const customerId = req.body?.customer_id;
     if (!name || !Number.isFinite(minimum) || minimum < 0) {
       return res.status(400).json({ code: 'INVALID_CART_RULE', message: 'Rule name and a non-negative minimum cart value are required.' });
+    }
+    if (customerId !== undefined && customerId !== null && customerId !== '' &&
+      (!Number.isSafeInteger(Number(customerId)) || Number(customerId) < 1)) {
+      return res.status(400).json({ code: 'INVALID_CART_RULE_CUSTOMER', message: 'Specific customer ID must be a positive whole number.' });
     }
     const rule = await createCartRule({ ...req.body, name, min_cart_value: minimum });
     res.status(201).json({ data: rule });
@@ -104,6 +109,11 @@ router.post('/cart-rules/create', authenticateAdmin, async (req, res) => {
 
 router.put('/cart-rules/:id', authenticateAdmin, async (req, res) => {
   try {
+    const customerId = req.body?.customer_id;
+    if (customerId !== undefined && customerId !== null && customerId !== '' &&
+      (!Number.isSafeInteger(Number(customerId)) || Number(customerId) < 1)) {
+      return res.status(400).json({ code: 'INVALID_CART_RULE_CUSTOMER', message: 'Specific customer ID must be a positive whole number.' });
+    }
     const rule = await updateCartRule(req.params.id, req.body || {});
     if (!rule) return res.status(404).json({ code: 'CART_RULE_NOT_FOUND', message: 'Cart rule not found.' });
     res.json({ data: rule });
