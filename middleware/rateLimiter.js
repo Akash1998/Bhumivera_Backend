@@ -1,4 +1,43 @@
+const crypto = require('crypto');
+const net = require('net');
 const rateLimit = require('express-rate-limit');
+
+function getLoginIpKey(ip) {
+  const address = String(ip || '');
+  if (net.isIP(address) === 4) return `v4:${address}`;
+  if (net.isIP(address) !== 6) return `unknown:${address}`;
+
+  const normalized = address.toLowerCase();
+  const mappedIpv4 = normalized.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (mappedIpv4) return `v4:${mappedIpv4[1]}`;
+
+  const segments = normalized.split(':');
+  const lastSegment = segments[segments.length - 1];
+  if (lastSegment.includes('.')) {
+    const octets = lastSegment.split('.').map(Number);
+    segments.splice(
+      segments.length - 1,
+      1,
+      ((octets[0] << 8) | octets[1]).toString(16),
+      ((octets[2] << 8) | octets[3]).toString(16)
+    );
+  }
+
+  const compressed = segments.indexOf('');
+  let groups;
+  if (compressed >= 0) {
+    const left = segments.slice(0, compressed).filter(Boolean);
+    const right = segments.slice(compressed + 1).filter(Boolean);
+    groups = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right];
+  } else {
+    groups = segments;
+  }
+  if (groups.length !== 8) return `v6:${normalized}`;
+
+  const prefix = groups.slice(0, 3).map(group => parseInt(group, 16).toString(16).padStart(4, '0')).join('');
+  const fourthGroupPrefix = (parseInt(groups[3], 16) & 0xff00).toString(16).padStart(4, '0');
+  return `v6:${prefix}${fourthGroupPrefix}`;
+}
 
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, 
@@ -9,11 +48,31 @@ const registerLimiter = rateLimit({
 });
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, 
-  max: 30, 
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyGenerator: req => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const emailHash = crypto.createHash('sha256').update(email).digest('hex');
+    return `login:${getLoginIpKey(req.ip)}:${emailHash}`;
+  },
   standardHeaders: true,
   legacyHeaders: false,
-  message: { message: 'Too many login attempts from this IP. Security protocol active. Try again in 15 minutes.' }
+  message: {
+    code: 'LOGIN_ATTEMPTS_LIMIT',
+    message: 'Too many sign-in attempts for this account from this network. Please wait 15 minutes before trying again.'
+  }
+});
+
+const loginIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    code: 'LOGIN_NETWORK_LIMIT',
+    message: 'There have been too many unsuccessful sign-in attempts from this network. Please wait 15 minutes and try again.'
+  }
 });
 
 const otpLimiter = rateLimit({
@@ -91,6 +150,7 @@ const newsletterLimiter = rateLimit({
 module.exports = {
   registerLimiter,
   loginLimiter,
+  loginIpLimiter,
   otpLimiter,
   forgotLimiter,
   magicLinkLimiter,

@@ -5,7 +5,7 @@ const express = require("express"),
   { authenticator } = require('otplib'),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
-  { registerLimiter, loginLimiter, otpLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
+  { registerLimiter, loginLimiter, loginIpLimiter, otpLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
   { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware'),
   { validatePassword } = require('../utils/passwordPolicy'),
   { isPwned } = require('../utils/hibp'),
@@ -66,7 +66,7 @@ router.use('/google/callback', googleCallbackLimiter);
 router.use('/challenge', challengeLimiter);
 
 // --- ADMIN SPECIFIC LOGIN ---
-router.post("/admin/login", loginLimiter, async (req, res) => {
+router.post("/admin/login", loginIpLimiter, loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ message: "Email and password required" });
@@ -117,7 +117,7 @@ router.post("/admin/login", loginLimiter, async (req, res) => {
 });
 
 // --- CORE UNIVERSAL LOGIN ---
-router.post("/login", loginLimiter, async (req, res) => {
+router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ message: "Email and password required" });
@@ -561,29 +561,36 @@ router.post("/refresh", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ code: 'TOKEN_MISSING', message: "Missing bearer refresh token", userAction: "Please re-login." });
+      return res.status(401).json({ code: 'TOKEN_MISSING', message: "This device needs you to sign in again.", userAction: "Sign in again on this device." });
     }
     const oldToken = authHeader.split(" ")[1];
     let payload;
     try {
       payload = jwt.verify(oldToken, process.env.JWT_SECRET || 'fallback_secret', { ignoreExpiration: true });
     } catch (verifyErr) {
-      return res.status(401).json({ code: 'TOKEN_INVALID', message: "Invalid token signature", userAction: "Please re-login and try again." });
+      return res.status(401).json({ code: 'TOKEN_INVALID', message: "This device needs you to sign in again.", userAction: "Sign in again on this device." });
     }
     if (!payload || !payload.id || !payload.email) {
-      return res.status(401).json({ code: 'TOKEN_MALFORMED', message: "Malformed token payload", userAction: "Clear local storage, re-login." });
+      return res.status(401).json({ code: 'TOKEN_MALFORMED', message: "This device needs you to sign in again.", userAction: "Sign in again on this device." });
     }
     const sessionType = payload.sessionType;
     if (!sessionType || !await isSessionActive(payload, req)) {
-      return res.status(401).json({ code: 'TOKEN_REVOKED', message: "This refresh token is revoked, expired, or belongs to a different trusted browser. Please sign in again.", userAction: "Clear local storage and log in again." });
+      return res.status(401).json({
+        code: 'SESSION_REAUTH_REQUIRED',
+        message: 'Your sign-in on this device has expired or needs verification. Please sign in again; other devices are not affected.',
+        userAction: 'Sign in again on this device. Other devices remain signed in.'
+      });
     }
     const now = Math.floor(Date.now() / 1000);
     const MAX_REFRESH_AGE_SEC = (sessionType === 'user' ? 30 : 14) * 24 * 60 * 60;
     const sessionStartedAt = payload.sessionStartedAt || payload.iat;
     if (sessionStartedAt && (now - sessionStartedAt) > MAX_REFRESH_AGE_SEC) {
-      return res.status(401).json({ code: 'TOKEN_TOO_OLD', message: "Token too old to refresh; please re-login", userAction: "Re-login with password." });
+      return res.status(401).json({
+        code: 'SESSION_REAUTH_REQUIRED',
+        message: 'Your sign-in on this device has expired. Please sign in again; other devices are not affected.',
+        userAction: 'Sign in again on this device. Other devices remain signed in.'
+      });
     }
-    await revokeSession(payload.jti);
     const role = payload.role || 'customer';
     const NEW_EXPIRES_SEC = 7 * 24 * 60 * 60;
     const freshToken = await issueToken(
@@ -591,6 +598,7 @@ router.post("/refresh", async (req, res) => {
       req,
       { expiresIn: NEW_EXPIRES_SEC, sessionType }
     );
+    await revokeSession(payload.jti, sessionType);
     res.json({ code: 'REFRESH_OK', token: freshToken, expiresIn: NEW_EXPIRES_SEC });
   } catch (err) {
     console.error("[AUTH REFRESH ERROR]:", err);
@@ -610,7 +618,7 @@ router.post("/logout", async (req, res) => {
       } catch (verifyErr) {
         return res.status(401).json({ code: 'TOKEN_INVALID', message: 'Invalid session token.' });
       }
-      if (decoded && decoded.jti) await revokeSession(decoded.jti);
+      if (decoded && decoded.jti) await revokeSession(decoded.jti, decoded.sessionType);
     }
     return res.status(200).json({ code: 'LOGGED_OUT', message: "Logged out successfully. Token revoked server-side." });
   } catch (err) {

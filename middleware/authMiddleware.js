@@ -14,7 +14,7 @@ const authenticateAdmin=async(req,res,next)=>{
   if(payload.role!=='admin'&&payload.role!=='superadmin'&&payload.role!=='warehouse_admin')
     return res.status(403).json({message:'Access denied: Admin privileges required.'});
   try {
-    if (!await isSessionActive(payload, req)) return res.status(401).json({message:'Session is revoked, expired, or from a different trusted browser. Please sign in again.'});
+    if (!await isSessionActive(payload, req)) return res.status(401).json({message:'Your sign-in on this device has expired or needs verification. Please sign in again; other devices are not affected.'});
   } catch (err) {
     console.error('[AUTH_SESSION_CHECK_ERROR]:', err);
     return res.status(503).json({message:'Could not validate session. Please try again.'});
@@ -35,7 +35,7 @@ const authenticateUser=async(req,res,next)=>{
     return res.status(401).json({message:'Invalid or expired user token'});
   }
   try {
-    if (!await isSessionActive(payload, req)) return res.status(401).json({message:'Session is revoked, expired, or from a different trusted browser. Please sign in again.'});
+    if (!await isSessionActive(payload, req)) return res.status(401).json({message:'Your sign-in on this device has expired or needs verification. Please sign in again; other devices are not affected.'});
   } catch (err) {
     console.error('[AUTH_SESSION_CHECK_ERROR]:', err);
     return res.status(503).json({message:'Could not validate session. Please try again.'});

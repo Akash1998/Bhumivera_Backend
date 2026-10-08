@@ -61,8 +61,16 @@ async function isSessionActive(payload, req) {
   return rows.length > 0;
 }
 
-async function revokeSession(jti) {
+async function revokeSession(jti, sessionType) {
   if (!jti) return;
+  const table = sessionType && TABLES[sessionType];
+  if (table) {
+    await pool.query(
+      `UPDATE ${table} SET revoked_at = COALESCE(revoked_at, NOW()) WHERE jti = ?`,
+      [jti]
+    );
+    return;
+  }
   await Promise.all([
     pool.query('UPDATE user_sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE jti = ?', [jti]),
     pool.query('UPDATE admin_sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE jti = ?', [jti]),
