@@ -70,6 +70,8 @@ const { createNewsletterTable } = require("./models/newsletterModel");
 const { createShippingTable } = require("./models/shippingModel");
 const { initSerialTable } = require("./models/serialModel");
 const { initImpactTables } = require("./models/impactModel");
+const { initSubcategoriesTable } = require("./models/subcategoryModel");
+const { createWishlistTable } = require("./models/wishlistModel");
 
 const app = express();
 
@@ -207,11 +209,13 @@ async function initDB() {
     await safeInit('Auth', initAuthTables);
     await safeInit('Categories', initCategoriesTable);
     await safeInit('Products', initProductsTable);
+    await safeInit('Subcategories', initSubcategoriesTable);
     await safeInit('ProductSerials', initSerialTable);
     await safeInit('Reviews', createReviewTable);
     await safeInit('Notifications', createNotificationTable);
     await safeInit('Address', createAddressTable);
     await safeInit('Wallet', initWalletTables);
+    await safeInit('Wishlist', createWishlistTable);
     await safeInit('Cart', createCartTable);
     await safeInit('Orders', createOrdersTables);
     await safeInit('ImpactLedger', initImpactTables);

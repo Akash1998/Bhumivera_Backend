@@ -174,9 +174,6 @@ const getProductSerialStats = async (productId) => {
   return stats[0];
 };
 
-// Run migration on module load (safe, idempotent)
-initSerialTable().catch((e) => console.error('serialModel migration error:', e));
-
 module.exports = {
   getAllSerials,
   getProductSerials,

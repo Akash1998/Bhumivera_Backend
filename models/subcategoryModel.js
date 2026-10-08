@@ -25,8 +25,6 @@ const initSubcategoriesTable = async () => {
     );
   }
 };
-initSubcategoriesTable().catch(console.error);
-
 // All subcategories with parent category name
 const getAllSubcategories = async () => {
   const [rows] = await pool.query(`
@@ -89,6 +87,7 @@ const deleteSubcategory = async (id) => {
 };
 
 module.exports = {
+  initSubcategoriesTable,
   getAllSubcategories,
   getSubcategoriesByCategory,
   getSubcategoryById,

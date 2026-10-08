@@ -218,8 +218,6 @@ const updateProductStock = async (id, quantityChange, operation = 'set') => {
   return updatedProduct.quantity;
 };
 
-initProductsTable().catch(err => console.error('[DB] productModel migration error:', err));
-
 module.exports = {
   initProductsTable,
   getAllProducts,
