@@ -227,7 +227,7 @@ async function initDB() {
 
     // Authentication schema migrations must finish before the API accepts requests.
     await createUsersTable();
-    await safeInit('Auth', initAuthTables);
+    await initAuthTables();
     await safeInit('Categories', initCategoriesTable);
     await safeInit('Products', initProductsTable);
     await safeInit('Subcategories', initSubcategoriesTable);
