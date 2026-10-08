@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
-const { getTrustedDeviceHash, getRequestDeviceHash } = require('./trustedDevice');
+const { getTrustedDeviceHash, getRequestDeviceHashes } = require('./trustedDevice');
 
 const TABLES = {
   user: 'user_sessions',
@@ -41,8 +41,8 @@ async function isSessionActive(payload, req) {
   if (!payload?.jti) return false;
   let rows;
   if (payload.sessionType === 'user') {
-    const deviceHash = getRequestDeviceHash(req);
-    if (!deviceHash || deviceHash !== payload.deviceHash) return false;
+    const deviceHashes = getRequestDeviceHashes(req);
+    if (!deviceHashes.includes(payload.deviceHash)) return false;
     [rows] = await pool.query(
       `SELECT s.jti FROM user_sessions s
        JOIN trusted_devices d ON d.user_id=s.user_id AND d.token_hash=s.device_hash

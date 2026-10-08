@@ -8,21 +8,25 @@ const TRUST_DAYS = 30;
 
 function cookieOptions(req) {
   const bhumiveraHost = /(^|\.)bhumivera\.com$/i.test(req.hostname || '');
+  const secure = Boolean(req.secure || bhumiveraHost || process.env.NODE_ENV === 'production');
   const options = {
     httpOnly: true,
-    secure: Boolean(req.secure || bhumiveraHost),
-    sameSite: 'lax',
+    secure,
+    sameSite: secure ? 'none' : 'lax',
     path: '/',
     maxAge: TRUST_DAYS * 24 * 60 * 60 * 1000,
   };
-  if (bhumiveraHost) options.domain = process.env.TRUSTED_DEVICE_COOKIE_DOMAIN || '.bhumivera.com';
   return options;
 }
 
-function getCookie(req) {
+function getCookies(req) {
   const prefix = `${COOKIE_NAME}=`;
-  const entry = String(req.headers.cookie || '').split(';').map(part => part.trim()).find(part => part.startsWith(prefix));
-  return entry ? entry.slice(prefix.length) : '';
+  return String(req.headers.cookie || '')
+    .split(';')
+    .map(part => part.trim())
+    .filter(part => part.startsWith(prefix))
+    .map(entry => entry.slice(prefix.length))
+    .filter(Boolean);
 }
 
 function hashDeviceToken(token) {
@@ -30,21 +34,26 @@ function hashDeviceToken(token) {
 }
 
 function getRequestDeviceHash(req) {
-  const token = getCookie(req);
-  return token ? hashDeviceToken(token) : null;
+  return getRequestDeviceHashes(req)[0] || null;
+}
+
+function getRequestDeviceHashes(req) {
+  return [...new Set(getCookies(req).map(hashDeviceToken))];
 }
 
 async function getTrustedDeviceHash(userId, req) {
-  const token = getCookie(req);
-  if (!token) return null;
-  const tokenHash = getRequestDeviceHash(req);
+  const tokenHashes = getRequestDeviceHashes(req);
+  if (!tokenHashes.length) return null;
   const [rows] = await pool.query(
-    'SELECT id FROM trusted_devices WHERE user_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at > NOW() LIMIT 1',
-    [userId, tokenHash]
+    `SELECT id, token_hash FROM trusted_devices
+     WHERE user_id=? AND token_hash IN (${tokenHashes.map(() => '?').join(',')})
+       AND revoked_at IS NULL AND expires_at > NOW()
+     LIMIT 1`,
+    [userId, ...tokenHashes]
   );
   if (!rows.length) return null;
   await pool.query('UPDATE trusted_devices SET last_seen_at=NOW() WHERE id=?', [rows[0].id]);
-  return tokenHash;
+  return rows[0].token_hash;
 }
 
 async function isTrustedDevice(userId, req) {
@@ -123,6 +132,7 @@ module.exports = {
   isTrustedDevice,
   getTrustedDeviceHash,
   getRequestDeviceHash,
+  getRequestDeviceHashes,
   sendDeviceChallenge,
   consumeDeviceChallenge,
   issueTrustedDevice,
