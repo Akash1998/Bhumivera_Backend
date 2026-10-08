@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
-const { authenticateAdmin } = require('../middleware/authMiddleware');
+const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { createCouponTable, createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
 const { validateDateRange } = require('../utils/dateValidation');
 
@@ -21,11 +21,11 @@ router.use(async (req, res, next) => {
 });
 
 // POST /api/coupons/validate - validate coupon (public)
-router.post('/validate', async (req, res) => {
+router.post('/validate', authenticateUser, async (req, res) => {
   try {
     const { code, orderTotal } = req.body;
     if (!code) return res.status(400).json({ message: 'Coupon code is required' });
-    const result = await validateCoupon(code, parseFloat(orderTotal) || 0);
+    const result = await validateCoupon(code, parseFloat(orderTotal) || 0, req.user.id);
     if (!result.valid) return res.status(400).json({ message: result.message });
     res.json({ valid: true, discount: result.discount, coupon: { code: result.coupon.code, discount_type: result.coupon.discount_type, discount_value: result.coupon.discount_value } });
   } catch (err) {
@@ -53,6 +53,7 @@ router.get('/public/active', async (req, res) => {
               expires_at
        FROM coupons
        WHERE is_active = 1
+         AND restricted_user_id IS NULL
          AND (description IS NULL OR description NOT LIKE 'spin_reward:%')
          AND (valid_from IS NULL OR valid_from <= NOW())
          AND (expires_at IS NULL OR expires_at >= NOW())

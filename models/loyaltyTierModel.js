@@ -36,6 +36,14 @@ const listLoyaltyTiers = async ({ activeOnly = false } = {}) => {
   return Array.isArray(rows) ? rows : [];
 };
 
+const getUserLoyaltyTier = async userId => {
+  await createLoyaltyTierTable();
+  const [[user]] = await pool.query('SELECT loyalty_points FROM users WHERE id = ?', [userId]);
+  const points = Math.max(0, Number(user?.loyalty_points) || 0);
+  const tiers = await listLoyaltyTiers({ activeOnly: true });
+  return tiers.filter(tier => Number(tier.min_points) <= points).pop() || null;
+};
+
 const createLoyaltyTier = async data => {
   await createLoyaltyTierTable();
   const [result] = await pool.query(
@@ -65,4 +73,4 @@ const deleteLoyaltyTier = async id => {
   return result.affectedRows > 0;
 };
 
-module.exports = { createLoyaltyTierTable, listLoyaltyTiers, createLoyaltyTier, updateLoyaltyTier, deleteLoyaltyTier };
+module.exports = { createLoyaltyTierTable, listLoyaltyTiers, getUserLoyaltyTier, createLoyaltyTier, updateLoyaltyTier, deleteLoyaltyTier };

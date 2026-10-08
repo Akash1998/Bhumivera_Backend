@@ -12,6 +12,7 @@ const {
   toggleCartRule,
 } = require('../models/cartRulesModel');
 const { evaluateCartRules } = require('../utils/cartRulesEngine');
+const { listLoyaltyTiers } = require('../models/loyaltyTierModel');
 
 // GET /api/settings/public - public: get non-sensitive settings (store info, SEO, social)
 router.get('/public', async (req, res) => {
@@ -62,6 +63,15 @@ router.get('/cart-rules/preview', async (req, res) => {
   } catch (err) {
     console.error('[CART_RULES_PREVIEW]', err);
     res.status(500).json({ code: 'CART_RULES_PREVIEW_FAILED', message: 'Failed to preview cart rules.' });
+  }
+});
+
+router.get('/cart-rules/loyalty-tiers', authenticateAdmin, async (req, res) => {
+  try {
+    res.json({ data: await listLoyaltyTiers({ activeOnly: true }) });
+  } catch (err) {
+    console.error('[CART_RULES_LOYALTY_TIERS]', err);
+    res.status(500).json({ code: 'CART_RULES_TIERS_LOAD_FAILED', message: 'Failed to load loyalty tiers.' });
   }
 });
 

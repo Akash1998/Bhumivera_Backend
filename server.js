@@ -73,6 +73,7 @@ const { initImpactTables } = require("./models/impactModel");
 const { initSubcategoriesTable } = require("./models/subcategoryModel");
 const { createWishlistTable } = require("./models/wishlistModel");
 const { createRecommendationTables } = require("./models/recommendationModel");
+const { createCouponTable } = require("./models/couponModel");
 
 const app = express();
 let databaseReady = false;
@@ -238,6 +239,7 @@ async function initDB() {
     await safeInit('Wishlist', createWishlistTable);
     await safeInit('ProductRecommendations', createRecommendationTables);
     await safeInit('Cart', createCartTable);
+    await safeInit('Coupons', createCouponTable);
     await safeInit('Orders', createOrdersTables);
     await safeInit('ImpactLedger', initImpactTables);
     await safeInit('Returns', initReturnsTable);

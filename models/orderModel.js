@@ -78,6 +78,8 @@ const createOrdersTables = async () => {
     await addCol('orders', 'notes', 'TEXT');
     await addCol('orders', 'tracking_number', 'VARCHAR(255)');
     await addCol('orders', 'courier', 'VARCHAR(255)');
+    await addCol('orders', 'delivered_at', 'DATETIME DEFAULT NULL');
+    await pool.query("UPDATE orders SET delivered_at = updated_at WHERE status = 'delivered' AND delivered_at IS NULL");
 
     await addCol('order_items', 'sku', 'VARCHAR(255)');
     await addCol('order_items', 'image', 'TEXT');
@@ -431,9 +433,11 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
     }
 
     await conn.query(
-      `UPDATE orders SET status = ?, cancel_reason = COALESCE(?, cancel_reason),
+      `UPDATE orders SET status = ?,
+       delivered_at = CASE WHEN ? = 'delivered' THEN COALESCE(delivered_at, NOW()) ELSE delivered_at END,
+       cancel_reason = COALESCE(?, cancel_reason),
        tracking_number = COALESCE(?, tracking_number), courier = COALESCE(?, courier) WHERE id = ?`,
-      [status, cancelReason || null, metadata.trackingNumber || null, metadata.courier || null, orderId]
+      [status, status, cancelReason || null, metadata.trackingNumber || null, metadata.courier || null, orderId]
     );
     await conn.commit();
     return true;

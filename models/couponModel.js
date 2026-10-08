@@ -16,6 +16,7 @@ const createCouponTable = async () => {
       max_discount DECIMAL(10,2) DEFAULT NULL,
       usage_limit INT DEFAULT NULL,
       used_count INT DEFAULT 0,
+      restricted_user_id INT DEFAULT NULL,
       is_active TINYINT(1) DEFAULT 1,
       valid_from DATETIME DEFAULT NULL,
       expires_at DATETIME DEFAULT NULL,
@@ -26,6 +27,7 @@ const createCouponTable = async () => {
     for (const [column, definition] of [
       ['description', 'VARCHAR(255) DEFAULT NULL'],
       ['valid_from', 'DATETIME DEFAULT NULL'],
+      ['restricted_user_id', 'INT DEFAULT NULL'],
     ]) {
       const [rows] = await pool.query(
         'SELECT COUNT(*) AS column_exists FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
@@ -56,11 +58,12 @@ const createCoupon = async (data) => {
     valid_until,
     status,
     is_active,
+    restricted_user_id,
   } = data;
   const active = is_active ?? (status === undefined ? 1 : status === 'active' ? 1 : 0);
   const [result] = await pool.query(
-    'INSERT INTO coupons (code, description, discount_type, discount_value, min_order_amount, max_discount, usage_limit, is_active, valid_from, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [code.toUpperCase(), description || null, discount_type, discount_value, min_order_amount ?? min_purchase ?? 0, max_discount || null, usage_limit || null, active, valid_from || null, expires_at || valid_until || null]
+    'INSERT INTO coupons (code, description, discount_type, discount_value, min_order_amount, max_discount, usage_limit, restricted_user_id, is_active, valid_from, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [code.toUpperCase(), description || null, discount_type, discount_value, min_order_amount ?? min_purchase ?? 0, max_discount || null, usage_limit || null, restricted_user_id || null, active, valid_from || null, expires_at || valid_until || null]
   );
   return result.insertId;
 };
@@ -120,9 +123,12 @@ const incrementCouponUsage = async (code) => {
   await pool.query('UPDATE coupons SET used_count = used_count + 1 WHERE code = ?', [code.toUpperCase()]);
 };
 
-const validateCoupon = async (code, orderTotal) => {
+const validateCoupon = async (code, orderTotal, userId = null) => {
   const coupon = await getCouponByCode(code);
   if (!coupon) return { valid: false, message: 'Invalid coupon code' };
+  if (coupon.restricted_user_id && String(coupon.restricted_user_id) !== String(userId)) {
+    return { valid: false, message: 'This coupon is assigned to a different customer.' };
+  }
   if (!coupon.is_active) return { valid: false, message: 'Coupon is not active' };
   if (coupon.valid_from && new Date(coupon.valid_from) > new Date()) return { valid: false, message: 'Coupon is not active yet' };
   if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) return { valid: false, message: 'Coupon has expired' };

@@ -15,6 +15,7 @@ const { getCartTotal, clearCart } = require("../models/cartModel");
 const { getSetting, getSettingsByGroup } = require('../models/settingsModel');
 const { listCartRules } = require('../models/cartRulesModel');
 const { evaluateCartRules } = require('../utils/cartRulesEngine');
+const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -139,7 +140,13 @@ router.post("/", authenticateUser, async (req, res) => {
 
     const rules = await listCartRules({ activeOnly: true });
     const enforceMinimum = (await getSetting('enforce_cart_rule_minimum')) === '1';
-    const rulePreview = evaluateCartRules(cartTotal, rules, { userId: req.user.id, enforceMinimum });
+    const loyaltyTier = await getUserLoyaltyTier(req.user.id);
+    const rulePreview = evaluateCartRules(cartTotal, rules, {
+      userId: req.user.id,
+      enforceMinimum,
+      loyaltyTierId: loyaltyTier?.id,
+      loyaltyTierName: loyaltyTier?.name,
+    });
     if (rulePreview.enforcedMin !== null && cartTotal < rulePreview.enforcedMin) {
       return res.status(400).json({
         code: 'CART_BELOW_MIN_TIER',
@@ -153,30 +160,35 @@ router.post("/", authenticateUser, async (req, res) => {
     let couponDiscount = 0;
     let resolvedCoupon = null;
     let couponId = null;
+    let recoveryCoupon = false;
 
     if (couponCode) {
       const [coupons] = await pool.query(
         `SELECT * FROM coupons WHERE code=? AND is_active=1
+         AND (restricted_user_id IS NULL OR restricted_user_id = ?)
          AND (valid_from IS NULL OR valid_from <= NOW())
          AND (expires_at IS NULL OR expires_at >= NOW())
          AND (usage_limit IS NULL OR used_count < usage_limit)`,
-        [couponCode.toUpperCase()]
+        [couponCode.toUpperCase(), req.user.id]
       );
       const coupon = coupons[0];
-      if (coupon && cartTotal >= (Number(coupon.min_order_amount) || 0)) {
-        couponDiscount = coupon.discount_type === "percentage"
-          ? Math.min((cartTotal * Number(coupon.discount_value)) / 100, Number(coupon.max_discount) || Infinity)
-          : Number(coupon.discount_value) || 0;
-        couponDiscount = Math.max(0, Math.min(couponDiscount, cartTotal));
-        resolvedCoupon = coupon.code;
-        couponId = coupon.id;
+      if (!coupon) return res.status(400).json({ code: 'INVALID_COUPON', message: 'This coupon is invalid, expired, already used, or assigned to another customer.' });
+      if (cartTotal < (Number(coupon.min_order_amount) || 0)) {
+        return res.status(400).json({ code: 'COUPON_MINIMUM_NOT_MET', message: `Add ₹${(Number(coupon.min_order_amount) - cartTotal).toFixed(2)} more to use this coupon.` });
       }
+      couponDiscount = coupon.discount_type === "percentage"
+        ? Math.min((cartTotal * Number(coupon.discount_value)) / 100, Number(coupon.max_discount) || Infinity)
+        : Number(coupon.discount_value) || 0;
+      couponDiscount = Math.max(0, Math.min(couponDiscount, cartTotal));
+      resolvedCoupon = coupon.code;
+      couponId = coupon.id;
+      recoveryCoupon = Boolean(coupon.restricted_user_id) && String(coupon.restricted_user_id) === String(req.user.id);
     }
 
     const couponStackPolicy = await getSetting('coupon_stack_policy') || 'rule_first';
     const ruleDiscount = Number(rulePreview.totalDiscount) || 0;
     let discount = ruleDiscount;
-    if (couponStackPolicy === 'both') discount = ruleDiscount + couponDiscount;
+    if (recoveryCoupon || couponStackPolicy === 'both') discount = ruleDiscount + couponDiscount;
     else if (couponStackPolicy === 'coupon_first' && couponDiscount > 0) discount = couponDiscount;
     else if (ruleDiscount <= 0) discount = couponDiscount;
     discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount));
@@ -274,17 +286,10 @@ router.get("/:id", authenticateUser, async (req, res) => {
 });
 
 router.post("/:id/return", authenticateUser, async (req, res) => {
-  try {
-    const order = await getOrderById(req.params.id);
-    if (!order) return res.status(404).json({ message: "Order not found" });
-    if (order.user_id !== req.user.id) return res.status(403).json({ message: "Forbidden" });
-    if (order.status !== "delivered") return res.status(400).json({ message: "Only delivered orders can be returned" });
-
-    await updateOrderStatus(order.id, "returned", req.body.reason || "Return requested by customer");
-    return res.json({ message: "Return request submitted successfully" });
-  } catch (err) {
-    return res.status(500).json({ message: "Failed to submit return request" });
-  }
+  return res.status(410).json({
+    code: "RETURN_REQUEST_ENDPOINT_RETIRED",
+    message: "Submit a return request through /api/returns so it can be reviewed before the order status changes."
+  });
 });
 
 router.delete("/:id", authenticateAdmin, async (req, res) => {

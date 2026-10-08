@@ -17,6 +17,7 @@ const createCartRulesTable = async () => {
         free_shipping_enabled TINYINT(1) NOT NULL DEFAULT 0,
         gift_product_id INT DEFAULT NULL,
         gift_quantity INT NOT NULL DEFAULT 1,
+        loyalty_tier_id INT DEFAULT NULL,
         loyalty_bonus_points INT NOT NULL DEFAULT 0,
         auto_coupon_code VARCHAR(50) DEFAULT NULL,
         enforce_min_checkout TINYINT(1) NOT NULL DEFAULT 0,
@@ -31,6 +32,8 @@ const createCartRulesTable = async () => {
         CONSTRAINT fk_cart_rules_gift_product FOREIGN KEY (gift_product_id) REFERENCES products(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    const [tierColumn] = await pool.query("SHOW COLUMNS FROM cart_rules LIKE 'loyalty_tier_id'");
+    if (!tierColumn.length) await pool.query('ALTER TABLE cart_rules ADD COLUMN loyalty_tier_id INT DEFAULT NULL');
     await pool.query(`
       INSERT IGNORE INTO cart_rules
         (name, description, priority, min_cart_value, free_shipping_enabled, gift_product_id, gift_quantity, loyalty_bonus_points, enforce_min_checkout, badge_text, status)
@@ -47,8 +50,10 @@ const createCartRulesTable = async () => {
 const listCartRules = async ({ activeOnly = false } = {}) => {
   await createCartRulesTable();
   const [rows] = await pool.query(
-    `SELECT cr.*, p.name AS gift_product_name, p.sku AS gift_product_sku, p.quantity AS gift_product_stock
+    `SELECT cr.*, p.name AS gift_product_name, p.sku AS gift_product_sku, p.quantity AS gift_product_stock,
+            lt.name AS loyalty_tier_name
      FROM cart_rules cr LEFT JOIN products p ON p.id = cr.gift_product_id
+     LEFT JOIN loyalty_tiers lt ON lt.id = cr.loyalty_tier_id
      ${activeOnly ? "WHERE cr.status = 'active'" : ''}
      ORDER BY cr.priority DESC, cr.id ASC`
   );
@@ -64,7 +69,7 @@ const getCartRuleById = async id => {
 const RULE_FIELDS = new Set([
   'name', 'description', 'priority', 'min_cart_value', 'max_cart_value',
   'discount_amount', 'discount_percent', 'free_shipping_enabled', 'gift_product_id',
-  'gift_quantity', 'loyalty_bonus_points', 'auto_coupon_code', 'enforce_min_checkout',
+  'gift_quantity', 'loyalty_tier_id', 'loyalty_bonus_points', 'auto_coupon_code', 'enforce_min_checkout',
   'badge_text', 'start_time', 'end_time', 'status',
 ]);
 

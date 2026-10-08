@@ -10,10 +10,16 @@ const createCartTable = async () => {
         product_id INT NOT NULL,
         quantity INT NOT NULL DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY uq_user_product (user_id, product_id),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+
+    const [columns] = await pool.query("SHOW COLUMNS FROM cart_items LIKE 'updated_at'");
+    if (!columns.length) {
+      await pool.query('ALTER TABLE cart_items ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    }
 
     const [indexes] = await pool.query("SHOW INDEX FROM cart_items WHERE Key_name = 'uq_user_product'");
     if (indexes.length === 0) {
@@ -36,10 +42,12 @@ const createCartTable = async () => {
 const getCartByUser = async (userId) => {
   try {
     const [rows] = await pool.query(
-      `SELECT ci.id, ci.quantity, ci.product_id, 
+      `SELECT ci.id, ci.quantity, ci.product_id, ci.created_at, ci.updated_at,
               p.name, p.price, p.discount_price, p.quantity AS stock,
               p.status, p.sku, p.brand,
-              (SELECT file_path FROM product_images WHERE product_id = p.id LIMIT 1) AS image
+              (SELECT file_path FROM product_images
+               WHERE product_id = p.id AND media_type = 'image'
+               ORDER BY sort_order ASC, id ASC LIMIT 1) AS image
        FROM cart_items ci
        JOIN products p ON p.id = ci.product_id
        WHERE ci.user_id = ?`,
@@ -89,7 +97,7 @@ const upsertCartItem = async (userId, productId, quantity) => {
     await pool.query(
       `INSERT INTO cart_items (user_id, product_id, quantity) 
        VALUES (?, ?, ?) 
-       ON DUPLICATE KEY UPDATE quantity = quantity + ?`,
+       ON DUPLICATE KEY UPDATE quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP`,
       [userId, productId, quantity, quantity]
     );
 
@@ -122,7 +130,7 @@ const updateCartItemQuantity = async (userId, productId, quantity) => {
   }
 
   await pool.query(
-    'UPDATE cart_items SET quantity = ? WHERE user_id = ? AND product_id = ?',
+    'UPDATE cart_items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND product_id = ?',
     [quantity, userId, productId]
   );
   
@@ -134,6 +142,7 @@ const removeCartItem = async (userId, productId) => {
     'DELETE FROM cart_items WHERE user_id = ? AND product_id = ?',
     [userId, productId]
   );
+  await pool.query('UPDATE cart_items SET updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', [userId]);
   return getCartByUser(userId);
 };
 

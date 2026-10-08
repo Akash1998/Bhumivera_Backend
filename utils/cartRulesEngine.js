@@ -10,6 +10,8 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
   const currentTime = Number.isFinite(now) ? now : Date.now();
   const activeRules = (Array.isArray(rules) ? rules : []).filter(rule => {
     if (!rule || rule.status === 'inactive' || rule.status === 0 || rule.status === false) return false;
+    if (rule.loyalty_tier_id !== null && rule.loyalty_tier_id !== undefined &&
+      String(rule.loyalty_tier_id) !== String(userProfile.loyaltyTierId)) return false;
     const start = rule.start_time ? new Date(rule.start_time).getTime() : null;
     const end = rule.end_time ? new Date(rule.end_time).getTime() : null;
     return (start === null || (Number.isFinite(start) && start <= currentTime)) &&
@@ -66,6 +68,7 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
     freeShipping: matchedRules.some(rule => Number(rule.free_shipping_enabled) === 1),
     loyaltyBonusPoints: matchedRules.reduce((total, rule) => total + Math.max(0, Math.trunc(toNumber(rule.loyalty_bonus_points))), 0),
     badges: matchedRules.map(rule => rule.badge_text).filter(Boolean),
+    membershipTier: userProfile.loyaltyTierName || null,
     enforcedMin,
     missingAmount: enforcedMin === null ? 0 : Math.max(0, enforcedMin - cartSubtotal),
   };
