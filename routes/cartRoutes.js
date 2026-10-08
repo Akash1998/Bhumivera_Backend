@@ -99,6 +99,7 @@ router.get('/', authenticateUser, async (req, res) => {
       loyaltyTierId: loyaltyTier?.id,
       loyaltyTierName: loyaltyTier?.name,
     });
+    const couponStackPolicy = await getSetting('coupon_stack_policy') || 'rule_first';
     const abandonmentEnabled = (await getSetting('cart_abandonment_coupon_enabled')) !== '0';
     const delayMinutes = Math.max(1, Math.min(10080, Number.parseInt(await getSetting('cart_abandonment_coupon_delay_minutes'), 10) || 30));
     const lastActivity = safeItems.reduce((latest, item) => {
@@ -109,6 +110,7 @@ router.get('/', authenticateUser, async (req, res) => {
       items: safeItems,
       total: total || 0,
       rulePreview,
+      couponStackPolicy,
       abandonment: { enabled: abandonmentEnabled, delayMinutes, lastActivityAt: lastActivity ? new Date(lastActivity).toISOString() : null },
     });
   } catch (err) {

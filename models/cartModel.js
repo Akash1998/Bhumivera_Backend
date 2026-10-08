@@ -44,9 +44,10 @@ const getCartByUser = async (userId) => {
     const [rows] = await pool.query(
       `SELECT ci.id, ci.quantity, ci.product_id, ci.created_at, ci.updated_at,
               p.name, p.price, p.discount_price, p.quantity AS stock,
+              p.rating, p.review_count,
               p.status, p.sku, p.brand,
               (SELECT file_path FROM product_images
-               WHERE product_id = p.id AND media_type = 'image'
+               WHERE product_id = p.id AND (media_type = 'image' OR media_type IS NULL)
                ORDER BY sort_order ASC, id ASC LIMIT 1) AS image
        FROM cart_items ci
        JOIN products p ON p.id = ci.product_id
