@@ -3,7 +3,6 @@ const express = require("express");
 const cors = require("cors");
 const pool = require("./config/db");
 const path = require("path");
-const bcrypt = require("bcryptjs");
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 if (JWT_SECRET === 'fallback_secret') {
@@ -221,7 +220,7 @@ async function initDB() {
     await safeInit('ImpactLedger', initImpactTables);
     await safeInit('Returns', initReturnsTable);
     await safeInit('Contact', initContactTable);
-    await safeInit('Admin', initAdminTable);
+    await initAdminTable();
     await safeInit('Warehouse', initWarehouseTables); 
     await safeInit('Settings', createSettingsTable);
     await safeInit('CartRules', createCartRulesTable);
@@ -253,19 +252,6 @@ async function initDB() {
       console.warn("[DB_INIT] Settings Table Warning:", settingErr.message);
     }
 
-    try {
-      const [adminCheck] = await pool.query("SELECT * FROM admin_users WHERE email='adminbhumivera27@gmail.com'");
-      if (adminCheck.length === 0) {
-        const hash = await bcrypt.hash('Akash#*@1998', 10);
-        await pool.query(
-          "INSERT INTO admin_users (email, password_hash, role) VALUES ('adminbhumivera27@gmail.com', ?, 'superadmin')",
-          [hash]
-        );
-        console.log('--- ROOT ADMIN ACCESS ACTIVATED: adminbhumivera27@gmail.com ---');
-      }
-    } catch (adminQueryErr) {
-      console.warn("[DB_INIT] Admin Master Account Verification Deferred:", adminQueryErr.message);
-    }
   } catch (err) {
     console.error("Critical Init Error:", err.message);
     throw err;

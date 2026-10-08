@@ -53,6 +53,7 @@ const router = express.Router();
 
 const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
 const hashAdminOtp = (adminId, otp) => hashOtp('admin-login', adminId, otp);
+const hashAdminResetOtp = (adminId, otp) => hashOtp('admin-password-reset', adminId, otp);
 
 const DISPOSABLE_DOMAINS = [
   'mailinator.com', 'tempmail.com', 'guerrillamail.com', '10minutemail.com', 
@@ -821,14 +822,14 @@ router.post("/security-question/verify-for-reset", otpLimiter, async (req, res) 
 });
 
 // --- NEW: ADMIN RESET 3-STEP ---
-router.post("/admin/forgot-password", async (req, res) => {
+router.post("/admin/forgot-password", forgotLimiter, async (req, res) => {
   try {
-    const { email } = req.body;
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     if (!email) return res.status(400).json({ message: "Email required." });
     const a = await getAdminByEmail(email);
     if (a && a.id) {
       const otp = generateOtp();
-      await saveAdminResetOtp(a.id, otp);
+      await saveAdminResetOtp(a.id, hashAdminResetOtp(a.id, otp));
       try {
         await sendMail({
           to: email,
@@ -848,16 +849,20 @@ router.post("/admin/forgot-password", async (req, res) => {
   }
 });
 
-router.post("/admin/verify-reset-otp", async (req, res) => {
+router.post("/admin/verify-reset-otp", otpLimiter, async (req, res) => {
   try {
-    const { email, otp } = req.body;
-    if (!email || !otp) return res.status(400).json({ message: "Email and OTP required." });
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const otp = String(req.body?.otp || '').trim();
+    if (!email || !/^\d{6}$/.test(otp)) return res.status(400).json({ message: "A valid email and 6-digit OTP are required." });
     const genericFail = "Invalid or expired verification code.";
-    const a = await getAdminByResetOtp(email, otp);
+    const target = await getAdminByEmail(email);
+    if (!target) return res.status(400).json({ message: genericFail });
+    const otpHash = hashAdminResetOtp(target.id, otp);
+    const a = await getAdminByResetOtp(email, otpHash);
     if (!a) return res.status(400).json({ message: genericFail });
     const [consumed] = await pool.query(
       'UPDATE admin_users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=? AND reset_otp_expires >= NOW()',
-      [a.id, otp]
+      [a.id, otpHash]
     );
     if (!consumed.affectedRows) return res.status(400).json({ message: genericFail });
     const adminRole = a.role || 'admin';
@@ -871,6 +876,69 @@ router.post("/admin/verify-reset-otp", async (req, res) => {
   } catch (err) {
     console.error("[admin/verify-reset-otp] Error:", err.message);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/admin/change-password", authenticateAdmin, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || !currentPassword || !newPassword) {
+      return res.status(400).json({ code: 'MISSING_FIELDS', message: 'Both currentPassword and newPassword are required.' });
+    }
+
+    const admin = await getAdminByEmail(req.admin.email);
+    if (!admin) return res.status(404).json({ message: 'Admin account not found.' });
+    if (!await verifyAdminPassword(currentPassword, admin.password_hash)) {
+      return res.status(401).json({ message: 'Current password is incorrect.' });
+    }
+    if (await verifyAdminPassword(newPassword, admin.password_hash)) {
+      return res.status(400).json({ code: 'PASSWORD_REUSED', message: 'New password must differ from your current password.' });
+    }
+
+    const policyResult = await validatePassword(newPassword);
+    if (!policyResult.valid) {
+      const error = policyResult.errors[0];
+      return res.status(400).json({ code: error.code, message: error.message });
+    }
+
+    try {
+      const hibpResult = await isPwned(newPassword);
+      if (hibpResult?.pwned && !hibpResult.skipped) {
+        return res.status(400).json({
+          code: 'PWNED_PASSWORD',
+          message: `This password has appeared in ${hibpResult.count} public data breach(es). Choose a different one.`
+        });
+      }
+    } catch (hibpErr) {
+      console.warn('[ADMIN_CHANGE_PASSWORD] HIBP check skipped:', hibpErr.message);
+    }
+
+    const last5 = await getLast5AdminPasswordHashes(admin.id);
+    for (const row of last5 || []) {
+      if (await bcrypt.compare(newPassword, row.password_hash)) {
+        return res.status(400).json({ code: 'PASSWORD_REUSED', message: 'Cannot reuse any of your last 5 passwords.' });
+      }
+    }
+
+    await insertAdminPasswordHistory(admin.id, admin.password_hash);
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    await updateAdminPassword(admin.id, passwordHash);
+    await insertAdminPasswordHistory(admin.id, passwordHash);
+    await revokeAllSessions('admin', admin.id);
+
+    const token = await issueToken(
+      { id: admin.id, email: admin.email, role: admin.role || 'admin' },
+      req,
+      { sessionType: 'admin' }
+    );
+    return res.json({
+      message: 'Password changed successfully.',
+      token,
+      admin: { id: admin.id, email: admin.email, role: admin.role || 'admin' },
+    });
+  } catch (err) {
+    console.error('[ADMIN_CHANGE_PASSWORD] Error:', err);
+    return res.status(500).json({ message: 'Could not change the admin password.' });
   }
 });
 

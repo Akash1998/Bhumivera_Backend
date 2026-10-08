@@ -26,7 +26,9 @@ const verifyPassword = async (password, hash) => {
 
 const updateAdminPassword = async (id, newHash) => {
   await pool.query(
-    `UPDATE admin_users SET password_hash = ? WHERE id = ?`,
+    `UPDATE admin_users
+     SET password_hash = ?, failed_attempts = 0, locked_until = NULL
+     WHERE id = ?`,
     [newHash, id]
   );
 };
@@ -42,13 +44,15 @@ const initAdminTable = async () => {
     await pool.query('ALTER TABLE admin_users MODIFY COLUMN login_otp VARCHAR(64) DEFAULT NULL');
     await addColIfMissing('failed_attempts', 'failed_attempts INT DEFAULT 0');
     await addColIfMissing('locked_until', 'locked_until DATETIME');
-    await addColIfMissing('reset_otp', 'reset_otp VARCHAR(10)');
+    await addColIfMissing('reset_otp', 'reset_otp VARCHAR(64) DEFAULT NULL');
+    await pool.query('ALTER TABLE admin_users MODIFY COLUMN reset_otp VARCHAR(64) DEFAULT NULL');
     await addColIfMissing('reset_otp_expires', 'reset_otp_expires DATETIME');
     await addColIfMissing('two_factor_secret', 'two_factor_secret VARCHAR(255)');
     await addColIfMissing('two_factor_enabled', 'two_factor_enabled TINYINT(1) DEFAULT 0');
     console.log('[AdminModel] admin_users columns verified.');
   } catch (err) {
     console.error('[AdminModel] Migration error:', err.message);
+    throw err;
   }
 };
 
@@ -84,17 +88,17 @@ const getAdminLockStatus = async (id) => {
   };
 };
 
-const saveAdminResetOtp = async (id, otp) => {
+const saveAdminResetOtp = async (id, otpHash) => {
   await pool.query(
     'UPDATE admin_users SET reset_otp = ?, reset_otp_expires = DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id = ?',
-    [otp, id]
+    [otpHash, id]
   );
 };
 
-const getAdminByResetOtp = async (email, otp) => {
+const getAdminByResetOtp = async (email, otpHash) => {
   const [rows] = await pool.query(
     'SELECT * FROM admin_users WHERE email = ? AND reset_otp = ? AND reset_otp_expires > NOW()',
-    [email, otp]
+    [email, otpHash]
   );
   return rows[0];
 };
