@@ -49,7 +49,7 @@ async function isSessionActive(payload, req) {
        WHERE s.jti=? AND s.device_hash=? AND s.revoked_at IS NULL AND s.expires_at > NOW()
          AND d.revoked_at IS NULL AND d.expires_at > NOW()
        LIMIT 1`,
-      [payload.jti, deviceHash]
+      [payload.jti, payload.deviceHash]
     );
   } else if (payload.sessionType === 'admin') {
     [rows] = await pool.query(
