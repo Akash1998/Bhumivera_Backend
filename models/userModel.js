@@ -74,6 +74,7 @@ const createAuthSecurityTables = async () => {
       id INT AUTO_INCREMENT PRIMARY KEY,
       user_id INT NOT NULL,
       jti VARCHAR(64) UNIQUE NOT NULL,
+      device_hash CHAR(64) DEFAULT NULL,
       device_info JSON DEFAULT NULL,
       ip VARCHAR(64),
       user_agent TEXT,
@@ -86,6 +87,11 @@ const createAuthSecurityTables = async () => {
       INDEX idx_us_user(user_id)
     )
   `);
+
+  const [deviceHashColumn] = await pool.query(`SHOW COLUMNS FROM user_sessions LIKE 'device_hash'`);
+  if (deviceHashColumn.length === 0) {
+    await pool.query(`ALTER TABLE user_sessions ADD COLUMN device_hash CHAR(64) DEFAULT NULL AFTER jti`);
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS admin_sessions (
@@ -102,6 +108,15 @@ const createAuthSecurityTables = async () => {
       is_current TINYINT(1) DEFAULT 0,
       INDEX idx_us_jti(jti),
       INDEX idx_us_user(admin_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS used_auth_tokens (
+      jti VARCHAR(64) PRIMARY KEY,
+      expires_at DATETIME NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_used_auth_tokens_expiry(expires_at)
     )
   `);
 
@@ -138,8 +153,35 @@ const createAuthSecurityTables = async () => {
       user_agent TEXT,
       city VARCHAR(128) DEFAULT NULL,
       challenge_code CHAR(6),
+      challenge_hash CHAR(64) DEFAULT NULL,
       expires_at DATETIME,
-      used TINYINT(1) DEFAULT 0
+      used TINYINT(1) DEFAULT 0,
+      INDEX idx_device_challenge(user_id, challenge_hash, used, expires_at)
+    )
+  `);
+
+  const [challengeHashColumn] = await pool.query(`SHOW COLUMNS FROM new_device_alerts LIKE 'challenge_hash'`);
+  if (challengeHashColumn.length === 0) {
+    await pool.query(`ALTER TABLE new_device_alerts ADD COLUMN challenge_hash CHAR(64) DEFAULT NULL AFTER challenge_code`);
+  }
+  const [challengeIndex] = await pool.query(`SHOW INDEX FROM new_device_alerts WHERE Key_name = 'idx_device_challenge'`);
+  if (challengeIndex.length === 0) {
+    await pool.query(`ALTER TABLE new_device_alerts ADD INDEX idx_device_challenge(user_id, challenge_hash, used, expires_at)`);
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS trusted_devices (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      token_hash CHAR(64) NOT NULL UNIQUE,
+      user_agent TEXT,
+      ip VARCHAR(64),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NOT NULL,
+      revoked_at DATETIME DEFAULT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      INDEX idx_trusted_devices_user(user_id, revoked_at, expires_at)
     )
   `);
 };

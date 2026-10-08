@@ -8,6 +8,7 @@ async function createAddressTable() {
       full_name VARCHAR(100) NOT NULL,
       phone_number VARCHAR(20) NOT NULL,
       street_address TEXT NOT NULL,
+      line2 TEXT DEFAULT NULL,
       city VARCHAR(100) NOT NULL,
       state VARCHAR(100) NOT NULL,
       postal_code VARCHAR(20) NOT NULL,
@@ -22,6 +23,10 @@ async function createAddressTable() {
 
   try {
     await pool.query(query);
+    const [line2Col] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'line2'`);
+    if (line2Col.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN line2 TEXT DEFAULT NULL AFTER street_address`);
+    }
     const [labelCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'label'`);
     if (labelCol.length === 0) {
       try { await pool.query(`ALTER TABLE addresses ADD COLUMN label VARCHAR(50) DEFAULT 'Home' AFTER is_default`); } catch (_) {}
@@ -59,6 +64,7 @@ const AddressModel = {
       full_name, 
       phone, phone_number,
       line1, street_address,
+      line2,
       city, 
       state, 
       pincode, postal_code,
@@ -78,13 +84,14 @@ const AddressModel = {
       }
 
       const [result] = await pool.query(
-        `INSERT INTO addresses (user_id, full_name, phone_number, street_address, city, state, postal_code, country, is_default, label) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO addresses (user_id, full_name, phone_number, street_address, line2, city, state, postal_code, country, is_default, label)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           userId, 
           full_name, 
           db_phone, 
           db_street, 
+          line2 || null,
           city, 
           state, 
           db_postal, 

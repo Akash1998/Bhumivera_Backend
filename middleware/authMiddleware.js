@@ -1,50 +1,62 @@
 const jwt=require('jsonwebtoken');
+const { isSessionActive } = require('../utils/sessionStore');
 
 const authenticateAdmin=async(req,res,next)=>{
   const auth=req.headers.authorization;
   if(!auth||!auth.startsWith('Bearer '))
     return res.status(401).json({message:'Missing token'});
-  try{
-    const token=auth.split(' ')[1],
-          payload=jwt.verify(token,process.env.JWT_SECRET);
-    if(payload.role!=='admin'&&payload.role!=='superadmin'&&payload.role!=='warehouse_admin')
-      return res.status(403).json({message:'Access denied: Admin privileges required.'});
-    req.admin={id:payload.id,email:payload.email,role:payload.role};
-    req.user=payload;
-    next()
-  }catch(err){
-    return res.status(401).json({message:'Invalid or expired admin token'})
+  let payload;
+  try {
+    payload = jwt.verify(auth.split(' ')[1], process.env.JWT_SECRET || 'fallback_secret');
+  } catch (err) {
+    return res.status(401).json({message:'Invalid or expired admin token'});
   }
+  if(payload.role!=='admin'&&payload.role!=='superadmin'&&payload.role!=='warehouse_admin')
+    return res.status(403).json({message:'Access denied: Admin privileges required.'});
+  try {
+    if (!await isSessionActive(payload, req)) return res.status(401).json({message:'Session is revoked, expired, or from a different trusted browser. Please sign in again.'});
+  } catch (err) {
+    console.error('[AUTH_SESSION_CHECK_ERROR]:', err);
+    return res.status(503).json({message:'Could not validate session. Please try again.'});
+  }
+  req.admin={id:payload.id,email:payload.email,role:payload.role};
+  req.user=payload;
+  next();
 };
 
 const authenticateUser=async(req,res,next)=>{
   const auth=req.headers.authorization;
   if(!auth||!auth.startsWith('Bearer '))
     return res.status(401).json({message:'Missing token'});
-  try{
-    const token=auth.split(' ')[1],
-          payload=jwt.verify(token,process.env.JWT_SECRET);
-    if(payload.role==='admin'||payload.role==='superadmin'){
-      req.user=payload;
-      return next()
-    }
-    const pool=require('../config/db');
-    try{
-      const[userData]=await pool.query('SELECT is_active FROM users WHERE id=?',[payload.id]);
-      if(!userData||userData.length===0||parseInt(userData[0].is_active)===0)
-        return res.status(401).json({message:'Account is disabled or deleted.'})
-    }catch(dbErr){
-      // [FIXED]: System failures are no longer caught by outer JWT block and misidentified.
-      if(dbErr.code!=='ER_BAD_FIELD_ERROR') {
-        console.error("[AUTH_DB_ERROR]:", dbErr);
-        return res.status(500).json({ message: "Internal server error during session validation." });
-      }
-    }
-    req.user=payload;
-    next()
-  }catch(err){
-    return res.status(401).json({message:'Invalid or expired user token'})
+  let payload;
+  try {
+    payload = jwt.verify(auth.split(' ')[1], process.env.JWT_SECRET || 'fallback_secret');
+  } catch (err) {
+    return res.status(401).json({message:'Invalid or expired user token'});
   }
+  try {
+    if (!await isSessionActive(payload, req)) return res.status(401).json({message:'Session is revoked, expired, or from a different trusted browser. Please sign in again.'});
+  } catch (err) {
+    console.error('[AUTH_SESSION_CHECK_ERROR]:', err);
+    return res.status(503).json({message:'Could not validate session. Please try again.'});
+  }
+  if(payload.role==='admin'||payload.role==='superadmin'){
+    req.user=payload;
+    return next();
+  }
+  const pool=require('../config/db');
+  try{
+    const[userData]=await pool.query('SELECT is_active FROM users WHERE id=?',[payload.id]);
+    if(!userData||userData.length===0||parseInt(userData[0].is_active)===0)
+      return res.status(401).json({message:'Account is disabled or deleted.'})
+  }catch(dbErr){
+    if(dbErr.code!=='ER_BAD_FIELD_ERROR') {
+      console.error("[AUTH_DB_ERROR]:", dbErr);
+      return res.status(500).json({ message: "Internal server error during session validation." });
+    }
+  }
+  req.user=payload;
+  next();
 };
 
 const isAdmin=(req,res,next)=>{

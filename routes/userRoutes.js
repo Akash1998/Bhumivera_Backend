@@ -1,5 +1,4 @@
 const express = require('express');
-const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { authenticator } = require('otplib');
 const qrcode = require('qrcode');
@@ -18,6 +17,8 @@ const {
 } = require('../models/userModel');
 const { validatePassword } = require('../utils/passwordPolicy');
 const { isPwned } = require('../utils/hibp');
+const { issueToken } = require('../utils/sessionStore');
+const { isTrustedDevice, sendDeviceChallenge, issueTrustedDevice } = require('../utils/trustedDevice');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const pool = require('../config/db');
 const { listLoyaltyTiers, createLoyaltyTier, updateLoyaltyTier, deleteLoyaltyTier } = require('../models/loyaltyTierModel');
@@ -33,9 +34,9 @@ router.post('/register', async (req, res) => {
     const existing = await getUserByEmail(email);
     if (existing) return res.status(409).json({ message: 'Email already registered' });
     
-    const jwt = require('jsonwebtoken');
     const id = await createUser({ name, email, password, phone });
-    const token = jwt.sign({ id, email, role: 'customer' }, process.env.JWT_SECRET, { expiresIn: '7d', jwtid: crypto.randomUUID() });
+    const deviceHash = await issueTrustedDevice(id, req, res);
+    const token = await issueToken({ id, email, role: 'customer' }, req, { sessionType: 'user', deviceHash });
     return res.status(201).json({ token, user: { id, name, email, phone, role: 'customer' } });
   } catch (err) {
     console.error(err);
@@ -52,12 +53,30 @@ router.post('/login', async (req, res) => {
     
     const ok = await verifyPassword(password, user.password_hash);
     if (!ok) return res.status(401).json({ message: 'Invalid email or password' });
+    if (user.two_factor_enabled) {
+      return res.status(202).json({ requires2FA: true, factor: 'authenticator', email: user.email });
+    }
+    let deviceHash;
+    try {
+      deviceHash = await isTrustedDevice(user.id, req);
+      if (!deviceHash) {
+        await sendDeviceChallenge(user, req);
+        return res.status(202).json({
+          requires2FA: true,
+          factor: 'email',
+          message: 'We sent a verification code to your email because this browser is not trusted yet.',
+          email: user.email
+        });
+      }
+    } catch (challengeError) {
+      console.error('[NEW_DEVICE_CHALLENGE_ERROR]:', challengeError);
+      return res.status(503).json({ message: 'Could not verify this browser. Please try again later.' });
+    }
     
-    const jwt = require('jsonwebtoken');
-    const token = jwt.sign(
+    const token = await issueToken(
       { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d', jwtid: crypto.randomUUID() }
+      req,
+      { sessionType: 'user', deviceHash }
     );
     return res.json({ token, user: { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role } });
   } catch (err) {

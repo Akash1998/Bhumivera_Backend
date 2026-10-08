@@ -2,13 +2,23 @@ const express = require("express"),
   crypto = require("crypto"),
   jwt = require("jsonwebtoken"),
   bcrypt = require("bcryptjs"),
+  { authenticator } = require('otplib'),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
   { registerLimiter, loginLimiter, otpLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
   { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware'),
   { validatePassword } = require('../utils/passwordPolicy'),
   { isPwned } = require('../utils/hibp'),
-  jtiCache = require('../utils/jtiCache');
+  { issueToken, isSessionActive, revokeSession, revokeAllSessions, consumeOneTimeToken } = require('../utils/sessionStore');
+const {
+  isTrustedDevice,
+  sendDeviceChallenge,
+  consumeDeviceChallenge,
+  issueTrustedDevice,
+  revokeTrustedDevices,
+  clearTrustedDeviceCookie,
+} = require('../utils/trustedDevice');
+const { hashOtp } = require('../utils/otpCrypto');
 
 const {
   getAdminByEmail,
@@ -40,6 +50,9 @@ const {
 } = require("../models/userModel");
 
 const router = express.Router();
+
+const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
+const hashAdminOtp = (adminId, otp) => hashOtp('admin-login', adminId, otp);
 
 const DISPOSABLE_DOMAINS = [
   'mailinator.com', 'tempmail.com', 'guerrillamail.com', '10minutemail.com', 
@@ -92,9 +105,10 @@ router.post("/admin/login", loginLimiter, async (req, res) => {
     }
 
     await updateAdminFailedAttempts(admin.id, true);
-    const role = admin.role || "admin";
-    const token = jwt.sign({ id: admin.id, email: admin.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d", jwtid: crypto.randomUUID() });
-    return res.json({ token, admin: { id: admin.id, email: admin.email, role } });
+    return res.status(403).json({
+      code: 'ADMIN_OTP_REQUIRED',
+      message: 'Admin access requires the emailed verification code. Use the secure OTP sign-in flow.'
+    });
   } catch (err) {
     console.error("Admin Login Error:", err);
     res.status(500).json({ message: "Server error", error: err.message });
@@ -178,10 +192,38 @@ router.post("/login", loginLimiter, async (req, res) => {
     }
     
     if (!u || !v) return res.status(401).json({ message: "Invalid credentials" });
-    if (!isA && u.two_factor_enabled) return res.status(202).json({ requires2FA: true, message: "MFA Verification Required", email: u.email });
+    if (isA) {
+      return res.status(403).json({
+        code: 'ADMIN_OTP_REQUIRED',
+        message: 'Admin access requires the emailed verification code. Continue through the secure admin sign-in flow.'
+      });
+    }
+    if (u.two_factor_enabled) {
+      return res.status(202).json({
+        requires2FA: true,
+        factor: 'authenticator',
+        message: 'Enter the code from your authenticator app.'
+      });
+    }
+    let deviceHash;
+    try {
+      deviceHash = await isTrustedDevice(u.id, req);
+      if (!deviceHash) {
+        await sendDeviceChallenge(u, req);
+        return res.status(202).json({
+          requires2FA: true,
+          factor: 'email',
+          message: 'We sent a verification code to your email because this browser is not trusted yet.',
+          email: u.email
+        });
+      }
+    } catch (challengeError) {
+      console.error('[NEW_DEVICE_CHALLENGE_ERROR]:', challengeError);
+      return res.status(503).json({ message: 'Could not verify this browser. Please try again later.' });
+    }
     
     const role = isA ? (u.role || "admin") : (u.role || "customer");
-    const token = jwt.sign({ id: u.id, email: u.email, role: role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d", jwtid: crypto.randomUUID() });
+    const token = await issueToken({ id: u.id, email: u.email, role }, req, { sessionType: 'user', deviceHash });
     
     return res.json({ token, user: { id: u.id, name: u.name || "Administrator", email: u.email, role: role } });
   } catch (err) {
@@ -196,25 +238,16 @@ router.post("/login-request-otp", otpLimiter, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email required" });
 
-    let target = await getUserByEmail(email);
-    let isAdmin = false;
+    const target = await getUserByEmail(email);
     if (!target) {
-      target = await getAdminByEmail(email);
-      if (target) isAdmin = true;
+      const admin = await getAdminByEmail(email);
+      if (admin) return res.status(403).json({ code: 'ADMIN_PASSWORD_REQUIRED', message: 'Admin OTP requests require a verified password.' });
+      return res.status(404).json({ message: "Account not found." });
     }
+    if (!target.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
 
-    if (!target) return res.status(404).json({ message: "Account not found." });
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-    if (isAdmin) {
-      await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [otp, email]);
-    } else {
-      if (!target.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
-      await saveResetOtp(target.id, otp);
-    }
-
-    console.log(`\n🚨 [EMERGENCY OVERRIDE] LOGIN OTP FOR ${email}: ${otp}\n`);
+    const otp = generateOtp();
+    await saveResetOtp(target.id, otp);
 
     try {
       await sendMail({
@@ -230,11 +263,8 @@ router.post("/login-request-otp", otpLimiter, async (req, res) => {
       });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
-      return res.status(200).json({ 
-        success: true,
-        message: "Email dispatch failed. OTP logged to console.", 
-        warning: "MAILJET_KEYS_MISSING"
-      });
+      await clearResetOtp(target.id);
+      return res.status(503).json({ message: "Could not deliver the verification code. Please try again later." });
     }
 
     res.json({ success: true, message: "OTP dispatched to registered email." });
@@ -254,8 +284,27 @@ router.post("/2fa/verify", otpLimiter, async (req, res) => {
     const c = await getUserByEmail(email);
     if (!c) return res.status(404).json({ message: "access not found." });
     const normalizedOtp = String(otpVal);
-    if (normalizedOtp !== "123456" && normalizedOtp !== String(c.reset_otp || "")) return res.status(401).json({ message: "Invalid MFA Token." });
-    const token = jwt.sign({ id: c.id, email: c.email, role: c.role || 'customer' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d", jwtid: crypto.randomUUID() });
+    let verifiedByEmail = false;
+    if (c.two_factor_enabled) {
+      if (!c.two_factor_secret || !authenticator.check(normalizedOtp, c.two_factor_secret)) {
+        return res.status(401).json({ message: "Invalid MFA token." });
+      }
+    } else {
+      verifiedByEmail = await consumeDeviceChallenge(c.id, normalizedOtp);
+      if (!verifiedByEmail) {
+        if (!c.reset_otp || normalizedOtp !== String(c.reset_otp) || !c.reset_otp_expires || new Date() > new Date(c.reset_otp_expires)) {
+          return res.status(401).json({ message: "Invalid or expired MFA token." });
+        }
+        const [consumed] = await pool.query(
+          'UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=? AND reset_otp_expires >= NOW()',
+          [c.id, normalizedOtp]
+        );
+        if (!consumed.affectedRows) return res.status(401).json({ message: "Invalid or expired MFA token." });
+        verifiedByEmail = true;
+      }
+    }
+    const deviceHash = await issueTrustedDevice(c.id, req, res);
+    const token = await issueToken({ id: c.id, email: c.email, role: c.role || 'customer' }, req, { sessionType: 'user', deviceHash });
     return res.json({ token, user: { id: c.id, name: c.name, email: c.email, role: c.role || 'customer' } });
   } catch (err) {
     console.error("MFA Error:", err);
@@ -271,10 +320,8 @@ router.post("/forgot-password", forgotLimiter, async (req, res) => {
     if (!u) return res.status(404).json({ message: "Designation not found in registry." });
     if (!u.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = generateOtp();
     await saveResetOtp(u.id, otp);
-
-    console.log(`\n🚨 [EMERGENCY OVERRIDE] RECOVERY OTP FOR ${email}: ${otp}\n`);
 
     try {
       await sendMail({
@@ -284,7 +331,8 @@ router.post("/forgot-password", forgotLimiter, async (req, res) => {
       });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
-      return res.status(200).json({ message: "Recovery email failed. Check console for OTP.", warning: true });
+      await clearResetOtp(u.id);
+      return res.status(503).json({ message: "Could not deliver the verification code. Please try again later." });
     }
 
     res.json({ message: "Recovery token dispatched." });
@@ -312,34 +360,23 @@ router.post("/verify-otp", otpLimiter, async (req, res) => {
 router.post("/reset-password", otpLimiter, async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    const { email, otp, newPassword, securityBypass } = req.body;
-    let targetUser = null;
-
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      const resetToken = authHeader.split(" ")[1];
-      let payload;
-      try {
-        payload = jwt.verify(resetToken, process.env.JWT_SECRET || 'fallback_secret');
-      } catch (jwtErr) {
-        return res.status(401).json({ message: "Invalid or expired reset token." });
-      }
-      if (!payload || payload.aud !== 'reset' || payload.scope !== 'reset-password') {
-        return res.status(401).json({ message: "Invalid reset token scope." });
-      }
-      if (!payload.email) return res.status(400).json({ message: "Malformed reset token." });
-      targetUser = await getUserByEmail(payload.email);
+    const { newPassword } = req.body;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "A verified password-reset token is required." });
     }
-
-    if (!targetUser) {
-      if (!email || !newPassword) {
-        return res.status(400).json({ code: 'MISSING_FIELDS', message: "email, otp, and newPassword are required when no Bearer reset token is provided." });
-      }
-      targetUser = await getUserByEmail(email);
-      if (!targetUser) return res.status(404).json({ message: "User not found." });
-      if (!securityBypass) {
-        if (targetUser.reset_otp !== otp) return res.status(400).json({ message: "Invalid Token." });
-        if (new Date() > new Date(targetUser.reset_otp_expires)) return res.status(400).json({ message: "Token Expired." });
-      }
+    let resetPayload;
+    try {
+      resetPayload = jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET || 'fallback_secret');
+    } catch (jwtErr) {
+      return res.status(401).json({ message: "Invalid or expired reset token." });
+    }
+    if (!resetPayload || resetPayload.aud !== 'reset' || resetPayload.scope !== 'reset-password' ||
+        !resetPayload.sub || !resetPayload.email || !resetPayload.jti || !resetPayload.exp) {
+      return res.status(401).json({ message: "Invalid reset token scope." });
+    }
+    let targetUser = await getUserByEmail(resetPayload.email);
+    if (!targetUser || String(targetUser.id) !== String(resetPayload.sub)) {
+      return res.status(401).json({ message: "Reset token does not match an active account." });
     }
 
     if (!targetUser || !targetUser.id) {
@@ -385,12 +422,18 @@ router.post("/reset-password", otpLimiter, async (req, res) => {
 
     const SALT_ROUNDS = 12;
     const hash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    if (!await consumeOneTimeToken(resetPayload.jti, resetPayload.exp)) {
+      return res.status(401).json({ message: "This reset token has already been used or expired." });
+    }
     await pool.query(
       'UPDATE users SET password_hash = ?, last_password_change = NOW() WHERE id = ?',
       [hash, targetUser.id]
     );
     await insertPasswordHistory(targetUser.id, 'customer', hash);
     await clearResetOtp(targetUser.id);
+    await revokeAllSessions('user', targetUser.id);
+    await revokeTrustedDevices(targetUser.id);
+    clearTrustedDeviceCookie(req, res);
 
     try {
       await sendMail({
@@ -419,7 +462,12 @@ router.post("/security-question/verify", otpLimiter, async (req, res) => {
     
     const ok = await verifySecurityAnswer(answer, u.security_answer_hash);
     if (!ok) return res.status(401).json({ message: "Identity verification failed." });
-    res.json({ success: true, securityBypass: true });
+    const resetJwt = jwt.sign(
+      { sub: u.id, email: u.email, aud: 'reset', scope: 'reset-password', role: u.role || 'customer' },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '5m', jwtid: crypto.randomUUID() }
+    );
+    res.json({ success: true, resetJwt });
   } catch (err) {
     res.status(500).json({ message: "Server Error", error: err.message });
   }
@@ -436,7 +484,7 @@ router.post("/register", registerLimiter, async (req, res) => {
     const ex = await getUserByEmail(email);
     if (ex) return res.status(409).json({ message: "Email already registered" });
     
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = generateOtp();
     
     // [FIXED CRITICAL]: Hashing the password prior to placing it in pending_registrations.
     // Plaintext passwords in pending tables present a systemic security risk if accessed.
@@ -453,13 +501,12 @@ router.post("/register", registerLimiter, async (req, res) => {
         created_at=NOW()
     `, [name, email, hashedPassword, otp]);
     
-    console.log(`\n🚨 [EMERGENCY OVERRIDE] REGISTRATION OTP FOR ${email}: ${otp}\n`);
-    
     try {
       await sendMail({ to: email, subject: 'Verify your account', html: `<div style="font-family: sans-serif; padding: 20px;"><h2>Welcome!</h2><p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p><p>Expires in 10 minutes.</p></div>` });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
-      return res.status(200).json({ success: true, message: "Email failed. OTP logged to console.", warning: true });
+      await pool.query('DELETE FROM pending_registrations WHERE email=?', [email]);
+      return res.status(503).json({ message: "Could not deliver the verification code. Please try again later." });
     }
     
     res.json({ success: true, message: "OTP sent to email." });
@@ -489,7 +536,8 @@ router.post("/verify-email", otpLimiter, async (req, res) => {
     await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
     
     const u = await getUserById(id);
-    const token = jwt.sign({ id: u.id, email: u.email, role: u.role || 'customer' }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: "7d", jwtid: crypto.randomUUID() });
+    const deviceHash = await issueTrustedDevice(u.id, req, res);
+    const token = await issueToken({ id: u.id, email: u.email, role: u.role || 'customer' }, req, { sessionType: 'user', deviceHash });
     res.status(201).json({ success: true, token, user: { id: u.id, name: u.name, email: u.email, role: u.role || 'customer' } });
   } catch (err) {
     res.status(500).json({ message: "Internal server error during verification.", error: err.message });
@@ -513,21 +561,23 @@ router.post("/refresh", async (req, res) => {
     if (!payload || !payload.id || !payload.email) {
       return res.status(401).json({ code: 'TOKEN_MALFORMED', message: "Malformed token payload", userAction: "Clear local storage, re-login." });
     }
-    if (payload.jti && jtiCache.isRevoked(payload.jti)) {
-      return res.status(401).json({ code: 'TOKEN_REVOKED', message: "This refresh token has already been used. Please re-login.", userAction: "Clear local storage and log in again." });
+    const sessionType = payload.sessionType;
+    if (!sessionType || !await isSessionActive(payload, req)) {
+      return res.status(401).json({ code: 'TOKEN_REVOKED', message: "This refresh token is revoked, expired, or belongs to a different trusted browser. Please sign in again.", userAction: "Clear local storage and log in again." });
     }
     const now = Math.floor(Date.now() / 1000);
-    const MAX_REFRESH_AGE_SEC = 14 * 24 * 60 * 60;
-    if (payload.iat && (now - payload.iat) > MAX_REFRESH_AGE_SEC) {
+    const MAX_REFRESH_AGE_SEC = (sessionType === 'user' ? 30 : 14) * 24 * 60 * 60;
+    const sessionStartedAt = payload.sessionStartedAt || payload.iat;
+    if (sessionStartedAt && (now - sessionStartedAt) > MAX_REFRESH_AGE_SEC) {
       return res.status(401).json({ code: 'TOKEN_TOO_OLD', message: "Token too old to refresh; please re-login", userAction: "Re-login with password." });
     }
-    if (payload.jti) jtiCache.markRevoked(payload.jti);
+    await revokeSession(payload.jti);
     const role = payload.role || 'customer';
     const NEW_EXPIRES_SEC = 7 * 24 * 60 * 60;
-    const freshToken = jwt.sign(
-      { id: payload.id, email: payload.email, role },
-      process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: NEW_EXPIRES_SEC, jwtid: crypto.randomUUID() }
+    const freshToken = await issueToken(
+      { id: payload.id, email: payload.email, role, sessionStartedAt },
+      req,
+      { expiresIn: NEW_EXPIRES_SEC, sessionType }
     );
     res.json({ code: 'REFRESH_OK', token: freshToken, expiresIn: NEW_EXPIRES_SEC });
   } catch (err) {
@@ -542,8 +592,13 @@ router.post("/logout", async (req, res) => {
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const tok = authHeader.split(" ")[1];
-      const decoded = jwt.decode(tok);
-      if (decoded && decoded.jti) jtiCache.markRevoked(decoded.jti);
+      let decoded;
+      try {
+        decoded = jwt.verify(tok, process.env.JWT_SECRET || 'fallback_secret', { ignoreExpiration: true });
+      } catch (verifyErr) {
+        return res.status(401).json({ code: 'TOKEN_INVALID', message: 'Invalid session token.' });
+      }
+      if (decoded && decoded.jti) await revokeSession(decoded.jti);
     }
     return res.status(200).json({ code: 'LOGGED_OUT', message: "Logged out successfully. Token revoked server-side." });
   } catch (err) {
@@ -567,19 +622,32 @@ router.get("/profile", authenticateAdmin, async (req, res) => {
 router.post('/admin/request-otp', otpLimiter, async (req, res) => {
   try {
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-    if (!email) return res.status(400).json({ message: 'Email required' });
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
     const a = await getAdminByEmail(email);
-    if (!a) return res.status(404).json({ message: 'No admin account with that email.' });
-    
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [otp, a.id]);
-    console.log(`\n🚨 [EMERGENCY OVERRIDE] ADMIN OTP FOR ${email}: ${otp}\n`);
+    if (!a || !a.password_hash) return res.status(401).json({ message: 'Invalid admin credentials.' });
+    const lockStatus = await getAdminLockStatus(a.id);
+    if (lockStatus.locked) {
+      const secondsRemaining = lockStatus.lockedUntil
+        ? Math.max(0, Math.ceil((new Date(lockStatus.lockedUntil) - new Date()) / 1000))
+        : 0;
+      return res.status(423).json({ code: 'ACCOUNT_LOCKED', message: 'Account temporarily locked due to multiple failed attempts.', secondsRemaining });
+    }
+    if (!await verifyAdminPassword(password, a.password_hash)) {
+      await updateAdminFailedAttempts(a.id, false);
+      return res.status(401).json({ message: 'Invalid admin credentials.' });
+    }
+    await updateAdminFailedAttempts(a.id, true);
+    const otp = generateOtp();
+    const otpHash = hashAdminOtp(a.id, otp);
+    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [otpHash, a.id]);
 
     try {
       await sendMail({ to: email, subject: 'Admin Login OTP', html: `<p>Your admin login OTP is: <strong>${otp}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>` });
     } catch (mailErr) {
       console.error("Mailjet API Error:", mailErr.message);
-      return res.status(200).json({ message: 'Email dispatch failed, but OTP logged to backend console.', warning: true });
+      await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE id=?', [a.id]);
+      return res.status(503).json({ message: 'Could not deliver the verification code. Please try again later.' });
     }
 
     res.json({ message: 'OTP sent to your email.' });
@@ -596,11 +664,14 @@ router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
     if (!email || !otp) return res.status(400).json({ message: 'Email and OTP required' });
     const a = await getAdminByEmail(email);
     if (!a) return res.status(404).json({ message: 'Admin not found.' });
-    if (!a.login_otp || String(a.login_otp).trim() !== otp) return res.status(401).json({ message: 'Invalid OTP.' });
+    const otpHash = hashAdminOtp(a.id, otp);
+    if (!a.login_otp || String(a.login_otp).length !== otpHash.length || !crypto.timingSafeEqual(Buffer.from(String(a.login_otp)), Buffer.from(otpHash))) {
+      return res.status(401).json({ message: 'Invalid or expired OTP.' });
+    }
 
     const [consumed] = await pool.query(
       'UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE id=? AND login_otp=? AND login_otp_expires >= NOW()',
-      [a.id, otp]
+      [a.id, otpHash]
     );
     if (consumed.affectedRows === 0) {
       const [[expiry]] = await pool.query('SELECT login_otp_expires >= NOW() AS valid FROM admin_users WHERE id=?', [a.id]);
@@ -608,7 +679,7 @@ router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
     }
 
     const role = a.role || 'admin';
-    const token = jwt.sign({ id: a.id, email: a.email, role }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d', jwtid: crypto.randomUUID() });
+    const token = await issueToken({ id: a.id, email: a.email, role }, req, { sessionType: 'admin' });
     res.json({ token, admin: { id: a.id, email: a.email, role } });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -632,21 +703,21 @@ router.post('/warehouse/request-otp', otpLimiter, async (req, res) => {
     
     if (!t) return res.status(404).json({ message: 'Account not authorized for warehouse portal.' });
     
-    const o = Math.floor(100000 + Math.random() * 900000).toString();
+    const o = generateOtp();
     
     if (iu) {
       await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [o, email]);
     } else {
-      await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [o, email]);
+      await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE email=?', [hashAdminOtp(t.id, o), email]);
     }
-
-    console.log(`\n🚨 [EMERGENCY OVERRIDE] WAREHOUSE OTP FOR ${email}: ${o}\n`);
 
     try {
       await sendMail({ to: email, subject: 'Warehouse Login OTP', html: `<p>Your warehouse login OTP is: <strong>${o}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>` });
     } catch(mailErr) {
       console.error("Mailjet SDK Error:", mailErr.message);
-      return res.status(200).json({ message: 'Mailjet failed, OTP in backend logs', warning: true });
+      if (iu) await pool.query('UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=?', [t.id]);
+      else await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE id=?', [t.id]);
+      return res.status(503).json({ message: 'Could not deliver the verification code. Please try again later.' });
     }
 
     res.json({ message: 'OTP sent to your email.' });
@@ -671,17 +742,29 @@ router.post('/warehouse/verify-otp', otpLimiter, async (req, res) => {
     }
     
     if (!w) return res.status(404).json({ message: 'Account not authorized.' });
-    if (!w.login_otp || w.login_otp !== otp) return res.status(401).json({ message: 'Invalid OTP.' });
-    if (new Date() > new Date(w.login_otp_expires)) return res.status(401).json({ message: 'OTP expired. Request a new one.' });
-    
+    if (!w.login_otp || new Date() > new Date(w.login_otp_expires)) return res.status(401).json({ message: 'Invalid or expired OTP.' });
     if (iu) {
-      await pool.query('UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE email=?', [email]);
+      const [consumed] = await pool.query(
+        'UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=? AND reset_otp_expires >= NOW()',
+        [w.id, otp]
+      );
+      if (!consumed.affectedRows) return res.status(401).json({ message: 'Invalid or expired OTP.' });
     } else {
-      await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE email=?', [email]);
+      const otpHash = hashAdminOtp(w.id, String(otp));
+      if (String(w.login_otp).length !== otpHash.length || !crypto.timingSafeEqual(Buffer.from(String(w.login_otp)), Buffer.from(otpHash))) {
+        return res.status(401).json({ message: 'Invalid or expired OTP.' });
+      }
+      const [consumed] = await pool.query(
+        'UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE id=? AND login_otp=? AND login_otp_expires >= NOW()',
+        [w.id, otpHash]
+      );
+      if (!consumed.affectedRows) return res.status(401).json({ message: 'Invalid or expired OTP.' });
     }
     
-    const token = jwt.sign({ id: w.id, email: w.email, role: iu ? 'warehouse_admin' : (w.role || 'admin') }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn: '7d', jwtid: crypto.randomUUID() });
-    res.json({ token, admin: { id: w.id, email: w.email, role: iu ? 'warehouse_admin' : (w.role || 'admin') } });
+    const role = 'warehouse_admin';
+    const deviceHash = iu ? await issueTrustedDevice(w.id, req, res) : undefined;
+    const token = await issueToken({ id: w.id, email: w.email, role }, req, { sessionType: iu ? 'user' : 'admin', deviceHash });
+    res.json({ token, admin: { id: w.id, email: w.email, role } });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -697,6 +780,11 @@ router.post("/verify-reset-otp", otpLimiter, async (req, res) => {
     if (!u) return res.status(400).json({ message: genericFail });
     if (!u.reset_otp || String(u.reset_otp) !== String(otp)) return res.status(400).json({ message: genericFail });
     if (!u.reset_otp_expires || new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: genericFail });
+    const [consumed] = await pool.query(
+      'UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=? AND reset_otp_expires >= NOW()',
+      [u.id, String(otp)]
+    );
+    if (!consumed.affectedRows) return res.status(400).json({ message: genericFail });
 
     const resetJwt = jwt.sign(
       { sub: u.id, email: u.email, aud: 'reset', scope: 'reset-password', role: u.role || 'customer' },
@@ -739,9 +827,8 @@ router.post("/admin/forgot-password", async (req, res) => {
     if (!email) return res.status(400).json({ message: "Email required." });
     const a = await getAdminByEmail(email);
     if (a && a.id) {
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otp = generateOtp();
       await saveAdminResetOtp(a.id, otp);
-      console.log(`\n🚨 [EMERGENCY OVERRIDE] ADMIN RESET OTP FOR ${email}: ${otp}\n`);
       try {
         await sendMail({
           to: email,
@@ -749,7 +836,9 @@ router.post("/admin/forgot-password", async (req, res) => {
           html: `<p>Your admin password reset OTP is: <strong style="font-size: 24px;">${otp}</strong></p><p>Valid for 10 minutes.</p>`
         });
       } catch (mailErr) {
-        console.log(`[MAIL TEMPLATE: admin_forgot_otp] to: ${email}`);
+        console.error('[ADMIN_RESET_OTP_MAIL_ERROR]:', mailErr.message);
+        await clearAdminResetOtp(a.id);
+        return res.status(503).json({ message: 'Could not deliver the verification code. Please try again later.' });
       }
     }
     return res.json({ message: "If this email is registered, a reset OTP has been dispatched." });
@@ -766,6 +855,11 @@ router.post("/admin/verify-reset-otp", async (req, res) => {
     const genericFail = "Invalid or expired verification code.";
     const a = await getAdminByResetOtp(email, otp);
     if (!a) return res.status(400).json({ message: genericFail });
+    const [consumed] = await pool.query(
+      'UPDATE admin_users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=? AND reset_otp_expires >= NOW()',
+      [a.id, otp]
+    );
+    if (!consumed.affectedRows) return res.status(400).json({ message: genericFail });
     const adminRole = a.role || 'admin';
 
     const resetJwt = jwt.sign(
@@ -783,33 +877,23 @@ router.post("/admin/verify-reset-otp", async (req, res) => {
 router.post("/admin/reset-password", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    const { email, otp, newPassword } = req.body;
-    let targetAdmin = null;
-    let adminRole = 'admin';
-
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      const resetToken = authHeader.split(" ")[1];
-      let payload;
-      try {
-        payload = jwt.verify(resetToken, process.env.JWT_SECRET || 'fallback_secret');
-      } catch (jwtErr) {
-        return res.status(401).json({ message: "Invalid or expired admin reset token." });
-      }
-      if (!payload || payload.aud !== 'reset' || payload.scope !== 'reset-password') {
-        return res.status(401).json({ message: "Invalid admin reset token scope." });
-      }
-      if (!payload.email) return res.status(400).json({ message: "Malformed admin reset token." });
-      targetAdmin = await getAdminByEmail(payload.email);
-      adminRole = payload.role || targetAdmin?.role || 'admin';
+    const { newPassword } = req.body;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "A verified admin password-reset token is required." });
     }
-
-    if (!targetAdmin) {
-      if (!email || !otp || !newPassword) {
-        return res.status(400).json({ code: 'MISSING_FIELDS', message: "email, otp, and newPassword are required when no Bearer admin reset token is provided." });
-      }
-      targetAdmin = await getAdminByResetOtp(email, otp);
-      if (!targetAdmin) return res.status(400).json({ message: "Invalid or expired OTP." });
-      adminRole = targetAdmin.role || 'admin';
+    let resetPayload;
+    try {
+      resetPayload = jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET || 'fallback_secret');
+    } catch (jwtErr) {
+      return res.status(401).json({ message: "Invalid or expired admin reset token." });
+    }
+    if (!resetPayload || resetPayload.aud !== 'reset' || resetPayload.scope !== 'reset-password' ||
+        !resetPayload.sub || !resetPayload.email || !resetPayload.jti || !resetPayload.exp) {
+      return res.status(401).json({ message: "Invalid admin reset token scope." });
+    }
+    const targetAdmin = await getAdminByEmail(resetPayload.email);
+    if (!targetAdmin || String(targetAdmin.id) !== String(resetPayload.sub)) {
+      return res.status(401).json({ message: "Reset token does not match an admin account." });
     }
 
     if (!targetAdmin || !targetAdmin.id) {
@@ -855,6 +939,9 @@ router.post("/admin/reset-password", async (req, res) => {
 
     const SALT_ROUNDS = 12;
     const hash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    if (!await consumeOneTimeToken(resetPayload.jti, resetPayload.exp)) {
+      return res.status(401).json({ message: "This reset token has already been used or expired." });
+    }
     await pool.query(
       `UPDATE admin_users SET password_hash = ?, 
         failed_attempts = 0, locked_until = NULL
@@ -863,6 +950,7 @@ router.post("/admin/reset-password", async (req, res) => {
     );
     await insertAdminPasswordHistory(targetAdmin.id, hash);
     await clearAdminResetOtp(targetAdmin.id);
+    await revokeAllSessions('admin', targetAdmin.id);
 
     try {
       await sendMail({

@@ -80,6 +80,7 @@ router.put('/:id', authenticateUser, async (req, res) => {
       line2, city, state, pincode, postal_code, country,
       is_default, label
     } = body;
+    const line2Provided = Object.prototype.hasOwnProperty.call(body, 'line2');
 
     const existing = (await pool.query('SELECT id FROM addresses WHERE id = ? AND user_id = ?', [addressId, userId]))[0][0];
     if (!existing) return res.status(404).json({ success: false, message: 'Address not found', code: 'ADDRESS_NOT_FOUND' });
@@ -87,7 +88,7 @@ router.put('/:id', authenticateUser, async (req, res) => {
     const final_full_name = full_name || null;
     const final_phone = phone_number || phone || null;
     const final_street_address = street_address || line1 || null;
-    const final_line2 = line2 || null;
+    const final_line2 = line2Provided ? line2 : null;
     const final_postal_code = postal_code || pincode || null;
     const final_city = city || null;
     const final_state = state || null;
@@ -109,7 +110,7 @@ router.put('/:id', authenticateUser, async (req, res) => {
         full_name = COALESCE(?, full_name),
         phone_number = COALESCE(?, phone_number),
         street_address = COALESCE(?, street_address),
-        line2 = COALESCE(?, line2),
+        line2 = IF(?, ?, line2),
         city = COALESCE(?, city),
         state = COALESCE(?, state),
         postal_code = COALESCE(?, postal_code),
@@ -121,6 +122,7 @@ router.put('/:id', authenticateUser, async (req, res) => {
         final_full_name,
         final_phone,
         final_street_address,
+        line2Provided ? 1 : 0,
         final_line2,
         final_city,
         final_state,

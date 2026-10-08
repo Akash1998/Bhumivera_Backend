@@ -70,10 +70,9 @@ function normalizeAddressKeys(input = {}) {
     out.line1 = street_address;
   }
 
-  const line2 = pickFirstValue(src, ['line2', 'address2']);
-  if (line2 !== undefined) {
-    out.line2 = line2;
-  }
+  const line2Keys = ['line2', 'address2', 'address_line2', 'street_address2', 'addressLine2'];
+  const line2Key = line2Keys.find(key => Object.prototype.hasOwnProperty.call(src, key));
+  if (line2Key) out.line2 = src[line2Key];
 
   const postal_code = pickFirstValue(src, ['postal_code', 'pincode', 'zip', 'zipCode', 'postalCode']);
   if (postal_code !== undefined) {
