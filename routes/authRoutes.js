@@ -478,6 +478,10 @@ router.post("/security-question/verify", otpLimiter, async (req, res) => {
 router.post("/register", registerLimiter, async (req, res) => {
   try {
     const { name, email, password } = req.body;
+    const marketingEmailOptIn = req.body?.marketingEmailOptIn === true;
+    if (req.body?.marketingEmailOptIn !== undefined && typeof req.body.marketingEmailOptIn !== 'boolean') {
+      return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
+    }
     if (!name || !email || !password) return res.status(400).json({ message: "Required fields missing" });
     const dom = email.split('@')[1].toLowerCase();
     if (DISPOSABLE_DOMAINS.includes(dom)) return res.status(400).json({ message: "Disposable emails not allowed" });
@@ -492,15 +496,16 @@ router.post("/register", registerLimiter, async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     
     await pool.query(`
-      INSERT INTO pending_registrations (name, email, password, otp, otp_expiry) 
-      VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE)) 
+      INSERT INTO pending_registrations (name, email, password, marketing_email_opt_in, otp, otp_expiry)
+      VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))
       ON DUPLICATE KEY UPDATE 
         name=VALUES(name), 
-        password=VALUES(password), 
+        password=VALUES(password),
+        marketing_email_opt_in=VALUES(marketing_email_opt_in),
         otp=VALUES(otp), 
         otp_expiry=DATE_ADD(NOW(), INTERVAL 10 MINUTE), 
         created_at=NOW()
-    `, [name, email, hashedPassword, otp]);
+    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, otp]);
     
     try {
       await sendMail({ to: email, subject: 'Verify your account', html: `<div style="font-family: sans-serif; padding: 20px;"><h2>Welcome!</h2><p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p><p>Expires in 10 minutes.</p></div>` });
@@ -533,7 +538,13 @@ router.post("/verify-email", otpLimiter, async (req, res) => {
     }
     
     // Model automatically detects starting "$2b$" string and skips re-hashing
-    const id = await createUser({ name: p.name, email: p.email, password: p.password, securityAnswer: securityAnswer || null });
+    const id = await createUser({
+      name: p.name,
+      email: p.email,
+      password: p.password,
+      securityAnswer: securityAnswer || null,
+      marketingEmailOptIn: p.marketing_email_opt_in === 1 || p.marketing_email_opt_in === true
+    });
     await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
     
     const u = await getUserById(id);

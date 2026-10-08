@@ -2,40 +2,58 @@
 const express = require('express');
 const router = express.Router();
 const { GoogleGenAI } = require('@google/genai');
+const { authenticateAdmin } = require('../middleware/authMiddleware');
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const getAIClient = () => {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('AI content generation is not configured. Set GEMINI_API_KEY on the server.');
+  }
+  return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+};
 
-router.post('/generate-product-content', async (req, res) => {
+router.post('/generate-product-content', authenticateAdmin, async (req, res) => {
   try {
-    const { productName } = req.body;
-    
-    // We remove the instruction to "Respond ONLY with valid JSON" from the prompt
-    // because we are forcing it at the protocol level via the config object.
-    const prompt = `You are an expert copywriter for an organic skincare brand named Bhumivera. 
-    Generate content for a product named "${productName}". 
-    You must return a JSON object with exactly these four keys:
-    "description": A beautiful, 3-sentence engaging description emphasizing natural ingredients.
-    "meta_title": A catchy SEO title strictly under 60 characters.
-    "meta_description": An SEO snippet strictly under 160 characters.
-    "tags": A single string of 5 comma-separated relevant SEO keywords.`;
+    const { productName, category, brand, specifications } = req.body;
+    if (typeof productName !== 'string' || !productName.trim()) {
+      return res.status(400).json({ success: false, message: 'Enter a product name before using AI Auto-Fill.' });
+    }
 
+    const prompt = `Write accurate ecommerce copy for Bhumivera.
+Product name: ${productName.trim()}
+Category: ${typeof category === 'string' && category.trim() ? category.trim() : 'Not provided'}
+Brand: ${typeof brand === 'string' && brand.trim() ? brand.trim() : 'Bhumivera'}
+Verified product specifications supplied by the admin: ${JSON.stringify(specifications || {})}
+
+Do not invent ingredients, certifications, health benefits, warranties, guarantees, measurements, or performance claims. Use only supplied facts; if there are not enough facts, describe the product neutrally. Return a JSON object with exactly these string keys:
+"description": Two or three concise sentences, based only on supplied facts.
+"meta_title": SEO title under 60 characters.
+"meta_description": Search snippet under 160 characters.
+"tags": Five relevant comma-separated search terms.`;
+    const ai = getAIClient();
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
-        // This is the enterprise-grade fix. It forces the Gemini API 
-        // to bypass Markdown wrappers and return raw, parseable JSON.
         responseMimeType: "application/json",
       }
     });
 
-    // Directly parse the text, no Regex required.
     const parsedData = JSON.parse(response.text);
+    const fields = ['description', 'meta_title', 'meta_description', 'tags'];
+    if (!parsedData || fields.some(field => typeof parsedData[field] !== 'string' || !parsedData[field].trim())) {
+      throw new Error('AI returned incomplete product content.');
+    }
 
     res.json({ success: true, data: parsedData });
   } catch (error) {
     console.error('[AI Generation Error]:', error);
-    res.status(500).json({ success: false, error: 'Failed to generate AI content. Please ensure API keys are valid.' });
+    const isConfigurationError = error.message?.includes('not configured');
+    res.status(isConfigurationError ? 503 : 502).json({
+      success: false,
+      message: isConfigurationError
+        ? error.message
+        : 'AI could not generate product content right now. Check the server AI configuration and try again.',
+    });
   }
 });
 

@@ -21,6 +21,27 @@ async function initContactTable() {
 
   try {
     await pool.query(query);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS support_ticket_messages (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        ticket_id INT NOT NULL,
+        sender_type ENUM('customer', 'admin') NOT NULL,
+        sender_user_id INT NULL,
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        legacy_ticket_id INT NULL UNIQUE,
+        INDEX idx_support_messages_ticket_created (ticket_id, created_at),
+        FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE,
+        FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await pool.query(`
+      INSERT IGNORE INTO support_ticket_messages
+        (ticket_id, sender_type, message, created_at, legacy_ticket_id)
+      SELECT id, 'admin', admin_reply, updated_at, id
+      FROM support_tickets
+      WHERE admin_reply IS NOT NULL AND TRIM(admin_reply) <> ''
+    `);
     console.log("[DB] Support Tickets table ready.");
   } catch (error) {
     console.error("[DB] Error initializing support tickets table:", error);
@@ -56,12 +77,81 @@ const ContactModel = {
     return rows;
   },
 
-  updateTicketStatus: async (id, status, adminReply = null) => {
-    const [result] = await pool.query(
-      `UPDATE support_tickets SET status = ?, admin_reply = COALESCE(?, admin_reply) WHERE id = ?`,
-      [status, adminReply, id]
+  getMessagesByTicketIds: async (ticketIds) => {
+    if (!ticketIds.length) return [];
+    const placeholders = ticketIds.map(() => '?').join(', ');
+    const [rows] = await pool.query(
+      `SELECT id, ticket_id, sender_type, sender_user_id, message, created_at
+       FROM support_ticket_messages
+       WHERE ticket_id IN (${placeholders})
+       ORDER BY created_at ASC, id ASC`,
+      ticketIds
     );
-    return result.affectedRows > 0;
+    return rows;
+  },
+
+  createCustomerReply: async (ticketId, userId, message) => {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[ticket]] = await connection.query(
+        `SELECT id FROM support_tickets WHERE id = ? AND user_id = ? FOR UPDATE`,
+        [ticketId, userId]
+      );
+      if (!ticket) {
+        await connection.rollback();
+        return false;
+      }
+      await connection.query(
+        `INSERT INTO support_ticket_messages (ticket_id, sender_type, sender_user_id, message)
+         VALUES (?, 'customer', ?, ?)`,
+        [ticketId, userId, message]
+      );
+      await connection.query(
+        `UPDATE support_tickets SET status = 'open' WHERE id = ?`,
+        [ticketId]
+      );
+      await connection.commit();
+      return true;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  },
+
+  updateTicketStatus: async (id, status, adminReply = null) => {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[ticket]] = await connection.query(
+        `SELECT id FROM support_tickets WHERE id = ? FOR UPDATE`,
+        [id]
+      );
+      if (!ticket) {
+        await connection.rollback();
+        return false;
+      }
+      await connection.query(
+        `UPDATE support_tickets SET status = ?, admin_reply = COALESCE(?, admin_reply) WHERE id = ?`,
+        [status, adminReply, id]
+      );
+      if (adminReply) {
+        await connection.query(
+          `INSERT INTO support_ticket_messages (ticket_id, sender_type, message)
+           VALUES (?, 'admin', ?)`,
+          [id, adminReply]
+        );
+      }
+      await connection.commit();
+      return true;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
 };
 

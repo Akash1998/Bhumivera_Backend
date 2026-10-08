@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
-const { generateUploadUrl } = require('../config/s3Upload');
+const { generateUploadUrl, deleteProductImage } = require('../config/s3Upload');
 const { generateGoogleMerchantFeed } = require('../utils/merchantFeed');
 
 /**
@@ -37,7 +37,7 @@ const parseImages = (rows) => {
       }
     }
 
-    parsedImages = parsedImages.filter(img => img && (typeof img === 'string' || img.file_path || img.url));
+    parsedImages = parsedImages.filter(img => img && (typeof img === 'string' || img.file_path || img.url || img.path));
 
     // Normalize image schemas to resolve both backend/frontend rendering requirements simultaneously
     const normalizedImages = parsedImages.map(img => {
@@ -45,7 +45,7 @@ const parseImages = (rows) => {
       if (typeof img === 'string') {
         path = img;
       } else if (img && typeof img === 'object') {
-        path = img.file_path || img.url || '';
+        path = img.file_path || img.url || img.path || '';
       }
       const fullUrl = path.startsWith('http') ? path : `${baseUrl.replace(/\/$/, '')}/${path.replace(/^\//, '')}`;
       return {
@@ -307,12 +307,49 @@ router.delete('/:id/images/all', authenticateAdmin, async (req, res) => {
 // 10. MEDIA: DELETE SINGLE IMAGE (Admin)
 // ==========================================
 router.delete('/:id/images', authenticateAdmin, async (req, res) => {
+  let connection;
   try {
-    const { imageId } = req.body;
-    await pool.query('DELETE FROM product_images WHERE id = ? AND product_id = ?', [imageId, req.params.id]);
-    res.json({ success: true, message: 'Image removed' });
+    const productId = Number(req.params.id);
+    const { imageId, imagePath } = req.body || {};
+    if (!Number.isSafeInteger(productId) || productId < 1 || (!imageId && !imagePath)) {
+      return res.status(400).json({ success: false, message: 'A valid product and image are required.' });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const [rows] = imageId
+      ? await connection.query('SELECT id, file_path FROM product_images WHERE id = ? AND product_id = ? FOR UPDATE', [imageId, productId])
+      : await connection.query('SELECT id, file_path FROM product_images WHERE file_path = ? AND product_id = ? FOR UPDATE', [imagePath, productId]);
+    if (!rows.length) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Image was not found on this product.' });
+    }
+
+    const image = rows[0];
+    if (typeof image.file_path === 'string' && image.file_path.startsWith('products/')) {
+      await deleteProductImage(image.file_path);
+    }
+    const [result] = await connection.query('DELETE FROM product_images WHERE id = ? AND product_id = ?', [image.id, productId]);
+    if (!result.affectedRows) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Image was not found on this product.' });
+    }
+    await connection.commit();
+    res.json({ success: true, message: 'Product image deleted successfully.' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to delete image' });
+    if (connection) await connection.rollback().catch(rollbackError => {
+      console.error('[PRODUCT_IMAGE_DELETE_ROLLBACK]', rollbackError);
+    });
+    console.error('[PRODUCT_IMAGE_DELETE]', error);
+    const storageUnavailable = error.message?.includes('Object storage deletion is not configured.');
+    res.status(storageUnavailable ? 503 : 500).json({
+      success: false,
+      message: storageUnavailable
+        ? 'Image deletion is unavailable because object storage is not configured.'
+        : 'Could not delete the image. The product image record was not removed.',
+    });
+  } finally {
+    connection?.release();
   }
 });
 

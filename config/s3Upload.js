@@ -1,5 +1,5 @@
 // backend/config/s3Upload.js
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 // 1) R2 (S3-Compatible) Client Setup
@@ -28,4 +28,15 @@ async function generateUploadUrl(filename, fileType) {
   return { uploadUrl, key };
 }
 
-module.exports = { s3, generateUploadUrl };
+async function deleteProductImage(key) {
+  if (!key.startsWith('products/')) throw new Error('Invalid product image key.');
+  if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY || !process.env.R2_SECRET_KEY || !process.env.R2_BUCKET_NAME) {
+    throw new Error('Object storage deletion is not configured.');
+  }
+  await s3.send(new DeleteObjectCommand({
+    Bucket: process.env.R2_BUCKET_NAME,
+    Key: key,
+  }));
+}
+
+module.exports = { s3, generateUploadUrl, deleteProductImage };

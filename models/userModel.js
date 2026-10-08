@@ -11,6 +11,8 @@ const createUsersTable = async () => {
       phone VARCHAR(20),
       role ENUM('customer','admin','superadmin','warehouse_admin') DEFAULT 'customer',
       is_active TINYINT(1) DEFAULT 1,
+      marketing_email_opt_in TINYINT(1) NOT NULL DEFAULT 0,
+      marketing_email_consent_at DATETIME NULL,
       wallet_balance DECIMAL(10,2) DEFAULT 0.00,
       loyalty_points INT NOT NULL DEFAULT 0,
       pending_lifecycle_gift_product_id INT DEFAULT NULL,
@@ -29,6 +31,8 @@ const createUsersTable = async () => {
     { name: 'phone', type: `VARCHAR(20)` },
     { name: 'role', type: `ENUM('customer','admin','superadmin','warehouse_admin') DEFAULT 'customer'` },
     { name: 'is_active', type: `TINYINT(1) DEFAULT 1` },
+    { name: 'marketing_email_opt_in', type: `TINYINT(1) NOT NULL DEFAULT 0` },
+    { name: 'marketing_email_consent_at', type: `DATETIME NULL` },
     { name: 'wallet_balance', type: `DECIMAL(10,2) DEFAULT 0.00` },
     { name: 'loyalty_points', type: `INT NOT NULL DEFAULT 0` },
     { name: 'pending_lifecycle_gift_product_id', type: `INT DEFAULT NULL` },
@@ -275,14 +279,23 @@ const initAuthTables = async () => {
       email VARCHAR(150) PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
       password VARCHAR(255) NOT NULL,
+      marketing_email_opt_in TINYINT(1) NOT NULL DEFAULT 0,
       otp VARCHAR(10) NOT NULL,
       otp_expiry DATETIME NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  const [marketingConsentColumn] = await pool.query(
+    `SHOW COLUMNS FROM pending_registrations LIKE 'marketing_email_opt_in'`
+  );
+  if (marketingConsentColumn.length === 0) {
+    await pool.query(
+      'ALTER TABLE pending_registrations ADD COLUMN marketing_email_opt_in TINYINT(1) NOT NULL DEFAULT 0'
+    );
+  }
 };
 
-const createUser = async ({ name, email, password, phone, securityAnswer }) => {
+const createUser = async ({ name, email, password, phone, securityAnswer, marketingEmailOptIn = false }) => {
   const isHashed = password.startsWith('$2b$');
   const hash = isHashed ? password : await bcrypt.hash(password, 10);
   
@@ -290,8 +303,10 @@ const createUser = async ({ name, email, password, phone, securityAnswer }) => {
   const secHash = await bcrypt.hash(safeSecurityAnswer, 10);
   
   const [result] = await pool.query(
-    'INSERT INTO users (name, email, password_hash, phone, security_answer_hash) VALUES (?, ?, ?, ?, ?)',
-    [name, email, hash, phone || null, secHash]
+    `INSERT INTO users
+      (name, email, password_hash, phone, security_answer_hash, marketing_email_opt_in, marketing_email_consent_at)
+     VALUES (?, ?, ?, ?, ?, ?, IF(? = 1, CURRENT_TIMESTAMP, NULL))`,
+    [name, email, hash, phone || null, secHash, marketingEmailOptIn ? 1 : 0, marketingEmailOptIn ? 1 : 0]
   );
   return result.insertId;
 };
@@ -303,20 +318,95 @@ const getUserByEmail = async (email) => {
 
 const getUserById = async (id) => {
   const [rows] = await pool.query(
-    'SELECT id, name, email, phone, role, is_active, wallet_balance, two_factor_enabled, security_question, created_at FROM users WHERE id = ?',
+    `SELECT id, name, email, phone, role, is_active, wallet_balance, loyalty_points,
+      two_factor_enabled, security_question, marketing_email_opt_in, marketing_email_consent_at, created_at
+     FROM users WHERE id = ?`,
     [id]
   );
   return rows[0];
 };
 
-const getAllUsers = async () => {
-  const [rows] = await pool.query(
-    'SELECT id, name, email, phone, role, is_active, wallet_balance, created_at FROM users ORDER BY created_at DESC'
+const getAdminCustomers = async ({ page = 1, limit = 25, search = '', status = 'all', activity = 'all', sort = 'recent' } = {}) => {
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const safeLimit = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 25));
+  const offset = (safePage - 1) * safeLimit;
+  const clauses = ["u.role = 'customer'"];
+  const params = [];
+
+  if (search.trim()) {
+    const term = `%${search.trim()}%`;
+    clauses.push('(u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ?)');
+    params.push(term, term, term);
+  }
+  if (status === 'active') clauses.push('u.is_active = 1');
+  if (status === 'disabled') clauses.push('u.is_active = 0');
+  if (activity === 'ordered') clauses.push('COALESCE(o.order_count, 0) > 0');
+  if (activity === 'no-orders') clauses.push('COALESCE(o.order_count, 0) = 0');
+  if (activity === 'loyalty') clauses.push('u.loyalty_points > 0');
+
+  const whereSql = `WHERE ${clauses.join(' AND ')}`;
+  const orderBy = {
+    recent: 'u.created_at DESC, u.id DESC',
+    orders: 'COALESCE(o.order_count, 0) DESC, u.created_at DESC',
+    loyalty: 'u.loyalty_points DESC, u.created_at DESC',
+    value: 'COALESCE(o.total_spent, 0) DESC, u.created_at DESC'
+  }[sort] || 'u.created_at DESC, u.id DESC';
+  const orderSummary = `LEFT JOIN (
+    SELECT user_id, COUNT(*) AS order_count,
+      COALESCE(SUM(CASE WHEN status NOT IN ('cancelled', 'returned') THEN total ELSE 0 END), 0) AS total_spent
+    FROM orders GROUP BY user_id
+  ) o ON o.user_id = u.id`;
+
+  const [[countRow]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM users u ${orderSummary} ${whereSql}`,
+    params
   );
-  return rows;
+  const [[summaryRow]] = await pool.query(
+    `SELECT COUNT(*) AS total,
+      COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) AS active,
+      COALESCE(SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END), 0) AS disabled
+     FROM users WHERE role = 'customer'`
+  );
+  const [rows] = await pool.query(
+    `SELECT u.id, u.name, u.email, u.phone, u.role, u.is_active, u.wallet_balance,
+      u.loyalty_points, u.marketing_email_opt_in, u.created_at,
+      COALESCE(o.order_count, 0) AS order_count,
+      COALESCE(o.total_spent, 0) AS total_spent
+     FROM users u ${orderSummary} ${whereSql}
+     ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
+    [...params, safeLimit, offset]
+  );
+
+  const total = Number(countRow?.total || 0);
+  return {
+    users: rows,
+    summary: summaryRow,
+    pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) }
+  };
 };
 
-const updateUser = async (id, { name, phone }) => {
+const updateUserStatus = async (id, status) => {
+  const isActive = status === 'active' ? 1 : 0;
+  await pool.query(
+    'UPDATE users SET is_active = ?, failed_attempts = CASE WHEN ? = 1 THEN 0 ELSE failed_attempts END, locked_until = CASE WHEN ? = 1 THEN NULL ELSE locked_until END WHERE id = ? AND role = ?',
+    [isActive, isActive, isActive, id, 'customer']
+  );
+};
+
+const updateUser = async (id, { name, phone, marketingEmailOptIn }) => {
+  if (typeof marketingEmailOptIn === 'boolean') {
+    await pool.query(
+      `UPDATE users
+       SET name = ?, phone = ?, marketing_email_opt_in = ?,
+           marketing_email_consent_at = CASE
+             WHEN ? = 1 THEN CURRENT_TIMESTAMP
+             ELSE marketing_email_consent_at
+           END
+       WHERE id = ? AND role = 'customer'`,
+      [name, phone || null, marketingEmailOptIn ? 1 : 0, marketingEmailOptIn ? 1 : 0, id]
+    );
+    return;
+  }
   await pool.query('UPDATE users SET name=?, phone=? WHERE id=?', [name, phone || null, id]);
 };
 
@@ -375,7 +465,8 @@ module.exports = {
   createUser,
   getUserByEmail,
   getUserById,
-  getAllUsers,
+  getAdminCustomers,
+  updateUserStatus,
   updateUser,
   updateUserPassword,
   createPendingUser,

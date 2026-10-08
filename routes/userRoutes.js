@@ -28,13 +28,16 @@ authenticator.options = { window: 1 };
 
 router.post('/register', async (req, res) => {
   try {
-    const { name, email, password, phone } = req.body;
+    const { name, email, password, phone, marketingEmailOptIn = false } = req.body;
     if (!name || !email || !password) return res.status(400).json({ message: 'Name, email and password are required' });
+    if (typeof marketingEmailOptIn !== 'boolean') {
+      return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
+    }
     
     const existing = await getUserByEmail(email);
     if (existing) return res.status(409).json({ message: 'Email already registered' });
     
-    const id = await createUser({ name, email, password, phone });
+    const id = await createUser({ name, email, password, phone, marketingEmailOptIn });
     const deviceHash = await issueTrustedDevice(id, req, res);
     const token = await issueToken({ id, email, role: 'customer' }, req, { sessionType: 'user', deviceHash });
     return res.status(201).json({ token, user: { id, name, email, phone, role: 'customer' } });
@@ -89,7 +92,7 @@ router.get('/profile', authenticateUser, async (req, res) => {
   try {
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, marketing_email_opt_in FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) {
         user = rows[0];
       }
@@ -151,12 +154,23 @@ router.delete('/loyalty/tiers/:id', authenticateAdmin, async (req, res) => {
 
 router.put('/profile', authenticateUser, async (req, res) => {
   try {
-    const { name, phone } = req.body;
+    const { name, phone, marketing_email_opt_in: marketingEmailOptIn } = req.body;
     if (!name) return res.status(400).json({ message: 'Name is required' });
-    await updateUser(req.user.id, { name, phone });
+    const hasMarketingPreference = Object.prototype.hasOwnProperty.call(req.body || {}, 'marketing_email_opt_in');
+    if (hasMarketingPreference && typeof marketingEmailOptIn !== 'boolean') {
+      return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
+    }
+    if (hasMarketingPreference && req.user.role !== 'customer') {
+      return res.status(403).json({ message: 'Only customer accounts can update marketing preferences.' });
+    }
+    await updateUser(req.user.id, {
+      name,
+      phone,
+      ...(hasMarketingPreference ? { marketingEmailOptIn } : {})
+    });
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, marketing_email_opt_in FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) user = rows[0];
     }
     const tiers = await listLoyaltyTiers({ activeOnly: true });
