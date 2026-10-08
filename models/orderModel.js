@@ -283,7 +283,18 @@ const getOrdersByUser = async (userId) => {
       order.items = [];
       continue;
     }
-    const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [orderId]);
+    const [items] = await pool.query(
+      `SELECT oi.*,
+        COALESCE(
+          oi.image,
+          (SELECT pi.file_path FROM product_images pi
+           WHERE pi.product_id = oi.product_id AND pi.media_type = 'image'
+           ORDER BY pi.sort_order ASC, pi.id ASC LIMIT 1)
+        ) AS image
+       FROM order_items oi
+       WHERE oi.order_id = ?`,
+      [orderId]
+    );
     order.items = Array.isArray(items) ? items.filter(Boolean) : [];
   }
   return safeOrders.map(parseOrder);

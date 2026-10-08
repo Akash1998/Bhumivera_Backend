@@ -6,6 +6,7 @@ async function initContactTable() {
       id INT AUTO_INCREMENT PRIMARY KEY,
       user_id INT NULL,          -- Nullable in case a guest submits a ticket
       order_id INT NULL,         -- Nullable for general inquiries
+      product_id INT NULL,
       name VARCHAR(100) NOT NULL,
       email VARCHAR(150) NOT NULL,
       subject VARCHAR(200) NOT NULL,
@@ -21,6 +22,10 @@ async function initContactTable() {
 
   try {
     await pool.query(query);
+    const [productColumn] = await pool.query("SHOW COLUMNS FROM support_tickets LIKE 'product_id'");
+    if (!productColumn.length) {
+      await pool.query('ALTER TABLE support_tickets ADD COLUMN product_id INT NULL');
+    }
     await pool.query(`
       CREATE TABLE IF NOT EXISTS support_ticket_messages (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -51,18 +56,21 @@ async function initContactTable() {
 
 const ContactModel = {
   createTicket: async (data) => {
-    const { user_id, order_id, name, email, subject, message } = data;
+    const { user_id, order_id, product_id, name, email, subject, message } = data;
     const [result] = await pool.query(
-      `INSERT INTO support_tickets (user_id, order_id, name, email, subject, message) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [user_id || null, order_id || null, name, email, subject, message]
+      `INSERT INTO support_tickets (user_id, order_id, product_id, name, email, subject, message)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [user_id || null, order_id || null, product_id || null, name, email, subject, message]
     );
     return result.insertId;
   },
 
   getTicketsByUser: async (userId) => {
     const [rows] = await pool.query(
-      `SELECT * FROM support_tickets WHERE user_id = ? ORDER BY created_at DESC`,
+      `SELECT t.*, p.name AS product_name
+       FROM support_tickets t
+       LEFT JOIN products p ON p.id = t.product_id
+       WHERE t.user_id = ? ORDER BY t.created_at DESC`,
       [userId]
     );
     return rows;
@@ -70,9 +78,10 @@ const ContactModel = {
 
   getAllTickets: async () => {
     const [rows] = await pool.query(
-      `SELECT * FROM support_tickets ORDER BY 
-       CASE status WHEN 'open' THEN 1 WHEN 'in_progress' THEN 2 ELSE 3 END, 
-       created_at DESC`
+      `SELECT t.*, p.name AS product_name FROM support_tickets t
+       LEFT JOIN products p ON p.id = t.product_id ORDER BY
+       CASE t.status WHEN 'open' THEN 1 WHEN 'in_progress' THEN 2 ELSE 3 END,
+       t.created_at DESC`
     );
     return rows;
   },

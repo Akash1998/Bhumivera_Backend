@@ -45,21 +45,42 @@ const validateMessage = value =>
 
 router.post('/', optionalAuth, async (req, res) => {
   try {
-    const { name, email, subject, message, order_id } = req.body;
+    const { name, email, subject, message, order_id, product_id } = req.body;
     const ticketEmail = req.user?.email || email;
     if (
       typeof name !== 'string' || !name.trim() || name.trim().length > 100 ||
       typeof ticketEmail !== 'string' || !validEmail(ticketEmail.trim()) || ticketEmail.trim().length > 150 ||
       typeof subject !== 'string' || !subject.trim() || subject.trim().length > 200 ||
       !validateMessage(message) ||
-      (order_id !== undefined && order_id !== null && order_id !== '' && !validId(order_id))
+      (order_id !== undefined && order_id !== null && order_id !== '' && !validId(order_id)) ||
+      (product_id !== undefined && product_id !== null && product_id !== '' && !validId(product_id)) ||
+      (product_id && !order_id)
     ) {
       return res.status(400).json({ success: false, message: 'Enter a valid name, email, subject, and message.' });
+    }
+    if ((order_id || product_id) && !req.user) {
+      return res.status(401).json({ success: false, message: 'Sign in to link a support request to an order.' });
+    }
+    if (order_id) {
+      const params = [order_id, req.user.id];
+      const productClause = product_id ? 'AND oi.product_id = ?' : '';
+      if (product_id) params.push(product_id);
+      const [[purchase]] = await pool.query(
+        `SELECT o.id FROM orders o
+         ${product_id ? 'JOIN order_items oi ON oi.order_id = o.id' : ''}
+         WHERE o.id = ? AND o.user_id = ? ${productClause}
+         LIMIT 1`,
+        params
+      );
+      if (!purchase) {
+        return res.status(403).json({ success: false, message: 'The selected order or product does not belong to your account.' });
+      }
     }
 
     const ticketId = await ContactModel.createTicket({
       user_id: req.user ? req.user.id : null,
       order_id: order_id || null,
+      product_id: product_id || null,
       name: name.trim(),
       email: ticketEmail.trim(),
       subject: subject.trim(),

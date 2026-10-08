@@ -13,15 +13,18 @@ const s3 = new S3Client({
 });
 
 // 2) Generate a secure URL for the frontend to upload directly to R2
-async function generateUploadUrl(filename, fileType) {
-  // Clean filename to prevent spaces/special chars from breaking URLs
+async function generateUploadUrl(filename, fileType, prefix = "products", contentLength) {
   const cleanName = filename.replace(/[^a-zA-Z0-9.]/g, '-');
-  const key = `products/${Date.now()}-${cleanName}`;
+  const key = `${prefix}/${Date.now()}-${require("crypto").randomBytes(8).toString("hex")}-${cleanName}`;
+  if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY || !process.env.R2_SECRET_KEY || !process.env.R2_BUCKET_NAME) {
+    throw new Error('Object storage uploads are not configured.');
+  }
   
   const command = new PutObjectCommand({
     Bucket: process.env.R2_BUCKET_NAME,
     Key: key,
     ContentType: fileType,
+    ...(contentLength ? { ContentLength: contentLength } : {}),
   });
   
   const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
@@ -39,4 +42,15 @@ async function deleteProductImage(key) {
   }));
 }
 
-module.exports = { s3, generateUploadUrl, deleteProductImage };
+async function deleteReviewImage(key) {
+  if (!key.startsWith('reviews/')) throw new Error('Invalid review image key.');
+  if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY || !process.env.R2_SECRET_KEY || !process.env.R2_BUCKET_NAME) {
+    throw new Error('Object storage deletion is not configured.');
+  }
+  await s3.send(new DeleteObjectCommand({
+    Bucket: process.env.R2_BUCKET_NAME,
+    Key: key,
+  }));
+}
+
+module.exports = { s3, generateUploadUrl, deleteProductImage, deleteReviewImage };
