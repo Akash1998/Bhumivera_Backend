@@ -73,6 +73,7 @@ const { initSubcategoriesTable } = require("./models/subcategoryModel");
 const { createWishlistTable } = require("./models/wishlistModel");
 
 const app = express();
+let databaseReady = false;
 
 // --- SECURITY & CORS POLICIES ---
 const allowedOrigins = [
@@ -121,6 +122,23 @@ app.use((req, res, next) => {
 
   if (req.method === "OPTIONS") return res.status(204).end();
   next();
+});
+
+app.get("/health", (req, res) => {
+  res.status(databaseReady ? 200 : 503).json({
+    status: databaseReady ? "ready" : "starting",
+    databaseReady
+  });
+});
+
+app.use((req, res, next) => {
+  if (databaseReady) return next();
+  res.setHeader("Retry-After", "15");
+  return res.status(503).json({
+    success: false,
+    code: "DATABASE_UNAVAILABLE",
+    message: "The API is online but its database is not ready. Please retry shortly."
+  });
 });
 
 app.set("trust proxy", 1);
@@ -278,15 +296,21 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-initDB()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Access Core Online on Port ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error("[STARTUP] Required database initialization failed; API will not start.", err);
-    process.exitCode = 1;
+app.listen(PORT, () => {
+  console.log(`Access Core Online on Port ${PORT}`);
 });
+
+const initializeDatabase = async () => {
+  try {
+    await initDB();
+    databaseReady = true;
+    console.log("[STARTUP] Database initialization complete; API is ready.");
+  } catch (err) {
+    console.error("[STARTUP] Required database initialization failed; API will retry.", err);
+    setTimeout(initializeDatabase, 15000).unref();
+  }
+};
+
+initializeDatabase();
 
 module.exports = app;
