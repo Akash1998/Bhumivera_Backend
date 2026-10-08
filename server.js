@@ -58,7 +58,7 @@ const { initCategoriesTable } = require("./models/categoryModel");
 const { initReturnsTable } = require("./models/returnModel");
 const { initContactTable } = require("./models/contactModel");
 const { initAdminTable } = require("./models/adminModel");
-const { createUsersTable, initAuthTables, createAuthSecurityTables } = require("./models/userModel");
+const { createUsersTable, initAuthTables } = require("./models/userModel");
 const { createReviewTable } = require("./models/reviewModel"); 
 const { createNotificationTable } = require("./models/notificationModel");
 const { createClientErrorTable } = require("./models/clientErrorModel");
@@ -202,7 +202,8 @@ async function initDB() {
       }
     };
 
-    await safeInit('Users', createUsersTable);
+    // Authentication schema migrations must finish before the API accepts requests.
+    await createUsersTable();
     await safeInit('Auth', initAuthTables);
     await safeInit('Categories', initCategoriesTable);
     await safeInit('Products', initProductsTable);
@@ -217,7 +218,6 @@ async function initDB() {
     await safeInit('Returns', initReturnsTable);
     await safeInit('Contact', initContactTable);
     await safeInit('Admin', initAdminTable);
-    await safeInit('AuthSecurity', createAuthSecurityTables);
     await safeInit('Warehouse', initWarehouseTables); 
     await safeInit('Settings', createSettingsTable);
     await safeInit('CartRules', createCartRulesTable);
@@ -264,6 +264,7 @@ async function initDB() {
     }
   } catch (err) {
     console.error("Critical Init Error:", err.message);
+    throw err;
   }
 }
 
@@ -287,9 +288,15 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, async () => {
-  console.log(`Access Core Online on Port ${PORT}`);
-  await initDB();
+initDB()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Access Core Online on Port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("[STARTUP] Required database initialization failed; API will not start.", err);
+    process.exitCode = 1;
 });
 
 module.exports = app;
