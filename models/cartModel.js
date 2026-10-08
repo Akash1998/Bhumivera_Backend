@@ -1,5 +1,7 @@
 // backend/models/cartModel.js
 const pool = require('../config/db');
+require('dotenv').config();
+const IMAGE_BASE_URL = process.env.CLOUDFRONT_BASE_URL || 'https://pub-70fdb5d94df347c4bed417c28b066c02.r2.dev/bhumivera';
 
 const createCartTable = async () => {
   try {
@@ -57,8 +59,12 @@ const getCartByUser = async (userId) => {
 
     return rows.map((r) => {
       const activePrice = (r.discount_price !== null && r.discount_price !== "") ? r.discount_price : r.price;
+      const imageUrl = typeof r.image === 'string' && r.image
+        ? (/^https?:\/\//i.test(r.image) ? r.image : `${IMAGE_BASE_URL.replace(/\/$/, '')}/${r.image.replace(/^\/+/, '')}`)
+        : null;
       return {
         ...r,
+        image_url: imageUrl,
         unit_price: parseFloat(activePrice),
         subtotal: parseFloat(activePrice) * r.quantity,
       };
