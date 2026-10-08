@@ -8,7 +8,7 @@ const TABLES = {
   admin: 'admin_sessions',
 };
 
-async function issueToken(claims, req, { expiresIn = '7d', sessionType = 'user', deviceHash: providedDeviceHash } = {}) {
+async function issueToken(claims, req, { sessionType = 'user', expiresIn = sessionType === 'admin' ? '24h' : '7d', deviceHash: providedDeviceHash } = {}) {
   const table = TABLES[sessionType];
   if (!table) throw new Error('Unknown session type.');
   const jti = crypto.randomUUID();
@@ -18,8 +18,9 @@ async function issueToken(claims, req, { expiresIn = '7d', sessionType = 'user',
     : undefined;
   if (sessionType === 'user' && !deviceHash) throw new Error('A verified trusted-device cookie is required to issue this session.');
   const token = jwt.sign({ ...claims, sessionStartedAt, sessionType, ...(deviceHash ? { deviceHash } : {}) }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn, jwtid: jti });
-  const maxSessionAgeDays = sessionType === 'user' ? 30 : 14;
-  const expiresAt = new Date((sessionStartedAt + maxSessionAgeDays * 24 * 60 * 60) * 1000);
+  const expiresAt = sessionType === 'user'
+    ? new Date((sessionStartedAt + 30 * 24 * 60 * 60) * 1000)
+    : new Date(Date.now() + 24 * 60 * 60 * 1000);
   if (sessionType === 'user') {
     await pool.query(
       `INSERT INTO user_sessions (user_id, jti, device_hash, ip, user_agent, expires_at, is_current)
@@ -52,9 +53,12 @@ async function isSessionActive(payload, req) {
     );
   } else if (payload.sessionType === 'admin') {
     [rows] = await pool.query(
-      'SELECT jti FROM admin_sessions WHERE jti=? AND revoked_at IS NULL AND expires_at > NOW() LIMIT 1',
+      `UPDATE admin_sessions
+       SET last_seen_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL 24 HOUR)
+       WHERE jti=? AND revoked_at IS NULL AND expires_at > NOW()`,
       [payload.jti]
     );
+    return rows.affectedRows === 1;
   } else {
     return false;
   }

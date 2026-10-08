@@ -19,6 +19,7 @@ const {
   clearTrustedDeviceCookie,
 } = require('../utils/trustedDevice');
 const { hashOtp } = require('../utils/otpCrypto');
+const { getTrustedAdminDevice, trustAdminDevice, revokeTrustedAdminDevices } = require('../utils/adminTrustedDevice');
 
 const {
   getAdminByEmail,
@@ -66,18 +67,18 @@ router.use('/google/callback', googleCallbackLimiter);
 router.use('/challenge', challengeLimiter);
 
 // --- ADMIN SPECIFIC LOGIN ---
-router.post("/admin/login", loginIpLimiter, loginLimiter, async (req, res) => {
+async function adminPasswordLogin(req, res) {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ message: "Email and password required" });
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
     const admin = await getAdminByEmail(email);
-    if (!admin) return res.status(401).json({ message: "Invalid admin credentials" });
-    if (!admin.password_hash) return res.status(500).json({ message: "Admin account missing security hash." });
+    if (!admin || !admin.password_hash) return res.status(401).json({ message: 'Invalid admin credentials.' });
 
-    const preLock = await getAdminLockStatus(admin.id);
-    if (preLock.locked) {
-      const secondsRemaining = preLock.lockedUntil
-        ? Math.max(0, Math.ceil((new Date(preLock.lockedUntil) - new Date()) / 1000))
+    const lockStatus = await getAdminLockStatus(admin.id);
+    if (lockStatus.locked) {
+      const secondsRemaining = lockStatus.lockedUntil
+        ? Math.max(0, Math.ceil((new Date(lockStatus.lockedUntil) - new Date()) / 1000))
         : 0;
       return res.status(423).json({
         code: 'ACCOUNT_LOCKED',
@@ -86,35 +87,73 @@ router.post("/admin/login", loginIpLimiter, loginLimiter, async (req, res) => {
       });
     }
 
-    const wasLocked = !!preLock.lockedUntil && new Date(preLock.lockedUntil) <= new Date();
-    const validAdmin = await verifyAdminPassword(password, admin.password_hash);
-    if (!validAdmin) {
+    if (!await verifyAdminPassword(password, admin.password_hash)) {
       await updateAdminFailedAttempts(admin.id, false);
       const postLock = await getAdminLockStatus(admin.id);
-      if (postLock.locked && !preLock.locked) {
+      if (postLock.locked && !lockStatus.locked) {
         try {
           await sendMail({
             to: email,
             subject: '[Bhumivera] Admin Account Locked',
-            html: `<p>Your admin account has been temporarily locked due to 6 failed login attempts.</p><p>Please reset your password or wait 15 minutes.</p>`
+            html: '<p>Your admin account was temporarily locked due to repeated failed sign-in attempts. Reset your password or wait 15 minutes.</p>',
+            text: 'Your admin account was temporarily locked due to repeated failed sign-in attempts. Reset your password or wait 15 minutes.',
+            timeoutMs: 15000
           });
         } catch (mailErr) {
-          console.log(`[MAIL TEMPLATE: admin_account_locked] to: ${email}`);
+          console.error('[ADMIN_LOCK_EMAIL_ERROR]:', mailErr.message);
         }
       }
-      return res.status(401).json({ message: "Invalid admin credentials" });
+      return res.status(401).json({ message: 'Invalid admin credentials.' });
     }
 
     await updateAdminFailedAttempts(admin.id, true);
-    return res.status(403).json({
-      code: 'ADMIN_OTP_REQUIRED',
-      message: 'Admin access requires the emailed verification code. Use the secure OTP sign-in flow.'
+    if (await getTrustedAdminDevice(admin.id, req)) {
+      const role = admin.role || 'admin';
+      const token = await issueToken({ id: admin.id, email: admin.email, role }, req, { sessionType: 'admin' });
+      return res.json({
+        token,
+        admin: { id: admin.id, email: admin.email, role },
+        message: 'Signed in on this trusted device.'
+      });
+    }
+
+    const otp = generateOtp();
+    const otpHash = hashAdminOtp(admin.id, otp);
+    await pool.query(
+      'UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?',
+      [otpHash, admin.id]
+    );
+    try {
+      const startedAt = Date.now();
+      await sendMail({
+        to: email,
+        subject: 'Your Bhumivera admin sign-in code',
+        html: `<p>Your admin sign-in code is <strong>${otp}</strong>.</p><p>It expires in 10 minutes. Never share this code.</p><p>If you did not request this code, secure your account immediately.</p>`,
+        text: `Your Bhumivera admin sign-in code is ${otp}. It expires in 10 minutes. Never share this code.`,
+        timeoutMs: 15000
+      });
+      console.info(`[ADMIN_OTP] Mail provider accepted request in ${Date.now() - startedAt}ms.`);
+    } catch (mailErr) {
+      console.error('[ADMIN_OTP_DELIVERY_ERROR]:', mailErr.message);
+      await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE id=?', [admin.id]);
+      return res.status(503).json({
+        code: 'ADMIN_OTP_DELIVERY_FAILED',
+        message: 'The email provider did not confirm the sign-in code request. Please try again shortly.'
+      });
+    }
+
+    return res.json({
+      requiresOtp: true,
+      email: admin.email,
+      message: 'We sent a sign-in code to your email. Enter it to trust this browser.'
     });
   } catch (err) {
-    console.error("Admin Login Error:", err);
-    res.status(500).json({ message: "Server error", error: err.message });
+    console.error('[ADMIN_PASSWORD_LOGIN_ERROR]:', err);
+    return res.status(500).json({ message: 'Could not complete admin sign-in. Please try again.' });
   }
-});
+}
+
+router.post('/admin/login', loginIpLimiter, loginLimiter, adminPasswordLogin);
 
 // --- CORE UNIVERSAL LOGIN ---
 router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
@@ -582,9 +621,9 @@ router.post("/refresh", async (req, res) => {
       });
     }
     const now = Math.floor(Date.now() / 1000);
-    const MAX_REFRESH_AGE_SEC = (sessionType === 'user' ? 30 : 14) * 24 * 60 * 60;
+    const MAX_REFRESH_AGE_SEC = 30 * 24 * 60 * 60;
     const sessionStartedAt = payload.sessionStartedAt || payload.iat;
-    if (sessionStartedAt && (now - sessionStartedAt) > MAX_REFRESH_AGE_SEC) {
+    if (sessionType === 'user' && sessionStartedAt && (now - sessionStartedAt) > MAX_REFRESH_AGE_SEC) {
       return res.status(401).json({
         code: 'SESSION_REAUTH_REQUIRED',
         message: 'Your sign-in on this device has expired. Please sign in again; other devices are not affected.',
@@ -592,7 +631,7 @@ router.post("/refresh", async (req, res) => {
       });
     }
     const role = payload.role || 'customer';
-    const NEW_EXPIRES_SEC = 7 * 24 * 60 * 60;
+    const NEW_EXPIRES_SEC = sessionType === 'admin' ? 24 * 60 * 60 : 7 * 24 * 60 * 60;
     const freshToken = await issueToken(
       { id: payload.id, email: payload.email, role, sessionStartedAt },
       req,
@@ -639,43 +678,7 @@ router.get("/profile", authenticateAdmin, async (req, res) => {
 });
 
 // --- LEGACY ADMIN OTP ---
-router.post('/admin/request-otp', otpLimiter, async (req, res) => {
-  try {
-    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-    const password = typeof req.body?.password === 'string' ? req.body.password : '';
-    if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
-    const a = await getAdminByEmail(email);
-    if (!a || !a.password_hash) return res.status(401).json({ message: 'Invalid admin credentials.' });
-    const lockStatus = await getAdminLockStatus(a.id);
-    if (lockStatus.locked) {
-      const secondsRemaining = lockStatus.lockedUntil
-        ? Math.max(0, Math.ceil((new Date(lockStatus.lockedUntil) - new Date()) / 1000))
-        : 0;
-      return res.status(423).json({ code: 'ACCOUNT_LOCKED', message: 'Account temporarily locked due to multiple failed attempts.', secondsRemaining });
-    }
-    if (!await verifyAdminPassword(password, a.password_hash)) {
-      await updateAdminFailedAttempts(a.id, false);
-      return res.status(401).json({ message: 'Invalid admin credentials.' });
-    }
-    await updateAdminFailedAttempts(a.id, true);
-    const otp = generateOtp();
-    const otpHash = hashAdminOtp(a.id, otp);
-    await pool.query('UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [otpHash, a.id]);
-
-    try {
-      await sendMail({ to: email, subject: 'Admin Login OTP', html: `<p>Your admin login OTP is: <strong>${otp}</strong></p><p>Expires in 10 minutes. Do not share this code.</p>` });
-    } catch (mailErr) {
-      console.error("Mailjet API Error:", mailErr.message);
-      await pool.query('UPDATE admin_users SET login_otp=NULL, login_otp_expires=NULL WHERE id=?', [a.id]);
-      return res.status(503).json({ message: 'Could not deliver the verification code. Please try again later.' });
-    }
-
-    res.json({ message: 'OTP sent to your email.' });
-  } catch (err) {
-    console.error("DB Error /admin/request-otp:", err);
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-});
+router.post('/admin/request-otp', loginIpLimiter, loginLimiter, otpLimiter, adminPasswordLogin);
 
 router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
   try {
@@ -698,6 +701,7 @@ router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
       return res.status(401).json({ message: expiry?.valid ? 'Invalid OTP.' : 'OTP expired. Request a new one.' });
     }
 
+    await trustAdminDevice(a.id, req, res);
     const role = a.role || 'admin';
     const token = await issueToken({ id: a.id, email: a.email, role }, req, { sessionType: 'admin' });
     res.json({ token, admin: { id: a.id, email: a.email, role } });
@@ -944,6 +948,7 @@ router.post("/admin/change-password", authenticateAdmin, async (req, res) => {
     await updateAdminPassword(admin.id, passwordHash);
     await insertAdminPasswordHistory(admin.id, passwordHash);
     await revokeAllSessions('admin', admin.id);
+    await revokeTrustedAdminDevices(admin.id);
 
     const token = await issueToken(
       { id: admin.id, email: admin.email, role: admin.role || 'admin' },
@@ -1038,6 +1043,7 @@ router.post("/admin/reset-password", async (req, res) => {
     await insertAdminPasswordHistory(targetAdmin.id, hash);
     await clearAdminResetOtp(targetAdmin.id);
     await revokeAllSessions('admin', targetAdmin.id);
+    await revokeTrustedAdminDevices(targetAdmin.id);
 
     try {
       await sendMail({

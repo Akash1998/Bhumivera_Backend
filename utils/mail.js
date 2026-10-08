@@ -15,7 +15,7 @@ const getMailConfig = () => {
  * Primary dispatch function utilizing Mailrelay's REST API (Port 443)
  * This guarantees delivery by completely bypassing Railway's strict SMTP firewall.
  */
-function sendMail({ to, subject, html, text, from }) {
+function sendMail({ to, subject, html, text, from, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const config = getMailConfig();
 
@@ -68,6 +68,9 @@ function sendMail({ to, subject, html, text, from }) {
 
     // If an error triggers here, it is usually a malformed URL, not a firewall block
     req.on("error", (err) => reject(new Error(`HTTPS Connection Error: ${err.message}`)));
+    if (timeoutMs) {
+      req.setTimeout(timeoutMs, () => req.destroy(new Error(`Mailrelay request timed out after ${timeoutMs}ms.`)));
+    }
     req.write(data);
     req.end();
   });

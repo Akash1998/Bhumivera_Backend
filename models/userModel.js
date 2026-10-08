@@ -116,6 +116,22 @@ const createAuthSecurityTables = async () => {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_trusted_devices (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      admin_id INT NOT NULL,
+      token_hash CHAR(64) NOT NULL,
+      user_agent TEXT,
+      ip VARCHAR(64),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NOT NULL,
+      revoked_at DATETIME DEFAULT NULL,
+      UNIQUE KEY idx_atd_token_hash(token_hash),
+      INDEX idx_atd_admin_id(admin_id)
+    )
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS used_auth_tokens (
       jti VARCHAR(64) PRIMARY KEY,
       expires_at DATETIME NOT NULL,
