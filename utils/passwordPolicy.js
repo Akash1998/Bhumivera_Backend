@@ -30,7 +30,7 @@ const validatePasswordBasic = (pw, opts = {}) => {
   const s = String(pw || '');
   if (s.length < 12) errors.push({ code:'MIN_LENGTH', message:'Password must be at least 12 characters long.' });
   if (s.length > 128) errors.push({ code:'MAX_LENGTH', message:'Password too long (max 128 characters).' });
-  if (classCount(s) < 3) errors.push({ code:'COMPLEXITY', message:'Password must contain at least 3 of: uppercase, lowercase, digit, symbol.' });
+  if (classCount(s) < 4) errors.push({ code:'COMPLEXITY', message:'Password must contain uppercase and lowercase letters, a number, and a special character.' });
   if (isCommonPassword(s)) errors.push({ code:'COMMON_PASSWORD', message:'This password is too commonly used. Choose something more unique.' });
   if (s.toLowerCase().includes('@')) errors.push({ code:'EMAIL_IN_PASSWORD', message:'Avoid using your email address in the password.' });
   const fatal = new Set(['MIN_LENGTH','MAX_LENGTH','COMPLEXITY','COMMON_PASSWORD']);

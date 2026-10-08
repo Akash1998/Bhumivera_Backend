@@ -4,7 +4,7 @@ const router = express.Router();
 const pool = require('../config/db');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { generateUploadUrl, deleteReviewImage } = require('../config/s3Upload');
-const { createReview, getReviewsByProduct, getProductRatingSummary, getAllReviews, approveReview, rejectReview, getUserReviews, updateReviewAsAdmin } = require('../models/reviewModel');
+const { createReview, getReviewsByProduct, getProductRatingSummary, getAllReviews, approveReview, rejectReview, getUserReviews, updateReviewAsAdmin, syncProductStats } = require('../models/reviewModel');
 
 const MAX_REVIEW_IMAGES = 5;
 const MAX_REVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -74,6 +74,7 @@ router.get('/product/:productId', async (req, res) => {
       getReviewsByProduct(productId, true),
       getProductRatingSummary(productId)
     ]);
+    res.set('Cache-Control', 'no-store');
     res.json({ reviews, summary });
   } catch (err) {
     console.error(err);
@@ -118,10 +119,7 @@ router.put('/:id', authenticateUser, async (req, res) => {
       values.push(req.params.id);
       await pool.query(`UPDATE reviews SET ${fields.join(', ')} WHERE id = ?`, values);
     }
-    const syncProductStats = require('../models/reviewModel').syncProductStats;
-    if (syncProductStats && existing.product_id) {
-      try { await syncProductStats(existing.product_id); } catch (_) {}
-    }
+    await syncProductStats(existing.product_id);
     res.json({ message: 'Review updated' });
   } catch (err) {
     console.error(err);
@@ -141,10 +139,7 @@ router.delete('/:id', authenticateUser, async (req, res, next) => {
     if (existing.user_id !== req.user.id) return res.status(403).json({ message: 'Forbidden' });
 
     await pool.query('DELETE FROM reviews WHERE id = ?', [req.params.id]);
-    const syncProductStats = require('../models/reviewModel').syncProductStats;
-    if (syncProductStats && existing.product_id) {
-      try { await syncProductStats(existing.product_id); } catch (_) {}
-    }
+    await syncProductStats(existing.product_id);
     const imageKeys = Array.isArray(existing.images) ? existing.images : (() => {
       try { return JSON.parse(existing.images || '[]'); } catch { return []; }
     })();

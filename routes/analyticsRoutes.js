@@ -6,27 +6,32 @@ const { authenticateAdmin } = require('../middleware/authMiddleware');
 // Shared analytics handler
 const getDashboardData = async (req, res) => {
   try {
-    const period = req.query.period || '30d';
-    let days = 30;
-    if (period === '7d') days = 7;
-    if (period === '90d') days = 90;
+    const period = ['7d', '30d', '90d', '1y'].includes(req.query.period)
+      ? req.query.period
+      : '30d';
+    const daysByPeriod = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+    const days = daysByPeriod[period];
+    const dateFormat = period === '1y' ? '%b %Y' : '%b %d';
+    const dateGroup = period === '1y'
+      ? 'YEAR(created_at), MONTH(created_at)'
+      : 'DATE(created_at)';
 
     // 1. Time-Series Sales Velocity Data
     // FIXED: Appended DATE_FORMAT to GROUP BY to bypass ER_WRONG_FIELD_WITH_GROUP
     const [salesData] = await db.execute(`
-      SELECT DATE_FORMAT(created_at, '%b %d') as name,
-        COUNT(*) as orders,
+      SELECT DATE_FORMAT(created_at, '${dateFormat}') as name,
+        SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) as orders,
         SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END) as revenue
       FROM orders
       WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY DATE(created_at), DATE_FORMAT(created_at, '%b %d')
-      ORDER BY DATE(created_at) ASC
+      GROUP BY ${dateGroup}, DATE_FORMAT(created_at, '${dateFormat}')
+      ORDER BY MIN(created_at) ASC
     `, [days]);
 
     // 2. Global KPI Metrics
     const [totalStats] = await db.execute(`
       SELECT
-        COUNT(*) as totalOrders,
+        SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) as totalOrders,
         SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END) as totalRevenue
       FROM orders
       WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
@@ -91,17 +96,25 @@ router.get('/revenue', authenticateAdmin, getDashboardData); // Added missing ro
 // FIXED: ER_WRONG_FIELD_WITH_GROUP error patched via explicit multi-column grouping
 router.get('/products', authenticateAdmin, async (req, res) => {
   try {
+    const period = ['7d', '30d', '90d', '1y'].includes(req.query.period)
+      ? req.query.period
+      : '30d';
+    const days = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 }[period];
     const [rows] = await db.execute(`
       SELECT p.id, p.name, p.price, p.discount_price, p.quantity,
         p.rating, p.review_count, p.status, c.name as category_name,
-        COUNT(oi.id) as total_sold
+        COALESCE(SUM(CASE WHEN o.id IS NOT NULL THEN oi.quantity ELSE 0 END), 0) as total_sold,
+        COALESCE(SUM(CASE WHEN o.id IS NOT NULL THEN oi.price * oi.quantity ELSE 0 END), 0) as revenue
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       LEFT JOIN order_items oi ON p.id = oi.product_id
+      LEFT JOIN orders o ON oi.order_id = o.id
+        AND o.status != 'cancelled'
+        AND o.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
       GROUP BY p.id, p.name, p.price, p.discount_price, p.quantity, p.rating, p.review_count, p.status, c.name
       ORDER BY total_sold DESC
       LIMIT 20
-    `);
+    `, [days]);
     res.json({ data: rows });
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch product analytics' });

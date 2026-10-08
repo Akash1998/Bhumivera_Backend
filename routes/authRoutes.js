@@ -522,6 +522,14 @@ router.post("/register", registerLimiter, async (req, res) => {
       return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
     }
     if (!name || !email || !password) return res.status(400).json({ message: "Required fields missing" });
+    const passwordPolicy = await validatePassword(password);
+    if (!passwordPolicy.valid) {
+      return res.status(400).json({
+        code: 'WEAK_PASSWORD',
+        message: passwordPolicy.errors.map(({ message }) => message).join(' '),
+        errors: passwordPolicy.errors
+      });
+    }
     const dom = email.split('@')[1].toLowerCase();
     if (DISPOSABLE_DOMAINS.includes(dom)) return res.status(400).json({ message: "Disposable emails not allowed" });
     
