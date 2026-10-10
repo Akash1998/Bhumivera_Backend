@@ -22,9 +22,9 @@ router.post('/generate-product-content', authenticateAdmin, async (req, res) => 
 Product name: ${productName.trim()}
 Category: ${typeof category === 'string' && category.trim() ? category.trim() : 'Not provided'}
 Brand: ${typeof brand === 'string' && brand.trim() ? brand.trim() : 'Bhumivera'}
-Verified product specifications supplied by the admin: ${JSON.stringify(specifications || {})}
+Product information supplied by the admin (not independently verified): ${JSON.stringify(specifications || {})}
 
-Do not invent ingredients, certifications, health benefits, warranties, guarantees, measurements, or performance claims. Use only supplied facts; if there are not enough facts, describe the product neutrally. Return a JSON object with exactly these string keys:
+Do not invent ingredients, certifications, product category classifications, health or cosmetic benefits, warranties, guarantees, measurements, sourcing, sustainability attributes, or performance claims. Do not generate medical, treatment, prevention, efficacy, superiority, absolute-purity, or safety claims. Do not assign or add regulated or composition labels such as natural, organic, herbal, Ayurvedic, chemical-free, or condition-suitable from an ingredient name or product name. Treat all supplied information as unverified input, not proof. If there are not enough facts, describe the product neutrally and make no ingredient or benefit inference. Return a JSON object with exactly these string keys:
 "description": Two or three concise sentences, based only on supplied facts.
 "meta_title": SEO title under 60 characters.
 "meta_description": Search snippet under 160 characters.
