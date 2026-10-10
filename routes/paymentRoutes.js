@@ -30,10 +30,18 @@ router.post('/create-order', authenticateUser, async (req, res) => {
     });
   } catch (error) {
     console.error('[RAZORPAY_CREATE_ORDER]', error);
-    const status = error.statusCode === 401 || error.status === 401 ? 401 : 500;
+    const status = error.code === 'RAZORPAY_NOT_CONFIGURED'
+      ? 503
+      : error.statusCode === 401 || error.status === 401
+        ? 401
+        : 500;
     return res.status(status).json({
       success: false,
-      message: status === 401 ? 'Razorpay authentication failed.' : 'Could not create the payment order.',
+      message: error.code === 'RAZORPAY_NOT_CONFIGURED'
+        ? 'Razorpay is not configured on the payment server. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in the backend deployment environment.'
+        : status === 401
+          ? 'Razorpay authentication failed. Check the backend test/live API credentials.'
+          : 'Could not create the payment order.',
     });
   }
 });
@@ -67,9 +75,18 @@ router.post('/verify-payment', authenticateUser, async (req, res) => {
     return res.json({ success: true, order_id: orderId, payment_id: paymentId });
   } catch (error) {
     console.error('[RAZORPAY_VERIFY_PAYMENT]', error);
-    return res.status(error.statusCode || 500).json({
+    const status = error.code === 'RAZORPAY_NOT_CONFIGURED'
+      ? 503
+      : error.statusCode === 401 || error.status === 401
+        ? 401
+        : error.statusCode || 500;
+    return res.status(status).json({
       success: false,
-      message: error.statusCode === 401 ? 'Razorpay authentication failed.' : 'Could not verify the payment.',
+      message: error.code === 'RAZORPAY_NOT_CONFIGURED'
+        ? 'Razorpay is not configured on the payment server.'
+        : status === 401
+          ? 'Razorpay authentication failed. Check the backend test/live API credentials.'
+          : 'Could not verify the payment.',
     });
   }
 });
