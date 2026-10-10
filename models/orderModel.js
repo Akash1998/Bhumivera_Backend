@@ -106,6 +106,8 @@ const createOrder = async ({
   addressSnapshot,
   deliveryType,
   paymentMode,
+  paymentStatus = 'pending',
+  paymentId = null,
   notes,
   shippingCost = 0,
   impactAmount = 0,
@@ -200,8 +202,8 @@ const createOrder = async ({
 
     // Step 4: Insert the Order
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO orders (user_id, subtotal, discount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         userId,
         backendSubtotal,
@@ -216,6 +218,8 @@ const createOrder = async ({
         typeof addressSnapshot === 'string' ? addressSnapshot : JSON.stringify(addressSnapshot),
         deliveryType || 'standard',
         paymentMode || 'COD',
+        paymentStatus,
+        paymentId,
         notes || null
       ]
     );

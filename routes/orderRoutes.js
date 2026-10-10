@@ -9,7 +9,7 @@ const {
   getOrdersByUser, 
   getOrderById, 
   getAllOrders,
-  updateOrderStatus 
+  updateOrderStatus
 } = require("../models/orderModel");
 const { getCartTotal, clearCart } = require("../models/cartModel");
 const { getSetting, getSettingsByGroup } = require('../models/settingsModel');
@@ -19,6 +19,7 @@ const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
+const { verifyRazorpayPayment } = require('../services/razorpayService');
 
 router.get("/all", authenticateAdmin, async (req, res) => {
   try {
@@ -211,6 +212,35 @@ router.post("/", authenticateUser, async (req, res) => {
       : null;
     const loyaltyPointsPerRupee = Math.max(1, Number(await getSetting('loyalty_points_per_rupee')) || 10);
     const orderItems = [...items, ...giftItems];
+    let verifiedPayment = null;
+    if (paymentMode === 'online') {
+      const {
+        razorpay_order_id: razorpayOrderId,
+        razorpay_payment_id: razorpayPaymentId,
+        razorpay_signature: razorpaySignature,
+      } = req.body;
+      if (![razorpayOrderId, razorpayPaymentId, razorpaySignature].every(value => typeof value === 'string' && value.trim())) {
+        return res.status(400).json({ message: 'Verified Razorpay payment details are required for online orders.' });
+      }
+      const backendSubtotal = items.reduce((sum, item) => {
+        const discountPrice = Number(item.discount_price);
+        const unitPrice = discountPrice > 0 ? discountPrice : Number(item.price) || 0;
+        return sum + unitPrice * (Number(item.quantity) || 1);
+      }, 0);
+      const safeDiscount = Math.min(backendSubtotal, Math.max(0, Number(discount) || 0));
+      const requestedPoints = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
+      const [[userPoints]] = await pool.query('SELECT loyalty_points FROM users WHERE id = ?', [req.user.id]);
+      const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount + shippingCost) * loyaltyPointsPerRupee);
+      const pointsRedeemed = Math.min(requestedPoints, Math.max(0, Math.trunc(Number(userPoints?.loyalty_points) || 0)), maxAffordablePoints);
+      const expectedTotal = Math.max(0, backendSubtotal - safeDiscount + shippingCost - pointsRedeemed / loyaltyPointsPerRupee);
+      verifiedPayment = await verifyRazorpayPayment({
+        orderId: razorpayOrderId,
+        paymentId: razorpayPaymentId,
+        signature: razorpaySignature,
+        userId: req.user.id,
+        expectedAmount: Math.round(expectedTotal * 100),
+      });
+    }
 
     const orderId = await createOrder({
       userId: req.user.id,
@@ -221,6 +251,8 @@ router.post("/", authenticateUser, async (req, res) => {
       addressSnapshot: address,
       deliveryType: deliveryType || "standard",
       paymentMode: paymentMode || "COD",
+      paymentStatus: verifiedPayment ? 'paid' : 'pending',
+      paymentId: verifiedPayment?.payment.id || null,
       notes: notes || null,
       shippingCost,
       impactAmount,
@@ -248,6 +280,7 @@ router.post("/", authenticateUser, async (req, res) => {
     return res.status(201).json({ orderId, message: "Order placed successfully", discount, shippingCost, rulePreview });
   } catch (err) {
     console.error("Place order error:", err);
+    if (err.statusCode === 400) return res.status(400).json({ message: err.message });
     if (err.status === 409) return res.status(409).json({ message: err.message });
     if (err.message?.includes("Insufficient stock")) return res.status(400).json({ message: err.message });
     if (err.message?.includes("not found")) return res.status(400).json({ message: "Product no longer available." });
