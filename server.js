@@ -1,6 +1,9 @@
 require("dotenv").config();
 const { parseOrigins, validateProductionEnvironment } = require("./config/environment");
 validateProductionEnvironment(process.env);
+if (process.env.NODE_ENV === "production" && !process.env.OTP_SECRET?.trim()) {
+  console.warn("[SECURITY WARNING] OTP_SECRET is unset; OTP HMAC uses a stable HKDF-derived key from JWT_SECRET. Configure an independent OTP_SECRET to isolate key compromise.");
+}
 const express = require("express");
 const cors = require("cors");
 const pool = require("./config/db");

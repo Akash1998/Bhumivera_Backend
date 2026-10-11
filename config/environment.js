@@ -37,10 +37,10 @@ const validateProductionEnvironment = env => {
   const requireValue = name => {
     if (!env[name]?.trim()) errors.push(`${name} is required in production.`);
   };
-  const requireSecret = (name, { distinctFrom } = {}) => {
+  const requireSecret = (name, { distinctFrom, required = true } = {}) => {
     const value = env[name]?.trim();
     if (!value) {
-      errors.push(`${name} is required in production.`);
+      if (required) errors.push(`${name} is required in production.`);
     } else if (value.length < 32 || PLACEHOLDER_SECRETS.has(value.toLowerCase())) {
       errors.push(`${name} must be a non-placeholder secret of at least 32 characters.`);
     }
@@ -50,9 +50,8 @@ const validateProductionEnvironment = env => {
   };
 
   requireSecret('JWT_SECRET');
-  requireSecret('OTP_SECRET', { distinctFrom: 'JWT_SECRET' });
+  requireSecret('OTP_SECRET', { distinctFrom: 'JWT_SECRET', required: false });
   for (const name of ['DB_HOST', 'DB_USER', 'DB_NAME']) requireValue(name);
-  requireValue('FRONTEND_ORIGINS');
   if (!env.DB_PASSWORD?.trim()) errors.push('DB_PASSWORD is required in production.');
   if (env.DB_SSL?.toLowerCase() === 'false') errors.push('DB_SSL cannot be disabled in production.');
   if (env.DB_SSL !== undefined && !['true', 'false'].includes(env.DB_SSL.toLowerCase())) {

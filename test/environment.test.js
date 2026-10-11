@@ -25,6 +25,17 @@ describe('production environment validation', () => {
     assert.deepEqual(validateProductionEnvironment(validProductionEnvironment()), []);
   });
 
+  it('allows secure key derivation and exact-origin defaults when optional settings are omitted', () => {
+    const env = validProductionEnvironment();
+    delete env.FRONTEND_ORIGINS;
+    delete env.OTP_SECRET;
+    assert.deepEqual(validateProductionEnvironment(env), []);
+    assert.deepEqual(
+      parseOrigins(undefined, ['https://www.bhumivera.com', 'https://bhumivera.com'], 'production'),
+      ['https://www.bhumivera.com', 'https://bhumivera.com']
+    );
+  });
+
   it('rejects missing, weak, placeholder, or reused critical secrets', () => {
     const env = validProductionEnvironment();
     env.JWT_SECRET = 'fallback_secret';
