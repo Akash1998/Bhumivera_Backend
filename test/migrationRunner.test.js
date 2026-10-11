@@ -1,7 +1,8 @@
 const assert = require('node:assert/strict');
-const { describe, it } = require('node:test');
+const { after, describe, it } = require('node:test');
 const { runMigrations } = require('../utils/migrationRunner');
 const migrations = require('../migrations');
+const pool = require('../config/db');
 
 const createPool = () => {
   const applied = new Map();
@@ -100,4 +101,9 @@ describe('runMigrations', () => {
       /versions must/
     );
   });
+});
+
+
+after(async () => {
+    await pool.end();
 });
