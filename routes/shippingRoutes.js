@@ -74,4 +74,6 @@ router.delete('/zones/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
+router.use('/', require('./shippingLabelRoutes'));
+
 module.exports = router;

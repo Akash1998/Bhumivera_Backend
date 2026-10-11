@@ -84,6 +84,8 @@ const createOrdersTables = async () => {
     await addCol('order_items', 'sku', 'VARCHAR(255)');
     await addCol('order_items', 'image', 'TEXT');
     await addCol('order_items', 'is_gift', 'TINYINT(1) NOT NULL DEFAULT 0');
+    await addCol('order_items', 'gst_hsn_code', 'VARCHAR(8) DEFAULT NULL');
+    await addCol('order_items', 'gst_rate', 'DECIMAL(5,2) DEFAULT NULL');
 
     await addIndex('orders', 'idx_orders_created_at', 'created_at DESC');
     await addIndex('orders', 'idx_orders_status', 'status');
@@ -151,7 +153,7 @@ const createOrder = async ({
     for (const item of orderItems) {
       const productId = item.product_id || item.id;
       const [dbProducts] = await conn.query(
-        'SELECT name, sku, price, discount_price, quantity FROM products WHERE id = ? FOR UPDATE',
+        'SELECT name, sku, price, discount_price, quantity, gst_hsn_code, gst_rate FROM products WHERE id = ? FOR UPDATE',
         [productId]
       );
       const dbProduct = dbProducts[0];
@@ -177,6 +179,8 @@ const createOrder = async ({
         product_id: productId,
         name: dbProduct.name,
         sku: dbProduct.sku,
+        gst_hsn_code: dbProduct.gst_hsn_code,
+        gst_rate: dbProduct.gst_rate,
         price: unitPrice,
         quantity: requestedQty,
         image: itemImage,
@@ -237,9 +241,13 @@ const createOrder = async ({
     // Step 5: Insert Order Items
     for (const pItem of processedItems) {
       await conn.query(
-        `INSERT INTO order_items (order_id, product_id, name, sku, price, quantity, image, is_gift)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [orderId, pItem.product_id, pItem.name, pItem.sku, pItem.price, pItem.quantity, pItem.image, pItem.is_gift]
+        `INSERT INTO order_items
+         (order_id, product_id, name, sku, price, quantity, image, is_gift, gst_hsn_code, gst_rate)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          orderId, pItem.product_id, pItem.name, pItem.sku, pItem.price, pItem.quantity,
+          pItem.image, pItem.is_gift, pItem.gst_hsn_code, pItem.gst_rate,
+        ]
       );
     }
 

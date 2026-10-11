@@ -42,6 +42,7 @@ const shippingRoutes = require("./routes/shippingRoutes");
 const returnRoutes = require("./routes/returnRoutes");
 const inventoryRoutes = require("./routes/inventoryRoutes");
 const warehouseRoutes = require("./routes/warehouseRoutes");
+const gstRoutes = require("./routes/gstRoutes");
 const clientLogRoutes = require("./routes/clientLogRoutes");
 const logsRoutes = require("./routes/logsRoutes");
 const newsletterRoutes = require("./routes/newsletterRoutes");
@@ -75,6 +76,8 @@ const { initSubcategoriesTable } = require("./models/subcategoryModel");
 const { createWishlistTable } = require("./models/wishlistModel");
 const { createRecommendationTables } = require("./models/recommendationModel");
 const { createCouponTable } = require("./models/couponModel");
+const { initShippingLabelTables } = require("./models/shippingLabelModel");
+const { initGstAccountingTables } = require("./models/gstAccountingModel");
 
 const app = express();
 let databaseReady = false;
@@ -188,6 +191,7 @@ app.use("/api/shipping", shippingRoutes);
 app.use("/api/returns", returnRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/warehouse", warehouseRoutes);
+app.use("/api/gst", gstRoutes);
 
 // --- SEO: DYNAMIC XML SITEMAP GENERATOR ---
 app.get("/sitemap.xml", async (req, res) => {
@@ -244,8 +248,10 @@ async function initDB() {
     await safeInit('Cart', createCartTable);
     await safeInit('Coupons', createCouponTable);
     await safeInit('Orders', createOrdersTables);
+    await safeInit('GST accounting', initGstAccountingTables);
     await safeInit('ImpactLedger', initImpactTables);
     await safeInit('Returns', initReturnsTable);
+    await safeInit('ShippingLabels', initShippingLabelTables);
     await safeInit('Contact', initContactTable);
     await initAdminTable();
     await safeInit('Warehouse', initWarehouseTables); 
