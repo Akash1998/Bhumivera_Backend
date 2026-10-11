@@ -258,6 +258,60 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 41,
+    name: 'separate restricted referral wallet credits',
+    up: async () => {
+      const addColumn = async (table, column, definition) => {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+        if (!columns.length) await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+      };
+
+      await addColumn('referral_settings', 'wallet_reward_per_order_limit', 'DECIMAL(10,2) NOT NULL DEFAULT 100.00');
+      await addColumn('referral_claims', 'wallet_bucket', "ENUM('cash','referral') NOT NULL DEFAULT 'cash'");
+      await addColumn('coupons', 'reward_type', "ENUM('standard','referral_wallet') NOT NULL DEFAULT 'standard'");
+      await addColumn('coupons', 'wallet_per_order_limit', 'DECIMAL(10,2) DEFAULT NULL');
+      await addColumn('orders', 'referral_wallet_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS referral_wallets (
+          user_id INT NOT NULL PRIMARY KEY,
+          balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS referral_wallet_transactions (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          amount DECIMAL(10,2) NOT NULL,
+          type ENUM('credit','debit') NOT NULL,
+          description VARCHAR(255) NOT NULL,
+          reference_id VARCHAR(100) NOT NULL,
+          coupon_code VARCHAR(50) DEFAULT NULL,
+          order_id INT DEFAULT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_referral_wallet_reference (user_id, reference_id),
+          INDEX idx_referral_wallet_history (user_id, created_at),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS wallet_topups (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          payment_id VARCHAR(100) NOT NULL,
+          payment_order_id VARCHAR(100) NOT NULL,
+          amount DECIMAL(10,2) NOT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_wallet_topup_payment (payment_id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

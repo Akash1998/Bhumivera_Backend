@@ -1,5 +1,10 @@
 const COD_REQUIRED_DELIVERED_ORDERS = 2;
 
+const calculateReferralWalletRedemption = (balance, perOrderLimit, subtotal) => {
+  const toCents = value => Math.round(Math.max(0, Number(value) || 0) * 100);
+  return Math.min(toCents(balance), toCents(perOrderLimit), toCents(subtotal)) / 100;
+};
+
 const assertCodEligibility = (paymentMode, deliveredOrderCount) => {
   if (paymentMode === 'COD' && deliveredOrderCount < COD_REQUIRED_DELIVERED_ORDERS) {
     throw Object.assign(
@@ -37,6 +42,7 @@ const debitWalletForOrder = async (connection, userId, amount, orderId) => {
 
 module.exports = {
   assertCodEligibility,
+  calculateReferralWalletRedemption,
   debitWalletForOrder,
   COD_REQUIRED_DELIVERED_ORDERS,
 };

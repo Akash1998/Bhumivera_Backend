@@ -44,8 +44,21 @@ const WalletModel = {
   },
 
   getTransactions: async (userId) => {
-    const [rows] = await pool.query('SELECT * FROM wallet_transactions WHERE user_id = ? ORDER BY created_at DESC', [userId]);
-    return rows;
+    const [[cashRows], [referralRows]] = await Promise.all([
+      pool.query(
+        `SELECT id, amount, type, description, reference_id, created_at, 'cash' AS wallet_bucket
+         FROM wallet_transactions WHERE user_id = ?`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, amount, type, description, reference_id, coupon_code, order_id, created_at, 'referral' AS wallet_bucket
+         FROM referral_wallet_transactions WHERE user_id = ?`,
+        [userId]
+      ),
+    ]);
+    return [...cashRows, ...referralRows]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 100);
   },
 
   processTransaction: async (userId, amount, type, description, reference_id = null) => {

@@ -15,10 +15,16 @@ const sendInvalidDate = (res, result) => res.status(400).json({
 });
 
 router.use(async (req, res, next) => {
-  try { await createCouponTable(); } catch (e) {
-    console.warn('[COUPON_INIT] Warning:', e.message);
+  try {
+    await createCouponTable();
+    return next();
+  } catch (error) {
+    console.error(`[COUPON_SCHEMA_UNAVAILABLE] code=${error.code || 'UNKNOWN'} message=${error.message}`);
+    return res.status(503).json({
+      code: 'COUPON_SCHEMA_UNAVAILABLE',
+      message: 'Coupon services are temporarily unavailable. Please try again shortly.',
+    });
   }
-  next();
 });
 
 // POST /api/coupons/validate - validate coupon (public)
@@ -29,10 +35,24 @@ router.post('/validate', authenticateUser, async (req, res) => {
     await reconcileReferralRewards(req.user.id);
     const result = await validateCoupon(code, parseFloat(orderTotal) || 0, req.user.id);
     if (!result.valid) return res.status(400).json({ message: result.message });
-    res.json({ valid: true, discount: result.discount, coupon: { code: result.coupon.code, discount_type: result.coupon.discount_type, discount_value: result.coupon.discount_value } });
+    res.json({
+      valid: true,
+      discount: result.discount,
+      referralWalletAmount: result.referralWalletAmount || 0,
+      rewardType: result.coupon.reward_type || 'standard',
+      coupon: {
+        code: result.coupon.code,
+        discount_type: result.coupon.discount_type,
+        discount_value: result.coupon.discount_value,
+        wallet_per_order_limit: result.coupon.wallet_per_order_limit || null,
+      },
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to validate coupon' });
+    console.error(`[COUPON_VALIDATE] code=${err.code || 'UNKNOWN'} table=${err.table || 'unknown'} message=${err.message}`);
+    res.status(500).json({
+      code: 'COUPON_VALIDATION_FAILED',
+      message: 'Could not validate this coupon right now. Please try again shortly.',
+    });
   }
 });
 
@@ -42,6 +62,7 @@ router.get('/mine', authenticateUser, async (req, res) => {
     const [coupons] = await pool.query(
       `SELECT id, code, description, discount_type, discount_value, min_order_amount,
               max_discount, usage_limit, used_count, valid_from, expires_at,
+              reward_type, wallet_per_order_limit,
               1 AS is_personal
        FROM coupons
        WHERE restricted_user_id = ? AND is_active = 1

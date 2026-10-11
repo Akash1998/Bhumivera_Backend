@@ -85,7 +85,7 @@ describe('referral model', () => {
     assert.equal(queries.filter(({ sql }) => sql.includes('INSERT INTO wallet_transactions')).length, 0);
   });
 
-  it('issues approved wallet rewards into the wallet and ledger in one decision', async () => {
+  it('issues restricted referral credit with a multi-use personal coupon', async () => {
     const queries = [];
     state.poolQuery = async sql => {
       if (sql.includes('SELECT id, name, email FROM users')) return [[
@@ -114,14 +114,12 @@ describe('referral model', () => {
             enabled: 1,
             reward_mode: 'wallet_coupon',
             wallet_reward_amount: '1000.00',
+            wallet_reward_per_order_limit: '100.00',
             coupon_discount_type: 'fixed',
             coupon_discount_value: '100.00',
             coupon_min_order_amount: '500.00',
             coupon_valid_days: 30,
           }], []];
-        }
-        if (sql.includes('SELECT w.balance, u.wallet_balance')) {
-          return [[{ balance: '25.00', wallet_balance: '25.00' }], []];
         }
         return [{ affectedRows: 1, insertId: 1 }, []];
       },
@@ -131,18 +129,16 @@ describe('referral model', () => {
 
     assert.equal(result.walletAmount, 1000);
     assert.ok(result.couponCode);
+    assert.equal(result.walletBucket, 'referral');
     assert.equal(result.status, 'approved');
     assert.ok(queries.some(({ sql, params }) =>
-      sql.includes('UPDATE wallets SET balance = ?') && params[0] === 1025
+      sql.includes('UPDATE referral_wallets SET balance = balance + ?') && params[0] === 1000
     ));
     assert.ok(queries.some(({ sql, params }) =>
-      sql.includes('UPDATE users SET wallet_balance = ?') && params[0] === 1025
+      sql.includes('INSERT INTO referral_wallet_transactions') && params[2] === 'referral-claim-12'
     ));
     assert.ok(queries.some(({ sql, params }) =>
-      sql.includes('INSERT INTO wallet_transactions') && params[2] === 'referral-claim-12'
-    ));
-    assert.ok(queries.some(({ sql, params }) =>
-      sql.includes('INSERT INTO coupons') && sql.includes('usage_limit') && params[4] === 7
+      sql.includes('INSERT INTO coupons') && sql.includes('usage_limit') && params[3] === 10 && params[4] === 7
     ));
   });
 });

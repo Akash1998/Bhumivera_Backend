@@ -6,6 +6,7 @@ const { getRazorpayClient, isValidPaymentSignature } = require('../services/razo
 
 router.post('/create-order', authenticateUser, async (req, res) => {
   const amount = Number(req.body.amount);
+  const purpose = req.body.purpose === 'wallet_topup' ? 'wallet_topup' : 'checkout';
   if (!Number.isSafeInteger(amount) || amount < 100) {
     return res.status(400).json({ success: false, message: 'Amount must be at least 100 paise.' });
   }
@@ -20,7 +21,7 @@ router.post('/create-order', authenticateUser, async (req, res) => {
       amount,
       currency: 'INR',
       receipt: `user-${req.user.id}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
-      notes: { userId: String(req.user.id) },
+      notes: { userId: String(req.user.id), purpose },
     });
     return res.status(201).json({
       order_id: order.id,

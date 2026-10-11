@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const {
   assertCodEligibility,
+  calculateReferralWalletRedemption,
   debitWalletForOrder,
   COD_REQUIRED_DELIVERED_ORDERS,
 } = require('../services/orderPaymentPolicy');
@@ -115,6 +116,7 @@ const createOrder = async ({
   impactAmount = 0,
   impactProject = null,
   couponId = null,
+  referralWalletAmount = 0,
   loyaltyPointsAwarded = 0,
   lifecycleGiftProductId = null,
   whatsappUpdatesOptIn = false,
@@ -136,7 +138,12 @@ const createOrder = async ({
       }
     }
 
+    let referralWalletOrderLimit = 0;
     if (couponId) {
+      const [[coupon]] = await conn.query(
+        'SELECT reward_type, restricted_user_id, wallet_per_order_limit, discount_value FROM coupons WHERE id = ? FOR UPDATE',
+        [couponId]
+      );
       const [usage] = await conn.query(
         `UPDATE coupons SET used_count = used_count + 1
          WHERE id = ? AND is_active = 1
@@ -148,6 +155,15 @@ const createOrder = async ({
       if (usage.affectedRows !== 1) {
         throw Object.assign(new Error('This coupon has already been used or has expired.'), { status: 409 });
       }
+      if (Number(referralWalletAmount) > 0 &&
+          (coupon?.reward_type !== 'referral_wallet' ||
+           String(coupon.restricted_user_id) !== String(userId) ||
+           Number(referralWalletAmount) > Number(coupon.wallet_per_order_limit))) {
+        throw Object.assign(new Error('This referral reward coupon is not available to this account.'), { status: 400 });
+      }
+      referralWalletOrderLimit = Number(coupon?.wallet_per_order_limit) || Number(coupon?.discount_value) || 0;
+    } else if (Number(referralWalletAmount) > 0) {
+      throw Object.assign(new Error('A valid referral reward coupon is required to use referral balance.'), { status: 400 });
     }
 
     let backendSubtotal = 0;
@@ -208,28 +224,50 @@ const createOrder = async ({
 
     // Step 3: Finalize Totals
     const safeDiscount = Math.min(backendSubtotal, Math.max(0, parseFloat(discount) || 0));
+    const requestedReferralWalletAmount = Math.max(0, Number(referralWalletAmount) || 0);
+    let safeReferralWalletAmount = 0;
+    if (requestedReferralWalletAmount > 0) {
+      const [[referralWallet]] = await conn.query(
+        'SELECT balance FROM referral_wallets WHERE user_id = ? FOR UPDATE',
+        [userId]
+      );
+      const availableReferralBalance = Math.max(0, Number(referralWallet?.balance) || 0);
+      const maxReferralRedemption = calculateReferralWalletRedemption(
+        availableReferralBalance,
+        referralWalletOrderLimit,
+        backendSubtotal - safeDiscount
+      );
+      if (maxReferralRedemption < requestedReferralWalletAmount) {
+        throw Object.assign(new Error('Your referral reward balance changed. Reapply the coupon and try again.'), {
+          status: 409,
+          code: 'REFERRAL_WALLET_BALANCE_CHANGED',
+        });
+      }
+      safeReferralWalletAmount = requestedReferralWalletAmount;
+    }
     const safeShippingCost = Math.max(0, parseFloat(shippingCost) || 0);
     const safeImpactAmount = Math.max(0, Math.min(500, Number(impactAmount) || 0));
     const safeLoyaltyPoints = Math.max(0, Math.trunc(Number(loyaltyPointsAwarded) || 0));
     const pointsPerRupee = Math.max(1, Math.trunc(Number(loyaltyPointsPerRupee) || 10));
     const pointsAvailable = Math.max(0, Math.trunc(Number(userRows?.[0]?.loyalty_points) || 0));
     const requestedPoints = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
-    const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount + safeShippingCost) * pointsPerRupee);
+    const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount - safeReferralWalletAmount + safeShippingCost) * pointsPerRupee);
     const pointsRedeemed = Math.min(requestedPoints, pointsAvailable, maxAffordablePoints);
     const loyaltyDiscount = pointsRedeemed / pointsPerRupee;
-    const backendTotal = Math.max(0, backendSubtotal - safeDiscount + safeShippingCost - loyaltyDiscount + safeImpactAmount);
+    const backendTotal = Math.max(0, backendSubtotal - safeDiscount - safeReferralWalletAmount + safeShippingCost - loyaltyDiscount + safeImpactAmount);
     if (pointsRedeemed > 0) {
       await conn.query('UPDATE users SET loyalty_points = loyalty_points - ? WHERE id = ? AND loyalty_points >= ?', [pointsRedeemed, userId, pointsRedeemed]);
     }
 
     // Step 4: Insert the Order
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
+      `INSERT INTO orders (user_id, subtotal, discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
       [
         userId,
         backendSubtotal,
         safeDiscount,
+        safeReferralWalletAmount,
         safeShippingCost,
         safeImpactAmount,
         safeImpactAmount > 0 ? impactProject : null,
@@ -249,6 +287,25 @@ const createOrder = async ({
     );
 
     const orderId = res.insertId;
+
+    if (safeReferralWalletAmount > 0) {
+      const [referralDebit] = await conn.query(
+        'UPDATE referral_wallets SET balance = balance - ? WHERE user_id = ? AND balance >= ?',
+        [safeReferralWalletAmount, userId, safeReferralWalletAmount]
+      );
+      if (referralDebit.affectedRows !== 1) {
+        throw Object.assign(new Error('Your referral reward balance changed. Reapply the coupon and try again.'), {
+          status: 409,
+          code: 'REFERRAL_WALLET_BALANCE_CHANGED',
+        });
+      }
+      await conn.query(
+        `INSERT INTO referral_wallet_transactions
+          (user_id, amount, type, description, reference_id, coupon_code, order_id)
+         VALUES (?, ?, 'debit', ?, ?, ?, ?)`,
+        [userId, safeReferralWalletAmount, `Referral reward applied to order #${orderId}`, `referral-order-${orderId}`, couponCode, orderId]
+      );
+    }
 
     if (paymentMode === 'WALLET' && backendTotal > 0) {
       await debitWalletForOrder(conn, userId, backendTotal, orderId);

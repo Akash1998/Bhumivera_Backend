@@ -1,5 +1,6 @@
 //Coupon
 const pool = require('../config/db');
+const { calculateReferralWalletRedemption } = require('../services/orderPaymentPolicy');
 
 let couponTablePromise;
 
@@ -28,6 +29,8 @@ const createCouponTable = async () => {
       ['description', 'VARCHAR(255) DEFAULT NULL'],
       ['valid_from', 'DATETIME DEFAULT NULL'],
       ['restricted_user_id', 'INT DEFAULT NULL'],
+      ['reward_type', "ENUM('standard','referral_wallet') NOT NULL DEFAULT 'standard'"],
+      ['wallet_per_order_limit', 'DECIMAL(10,2) DEFAULT NULL'],
     ]) {
       const [rows] = await pool.query(
         'SELECT COUNT(*) AS column_exists FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
@@ -78,6 +81,7 @@ const getAllCoupons = async () => {
     SELECT id, code, description, discount_type, discount_value,
            min_order_amount, min_order_amount AS min_purchase, max_discount,
            usage_limit, used_count, is_active, IF(is_active = 1, 'active', 'inactive') AS status,
+           restricted_user_id, reward_type, wallet_per_order_limit,
            valid_from, expires_at, expires_at AS valid_until, created_at
     FROM coupons
     ORDER BY created_at DESC
@@ -126,15 +130,6 @@ const incrementCouponUsage = async (code) => {
 const validateCoupon = async (code, orderTotal, userId = null) => {
   const coupon = await getCouponByCode(code);
   if (!coupon) return { valid: false, message: 'Invalid coupon code' };
-  const [referralClaims] = await pool.query(
-    `SELECT referrer_user_id FROM referral_claims
-     WHERE coupon_code = ? AND status IN ('approved', 'auto_approved')
-     LIMIT 1`,
-    [coupon.code]
-  );
-  if (referralClaims.length && String(referralClaims[0].referrer_user_id) !== String(userId)) {
-    return { valid: false, message: 'This referral coupon belongs to a different customer.' };
-  }
   if (coupon.restricted_user_id && String(coupon.restricted_user_id) !== String(userId)) {
     return { valid: false, message: 'This coupon is assigned to a different customer.' };
   }
@@ -143,6 +138,20 @@ const validateCoupon = async (code, orderTotal, userId = null) => {
   if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) return { valid: false, message: 'Coupon has expired' };
   if (coupon.usage_limit && coupon.used_count >= coupon.usage_limit) return { valid: false, message: 'Coupon usage limit reached' };
   if (orderTotal < coupon.min_order_amount) return { valid: false, message: `Minimum order amount is ${coupon.min_order_amount}` };
+  if (coupon.reward_type === 'referral_wallet') {
+    const [[wallet]] = await pool.query('SELECT balance FROM referral_wallets WHERE user_id = ?', [userId]);
+    const available = Math.max(0, Number(wallet?.balance) || 0);
+    if (available <= 0) return { valid: false, message: 'No referral reward balance remains for this coupon.' };
+    const perOrderLimit = Number(coupon.wallet_per_order_limit) || Number(coupon.discount_value);
+    const discount = calculateReferralWalletRedemption(available, perOrderLimit, orderTotal);
+    if (discount <= 0) return { valid: false, message: 'This order does not meet the minimum required to use the referral reward.' };
+    return {
+      valid: true,
+      discount: Number(discount.toFixed(2)),
+      referralWalletAmount: Number(discount.toFixed(2)),
+      coupon,
+    };
+  }
   let discount = coupon.discount_type === 'percentage'
     ? (orderTotal * coupon.discount_value) / 100
     : coupon.discount_value;

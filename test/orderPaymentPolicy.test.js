@@ -2,10 +2,19 @@ const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
 const {
   assertCodEligibility,
+  calculateReferralWalletRedemption,
   debitWalletForOrder,
 } = require('../services/orderPaymentPolicy');
 
 describe('order payment policies', () => {
+  it('caps referral wallet redemption by balance, per-order limit, and eligible subtotal', () => {
+    assert.equal(calculateReferralWalletRedemption(1000, 100, 999), 100);
+    assert.equal(calculateReferralWalletRedemption(75, 100, 999), 75);
+    assert.equal(calculateReferralWalletRedemption(1000, 100, 60), 60);
+    assert.equal(calculateReferralWalletRedemption(1000, 100, 999.999), 100);
+    assert.equal(calculateReferralWalletRedemption(-10, 100, 999), 0);
+  });
+
   it('requires two successfully delivered orders before COD is allowed', () => {
     for (const deliveredCount of [0, 1]) {
       assert.throws(

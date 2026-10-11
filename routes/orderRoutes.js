@@ -13,7 +13,10 @@ const {
   getAllOrders,
   updateOrderStatus
 } = require("../models/orderModel");
-const { COD_REQUIRED_DELIVERED_ORDERS } = require('../services/orderPaymentPolicy');
+const {
+  COD_REQUIRED_DELIVERED_ORDERS,
+  calculateReferralWalletRedemption,
+} = require('../services/orderPaymentPolicy');
 const { getCartTotal, clearCart } = require("../models/cartModel");
 const { getSetting, getSettingsByGroup } = require('../models/settingsModel');
 const { listCartRules } = require('../models/cartRulesModel');
@@ -236,6 +239,7 @@ router.post("/", authenticateUser, async (req, res) => {
     }
 
     let couponDiscount = 0;
+    let referralWalletAmount = 0;
     let resolvedCoupon = null;
     let couponId = null;
     let recoveryCoupon = false;
@@ -252,22 +256,30 @@ router.post("/", authenticateUser, async (req, res) => {
       );
       const coupon = coupons[0];
       if (!coupon) return res.status(400).json({ code: 'INVALID_COUPON', message: 'This coupon is invalid, expired, already used, or assigned to another customer.' });
-      const [referralClaims] = await pool.query(
-        `SELECT referrer_user_id FROM referral_claims
-         WHERE coupon_code = ? AND status IN ('approved', 'auto_approved')
-         LIMIT 1`,
-        [coupon.code]
-      );
-      if (referralClaims.length && String(referralClaims[0].referrer_user_id) !== String(req.user.id)) {
-        return res.status(400).json({ code: 'INVALID_COUPON', message: 'This referral coupon belongs to a different customer.' });
-      }
       if (cartTotal < (Number(coupon.min_order_amount) || 0)) {
         return res.status(400).json({ code: 'COUPON_MINIMUM_NOT_MET', message: `Add ₹${(Number(coupon.min_order_amount) - cartTotal).toFixed(2)} more to use this coupon.` });
       }
-      couponDiscount = coupon.discount_type === "percentage"
-        ? Math.min((cartTotal * Number(coupon.discount_value)) / 100, Number(coupon.max_discount) || Infinity)
-        : Number(coupon.discount_value) || 0;
-      couponDiscount = Math.max(0, Math.min(couponDiscount, cartTotal));
+      if (coupon.reward_type === 'referral_wallet') {
+        const [[referralWallet]] = await pool.query(
+          'SELECT balance FROM referral_wallets WHERE user_id = ?',
+          [req.user.id]
+        );
+        const available = Math.max(0, Number(referralWallet?.balance) || 0);
+        const perOrderLimit = Number(coupon.wallet_per_order_limit) || Number(coupon.discount_value) || 0;
+        referralWalletAmount = calculateReferralWalletRedemption(
+          available,
+          perOrderLimit,
+          cartTotal
+        );
+        if (referralWalletAmount <= 0) {
+          return res.status(400).json({ code: 'REFERRAL_WALLET_EMPTY', message: 'No referral reward balance remains for this coupon.' });
+        }
+      } else {
+        couponDiscount = coupon.discount_type === "percentage"
+          ? Math.min((cartTotal * Number(coupon.discount_value)) / 100, Number(coupon.max_discount) || Infinity)
+          : Number(coupon.discount_value) || 0;
+        couponDiscount = Math.max(0, Math.min(couponDiscount, cartTotal));
+      }
       resolvedCoupon = coupon.code;
       couponId = coupon.id;
       recoveryCoupon = Boolean(coupon.restricted_user_id) && String(coupon.restricted_user_id) === String(req.user.id);
@@ -280,6 +292,10 @@ router.post("/", authenticateUser, async (req, res) => {
     else if (couponStackPolicy === 'coupon_first' && couponDiscount > 0) discount = couponDiscount;
     else if (ruleDiscount <= 0) discount = couponDiscount;
     discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount));
+    referralWalletAmount = Math.min(
+      referralWalletAmount,
+      Math.max(0, Number(cartTotal) - discount)
+    );
 
     const shippingSettings = await getSettingsByGroup('shipping');
     const shippingKey = deliveryType === 'express' ? 'express_charge' : 'standard_charge';
@@ -317,9 +333,9 @@ router.post("/", authenticateUser, async (req, res) => {
       const safeDiscount = Math.min(backendSubtotal, Math.max(0, Number(discount) || 0));
       const requestedPoints = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
       const [[userPoints]] = await pool.query('SELECT loyalty_points FROM users WHERE id = ?', [req.user.id]);
-      const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount + shippingCost) * loyaltyPointsPerRupee);
+      const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount - referralWalletAmount + shippingCost) * loyaltyPointsPerRupee);
       const pointsRedeemed = Math.min(requestedPoints, Math.max(0, Math.trunc(Number(userPoints?.loyalty_points) || 0)), maxAffordablePoints);
-      const expectedTotal = Math.max(0, backendSubtotal - safeDiscount + shippingCost - pointsRedeemed / loyaltyPointsPerRupee);
+      const expectedTotal = Math.max(0, backendSubtotal - safeDiscount - referralWalletAmount + shippingCost - pointsRedeemed / loyaltyPointsPerRupee);
       verifiedPayment = await verifyRazorpayPayment({
         orderId: razorpayOrderId,
         paymentId: razorpayPaymentId,
@@ -335,6 +351,7 @@ router.post("/", authenticateUser, async (req, res) => {
       discount,
       couponCode: resolvedCoupon,
       couponId,
+      referralWalletAmount,
       addressSnapshot: address,
       deliveryType: deliveryType || "standard",
       paymentMode,
@@ -376,7 +393,7 @@ router.post("/", authenticateUser, async (req, res) => {
       console.error("[Mailer] DB Query Error during placement:", mailErr);
     }
 
-    return res.status(201).json({ orderId, message: "Order placed successfully", discount, shippingCost, rulePreview });
+    return res.status(201).json({ orderId, message: "Order placed successfully", discount, referralWalletAmount, shippingCost, rulePreview });
   } catch (err) {
     console.error("Place order error:", err);
     if (err.status === 403 && err.code === 'COD_DELIVERY_REQUIREMENT') {

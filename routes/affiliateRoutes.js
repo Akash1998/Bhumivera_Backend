@@ -7,6 +7,7 @@ const {
   getReferralSummary,
   saveReferralConfig,
   decideReferralClaim,
+  reissueReferralCoupon,
   approveDueReferralClaims,
 } = require('../models/referralModel');
 
@@ -45,6 +46,7 @@ router.put('/admin/config', authenticateAdmin, async (req, res) => {
   const config = req.body || {};
   const modes = ['wallet', 'coupon', 'wallet_coupon'];
   const amount = Number(config.wallet_reward_amount);
+  const walletPerOrderLimit = Number(config.wallet_reward_per_order_limit);
   const couponValue = Number(config.coupon_discount_value);
   const minimum = Number(config.coupon_min_order_amount);
   const validDays = Number(config.coupon_valid_days);
@@ -52,6 +54,8 @@ router.put('/admin/config', authenticateAdmin, async (req, res) => {
     !modes.includes(config.reward_mode) ||
     !['fixed', 'percentage'].includes(config.coupon_discount_type) ||
     !Number.isFinite(amount) || amount < 0 || amount > 100000 ||
+    !Number.isFinite(walletPerOrderLimit) || walletPerOrderLimit < 0 || walletPerOrderLimit > 100000 ||
+    (config.reward_mode === 'wallet_coupon' && amount > 0 && walletPerOrderLimit <= 0) ||
     !Number.isFinite(couponValue) || couponValue <= 0 || couponValue > (config.coupon_discount_type === 'percentage' ? 100 : 100000) ||
     !Number.isFinite(minimum) || minimum < 0 ||
     !Number.isInteger(validDays) || validDays < 1 || validDays > 365
@@ -75,9 +79,11 @@ router.get('/admin/referrals', authenticateAdmin, async (req, res) => {
     const [rows] = await pool.query(
       `SELECT c.id AS claim_id, c.status, c.verified_at, c.auto_approve_at,
         c.reviewed_at, c.decision_reason, c.wallet_amount, c.coupon_code,
+        c.wallet_bucket, COALESCE(rw.balance, 0) AS referral_wallet_balance,
         referrer.id AS referrer_id, referrer.name AS referrer_name, referrer.email AS referrer_email,
         referred.id AS referred_id, referred.name AS referred_name, referred.email AS referred_email
        FROM referral_claims c
+       LEFT JOIN referral_wallets rw ON rw.user_id = c.referrer_user_id
        JOIN users referred ON referred.id = c.referred_user_id
        JOIN users referrer ON referrer.id = c.referrer_user_id
        ORDER BY (c.status = 'pending') DESC, c.verified_at DESC LIMIT ? OFFSET ?`,
@@ -87,6 +93,21 @@ router.get('/admin/referrals', authenticateAdmin, async (req, res) => {
   } catch (error) {
     console.error('[REFERRAL_ADMIN_LIST]', error);
     return res.status(500).json({ message: 'Could not load referrals.' });
+  }
+});
+
+router.post('/admin/referrals/:claimId/reissue-coupon', authenticateAdmin, async (req, res) => {
+  const claimId = Number(req.params.claimId);
+  if (!Number.isSafeInteger(claimId) || claimId < 1) {
+    return res.status(400).json({ code: 'INVALID_REFERRAL_CLAIM', message: 'Choose a valid referral record.' });
+  }
+  try {
+    const result = await reissueReferralCoupon(claimId);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: 'REFERRAL_COUPON_REISSUE_FAILED', message: error.message });
+    console.error('[REFERRAL_COUPON_REISSUE]', error);
+    return res.status(500).json({ code: 'REFERRAL_COUPON_REISSUE_FAILED', message: 'Could not reissue this referral coupon.' });
   }
 });
 
