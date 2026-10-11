@@ -38,6 +38,7 @@ const initWarehouseTables = async () => {
         `);
     } catch (err) {
         console.error('Error initializing warehouse tables:', err);
+        throw err;
     }
 };
 const restoreLegacyBackup=async(d,uid,sn)=>{const c=await pool.getConnection();try{await c.beginTransaction();const cm=new Map(d.c.map(x=>[x.id,x.n]));for(let s of d.s){const cn=cm.get(s.cust?.id)||'Walk-in';for(let i of(s.items||[])){await c.query(`INSERT INTO warehouse_sales_log (user_id,store_name,product_name,quantity,sale_price,customer_type,customer_name,legacy_id,sold_at) VALUES (?,?,?,?,?,?,?,?,?)`,[uid,sn,i.n||'Legacy Item',i.q||1,i.pr||0,'walkin',cn,s.id,new Date(s.date||Date.now())])}}await c.commit();return!0}catch(e){await c.rollback();throw e}finally{c.release()}};

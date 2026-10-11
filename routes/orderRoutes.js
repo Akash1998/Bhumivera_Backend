@@ -242,7 +242,7 @@ router.post("/", authenticateUser, async (req, res) => {
       });
     }
 
-    const orderId = await createOrder({
+    const orderResult = await createOrder({
       userId: req.user.id,
       items: orderItems,
       discount,
@@ -262,6 +262,16 @@ router.post("/", authenticateUser, async (req, res) => {
       loyaltyPointsToRedeem,
       loyaltyPointsPerRupee,
     });
+    const orderId = orderResult.id;
+    if (orderResult.reused) {
+      return res.status(200).json({
+        orderId,
+        message: "This payment was already used to place an order.",
+        discount,
+        shippingCost,
+        rulePreview,
+      });
+    }
 
     await clearCart(req.user.id);
 

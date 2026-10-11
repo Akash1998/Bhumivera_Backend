@@ -28,38 +28,22 @@ const createOrdersTables = async () => {
       )
     `);
 
-    try {
-      await pool.query("ALTER TABLE orders MODIFY COLUMN payment_mode ENUM('COD','online','WALLET') DEFAULT 'COD'");
-    } catch (enumErr) {
-      console.warn("Notice: ENUM payment_mode modifier skipped or already applied.", enumErr.message);
-    }
-    try {
-      await pool.query("ALTER TABLE orders MODIFY COLUMN status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned','archived') DEFAULT 'pending'");
-    } catch (enumErr) {
-      console.warn("Notice: ENUM status modifier skipped or already applied.", enumErr.message);
-    }
+    await pool.query("ALTER TABLE orders MODIFY COLUMN payment_mode ENUM('COD','online','WALLET') DEFAULT 'COD'");
+    await pool.query("ALTER TABLE orders MODIFY COLUMN status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned','archived') DEFAULT 'pending'");
 
     const addCol = async (table, column, definition) => {
-      try {
-        const [cols] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE '${column}'`);
-        if (cols.length === 0) {
-          await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
-          console.log(`Added ${column} to ${table}`);
-        }
-      } catch (err) {
-        console.error(`Error adding ${column} to ${table}:`, err.message);
+      const [cols] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+      if (cols.length === 0) {
+        await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+        console.log(`Added ${column} to ${table}`);
       }
     };
 
     const addIndex = async (table, indexName, columns) => {
-      try {
-        const [idx] = await pool.query(`SHOW INDEX FROM \`${table}\` WHERE Key_name = ?`, [indexName]);
-        if (idx.length === 0) {
-          await pool.query(`CREATE INDEX \`${indexName}\` ON \`${table}\` (${columns})`);
-          console.log(`Added index ${indexName} on ${table}`);
-        }
-      } catch (err) {
-        console.warn(`Index ${indexName} on ${table} warning:`, err.message);
+      const [idx] = await pool.query(`SHOW INDEX FROM \`${table}\` WHERE Key_name = ?`, [indexName]);
+      if (idx.length === 0) {
+        await pool.query(`CREATE INDEX \`${indexName}\` ON \`${table}\` (${columns})`);
+        console.log(`Added index ${indexName} on ${table}`);
       }
     };
 
@@ -95,6 +79,7 @@ const createOrdersTables = async () => {
 
   } catch (err) {
     console.error("Order Table Creation Error:", err);
+    throw err;
   }
 };
 
@@ -123,6 +108,17 @@ const createOrder = async ({
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    if (paymentId) {
+      const [existingOrders] = await conn.query(
+        'SELECT id FROM orders WHERE payment_id = ? AND user_id = ? FOR UPDATE',
+        [paymentId, userId]
+      );
+      if (existingOrders.length > 0) {
+        await conn.commit();
+        return { id: existingOrders[0].id, reused: true };
+      }
+    }
 
     if (couponId) {
       const [usage] = await conn.query(
@@ -262,9 +258,16 @@ const createOrder = async ({
     }
 
     await conn.commit();
-    return orderId;
+    return { id: orderId, reused: false };
   } catch (e) {
     await conn.rollback();
+    if (paymentId && ['ER_DUP_ENTRY', 'ER_LOCK_DEADLOCK'].includes(e.code)) {
+      const [existingOrders] = await pool.query(
+        'SELECT id FROM orders WHERE payment_id = ? AND user_id = ? LIMIT 1',
+        [paymentId, userId]
+      );
+      if (existingOrders.length > 0) return { id: existingOrders[0].id, reused: true };
+    }
     console.error("createOrder Error:", e);
     throw e;
   } finally {

@@ -1,8 +1,16 @@
 require("dotenv").config();
+const { parseOrigins, validateProductionEnvironment } = require("./config/environment");
+validateProductionEnvironment(process.env);
 const express = require("express");
 const cors = require("cors");
 const pool = require("./config/db");
 const path = require("path");
+const { connectRateLimitStore, closeRateLimitStore } = require("./middleware/rateLimiter");
+const { createRequestObservability } = require("./middleware/requestObservability");
+const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
+const { runMigrations } = require("./utils/migrationRunner");
+const { createHealthRouter } = require("./utils/healthRoutes");
+const migrations = require("./migrations");
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 if (JWT_SECRET === 'fallback_secret') {
@@ -49,59 +57,39 @@ const newsletterRoutes = require("./routes/newsletterRoutes");
 const gamificationRoutes = require("./routes/gamificationRoutes");
 const impactRoutes = require("./routes/impactRoutes");
 
-// Model Initializations
-const { initWarehouseTables } = require("./models/warehouseModel");
-const { initWalletTables } = require("./models/walletModel");
-const { createCartTable } = require("./models/cartModel");
-const { createOrdersTables } = require("./models/orderModel");
-const { createAddressTable } = require("./models/addressModel");
-const { initProductsTable } = require("./models/productModel");
-const { initCategoriesTable } = require("./models/categoryModel");
-const { initReturnsTable } = require("./models/returnModel");
-const { initContactTable } = require("./models/contactModel");
-const { initAdminTable } = require("./models/adminModel");
-const { createUsersTable, initAuthTables } = require("./models/userModel");
-const { createReviewTable } = require("./models/reviewModel"); 
-const { createNotificationTable } = require("./models/notificationModel");
-const { createClientErrorTable } = require("./models/clientErrorModel");
 const { createError, normalizeErrorResponses, sendError } = require("./utils/errorReporting");
-const { createSettingsTable } = require("./models/settingsModel");
-const { createCartRulesTable } = require("./models/cartRulesModel");
-const { createLoyaltyTierTable } = require("./models/loyaltyTierModel");
-const { createNewsletterTable } = require("./models/newsletterModel");
-const { createShippingTable } = require("./models/shippingModel");
-const { initSerialTable } = require("./models/serialModel");
-const { initImpactTables } = require("./models/impactModel");
-const { initSubcategoriesTable } = require("./models/subcategoryModel");
-const { createWishlistTable } = require("./models/wishlistModel");
-const { createRecommendationTables } = require("./models/recommendationModel");
-const { createCouponTable } = require("./models/couponModel");
-const { initShippingLabelTables } = require("./models/shippingLabelModel");
-const { initGstAccountingTables } = require("./models/gstAccountingModel");
 
 const app = express();
 let databaseReady = false;
+let startupFailure = null;
+app.use(createRequestObservability());
 
 // --- SECURITY & CORS POLICIES ---
-const allowedOrigins = [
+const defaultAllowedOrigins = [
   "https://www.bhumivera.com",
   "https://bhumivera.com",
   "http://localhost:5173",
   "http://localhost:3000"
 ];
+const productionAllowedOrigins = defaultAllowedOrigins.filter(origin => origin.startsWith("https://"));
+const allowedOrigins = new Set(parseOrigins(
+  process.env.FRONTEND_ORIGINS,
+  process.env.NODE_ENV === "production" ? productionAllowedOrigins : defaultAllowedOrigins,
+  process.env.NODE_ENV
+));
 
 const corsOptions = {
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     const currentEnv = process.env.NODE_ENV || process.env.access_ENV || "production";
-    const isAllowed = allowedOrigins.includes(origin) || origin.endsWith(".vercel.app") || currentEnv === "development";
+    const isAllowed = allowedOrigins.has(origin) || currentEnv === "development";
     if (isAllowed) callback(null, true);
     else callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
-  exposedHeaders: ["Content-Range", "X-Content-Range"],
+  exposedHeaders: ["Content-Range", "X-Content-Range", "X-Request-Id"],
   optionsSuccessStatus: 204
 };
 
@@ -132,12 +120,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/health", (req, res) => {
-  res.status(databaseReady ? 200 : 503).json({
-    status: databaseReady ? "ready" : "starting",
-    databaseReady
-  });
-});
+app.use("/health", createHealthRouter(() => ({ databaseReady, failure: startupFailure })));
 
 app.use((req, res, next) => {
   if (databaseReady) return next();
@@ -150,6 +133,7 @@ app.use((req, res, next) => {
 });
 
 app.set("trust proxy", 1);
+app.use("/api/webhooks/razorpay", createRazorpayWebhookRouter({ pool }));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(normalizeErrorResponses);
@@ -223,74 +207,6 @@ app.get("/sitemap.xml", async (req, res) => {
 
 app.get("/", (req, res) => res.json({ status: "ok", message: "Bhumivera Eco-Lab Core API running!" }));
 
-// --- DATABASE INITIALIZATION ---
-async function initDB() {
-  try {
-    const safeInit = async (name, initFunction) => {
-      if (typeof initFunction === 'function') {
-        try { await initFunction(); } catch (e) { console.warn(`[DB_INIT] ${name} Warning:`, e.message); }
-      }
-    };
-
-    // Authentication schema migrations must finish before the API accepts requests.
-    await createUsersTable();
-    await initAuthTables();
-    await safeInit('Categories', initCategoriesTable);
-    await safeInit('Products', initProductsTable);
-    await safeInit('Subcategories', initSubcategoriesTable);
-    await safeInit('ProductSerials', initSerialTable);
-    await safeInit('Reviews', createReviewTable);
-    await safeInit('Notifications', createNotificationTable);
-    await safeInit('Address', createAddressTable);
-    await safeInit('Wallet', initWalletTables);
-    await safeInit('Wishlist', createWishlistTable);
-    await safeInit('ProductRecommendations', createRecommendationTables);
-    await safeInit('Cart', createCartTable);
-    await safeInit('Coupons', createCouponTable);
-    await safeInit('Orders', createOrdersTables);
-    await safeInit('GST accounting', initGstAccountingTables);
-    await safeInit('ImpactLedger', initImpactTables);
-    await safeInit('Returns', initReturnsTable);
-    await safeInit('ShippingLabels', initShippingLabelTables);
-    await safeInit('Contact', initContactTable);
-    await initAdminTable();
-    await safeInit('Warehouse', initWarehouseTables); 
-    await safeInit('Settings', createSettingsTable);
-    await safeInit('CartRules', createCartRulesTable);
-    await safeInit('LoyaltyTiers', createLoyaltyTierTable);
-    await safeInit('Newsletter', createNewsletterTable);
-    await safeInit('ShippingZones', createShippingTable);
-    await safeInit('ClientErrorLogs', createClientErrorTable);
-
-    try {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS settings (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          group_name VARCHAR(50) NOT NULL,
-          key_name VARCHAR(50) UNIQUE NOT NULL,
-          value TEXT,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-
-      const initialSettings = [
-        ['general', 'site_name', 'Bhumivera'],
-        ['seo', 'meta_title', 'Bhumivera | Botanical Science'],
-        ['policy', 'return_policy', '15-day botanical window']
-      ];
-      for (const [g, k, v] of initialSettings) {
-        await pool.query("INSERT IGNORE INTO settings (group_name, key_name, value) VALUES (?, ?, ?)", [g, k, v]);
-      }
-    } catch (settingErr) {
-      console.warn("[DB_INIT] Settings Table Warning:", settingErr.message);
-    }
-
-  } catch (err) {
-    console.error("Critical Init Error:", err.message);
-    throw err;
-  }
-}
-
 // --- ERROR HANDLING ---
 app.use("/api", (req, res) => {
   res.status(404).json({ success: false, message: `API Endpoint Not Found: ${req.originalUrl}` });
@@ -310,22 +226,61 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`Access Core Online on Port ${PORT}`);
 });
 
 const initializeDatabase = async () => {
   try {
-    await initDB();
+    await connectRateLimitStore();
+    await pool.query('SELECT 1');
+    await runMigrations(pool, migrations);
     databaseReady = true;
+    startupFailure = null;
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {
+    databaseReady = false;
+    startupFailure = err.migration
+      ? { migration: err.migration, code: err.code || "MIGRATION_FAILED" }
+      : { code: err.code || "STARTUP_FAILED" };
     console.error("[STARTUP] Required database initialization failed; API will retry.", err);
     setTimeout(initializeDatabase, 15000).unref();
   }
 };
 
 initializeDatabase();
+
+let shutdownStarted = false;
+const shutdown = signal => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  databaseReady = false;
+  console.info(`[SHUTDOWN] Received ${signal}; draining HTTP connections.`);
+  const forceCloseTimer = setTimeout(() => {
+    console.error('[SHUTDOWN] Graceful shutdown timed out.');
+    process.exitCode = 1;
+    httpServer.closeAllConnections();
+  }, 10000);
+  forceCloseTimer.unref();
+
+  httpServer.close(async error => {
+    clearTimeout(forceCloseTimer);
+    const shutdownTasks = [
+      pool.end(),
+      closeRateLimitStore(),
+    ];
+    const results = await Promise.allSettled(shutdownTasks);
+    const failure = error || results.find(result => result.status === 'rejected')?.reason;
+    if (failure) {
+      console.error('[SHUTDOWN] Failed to close one or more service connections.', failure);
+      process.exitCode = 1;
+      return;
+    }
+    console.info('[SHUTDOWN] HTTP, database, and rate-limit connections closed.');
+  });
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 module.exports = app;

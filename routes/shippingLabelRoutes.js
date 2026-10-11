@@ -22,12 +22,7 @@ const axios = require('axios');
 
 const router = express.Router();
 const asyncRoute = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
-router.use(authenticateAdmin, (req, res, next) => {
-  if (!['admin', 'superadmin'].includes(req.admin?.role)) {
-    return res.status(403).json({ message: 'Shipping labels require an admin account.' });
-  }
-  next();
-});
+router.use(authenticateAdmin);
 
 const parsePositive = (value, label, maximum) => {
   const result = Number(value);

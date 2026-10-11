@@ -2,6 +2,9 @@ const crypto = require('crypto');
 const net = require('net');
 const rateLimit = require('express-rate-limit');
 
+const FIFTEEN_MINUTES = 15 * 60 * 1000;
+const TEN_MINUTES = 10 * 60 * 1000;
+
 function getLoginIpKey(ip) {
   const address = String(ip || '');
   if (net.isIP(address) === 4) return `v4:${address}`;
@@ -34,131 +37,224 @@ function getLoginIpKey(ip) {
   }
   if (groups.length !== 8) return `v6:${normalized}`;
 
-  const prefix = groups.slice(0, 3).map(group => parseInt(group, 16).toString(16).padStart(4, '0')).join('');
+  const prefix = groups.slice(0, 3)
+    .map(group => parseInt(group, 16).toString(16).padStart(4, '0'))
+    .join('');
   const fourthGroupPrefix = (parseInt(groups[3], 16) & 0xff00).toString(16).padStart(4, '0');
   return `v6:${prefix}${fourthGroupPrefix}`;
 }
 
-const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, 
-  max: 100, 
-  standardHeaders: true, 
-  legacyHeaders: false,
-  message: { message: 'Too many accounts created from this network. Please try again later.' }
+const normalizeEmail = req => typeof req.body?.email === 'string'
+  ? req.body.email.trim().toLowerCase()
+  : '';
+const hashEmail = email => crypto.createHash('sha256').update(email).digest('hex');
+const accountNetworkKey = req => `${getLoginIpKey(req.ip)}:${hashEmail(normalizeEmail(req))}`;
+const retryAfterSeconds = (req, windowMs) => {
+  const resetAt = req.rateLimit?.resetTime?.getTime?.();
+  return resetAt
+    ? Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))
+    : Math.ceil(windowMs / 1000);
+};
+
+const createRateLimitHandler = ({ code, message, windowMs, userAction }) =>
+  (req, res) => {
+    const seconds = retryAfterSeconds(req, windowMs);
+    res.setHeader('Retry-After', String(seconds));
+    return res.status(429).json({
+      code,
+      message,
+      retryAfterSeconds: seconds,
+      ...(userAction ? { userAction } : {}),
+    });
+  };
+
+const sharedRedisClient = process.env.RATE_LIMIT_REDIS_URL
+  ? require('redis').createClient({ url: process.env.RATE_LIMIT_REDIS_URL })
+  : null;
+
+if (sharedRedisClient) {
+  sharedRedisClient.on('error', error => {
+    console.error('[RATE_LIMIT_REDIS_ERROR]', error.message);
+  });
+} else if (process.env.NODE_ENV === 'production') {
+  console.warn('[RATE_LIMIT_STORE] RATE_LIMIT_REDIS_URL is not configured; rate limits use process-local memory.');
+}
+
+async function connectRateLimitStore() {
+  if (!sharedRedisClient || sharedRedisClient.isOpen) return;
+  await sharedRedisClient.connect();
+  console.info('[RATE_LIMIT_STORE] Shared Redis rate-limit storage connected.');
+}
+
+async function closeRateLimitStore() {
+  if (sharedRedisClient?.isOpen) await sharedRedisClient.quit();
+}
+
+function createLimiter(name, {
+  windowMs,
+  max,
+  message,
+  code,
+  keyGenerator,
+  skipSuccessfulRequests = false,
+  ignoreServerErrors = false,
+  userAction,
+  store,
+}) {
+  const options = {
+    windowMs,
+    limit: max,
+    keyGenerator,
+    skipSuccessfulRequests,
+    requestWasSuccessful: (_req, res) =>
+      res.statusCode < 400 || (ignoreServerErrors && res.statusCode >= 500),
+    standardHeaders: true,
+    legacyHeaders: false,
+    passOnStoreError: false,
+    handler: createRateLimitHandler({ code, message, windowMs, userAction }),
+  };
+  if (store) {
+    options.store = store;
+  } else if (sharedRedisClient) {
+    const { RedisStore } = require('rate-limit-redis');
+    options.store = new RedisStore({
+      prefix: `bhumivera:rate-limit:${name}:`,
+      sendCommand: (...args) => sharedRedisClient.sendCommand(args),
+    });
+  }
+  return rateLimit(options);
+}
+
+const registerLimiter = createLimiter('register', {
+  windowMs: 60 * 60 * 1000,
+  max: 100,
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'REGISTER_NETWORK_LIMIT',
+  message: 'Too many accounts have been created from this network.',
 });
 
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+const loginLimiter = createLimiter('login-account', {
+  windowMs: FIFTEEN_MINUTES,
   max: 5,
   skipSuccessfulRequests: true,
-  keyGenerator: req => {
-    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-    const emailHash = crypto.createHash('sha256').update(email).digest('hex');
-    return `login:${getLoginIpKey(req.ip)}:${emailHash}`;
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    code: 'LOGIN_ATTEMPTS_LIMIT',
-    message: 'Too many sign-in attempts for this account from this network. Please wait 15 minutes before trying again.'
-  }
+  ignoreServerErrors: true,
+  keyGenerator: req => accountNetworkKey(req),
+  code: 'LOGIN_ATTEMPTS_LIMIT',
+  message: 'Too many unsuccessful sign-in attempts for this account from this network.',
+  userAction: 'Wait for the retry interval to expire before trying again.',
 });
 
-const loginIpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+const loginIpLimiter = createLimiter('login-network', {
+  windowMs: FIFTEEN_MINUTES,
   max: 100,
   skipSuccessfulRequests: true,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    code: 'LOGIN_NETWORK_LIMIT',
-    message: 'There have been too many unsuccessful sign-in attempts from this network. Please wait 15 minutes and try again.'
-  }
+  ignoreServerErrors: true,
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'LOGIN_NETWORK_LIMIT',
+  message: 'Too many unsuccessful sign-in attempts from this network.',
+  userAction: 'Wait for the retry interval to expire before trying again.',
 });
 
-const otpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, 
-  max: 30, 
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: 'Too many OTP requests. System locked for 15 minutes to prevent brute-force attacks.' }
+const otpRequestLimiter = createLimiter('otp-request-account-network', {
+  windowMs: FIFTEEN_MINUTES,
+  max: 10,
+  keyGenerator: req => accountNetworkKey(req),
+  code: 'OTP_REQUEST_LIMIT',
+  message: 'Too many OTP requests for this account from this network.',
+  userAction: 'Request a new code after the retry interval expires.',
 });
 
-const forgotLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: (req, res) => { return req.body && req.body.email ? 3 : 10; },
-  keyGenerator: (req, res) => { return req.body && req.body.email ? `${req.body.email.toLowerCase()}|${req.ip}` : req.ip; },
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: (req, res, next, options) => res.status(429).setHeader('Retry-After', Math.ceil(options.windowMs / 1000)).json({ message:'Too many reset requests. Please try again later.', code:'TOO_MANY_RESET_REQUESTS', retryAfterSeconds: Math.ceil(options.windowMs / 1000) })
+const otpVerificationLimiter = createLimiter('otp-verification-account-network', {
+  windowMs: FIFTEEN_MINUTES,
+  max: 10,
+  skipSuccessfulRequests: true,
+  ignoreServerErrors: true,
+  keyGenerator: req => accountNetworkKey(req),
+  code: 'OTP_VERIFICATION_LIMIT',
+  message: 'Too many unsuccessful OTP verification attempts for this account from this network.',
+  userAction: 'Wait for the retry interval to expire before entering another code.',
 });
 
-const magicLinkLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
+const forgotLimiter = createLimiter('password-reset', {
+  windowMs: TEN_MINUTES,
+  max: req => normalizeEmail(req) ? 3 : 10,
+  keyGenerator: req => normalizeEmail(req)
+    ? accountNetworkKey(req)
+    : getLoginIpKey(req.ip),
+  code: 'TOO_MANY_RESET_REQUESTS',
+  message: 'Too many password reset requests. Please try again later.',
+  userAction: 'Wait for the retry interval to expire before requesting another reset.',
+});
+
+const magicLinkLimiter = createLimiter('magic-link', {
+  windowMs: TEN_MINUTES,
   max: 5,
-  keyGenerator: (req, res) => (req.body && req.body.email) ? req.body.email.toLowerCase() : req.ip,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message:'Too many magic link requests. Try again in 10 minutes.', code:'TOO_MANY_MAGIC_LINKS' }
+  keyGenerator: req => accountNetworkKey(req),
+  code: 'TOO_MANY_MAGIC_LINKS',
+  message: 'Too many magic link requests.',
 });
 
-const googleCallbackLimiter = rateLimit({
+const googleCallbackLimiter = createLimiter('google-callback', {
   windowMs: 60 * 1000,
   max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message:'Too many Google OAuth callback attempts.', code:'GOOGLE_RATE_LIMIT' }
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'GOOGLE_RATE_LIMIT',
+  message: 'Too many Google OAuth callback attempts.',
 });
 
-const adminStrictLimiter = rateLimit({
+const adminStrictLimiter = createLimiter('admin-authentication', {
   windowMs: 60 * 60 * 1000,
   max: 10,
   skipSuccessfulRequests: true,
-  keyGenerator: (req) => (req.body && req.body.email) ? `admin:${req.body.email.toLowerCase()}|${req.ip}` : `admin:ip:${req.ip}`,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message:'Too many admin authentication attempts. Account locked for 1 hour.', code:'ADMIN_RATE_LIMIT' }
+  ignoreServerErrors: true,
+  keyGenerator: req => accountNetworkKey(req),
+  code: 'ADMIN_RATE_LIMIT',
+  message: 'Too many unsuccessful admin authentication attempts.',
+  userAction: 'Wait for the retry interval to expire before trying again.',
 });
 
-const challengeLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
+const challengeLimiter = createLimiter('device-challenge', {
+  windowMs: TEN_MINUTES,
   max: 10,
-  keyGenerator: (req, res) => (req.body && req.body.email) ? `ch:${req.body.email.toLowerCase()}` : `ch:ip:${req.ip}`,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message:'Too many device challenge attempts.', code:'CHALLENGE_RATE_LIMIT' }
+  keyGenerator: req => accountNetworkKey(req),
+  code: 'CHALLENGE_RATE_LIMIT',
+  message: 'Too many device challenge attempts for this account from this network.',
 });
 
-const clientErrorLimiter = rateLimit({
+const clientErrorLimiter = createLimiter('client-error', {
   windowMs: 5 * 60 * 1000,
   max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: (req, res) => res.status(429).json({
-    code: 'CLIENT_LOG_RATE_LIMIT',
-    message: 'Too many client error reports.',
-    userAction: 'Wait a few minutes before submitting another report.',
-  }),
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'CLIENT_LOG_RATE_LIMIT',
+  message: 'Too many client error reports.',
+  userAction: 'Wait a few minutes before submitting another report.',
 });
 
-const newsletterLimiter = rateLimit({
+const newsletterLimiter = createLimiter('newsletter', {
   windowMs: 60 * 60 * 1000,
   max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { code: 'NEWSLETTER_RATE_LIMIT', message: 'Too many subscription attempts.', userAction: 'Try again later.' },
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'NEWSLETTER_RATE_LIMIT',
+  message: 'Too many subscription attempts.',
+  userAction: 'Try again later.',
 });
 
 module.exports = {
   registerLimiter,
   loginLimiter,
   loginIpLimiter,
-  otpLimiter,
+  otpRequestLimiter,
+  otpVerificationLimiter,
   forgotLimiter,
   magicLinkLimiter,
   googleCallbackLimiter,
   adminStrictLimiter,
   challengeLimiter,
   clientErrorLimiter,
-  newsletterLimiter
+  newsletterLimiter,
+  connectRateLimitStore,
+  closeRateLimitStore,
+  createLimiter,
+  getLoginIpKey,
+  accountNetworkKey,
 };

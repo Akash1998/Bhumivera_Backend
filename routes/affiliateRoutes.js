@@ -1,6 +1,8 @@
 // backend-Bhumivera/routes/affiliateRoutes.js
 const express = require('express');
+const { authenticateAdmin } = require('../middleware/authMiddleware');
 const router = express.Router();
+router.use(authenticateAdmin);
 
 // Mock endpoints to satisfy the frontend's API calls and stop the 404s
 router.get('/partners', (req, res) => {

@@ -33,25 +33,34 @@ const initWarrantyTable = async () => {
     )
   `);
 
-  try {
-    await pool.query(`ALTER TABLE warranty_registrations DROP FOREIGN KEY fk_warranty_serial`);
-  } catch (e) {}
+  const [foreignKeys] = await pool.query(
+    `SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+       AND CONSTRAINT_NAME = ? AND CONSTRAINT_TYPE = 'FOREIGN KEY'`,
+    ['warranty_registrations', 'fk_warranty_serial']
+  );
+  if (foreignKeys.length > 0) {
+    await pool.query('ALTER TABLE warranty_registrations DROP FOREIGN KEY fk_warranty_serial');
+  }
 
-  const addCol = async (table, sql) => {
-    try { await pool.query(`ALTER TABLE ${table} ADD COLUMN ${sql}`); } catch (e) {}
+  const addCol = async (table, column, definition) => {
+    const [columns] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+    if (columns.length === 0) {
+      await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+    }
   };
 
-  await addCol('warranty_registrations', 'serial_number_id INT AFTER registered_serial');
-  await addCol('warranty_registrations', 'user_name VARCHAR(255) AFTER product_id');
-  await addCol('warranty_registrations', 'user_email VARCHAR(255) AFTER user_name');
-  await addCol('warranty_registrations', 'user_phone VARCHAR(50) AFTER user_email');
-  await addCol('warranty_registrations', 'purchase_date DATE AFTER user_phone');
-  await addCol('warranty_registrations', 'invoice_number VARCHAR(100) AFTER purchase_date');
-  await addCol('warranty_registrations', 'shop_name VARCHAR(255) AFTER invoice_number');
-  await addCol('warranty_registrations', 'registration_date DATE NULL DEFAULT NULL AFTER shop_name');
-  await addCol('warranty_registrations', 'warranty_end_date DATE NULL DEFAULT NULL AFTER registration_date');
-  await addCol('warranty_registrations', 'invoice_url VARCHAR(500) NULL DEFAULT NULL AFTER warranty_end_date');
-  await addCol('warranty_registrations', 'is_legacy TINYINT(1) NOT NULL DEFAULT 1 AFTER invoice_url');
+  await addCol('warranty_registrations', 'serial_number_id', 'INT AFTER registered_serial');
+  await addCol('warranty_registrations', 'user_name', 'VARCHAR(255) AFTER product_id');
+  await addCol('warranty_registrations', 'user_email', 'VARCHAR(255) AFTER user_name');
+  await addCol('warranty_registrations', 'user_phone', 'VARCHAR(50) AFTER user_email');
+  await addCol('warranty_registrations', 'purchase_date', 'DATE AFTER user_phone');
+  await addCol('warranty_registrations', 'invoice_number', 'VARCHAR(100) AFTER purchase_date');
+  await addCol('warranty_registrations', 'shop_name', 'VARCHAR(255) AFTER invoice_number');
+  await addCol('warranty_registrations', 'registration_date', 'DATE NULL DEFAULT NULL AFTER shop_name');
+  await addCol('warranty_registrations', 'warranty_end_date', 'DATE NULL DEFAULT NULL AFTER registration_date');
+  await addCol('warranty_registrations', 'invoice_url', 'VARCHAR(500) NULL DEFAULT NULL AFTER warranty_end_date');
+  await addCol('warranty_registrations', 'is_legacy', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER invoice_url');
 };
 
 const validateSerial = async (serial) => {

@@ -2,8 +2,11 @@
 const pool = require("../config/db");
 
 // ─── Helper: safely add a column (idempotent) ───────────────────────────────
-const addCol = async (table, sql) => {
-  try { await pool.query(`ALTER TABLE ${table} ADD COLUMN ${sql}`); } catch (e) {}
+const addCol = async (table, column, definition) => {
+  const [columns] = await pool.query(`SHOW COLUMNS FROM ${table} LIKE ?`, [column]);
+  if (columns.length === 0) {
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 };
 
 // ─── Run once on startup: migrate product_serials for new-policy fields ──────
@@ -22,9 +25,9 @@ const initSerialTable = async () => {
     )
   `);
   // base_warranty_months: set by admin at generation time (null = legacy serial)
-  await addCol('product_serials', 'base_warranty_months INT NULL DEFAULT NULL AFTER status');
+  await addCol('product_serials', 'base_warranty_months', 'INT NULL DEFAULT NULL AFTER status');
   // is_legacy: false for serials generated under the new e-warranty policy
-  await addCol('product_serials', 'is_legacy TINYINT(1) NOT NULL DEFAULT 1 AFTER base_warranty_months');
+  await addCol('product_serials', 'is_legacy', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER base_warranty_months');
 };
 
 const getAllSerials = async () => {

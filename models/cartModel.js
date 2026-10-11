@@ -38,6 +38,7 @@ const createCartTable = async () => {
     }
   } catch (err) {
     console.error("[DB] cartModel migration error:", err.message);
+    throw err;
   }
 };
 

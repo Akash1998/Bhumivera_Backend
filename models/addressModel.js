@@ -29,7 +29,7 @@ async function createAddressTable() {
     }
     const [labelCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'label'`);
     if (labelCol.length === 0) {
-      try { await pool.query(`ALTER TABLE addresses ADD COLUMN label VARCHAR(50) DEFAULT 'Home' AFTER is_default`); } catch (_) {}
+      await pool.query(`ALTER TABLE addresses ADD COLUMN label VARCHAR(50) DEFAULT 'Home' AFTER is_default`);
     }
     console.log("[DB] Addresses table ready.");
   } catch (error) {

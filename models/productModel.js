@@ -11,6 +11,7 @@ const addColIfMissing = async (table, column, definition) => {
     }
   } catch (err) {
     console.error(`[DB] Error adding column ${column} to ${table}:`, err.message);
+    throw err;
   }
 };
 

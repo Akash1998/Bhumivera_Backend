@@ -19,7 +19,7 @@ const createNotificationTable = async () => {
   try {
     await pool.query(`ALTER TABLE notifications MODIFY COLUMN type VARCHAR(50) DEFAULT 'system'`);
   } catch (err) {
-    // Ignore if table was already altered in a previous deployment
+    throw err;
   }
 };
 

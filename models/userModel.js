@@ -60,6 +60,7 @@ const createUsersTable = async () => {
       }
     } catch (err) {
       console.error(`[DB_SYNC] Error syncing column ${col.name}:`, err.message);
+      throw err;
     }
   }
 
@@ -67,6 +68,7 @@ const createUsersTable = async () => {
     await pool.query(`ALTER TABLE users MODIFY COLUMN reset_otp_expires DATETIME`);
   } catch(err) {
     console.warn(`[DB_SYNC] Info: Could not modify reset_otp_expires (ignoring):`, err.message);
+    throw err;
   }
 
   await createAuthSecurityTables();

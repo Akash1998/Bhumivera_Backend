@@ -5,7 +5,7 @@ const express = require("express"),
   { authenticator } = require('otplib'),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
-  { registerLimiter, loginLimiter, loginIpLimiter, otpLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
+  { registerLimiter, loginLimiter, loginIpLimiter, otpRequestLimiter, otpVerificationLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
   { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware'),
   { validatePassword } = require('../utils/passwordPolicy'),
   { isPwned } = require('../utils/hibp'),
@@ -272,7 +272,7 @@ router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
 });
 
 // --- LOGIN OTP DISPATCH ---
-router.post("/login-request-otp", otpLimiter, async (req, res) => {
+router.post("/login-request-otp", otpRequestLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email required" });
@@ -314,7 +314,7 @@ router.post("/login-request-otp", otpLimiter, async (req, res) => {
 });
 
 // --- MFA VERIFICATION ---
-router.post("/2fa/verify", otpLimiter, async (req, res) => {
+router.post("/2fa/verify", otpVerificationLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     const otpVal = req.body?.otp ?? req.body?.code ?? req.body?.twoFactorCode;
@@ -381,7 +381,7 @@ router.post("/forgot-password", forgotLimiter, async (req, res) => {
   }
 });
 
-router.post("/verify-otp", otpLimiter, async (req, res) => {
+router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
   try {
     const { email, otp } = req.body;
     const u = await getUserByEmail(email);
@@ -396,7 +396,7 @@ router.post("/verify-otp", otpLimiter, async (req, res) => {
   }
 });
 
-router.post("/reset-password", otpLimiter, async (req, res) => {
+router.post("/reset-password", otpVerificationLimiter, async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const { newPassword } = req.body;
@@ -492,7 +492,7 @@ router.post("/reset-password", otpLimiter, async (req, res) => {
 });
 
 // --- SECURITY QUESTIONS ---
-router.post("/security-question/verify", otpLimiter, async (req, res) => {
+router.post("/security-question/verify", otpVerificationLimiter, async (req, res) => {
   try {
     const { email, answer } = req.body;
     const u = await getUserByEmail(email);
@@ -568,7 +568,7 @@ router.post("/register", registerLimiter, async (req, res) => {
   }
 });
 
-router.post("/verify-email", otpLimiter, async (req, res) => {
+router.post("/verify-email", otpVerificationLimiter, async (req, res) => {
   try {
     const { email, otp, securityAnswer } = req.body;
     if (!email || !otp) return res.status(400).json({ message: "Email and OTP required" });
@@ -685,9 +685,9 @@ router.get("/profile", authenticateAdmin, async (req, res) => {
 });
 
 // --- LEGACY ADMIN OTP ---
-router.post('/admin/request-otp', adminStrictLimiter, loginIpLimiter, loginLimiter, otpLimiter, adminPasswordLogin);
+router.post('/admin/request-otp', adminStrictLimiter, loginIpLimiter, loginLimiter, otpRequestLimiter, adminPasswordLogin);
 
-router.post('/admin/verify-otp', adminStrictLimiter, otpLimiter, async (req, res) => {
+router.post('/admin/verify-otp', adminStrictLimiter, otpVerificationLimiter, async (req, res) => {
   try {
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const otp = String(req.body?.otp || '').trim();
@@ -718,7 +718,7 @@ router.post('/admin/verify-otp', adminStrictLimiter, otpLimiter, async (req, res
 });
 
 // --- WAREHOUSE PORTAL ACCESS ---
-router.post('/warehouse/request-otp', otpLimiter, async (req, res) => {
+router.post('/warehouse/request-otp', otpRequestLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: 'Email required' });
@@ -758,7 +758,7 @@ router.post('/warehouse/request-otp', otpLimiter, async (req, res) => {
   }
 });
 
-router.post('/warehouse/verify-otp', otpLimiter, async (req, res) => {
+router.post('/warehouse/verify-otp', otpVerificationLimiter, async (req, res) => {
   try {
     const { email, otp } = req.body;
     if (!email || !otp) return res.status(400).json({ message: 'Email and OTP required' });
@@ -802,7 +802,7 @@ router.post('/warehouse/verify-otp', otpLimiter, async (req, res) => {
 });
 
 // --- NEW: CUSTOMER RESET 3-STEP ---
-router.post("/verify-reset-otp", otpLimiter, async (req, res) => {
+router.post("/verify-reset-otp", otpVerificationLimiter, async (req, res) => {
   try {
     const { email, otp } = req.body;
     if (!email || !otp) return res.status(400).json({ message: "Email and OTP required." });
@@ -829,7 +829,7 @@ router.post("/verify-reset-otp", otpLimiter, async (req, res) => {
   }
 });
 
-router.post("/security-question/verify-for-reset", otpLimiter, async (req, res) => {
+router.post("/security-question/verify-for-reset", otpVerificationLimiter, async (req, res) => {
   try {
     const { email, answer } = req.body;
     if (!email || !answer) return res.status(400).json({ message: "Email and security answer required." });
@@ -879,7 +879,7 @@ router.post("/admin/forgot-password", forgotLimiter, async (req, res) => {
   }
 });
 
-router.post("/admin/verify-reset-otp", otpLimiter, async (req, res) => {
+router.post("/admin/verify-reset-otp", otpVerificationLimiter, async (req, res) => {
   try {
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const otp = String(req.body?.otp || '').trim();
