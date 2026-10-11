@@ -7,11 +7,13 @@ const { notifyOrderWhatsApp } = require("../services/orderWhatsAppNotifier");
 
 const { 
   createOrder, 
+  getDeliveredOrderCount,
   getOrdersByUser, 
   getOrderById, 
   getAllOrders,
   updateOrderStatus
 } = require("../models/orderModel");
+const { COD_REQUIRED_DELIVERED_ORDERS } = require('../services/orderPaymentPolicy');
 const { getCartTotal, clearCart } = require("../models/cartModel");
 const { getSetting, getSettingsByGroup } = require('../models/settingsModel');
 const { listCartRules } = require('../models/cartRulesModel');
@@ -176,7 +178,18 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 
 router.post("/", authenticateUser, async (req, res) => {
   try {
-    const { addressId, deliveryType, paymentMode, couponCode, notes, loyaltyPointsToRedeem } = req.body;
+    const {
+      addressId,
+      deliveryType,
+      paymentMode: requestedPaymentMode,
+      couponCode,
+      notes,
+      loyaltyPointsToRedeem,
+    } = req.body;
+    const paymentMode = requestedPaymentMode || 'online';
+    if (!['online', 'WALLET', 'COD'].includes(paymentMode)) {
+      return res.status(400).json({ code: 'INVALID_PAYMENT_METHOD', message: 'Choose Razorpay, Bhumivera Wallet, or cash on delivery.' });
+    }
     const whatsappUpdatesOptIn = req.body.whatsappUpdatesOptIn === true;
     if (req.body.whatsappUpdatesOptIn !== undefined && typeof req.body.whatsappUpdatesOptIn !== 'boolean') {
       return res.status(400).json({ message: 'WhatsApp order update consent must be true or false.' });
@@ -313,8 +326,8 @@ router.post("/", authenticateUser, async (req, res) => {
       couponId,
       addressSnapshot: address,
       deliveryType: deliveryType || "standard",
-      paymentMode: paymentMode || "COD",
-      paymentStatus: verifiedPayment ? 'paid' : 'pending',
+      paymentMode,
+      paymentStatus: verifiedPayment || paymentMode === 'WALLET' ? 'paid' : 'pending',
       paymentId: verifiedPayment?.payment.id || null,
       notes: notes || null,
       shippingCost,
@@ -355,11 +368,32 @@ router.post("/", authenticateUser, async (req, res) => {
     return res.status(201).json({ orderId, message: "Order placed successfully", discount, shippingCost, rulePreview });
   } catch (err) {
     console.error("Place order error:", err);
+    if (err.status === 403 && err.code === 'COD_DELIVERY_REQUIREMENT') {
+      return res.status(403).json({ code: err.code, message: err.message });
+    }
     if (err.statusCode === 400) return res.status(400).json({ message: err.message });
     if (err.status === 409) return res.status(409).json({ message: err.message });
+    if (err.status === 400 && err.code === 'INSUFFICIENT_WALLET_BALANCE') {
+      return res.status(400).json({ code: err.code, message: err.message });
+    }
     if (err.message?.includes("Insufficient stock")) return res.status(400).json({ message: err.message });
     if (err.message?.includes("not found")) return res.status(400).json({ message: "Product no longer available." });
     return res.status(500).json({ message: `Checkout Error: ${err.sqlMessage || err.message}` });
+  }
+});
+
+router.get('/cod-eligibility', authenticateUser, async (req, res) => {
+  try {
+    const deliveredOrderCount = await getDeliveredOrderCount(req.user.id);
+    const requiredDeliveredOrders = COD_REQUIRED_DELIVERED_ORDERS;
+    return res.json({
+      eligible: deliveredOrderCount >= requiredDeliveredOrders,
+      deliveredOrderCount,
+      requiredDeliveredOrders,
+    });
+  } catch (error) {
+    console.error('[CUSTOMER_COD_ELIGIBILITY]', error);
+    return res.status(500).json({ message: 'Could not check cash-on-delivery eligibility.' });
   }
 });
 

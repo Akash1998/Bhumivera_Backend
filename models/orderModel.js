@@ -1,4 +1,17 @@
 const pool = require('../config/db');
+const {
+  assertCodEligibility,
+  debitWalletForOrder,
+  COD_REQUIRED_DELIVERED_ORDERS,
+} = require('../services/orderPaymentPolicy');
+
+const getDeliveredOrderCount = async userId => {
+  const [[result]] = await pool.query(
+    'SELECT COUNT(*) AS delivered_order_count FROM orders WHERE user_id = ? AND delivered_at IS NOT NULL',
+    [userId]
+  );
+  return Number(result?.delivered_order_count) || 0;
+};
 
 const createOrdersTables = async () => {
   try {
@@ -141,6 +154,12 @@ const createOrder = async ({
     const processedItems = [];
     const orderItems = Array.isArray(items) ? items.slice() : [];
 
+    const [deliveredOrders] = await conn.query(
+      'SELECT id FROM orders WHERE user_id = ? AND delivered_at IS NOT NULL LIMIT 2 FOR UPDATE',
+      [userId]
+    );
+    assertCodEligibility(paymentMode, deliveredOrders.length);
+
     const [userRows] = await conn.query('SELECT pending_lifecycle_gift_product_id, loyalty_points FROM users WHERE id = ? FOR UPDATE', [userId]);
     const pendingGiftProductId = userRows?.[0]?.pending_lifecycle_gift_product_id;
     if (pendingGiftProductId) {
@@ -230,6 +249,10 @@ const createOrder = async ({
     );
 
     const orderId = res.insertId;
+
+    if (paymentMode === 'WALLET' && backendTotal > 0) {
+      await debitWalletForOrder(conn, userId, backendTotal, orderId);
+    }
 
     if (safeImpactAmount > 0) {
       await conn.query(
@@ -511,6 +534,7 @@ const updatePaymentStatus = async (orderId, paymentStatus, paymentId) => {
 
 module.exports = {
   createOrder,
+  getDeliveredOrderCount,
   getOrdersByUser,
   getAllOrders,
   getOrderById,
