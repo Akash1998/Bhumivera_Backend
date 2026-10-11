@@ -4,6 +4,10 @@ const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { generateUploadUrl, deleteProductImage } = require('../config/s3Upload');
 const { generateGoogleMerchantFeed } = require('../utils/merchantFeed');
+const {
+  cleanProductMarketingFields,
+  validateProductMarketingFields,
+} = require('../utils/productMarketingClaims');
 
 const normalizeUrlList = (value, allowedHosts) => {
   if (value === undefined || value === null || value === '') return { value: null };
@@ -79,7 +83,7 @@ const parseImages = (rows) => {
     normalizedImages.sort((a, b) => a.sort_order - b.sort_order);
 
     return { 
-      ...row,
+      ...cleanProductMarketingFields(row),
       images: normalizedImages.map(({ sort_order, ...image }) => image),
       image_url: normalizedImages.length > 0 ? normalizedImages[0].url : null
     };
@@ -160,6 +164,12 @@ router.get('/', authenticateAdmin, async (req, res) => {
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
     const { name, slug, description, price, discount_price, category_id, subcategory_id, quantity, status, sku, brand, warranty_period, meta_title, meta_description, tags, is_featured, is_trending, is_new_arrival, model_3d_url, video_urls, product_links, specifications } = req.body;
+    if (validateProductMarketingFields({ name, description, meta_title, meta_description, tags })) {
+      return res.status(400).json({
+        success: false,
+        message: 'Remove unsupported absolute or composition claims from product name, description, SEO fields, and tags. Use only claims documented for this exact product.',
+      });
+    }
     const videoLinks = normalizeUrlList(video_urls, VIDEO_HOSTS);
     const externalLinks = normalizeUrlList(product_links);
     if (videoLinks.error) {
@@ -209,6 +219,12 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     if (isNaN(productId)) return res.status(400).json({ success: false, message: 'Invalid ID format' });
     
     const fields = req.body;
+    if (validateProductMarketingFields(fields)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Remove unsupported absolute or composition claims from product name, description, SEO fields, and tags. Use only claims documented for this exact product.',
+      });
+    }
     const allowedFields = ['name','slug','description','price','discount_price','category_id','subcategory_id','quantity','status','sku','brand','warranty_period','meta_title','meta_description','tags','is_featured','is_trending','is_new_arrival','model_3d_url','video_urls','product_links', 'specifications'];
     const videoLinks = fields.video_urls === undefined ? null : normalizeUrlList(fields.video_urls, VIDEO_HOSTS);
     const externalLinks = fields.product_links === undefined ? null : normalizeUrlList(fields.product_links);

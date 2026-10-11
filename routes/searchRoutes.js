@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 const { performSemanticSearch } = require('../services/vectorService');
+const { cleanProductMarketingFields } = require('../utils/productMarketingClaims');
 
 const parseImages = (rows) => {
   return rows.map(row => {
@@ -11,7 +12,7 @@ const parseImages = (rows) => {
         parsedImages = typeof row.images === 'string' ? JSON.parse(row.images) : row.images;
       } catch (e) { parsedImages = []; }
     }
-    return { ...row, images: parsedImages };
+    return { ...cleanProductMarketingFields(row), images: parsedImages };
   });
 };
 

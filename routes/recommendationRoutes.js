@@ -4,6 +4,7 @@ const pool = require('../config/db');
 const { authenticateUser } = require('../middleware/authMiddleware');
 const { attachImages } = require('../models/productModel');
 const { recordProductView, getPersonalizedRecommendations } = require('../models/recommendationModel');
+const { cleanProductMarketingFields } = require('../utils/productMarketingClaims');
 
 router.post('/view', authenticateUser, async (req, res) => {
   const productId = Number(req.body?.product_id);
@@ -33,7 +34,7 @@ router.get('/for-you', authenticateUser, async (req, res) => {
 
   try {
     const result = await getPersonalizedRecommendations(req.user.id, currentProductId);
-    const products = await attachImages(result.products);
+    const products = (await attachImages(result.products)).map(cleanProductMarketingFields);
     return res.json({
       products,
       personalized: result.personalized,

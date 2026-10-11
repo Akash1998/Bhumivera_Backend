@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { cleanProductMarketingFields } = require('./productMarketingClaims');
 
 const escapeXml = value => String(value ?? '').replace(/[<>&'"]/g, character => ({
   '<': '&lt;',
@@ -29,7 +30,8 @@ const generateGoogleMerchantFeed = async () => {
     <description>Explore Bhumivera products and review the product-specific details provided for each item.</description>
 `;
 
-    products.forEach(p => {
+    products.forEach(product => {
+      const p = cleanProductMarketingFields(product);
       const imagePath = p.primary_image;
       const imageUrl = imagePath
         ? (/^https?:\/\//i.test(imagePath) ? imagePath : `${imageBaseUrl}/${String(imagePath).replace(/^\/+/, '')}`)

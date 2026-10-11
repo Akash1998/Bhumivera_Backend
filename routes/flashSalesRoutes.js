@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
 const pool = require('../config/db');
+const { cleanProductMarketingFields } = require('../utils/productMarketingClaims');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { validateDateRange } = require('../utils/dateValidation');
 
@@ -137,7 +138,7 @@ const getActiveSales = async (req, res) => {
     `;
     const [sales] = await pool.query(query);
     
-    res.json({ success: true, data: sales });
+    res.json({ success: true, data: sales.map(cleanProductMarketingFields) });
   } catch (error) {
     console.error("Flash sales fetch failed:", error);
     res.status(500).json({ success: false, message: "Server error" });
