@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 
 const createUsersTable = async () => {
   await pool.query(`
@@ -416,6 +417,53 @@ const updateUserStatus = async (id, status) => {
   );
 };
 
+const deleteUser = async id => {
+  const userId = Number(id);
+  if (!Number.isSafeInteger(userId) || userId < 1) {
+    throw Object.assign(new Error('A valid customer account is required.'), { status: 400 });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [users] = await connection.query(
+      "SELECT id FROM users WHERE id = ? AND role = 'customer' FOR UPDATE",
+      [userId]
+    );
+    if (!users.length) {
+      await connection.rollback();
+      return false;
+    }
+
+    const anonymizedEmail = `deleted-${userId}-${crypto.randomBytes(8).toString('hex')}@deleted.invalid`;
+    await connection.query(
+      `UPDATE users
+       SET name = 'Deleted customer', email = ?, phone = NULL, is_active = 0,
+           reset_otp = NULL, reset_otp_expires = NULL, magic_token = NULL,
+           magic_token_expires = NULL, remember_device_hash = NULL,
+           two_factor_secret = NULL, two_factor_enabled = 0,
+           security_answer_hash = NULL
+       WHERE id = ? AND role = 'customer'`,
+      [anonymizedEmail, userId]
+    );
+    await connection.query(
+      'UPDATE user_sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE user_id = ?',
+      [userId]
+    );
+    await connection.query(
+      'UPDATE trusted_devices SET revoked_at = COALESCE(revoked_at, NOW()) WHERE user_id = ?',
+      [userId]
+    );
+    await connection.commit();
+    return true;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
 const updateUser = async (id, { name, phone, marketingEmailOptIn }) => {
   if (typeof marketingEmailOptIn === 'boolean') {
     await pool.query(
@@ -490,6 +538,7 @@ module.exports = {
   getUserById,
   getAdminCustomers,
   updateUserStatus,
+  deleteUser,
   updateUser,
   updateUserPassword,
   createPendingUser,

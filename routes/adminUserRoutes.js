@@ -247,10 +247,15 @@ router.post('/users/:id/reset-password', authenticateAdmin, async (req, res) => 
 
 router.delete('/users/:id', authenticateAdmin, async (req, res) => {
   try {
-    await deleteUser(req.params.id);
-    return res.json({ message: 'User deleted' });
+    const deleted = await deleteUser(req.params.id);
+    if (!deleted) return res.status(404).json({ message: 'Customer not found' });
+    return res.json({
+      message: 'Customer account deleted and personal profile details anonymized. Only this customer’s sessions were revoked.',
+    });
   } catch (err) {
-    return res.status(500).json({ message: 'Failed to delete user' });
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    console.error('[ADMIN_CUSTOMER_DELETE]', err);
+    return res.status(500).json({ message: 'Failed to delete customer account' });
   }
 });
 
