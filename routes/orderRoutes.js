@@ -21,6 +21,7 @@ const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
 const { getRazorpayClient } = require('../services/razorpayService');
 const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../services/paymentReconciliationService');
+const { reconcileReferralRewards } = require('../models/referralModel');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -240,6 +241,7 @@ router.post("/", authenticateUser, async (req, res) => {
     let recoveryCoupon = false;
 
     if (couponCode) {
+      await reconcileReferralRewards(req.user.id);
       const [coupons] = await pool.query(
         `SELECT * FROM coupons WHERE code=? AND is_active=1
          AND (restricted_user_id IS NULL OR restricted_user_id = ?)
@@ -250,6 +252,15 @@ router.post("/", authenticateUser, async (req, res) => {
       );
       const coupon = coupons[0];
       if (!coupon) return res.status(400).json({ code: 'INVALID_COUPON', message: 'This coupon is invalid, expired, already used, or assigned to another customer.' });
+      const [referralClaims] = await pool.query(
+        `SELECT referrer_user_id FROM referral_claims
+         WHERE coupon_code = ? AND status IN ('approved', 'auto_approved')
+         LIMIT 1`,
+        [coupon.code]
+      );
+      if (referralClaims.length && String(referralClaims[0].referrer_user_id) !== String(req.user.id)) {
+        return res.status(400).json({ code: 'INVALID_COUPON', message: 'This referral coupon belongs to a different customer.' });
+      }
       if (cartTotal < (Number(coupon.min_order_amount) || 0)) {
         return res.status(400).json({ code: 'COUPON_MINIMUM_NOT_MET', message: `Add ₹${(Number(coupon.min_order_amount) - cartTotal).toFixed(2)} more to use this coupon.` });
       }

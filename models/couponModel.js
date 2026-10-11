@@ -126,6 +126,15 @@ const incrementCouponUsage = async (code) => {
 const validateCoupon = async (code, orderTotal, userId = null) => {
   const coupon = await getCouponByCode(code);
   if (!coupon) return { valid: false, message: 'Invalid coupon code' };
+  const [referralClaims] = await pool.query(
+    `SELECT referrer_user_id FROM referral_claims
+     WHERE coupon_code = ? AND status IN ('approved', 'auto_approved')
+     LIMIT 1`,
+    [coupon.code]
+  );
+  if (referralClaims.length && String(referralClaims[0].referrer_user_id) !== String(userId)) {
+    return { valid: false, message: 'This referral coupon belongs to a different customer.' };
+  }
   if (coupon.restricted_user_id && String(coupon.restricted_user_id) !== String(userId)) {
     return { valid: false, message: 'This coupon is assigned to a different customer.' };
   }

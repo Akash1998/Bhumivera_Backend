@@ -4,6 +4,7 @@ const router = express.Router();
 const pool = require('../config/db');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { createCouponTable, createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
+const { reconcileReferralRewards } = require('../models/referralModel');
 const { validateDateRange } = require('../utils/dateValidation');
 
 const sendInvalidDate = (res, result) => res.status(400).json({
@@ -25,12 +26,35 @@ router.post('/validate', authenticateUser, async (req, res) => {
   try {
     const { code, orderTotal } = req.body;
     if (!code) return res.status(400).json({ message: 'Coupon code is required' });
+    await reconcileReferralRewards(req.user.id);
     const result = await validateCoupon(code, parseFloat(orderTotal) || 0, req.user.id);
     if (!result.valid) return res.status(400).json({ message: result.message });
     res.json({ valid: true, discount: result.discount, coupon: { code: result.coupon.code, discount_type: result.coupon.discount_type, discount_value: result.coupon.discount_value } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to validate coupon' });
+  }
+});
+
+router.get('/mine', authenticateUser, async (req, res) => {
+  try {
+    await reconcileReferralRewards(req.user.id);
+    const [coupons] = await pool.query(
+      `SELECT id, code, description, discount_type, discount_value, min_order_amount,
+              max_discount, usage_limit, used_count, valid_from, expires_at,
+              1 AS is_personal
+       FROM coupons
+       WHERE restricted_user_id = ? AND is_active = 1
+         AND (valid_from IS NULL OR valid_from <= NOW())
+         AND (expires_at IS NULL OR expires_at >= NOW())
+         AND (usage_limit IS NULL OR used_count < usage_limit)
+       ORDER BY created_at DESC`,
+      [req.user.id]
+    );
+    return res.json({ success: true, coupons });
+  } catch (error) {
+    console.error('[CUSTOMER_COUPONS]', error);
+    return res.status(500).json({ success: false, message: 'Could not load your assigned coupons.' });
   }
 });
 

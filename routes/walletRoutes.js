@@ -3,6 +3,7 @@ const router = express.Router();
 const pool = require("../config/db");
 const { authenticateUser, authenticateAdmin } = require("../middleware/authMiddleware");
 const { WalletModel } = require("../models/walletModel");
+const { reconcileReferralRewards } = require("../models/referralModel");
 const crypto = require('crypto');
 
 const syncUserWallet = async (userId) => {
@@ -14,6 +15,7 @@ const syncUserWallet = async (userId) => {
 
 router.get("/balance", authenticateUser, async (req, res) => {
   try {
+    await reconcileReferralRewards(req.user.id);
     const balance = await WalletModel.getWalletBalance(req.user.id);
     await syncUserWallet(req.user.id);
     res.json({ success: true, balance });
@@ -24,6 +26,7 @@ router.get("/balance", authenticateUser, async (req, res) => {
 
 router.get("/history", authenticateUser, async (req, res) => {
   try {
+    await reconcileReferralRewards(req.user.id);
     const transactions = await WalletModel.getTransactions(req.user.id);
     res.json({ success: true, transactions });
   } catch (error) {

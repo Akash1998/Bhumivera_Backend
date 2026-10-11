@@ -130,6 +130,7 @@ const createReferralClaim = async (connection, referredUserId, referrerUserId) =
 };
 
 const getReferralSummary = async userId => {
+  await reconcileReferralRewards(userId);
   const code = await ensureReferralCode(userId);
   const [codeRows] = await pool.query('SELECT link_expires_at FROM referral_codes WHERE user_id = ?', [userId]);
   let expiresAt = codeRows[0]?.link_expires_at ? new Date(codeRows[0].link_expires_at) : null;
@@ -178,8 +179,8 @@ const createRewardForClaim = async (connection, claim, config) => {
     couponCode = `REF${claim.referrer_user_id}${crypto.randomBytes(5).toString('hex').toUpperCase()}`.slice(0, 50);
     await connection.query(
       `INSERT INTO coupons
-        (code, description, discount_type, discount_value, min_order_amount, restricted_user_id, is_active, valid_from, expires_at)
-       VALUES (?, 'Referral reward', ?, ?, ?, ?, 1, NOW(), DATE_ADD(NOW(), INTERVAL ? DAY))`,
+        (code, description, discount_type, discount_value, min_order_amount, usage_limit, restricted_user_id, is_active, valid_from, expires_at)
+       VALUES (?, 'Referral reward', ?, ?, ?, 1, ?, 1, NOW(), DATE_ADD(NOW(), INTERVAL ? DAY))`,
       [
         couponCode,
         config.coupon_discount_type,
@@ -209,6 +210,87 @@ const createRewardForClaim = async (connection, claim, config) => {
     [claim.referred_user_id, claim.referrer_user_id, walletAmount, couponCode]
   );
   return { walletAmount, couponCode };
+};
+
+const reconcileReferralRewards = async userId => {
+  const [claims] = await pool.query(
+    `SELECT id FROM referral_claims
+     WHERE referrer_user_id = ? AND status IN ('approved', 'auto_approved')
+       AND (wallet_amount > 0 OR coupon_code IS NOT NULL)`,
+    [userId]
+  );
+
+  for (const row of claims) {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [lockedClaims] = await connection.query(
+        `SELECT * FROM referral_claims
+         WHERE id = ? AND referrer_user_id = ?
+           AND status IN ('approved', 'auto_approved')
+         FOR UPDATE`,
+        [row.id, userId]
+      );
+      const claim = lockedClaims[0];
+      if (!claim) {
+        await connection.commit();
+        continue;
+      }
+
+      if (Number(claim.wallet_amount) > 0) {
+        const reference = `referral-claim-${claim.id}`;
+        const [transactions] = await connection.query(
+          'SELECT id FROM wallet_transactions WHERE user_id = ? AND reference_id = ? LIMIT 1',
+          [userId, reference]
+        );
+        if (!transactions.length) {
+          const walletAmount = Number(claim.wallet_amount);
+          await connection.query('INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0.00)', [userId]);
+          await connection.query('UPDATE wallets SET balance = balance + ? WHERE user_id = ?', [walletAmount, userId]);
+          await connection.query('UPDATE users SET wallet_balance = wallet_balance + ? WHERE id = ?', [walletAmount, userId]);
+          await connection.query(
+            `INSERT INTO wallet_transactions (user_id, amount, type, description, reference_id)
+             VALUES (?, ?, 'credit', 'Approved referral reward', ?)`,
+            [userId, walletAmount, reference]
+          );
+        }
+      }
+
+      if (claim.coupon_code) {
+        const [coupons] = await connection.query(
+          'SELECT id, restricted_user_id, usage_limit FROM coupons WHERE code = ? FOR UPDATE',
+          [claim.coupon_code]
+        );
+        if (!coupons.length) {
+          const config = await getReferralConfig(connection);
+          await connection.query(
+            `INSERT INTO coupons
+              (code, description, discount_type, discount_value, min_order_amount, usage_limit, restricted_user_id, is_active, valid_from, expires_at)
+             VALUES (?, 'Referral reward', ?, ?, ?, 1, ?, 1, NOW(), DATE_ADD(NOW(), INTERVAL ? DAY))`,
+            [
+              claim.coupon_code,
+              config.coupon_discount_type,
+              config.coupon_discount_value,
+              config.coupon_min_order_amount,
+              userId,
+              config.coupon_valid_days,
+            ]
+          );
+        } else if (String(coupons[0].restricted_user_id) !== String(userId) || coupons[0].usage_limit !== 1) {
+          await connection.query(
+            'UPDATE coupons SET restricted_user_id = ?, usage_limit = 1 WHERE id = ?',
+            [userId, coupons[0].id]
+          );
+        }
+      }
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
 };
 
 const decideReferralClaim = async (claimId, decision, adminId = null, reason = null, automatic = false) => {
@@ -329,6 +411,7 @@ module.exports = {
   saveReferralConfig,
   createReferralClaim,
   getReferralSummary,
+  reconcileReferralRewards,
   decideReferralClaim,
   approveDueReferralClaims,
 };
