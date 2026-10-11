@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
 const { runMigrations } = require('../utils/migrationRunner');
+const migrations = require('../migrations');
 
 const createPool = () => {
   const applied = new Map();
@@ -41,6 +42,16 @@ const createPool = () => {
 const logger = { info() {}, error() {} };
 
 describe('runMigrations', () => {
+  it('registers every migration with a valid version, name, and up function', () => {
+    assert.ok(migrations.length > 0);
+    migrations.forEach((migration, index) => {
+      assert.equal(migration.version, index + 1);
+      assert.equal(typeof migration.name, 'string');
+      assert.ok(migration.name.trim());
+      assert.equal(typeof migration.up, 'function');
+    });
+  });
+
   it('records each successful migration and skips it on later runs', async () => {
     const pool = createPool();
     let executionCount = 0;

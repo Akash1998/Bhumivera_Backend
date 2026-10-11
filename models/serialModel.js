@@ -178,6 +178,7 @@ const getProductSerialStats = async (productId) => {
 };
 
 module.exports = {
+  initSerialTable,
   getAllSerials,
   getProductSerials,
   addProductSerials,
