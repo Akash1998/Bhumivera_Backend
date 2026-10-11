@@ -14,6 +14,7 @@ const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
 const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
 const migrations = require("./migrations");
+const { approveDueReferralClaims } = require("./models/referralModel");
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 if (JWT_SECRET === 'fallback_secret') {
@@ -65,6 +66,7 @@ const { createError, normalizeErrorResponses, sendError } = require("./utils/err
 const app = express();
 let databaseReady = false;
 let startupFailure = null;
+let referralApprovalTimer = null;
 app.use(createRequestObservability());
 
 // --- SECURITY & CORS POLICIES ---
@@ -240,6 +242,14 @@ const initializeDatabase = async () => {
     await runMigrations(pool, migrations);
     databaseReady = true;
     startupFailure = null;
+    if (!referralApprovalTimer) {
+      const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
+        console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
+      });
+      runReferralApprovals();
+      referralApprovalTimer = setInterval(runReferralApprovals, 15000);
+      referralApprovalTimer.unref();
+    }
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {
     databaseReady = false;
@@ -269,6 +279,7 @@ const shutdown = signal => {
   httpServer.close(async error => {
     clearTimeout(forceCloseTimer);
     const shutdownTasks = [
+        Promise.resolve().then(() => clearInterval(referralApprovalTimer)),
       pool.end(),
       closeRateLimitStore(),
     ];

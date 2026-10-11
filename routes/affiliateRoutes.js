@@ -6,6 +6,8 @@ const {
   getReferralConfig,
   getReferralSummary,
   saveReferralConfig,
+  decideReferralClaim,
+  approveDueReferralClaims,
 } = require('../models/referralModel');
 
 const router = express.Router();
@@ -69,20 +71,47 @@ router.get('/admin/referrals', authenticateAdmin, async (req, res) => {
   const page = Math.max(1, Math.min(10000, Number.parseInt(req.query.page, 10) || 1));
   const limit = Math.max(1, Math.min(100, Number.parseInt(req.query.limit, 10) || 25));
   try {
+    await approveDueReferralClaims();
     const [rows] = await pool.query(
-      `SELECT referrer.id AS referrer_id, referrer.name AS referrer_name, referrer.email AS referrer_email,
-        referred.id AS referred_id, referred.name AS referred_name, referred.email AS referred_email,
-        rr.wallet_amount, rr.coupon_code, rr.order_id, rr.created_at AS rewarded_at
-       FROM users referred
-       JOIN users referrer ON referrer.id = referred.referred_by_user_id
-       LEFT JOIN referral_rewards rr ON rr.referred_user_id = referred.id
-       ORDER BY referred.created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT c.id AS claim_id, c.status, c.verified_at, c.auto_approve_at,
+        c.reviewed_at, c.decision_reason, c.wallet_amount, c.coupon_code,
+        referrer.id AS referrer_id, referrer.name AS referrer_name, referrer.email AS referrer_email,
+        referred.id AS referred_id, referred.name AS referred_name, referred.email AS referred_email
+       FROM referral_claims c
+       JOIN users referred ON referred.id = c.referred_user_id
+       JOIN users referrer ON referrer.id = c.referrer_user_id
+       ORDER BY (c.status = 'pending') DESC, c.verified_at DESC LIMIT ? OFFSET ?`,
       [limit, (page - 1) * limit]
     );
     return res.json({ success: true, referrals: rows, page, limit });
   } catch (error) {
     console.error('[REFERRAL_ADMIN_LIST]', error);
     return res.status(500).json({ message: 'Could not load referrals.' });
+  }
+});
+
+router.patch('/admin/referrals/:claimId/decision', authenticateAdmin, async (req, res) => {
+  const claimId = Number(req.params.claimId);
+  const decision = req.body?.decision;
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 255) : '';
+  if (!Number.isSafeInteger(claimId) || claimId < 1 ||
+      !['approved', 'rejected'].includes(decision) ||
+      (decision === 'rejected' && reason.length < 5)) {
+    return res.status(400).json({
+      code: 'INVALID_REFERRAL_DECISION',
+      message: 'Choose approve or reject. A rejection also needs a reason of at least 5 characters.',
+    });
+  }
+  try {
+    const result = await decideReferralClaim(claimId, decision, req.user.id, reason || null);
+    if (result.alreadyDecided) {
+      return res.status(409).json({ code: 'REFERRAL_ALREADY_REVIEWED', message: `This referral is already ${result.status.replace('_', ' ')}.` });
+    }
+    return res.json({ success: true, referral: result });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: 'REFERRAL_REVIEW_FAILED', message: error.message });
+    console.error('[REFERRAL_ADMIN_DECISION]', error);
+    return res.status(500).json({ message: 'Could not update this referral.' });
   }
 });
 

@@ -20,7 +20,7 @@ const {
 } = require('../utils/trustedDevice');
 const { hashOtp } = require('../utils/otpCrypto');
 const { getTrustedAdminDevice, trustAdminDevice, revokeTrustedAdminDevices } = require('../utils/adminTrustedDevice');
-const { findReferralUser, verifyReferralToken } = require('../models/referralModel');
+const { createReferralClaim, findReferralUser, verifyReferralToken } = require('../models/referralModel');
 
 const {
   getAdminByEmail,
@@ -557,7 +557,6 @@ router.post("/register", registerLimiter, async (req, res) => {
         name=VALUES(name), 
         password=VALUES(password),
         marketing_email_opt_in=VALUES(marketing_email_opt_in),
-        referrer_user_id=VALUES(referrer_user_id),
         otp=VALUES(otp), 
         otp_expiry=DATE_ADD(NOW(), INTERVAL 10 MINUTE), 
         created_at=NOW()
@@ -579,17 +578,31 @@ router.post("/register", registerLimiter, async (req, res) => {
 });
 
 router.post("/verify-email", otpVerificationLimiter, async (req, res) => {
+  let connection;
   try {
     const { email, otp, securityAnswer } = req.body;
     if (!email || !otp) return res.status(400).json({ message: "Email and OTP required" });
     
-    const [rows] = await pool.query('SELECT * FROM pending_registrations WHERE email = ?', [email]);
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const [rows] = await connection.query('SELECT * FROM pending_registrations WHERE email = ? FOR UPDATE', [email]);
     const p = rows[0];
-    if (!p) return res.status(404).json({ message: "Registration session expired. Please sign up again." });
-    if (String(p.otp) !== String(otp)) return res.status(400).json({ message: "Invalid verification code." });
+    if (!p) {
+      await connection.rollback();
+      connection.release();
+      connection = null;
+      return res.status(404).json({ message: "Registration session expired. Please sign up again." });
+    }
+    if (String(p.otp) !== String(otp)) {
+      await connection.rollback();
+      connection.release();
+      connection = null;
+      return res.status(400).json({ message: "Invalid verification code." });
+    }
     
     if (new Date() > new Date(p.otp_expiry)) {
-      await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
+      await connection.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
+      await connection.commit();
       return res.status(400).json({ message: "Code expired. Please request a new one." });
     }
     
@@ -601,14 +614,32 @@ router.post("/verify-email", otpVerificationLimiter, async (req, res) => {
       securityAnswer: securityAnswer || null,
       marketingEmailOptIn: p.marketing_email_opt_in === 1 || p.marketing_email_opt_in === true,
       referrerUserId: p.referrer_user_id || null
-    });
-    await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
+    }, connection);
+    const referralClaimId = await createReferralClaim(connection, id, p.referrer_user_id || null);
+    await connection.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
+    await connection.commit();
+    connection.release();
+    connection = null;
     
     const u = await getUserById(id);
+    if (referralClaimId) {
+      const [[referrer]] = await pool.query('SELECT name, email FROM users WHERE id = ?', [p.referrer_user_id]);
+      if (referrer?.email) {
+        sendMail({
+          to: referrer.email,
+          subject: 'Your Bhumivera referral is being reviewed',
+          html: `<p>Hi ${String(referrer.name || 'there').replace(/[&<>"]/g, '')},</p><p>Your friend has verified their Bhumivera account. Your referral is waiting for a quick review. If it is not reviewed, it will be automatically approved one hour after verification.</p><p>You can see its status in your account under Refer &amp; Earn.</p>`,
+        }).catch(error => console.error('[REFERRAL_PENDING_EMAIL]', error));
+      }
+    }
     const deviceHash = await issueTrustedDevice(u.id, req, res);
     const token = await issueToken({ id: u.id, email: u.email, role: u.role || 'customer' }, req, { sessionType: 'user', deviceHash });
     res.status(201).json({ success: true, token, user: { id: u.id, name: u.name, email: u.email, role: u.role || 'customer' } });
   } catch (err) {
+    if (connection) {
+      await connection.rollback();
+      connection.release();
+    }
     res.status(500).json({ message: "Internal server error during verification.", error: err.message });
   }
 });

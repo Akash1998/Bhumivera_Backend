@@ -210,6 +210,54 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 40,
+    name: 'add referral review and timed approvals',
+    up: async () => {
+      const [linkExpiryColumn] = await pool.query("SHOW COLUMNS FROM referral_codes LIKE 'link_expires_at'");
+      if (linkExpiryColumn.length === 0) {
+        await pool.query('ALTER TABLE referral_codes ADD COLUMN link_expires_at DATETIME DEFAULT NULL');
+      }
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS referral_claims (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          referred_user_id INT NOT NULL UNIQUE,
+          referrer_user_id INT NOT NULL,
+          status ENUM('pending','approved','auto_approved','rejected') NOT NULL DEFAULT 'pending',
+          verified_at DATETIME NOT NULL,
+          auto_approve_at DATETIME NOT NULL,
+          reviewed_at DATETIME DEFAULT NULL,
+          reviewed_by_admin_id INT DEFAULT NULL,
+          decision_reason VARCHAR(255) DEFAULT NULL,
+          wallet_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+          coupon_code VARCHAR(50) DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_referral_claims_queue (status, auto_approve_at),
+          INDEX idx_referral_claims_referrer (referrer_user_id, verified_at),
+          FOREIGN KEY (referred_user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (referrer_user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB
+      `);
+      const [orderIdColumn] = await pool.query("SHOW COLUMNS FROM referral_rewards LIKE 'order_id'");
+      if (orderIdColumn.length && orderIdColumn[0].Null === 'NO') {
+        await pool.query('ALTER TABLE referral_rewards MODIFY COLUMN order_id INT NULL');
+      }
+      await pool.query(`
+        INSERT IGNORE INTO referral_claims
+          (referred_user_id, referrer_user_id, status, verified_at, auto_approve_at, reviewed_at, wallet_amount, coupon_code)
+        SELECT referred.id, referred.referred_by_user_id,
+          IF(reward.id IS NULL, 'pending', 'auto_approved'),
+          COALESCE(reward.created_at, NOW()),
+          DATE_ADD(NOW(), INTERVAL 60 MINUTE),
+          reward.created_at,
+          COALESCE(reward.wallet_amount, 0),
+          reward.coupon_code
+        FROM users referred
+        LEFT JOIN referral_rewards reward ON reward.referred_user_id = referred.id
+        WHERE referred.referred_by_user_id IS NOT NULL
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;
