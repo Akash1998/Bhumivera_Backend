@@ -317,7 +317,7 @@ const initAuthTables = async () => {
   }
 };
 
-const createUser = async ({ name, email, password, phone, securityAnswer, marketingEmailOptIn = false }) => {
+const createUser = async ({ name, email, password, phone, securityAnswer, marketingEmailOptIn = false, referrerUserId = null }) => {
   const isHashed = password.startsWith('$2b$');
   const hash = isHashed ? password : await bcrypt.hash(password, 10);
   
@@ -326,9 +326,9 @@ const createUser = async ({ name, email, password, phone, securityAnswer, market
   
   const [result] = await pool.query(
     `INSERT INTO users
-      (name, email, password_hash, phone, security_answer_hash, marketing_email_opt_in, marketing_email_consent_at)
-     VALUES (?, ?, ?, ?, ?, ?, IF(? = 1, CURRENT_TIMESTAMP, NULL))`,
-    [name, email, hash, phone || null, secHash, marketingEmailOptIn ? 1 : 0, marketingEmailOptIn ? 1 : 0]
+      (name, email, password_hash, phone, security_answer_hash, marketing_email_opt_in, marketing_email_consent_at, referred_by_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, IF(? = 1, CURRENT_TIMESTAMP, NULL), ?)`,
+    [name, email, hash, phone || null, secHash, marketingEmailOptIn ? 1 : 0, marketingEmailOptIn ? 1 : 0, referrerUserId]
   );
   return result.insertId;
 };

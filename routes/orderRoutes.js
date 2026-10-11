@@ -25,6 +25,7 @@ const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../servic
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
 const { verifyRazorpayPayment } = require('../services/razorpayService');
+const { applyReferralRewardForOrder } = require('../models/referralModel');
 
 router.get("/all", authenticateAdmin, async (req, res) => {
   try {
@@ -144,6 +145,7 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
     const previousOrder = await getOrderById(id);
     const updated = await updateOrderStatus(id, status, req.body.cancelReason, { trackingNumber, courier });
     if (updated === false) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'Order not found.' });
+    if (status === 'delivered') await applyReferralRewardForOrder(id);
     const hasOrderUpdate = previousOrder && (
       previousOrder.status !== status ||
       (trackingNumber !== undefined && previousOrder.tracking_number !== trackingNumber) ||

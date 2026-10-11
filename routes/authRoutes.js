@@ -20,6 +20,7 @@ const {
 } = require('../utils/trustedDevice');
 const { hashOtp } = require('../utils/otpCrypto');
 const { getTrustedAdminDevice, trustAdminDevice, revokeTrustedAdminDevices } = require('../utils/adminTrustedDevice');
+const { findReferralUser, verifyReferralToken } = require('../models/referralModel');
 
 const {
   getAdminByEmail,
@@ -521,6 +522,14 @@ router.post("/register", registerLimiter, async (req, res) => {
       return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
     }
     if (!name || !email || !password) return res.status(400).json({ message: "Required fields missing" });
+    let referrerUserId = null;
+    if (req.body?.referralToken) {
+      referrerUserId = await verifyReferralToken(req.body.referralToken);
+      if (!referrerUserId) return res.status(400).json({ code: 'INVALID_REFERRAL_LINK', message: 'This referral link is invalid. Ask your friend for a new link.' });
+    } else if (req.body?.referralCode) {
+      referrerUserId = await findReferralUser(req.body.referralCode);
+      if (!referrerUserId) return res.status(400).json({ code: 'INVALID_REFERRAL_CODE', message: 'Referral code not found. Check the code and try again.' });
+    }
     const passwordPolicy = await validatePassword(password);
     if (!passwordPolicy.valid) {
       return res.status(400).json({
@@ -542,16 +551,17 @@ router.post("/register", registerLimiter, async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     
     await pool.query(`
-      INSERT INTO pending_registrations (name, email, password, marketing_email_opt_in, otp, otp_expiry)
-      VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))
+      INSERT INTO pending_registrations (name, email, password, marketing_email_opt_in, otp, otp_expiry, referrer_user_id)
+      VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), ?)
       ON DUPLICATE KEY UPDATE 
         name=VALUES(name), 
         password=VALUES(password),
         marketing_email_opt_in=VALUES(marketing_email_opt_in),
+        referrer_user_id=VALUES(referrer_user_id),
         otp=VALUES(otp), 
         otp_expiry=DATE_ADD(NOW(), INTERVAL 10 MINUTE), 
         created_at=NOW()
-    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, otp]);
+    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, otp, referrerUserId]);
     
     try {
       await sendMail({ to: email, subject: 'Verify your account', html: `<div style="font-family: sans-serif; padding: 20px;"><h2>Welcome!</h2><p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p><p>Expires in 10 minutes.</p></div>` });
@@ -589,7 +599,8 @@ router.post("/verify-email", otpVerificationLimiter, async (req, res) => {
       email: p.email,
       password: p.password,
       securityAnswer: securityAnswer || null,
-      marketingEmailOptIn: p.marketing_email_opt_in === 1 || p.marketing_email_opt_in === true
+      marketingEmailOptIn: p.marketing_email_opt_in === 1 || p.marketing_email_opt_in === true,
+      referrerUserId: p.referrer_user_id || null
     });
     await pool.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
     

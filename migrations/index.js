@@ -160,6 +160,56 @@ const migrations = [
       }
     },
   },
+  {
+    version: 39,
+    name: 'initialize referral rewards',
+    up: async () => {
+      for (const [table, column, definition] of [
+        ['users', 'referred_by_user_id', 'INT DEFAULT NULL'],
+        ['pending_registrations', 'referrer_user_id', 'INT DEFAULT NULL'],
+      ]) {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM ${table} LIKE ?`, [column]);
+        if (columns.length === 0) await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      }
+      const [referrerIndex] = await pool.query("SHOW INDEX FROM users WHERE Key_name = 'idx_users_referred_by'");
+      if (referrerIndex.length === 0) await pool.query('CREATE INDEX idx_users_referred_by ON users (referred_by_user_id)');
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS referral_codes (
+          user_id INT NOT NULL PRIMARY KEY,
+          code VARCHAR(32) NOT NULL UNIQUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS referral_settings (
+          id TINYINT NOT NULL PRIMARY KEY,
+          enabled TINYINT(1) NOT NULL DEFAULT 1,
+          reward_mode ENUM('wallet','coupon','wallet_coupon') NOT NULL DEFAULT 'wallet',
+          wallet_reward_amount DECIMAL(10,2) NOT NULL DEFAULT 100,
+          coupon_discount_type ENUM('fixed','percentage') NOT NULL DEFAULT 'fixed',
+          coupon_discount_value DECIMAL(10,2) NOT NULL DEFAULT 100,
+          coupon_min_order_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+          coupon_valid_days INT NOT NULL DEFAULT 30,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS referral_rewards (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          referred_user_id INT NOT NULL UNIQUE,
+          referrer_user_id INT NOT NULL,
+          order_id INT NOT NULL UNIQUE,
+          wallet_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+          coupon_code VARCHAR(50) DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_referral_rewards_referrer (referrer_user_id, created_at),
+          FOREIGN KEY (referred_user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (referrer_user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;
