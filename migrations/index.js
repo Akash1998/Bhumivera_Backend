@@ -132,6 +132,20 @@ const migrations = [
     name: 'correct legacy electronics SEO defaults',
     up: () => correctOutdatedSiteMetadata(pool),
   },
+  {
+    version: 37,
+    name: 'record order WhatsApp notification consent',
+    up: async () => {
+      const [columns] = await pool.query("SHOW COLUMNS FROM orders LIKE 'whatsapp_updates_opt_in'");
+      if (columns.length === 0) {
+        await pool.query('ALTER TABLE orders ADD COLUMN whatsapp_updates_opt_in TINYINT(1) NOT NULL DEFAULT 0');
+      }
+      const [consentColumns] = await pool.query("SHOW COLUMNS FROM orders LIKE 'whatsapp_consent_at'");
+      if (consentColumns.length === 0) {
+        await pool.query('ALTER TABLE orders ADD COLUMN whatsapp_consent_at DATETIME DEFAULT NULL');
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

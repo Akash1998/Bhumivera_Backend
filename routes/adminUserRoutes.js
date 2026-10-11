@@ -13,6 +13,7 @@ const {
 const { getAllOrders, getOrdersByUser, updateOrderStatus, getOrderById } = require('../models/orderModel');
 const { getAllReviews } = require('../models/reviewModel');
 const { sendMail } = require('../utils/mail');
+const { notifyOrderWhatsApp } = require('../services/orderWhatsAppNotifier');
 
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -240,30 +241,28 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ message: 'Invalid status' });
     }
 
-    let sql = 'UPDATE orders SET status = ?';
-    let params = [status];
-
-    if (tracking_number !== undefined) {
-      sql += ', tracking_number = ?';
-      params.push(tracking_number);
+    const orderId = req.params.id;
+    const previousOrder = await getOrderById(orderId);
+    if (!previousOrder) return res.status(404).json({ message: 'Order not found' });
+    const updated = await updateOrderStatus(orderId, status, req.body.cancel_reason, {
+      trackingNumber: tracking_number,
+      courier,
+    });
+    if (updated === false) return res.status(404).json({ message: 'Order not found' });
+    const hasOrderUpdate = previousOrder.status !== status ||
+      (tracking_number !== undefined && previousOrder.tracking_number !== tracking_number) ||
+      (courier !== undefined && previousOrder.courier !== courier);
+    if (hasOrderUpdate) {
+      void notifyOrderWhatsApp(orderId, status, {
+        trackingNumber: tracking_number,
+        courier,
+        cancelReason: req.body.cancel_reason,
+      });
     }
-    if (courier !== undefined) {
-      sql += ', courier = ?';
-      params.push(courier);
-    }
-
-    sql += ' WHERE id = ?';
-    params.push(req.params.id);
-
-    await db.query(sql, params);
-
-    if (status === 'cancelled' || status === 'returned') {
-       await updateOrderStatus(req.params.id, status);
-    }
-
     return res.json({ message: 'Order updated successfully' });
   } catch (err) {
     console.error("Update Order Error:", err);
+    if (err.status) return res.status(err.status).json({ code: err.code, message: err.message });
     return res.status(500).json({ message: 'Failed to update order' });
   }
 });

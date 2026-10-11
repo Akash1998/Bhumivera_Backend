@@ -13,6 +13,12 @@ If the corresponding feature is enabled, configure both Razorpay API credentials
 
 For more than one backend instance, set the same `RATE_LIMIT_REDIS_URL` on every instance. A single instance can use the built-in in-memory rate-limit store.
 
+### WhatsApp order updates
+
+Order placement confirmations, customer cancellations, admin order-status changes, and shipment/tracking changes can be sent with the Meta WhatsApp Cloud API. Migration 37 records per-order WhatsApp consent; existing orders and customers are not opted in. Checkout leaves the opt-in unchecked by default, and the backend sends no WhatsApp alert unless the customer checks it for that order.
+
+Configure `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`, and `WHATSAPP_ORDER_STATUS_TEMPLATE` as Railway service variables. Set `WHATSAPP_TEMPLATE_LANGUAGE` to the language approved for the template (default `en`). Create and get Meta approval for a Utility template whose name matches `WHATSAPP_ORDER_STATUS_TEMPLATE` and whose body has five text placeholders in this order: customer first name, order number, status, update/tracking detail, and the order-tracking page URL. Suggested template body: `Hi {{1}}, Bhumivera order {{2}} is {{3}}. {{4}} Track your order: {{5}}.` Add sample values when submitting it for provider approval. Meta credentials and the approved template are provider-side prerequisites; no live WhatsApp message is sent until configured. Failed or unconfigured delivery is logged without undoing an order or cancellation.
+
 The backend runs schema migrations before declaring readiness. Migration 33 adds the nullable customer association to warranty registrations; warranty ownership is saved in the registration transaction, and serial rows are locked to prevent duplicate registrations. Configure the deployment platform to use `/health/live` for liveness and `/health/ready` for readiness. A migration failure leaves the service unready and is retried; inspect the server logs for the failing migration before changing production data.
 
 The Orders admin page can compare up to 25 online payments on the visible page with Razorpay. This is a read-only diagnostic: discrepancies and provider lookup failures are reported but never auto-corrected. Normal online checkout captures the payment before creating the order; pending orders also include legitimate COD orders, so do not automatically expire pending orders or release their stock without an approved fulfillment policy.

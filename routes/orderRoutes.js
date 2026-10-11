@@ -3,6 +3,7 @@ const router = express.Router();
 const pool = require("../config/db");
 const { authenticateUser, authenticateAdmin } = require("../middleware/authMiddleware");
 const { sendOrderStatusEmail } = require("../utils/mail");
+const { notifyOrderWhatsApp } = require("../services/orderWhatsAppNotifier");
 
 const { 
   createOrder, 
@@ -87,9 +88,11 @@ router.patch("/:id/status", authenticateUser, async (req, res) => {
         return res.status(400).json({ message: `Cannot cancel order with status '${order.status}'` });
       }
 
-      await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer", {
+      const updated = await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer", {
         allowedCurrentStatuses: cancellableStatuses,
       });
+      if (updated === false) return res.status(404).json({ message: "Order not found" });
+      void notifyOrderWhatsApp(order.id, 'cancelled', { cancelReason: req.body.reason });
       return res.json({ success: true, message: "Order cancelled successfully" });
     }
 
@@ -113,9 +116,11 @@ router.post("/:id/cancel", authenticateUser, async (req, res) => {
     if (!cancellableStatuses.includes(order.status)) {
       return res.status(400).json({ message: `Cannot cancel order with status '${order.status}'` });
     }
-    await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer", {
+    const updated = await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer", {
       allowedCurrentStatuses: cancellableStatuses,
     });
+    if (updated === false) return res.status(404).json({ message: "Order not found" });
+    void notifyOrderWhatsApp(order.id, 'cancelled', { cancelReason: req.body.reason });
     return res.json({ success: true, message: "Order cancelled successfully" });
   } catch (err) {
     console.error("[Order Cancel Error]:", err);
@@ -134,8 +139,14 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: "A valid order status is required." });
     }
 
+    const previousOrder = await getOrderById(id);
     const updated = await updateOrderStatus(id, status, req.body.cancelReason, { trackingNumber, courier });
     if (updated === false) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'Order not found.' });
+    const hasOrderUpdate = previousOrder && (
+      previousOrder.status !== status ||
+      (trackingNumber !== undefined && previousOrder.tracking_number !== trackingNumber) ||
+      (courier !== undefined && previousOrder.courier !== courier)
+    );
 
     const [orderData] = await pool.query(
       `SELECT o.id, o.status, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
@@ -146,6 +157,13 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
       const { email, name } = orderData[0];
       sendOrderStatusEmail(email, name, id, status, trackingNumber, courier)
         .catch(err => console.error(`[Mailer] Failed to send email:`, err));
+    }
+    if (hasOrderUpdate) {
+      void notifyOrderWhatsApp(id, status, {
+        trackingNumber,
+        courier,
+        cancelReason: req.body.cancelReason,
+      });
     }
 
     res.json({ success: true, message: "Order status updated." });
@@ -159,6 +177,10 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 router.post("/", authenticateUser, async (req, res) => {
   try {
     const { addressId, deliveryType, paymentMode, couponCode, notes, loyaltyPointsToRedeem } = req.body;
+    const whatsappUpdatesOptIn = req.body.whatsappUpdatesOptIn === true;
+    if (req.body.whatsappUpdatesOptIn !== undefined && typeof req.body.whatsappUpdatesOptIn !== 'boolean') {
+      return res.status(400).json({ message: 'WhatsApp order update consent must be true or false.' });
+    }
     const rawImpactAmount = req.body.impactAmount;
     const impactAmount = rawImpactAmount === undefined ? 0 : Number(rawImpactAmount);
     const impactProjects = ['native-trees', 'river-care', 'community-care'];
@@ -300,6 +322,7 @@ router.post("/", authenticateUser, async (req, res) => {
       impactProject,
       loyaltyPointsAwarded: rulePreview.loyaltyBonusPoints,
       lifecycleGiftProductId,
+      whatsappUpdatesOptIn,
       loyaltyPointsToRedeem,
       loyaltyPointsPerRupee,
     });
@@ -317,6 +340,7 @@ router.post("/", authenticateUser, async (req, res) => {
     await clearCart(req.user.id);
 
     // [ENHANCEMENT]: Immediately dispatch Order Confirmation Email upon successful placement
+    if (whatsappUpdatesOptIn) void notifyOrderWhatsApp(orderId, 'pending');
     try {
       const [userRecords] = await pool.query(`SELECT name, email FROM users WHERE id = ?`, [req.user.id]);
       if (userRecords.length > 0) {

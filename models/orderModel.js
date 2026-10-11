@@ -62,6 +62,8 @@ const createOrdersTables = async () => {
     await addCol('orders', 'notes', 'TEXT');
     await addCol('orders', 'tracking_number', 'VARCHAR(255)');
     await addCol('orders', 'courier', 'VARCHAR(255)');
+    await addCol('orders', 'whatsapp_updates_opt_in', 'TINYINT(1) NOT NULL DEFAULT 0');
+    await addCol('orders', 'whatsapp_consent_at', 'DATETIME DEFAULT NULL');
     await addCol('orders', 'delivered_at', 'DATETIME DEFAULT NULL');
     await pool.query("UPDATE orders SET delivered_at = updated_at WHERE status = 'delivered' AND delivered_at IS NULL");
 
@@ -102,6 +104,7 @@ const createOrder = async ({
   couponId = null,
   loyaltyPointsAwarded = 0,
   lifecycleGiftProductId = null,
+  whatsappUpdatesOptIn = false,
   loyaltyPointsToRedeem = 0,
   loyaltyPointsPerRupee = 10
 }) => {
@@ -202,8 +205,8 @@ const createOrder = async ({
 
     // Step 4: Insert the Order
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO orders (user_id, subtotal, discount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
       [
         userId,
         backendSubtotal,
@@ -220,7 +223,9 @@ const createOrder = async ({
         paymentMode || 'COD',
         paymentStatus,
         paymentId,
-        notes || null
+        notes || null,
+        whatsappUpdatesOptIn ? 1 : 0,
+        whatsappUpdatesOptIn ? 1 : 0
       ]
     );
 
