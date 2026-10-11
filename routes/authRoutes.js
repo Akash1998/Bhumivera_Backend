@@ -61,7 +61,6 @@ const DISPOSABLE_DOMAINS = [
   'throwaway.email', 'getnada.com', 'trashmail.com', 'maildrop.cc', 'sharklasers.com'
 ];
 
-router.use('/admin', adminStrictLimiter);
 router.use('/magic-link', magicLinkLimiter);
 router.use('/google/callback', googleCallbackLimiter);
 router.use('/challenge', challengeLimiter);
@@ -153,7 +152,7 @@ async function adminPasswordLogin(req, res) {
   }
 }
 
-router.post('/admin/login', loginIpLimiter, loginLimiter, adminPasswordLogin);
+router.post('/admin/login', adminStrictLimiter, loginIpLimiter, loginLimiter, adminPasswordLogin);
 
 // --- CORE UNIVERSAL LOGIN ---
 router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
@@ -686,9 +685,9 @@ router.get("/profile", authenticateAdmin, async (req, res) => {
 });
 
 // --- LEGACY ADMIN OTP ---
-router.post('/admin/request-otp', loginIpLimiter, loginLimiter, otpLimiter, adminPasswordLogin);
+router.post('/admin/request-otp', adminStrictLimiter, loginIpLimiter, loginLimiter, otpLimiter, adminPasswordLogin);
 
-router.post('/admin/verify-otp', otpLimiter, async (req, res) => {
+router.post('/admin/verify-otp', adminStrictLimiter, otpLimiter, async (req, res) => {
   try {
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const otp = String(req.body?.otp || '').trim();

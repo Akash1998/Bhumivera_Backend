@@ -52,13 +52,20 @@ async function isSessionActive(payload, req) {
       [payload.jti, payload.deviceHash]
     );
   } else if (payload.sessionType === 'admin') {
-    [rows] = await pool.query(
+    const [activeSessions] = await pool.query(
+      `SELECT jti FROM admin_sessions
+       WHERE jti=? AND revoked_at IS NULL AND expires_at > NOW()
+       LIMIT 1`,
+      [payload.jti]
+    );
+    if (!activeSessions.length) return false;
+    await pool.query(
       `UPDATE admin_sessions
        SET last_seen_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL 24 HOUR)
        WHERE jti=? AND revoked_at IS NULL AND expires_at > NOW()`,
       [payload.jti]
     );
-    return rows.affectedRows === 1;
+    return true;
   } else {
     return false;
   }

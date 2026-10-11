@@ -50,6 +50,7 @@ const registerLimiter = rateLimit({
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
+  skipSuccessfulRequests: true,
   keyGenerator: req => {
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const emailHash = crypto.createHash('sha256').update(email).digest('hex');
@@ -112,6 +113,7 @@ const googleCallbackLimiter = rateLimit({
 const adminStrictLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
+  skipSuccessfulRequests: true,
   keyGenerator: (req) => (req.body && req.body.email) ? `admin:${req.body.email.toLowerCase()}|${req.ip}` : `admin:ip:${req.ip}`,
   standardHeaders: true,
   legacyHeaders: false,
