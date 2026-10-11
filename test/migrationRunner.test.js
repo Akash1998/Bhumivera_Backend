@@ -106,3 +106,8 @@ describe('runMigrations', () => {
     );
   });
 });
+
+
+after(async () => {
+    await pool.end();
+});
