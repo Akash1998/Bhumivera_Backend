@@ -18,6 +18,7 @@ const optedInOrder = {
   id: 12,
   user_name: 'Asha Customer',
   whatsapp_updates_opt_in: 1,
+  user_whatsapp_order_updates_opt_in: 1,
   address_snapshot: { phone_number: '9876543210', full_name: 'Asha Customer' },
 };
 
@@ -62,6 +63,18 @@ describe('WhatsApp order notifications', () => {
       order: { ...optedInOrder, whatsapp_updates_opt_in: 0 },
       status: 'confirmed',
       env: {},
+      fetchImpl: async () => { called = true; },
+    });
+    assert.deepEqual(result, { sent: false, reason: 'customer_not_opted_in' });
+    assert.equal(called, false);
+  });
+
+  it('does not send even for an opted-in order after the customer globally opts out', async () => {
+    let called = false;
+    const result = await sendOrderStatusWhatsApp({
+      order: { ...optedInOrder, user_whatsapp_order_updates_opt_in: 0 },
+      status: 'shipped',
+      env: validEnv,
       fetchImpl: async () => { called = true; },
     });
     assert.deepEqual(result, { sent: false, reason: 'customer_not_opted_in' });

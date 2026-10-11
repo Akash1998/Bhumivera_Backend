@@ -79,7 +79,11 @@ const sendOrderStatusWhatsApp = async ({
   env = process.env,
   fetchImpl = globalThis.fetch,
 }) => {
-  if (!order || Number(order.whatsapp_updates_opt_in) !== 1) {
+  if (
+    !order ||
+    Number(order.whatsapp_updates_opt_in) !== 1 ||
+    Number(order.user_whatsapp_order_updates_opt_in) !== 1
+  ) {
     return { sent: false, reason: 'customer_not_opted_in' };
   }
   const accessToken = requiredConfig(env, 'WHATSAPP_ACCESS_TOKEN');

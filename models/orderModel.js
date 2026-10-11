@@ -238,6 +238,15 @@ const createOrder = async ({
         [orderId, userId, impactProject, safeImpactAmount]
       );
     }
+    if (whatsappUpdatesOptIn) {
+      await conn.query(
+        `UPDATE users
+         SET whatsapp_order_updates_opt_in = 1,
+             whatsapp_order_updates_consent_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND role = 'customer'`,
+        [userId]
+      );
+    }
 
     // Step 5: Insert Order Items
     for (const pItem of processedItems) {
@@ -392,7 +401,12 @@ const getAllOrders = async (filters = {}) => {
 };
 
 const getOrderById = async (orderId) => {
-  const [orders] = await pool.query('SELECT o.*, u.name as user_name, u.email as user_email FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE o.id = ?', [orderId]);
+  const [orders] = await pool.query(
+    `SELECT o.*, u.name AS user_name, u.email AS user_email,
+      u.whatsapp_order_updates_opt_in AS user_whatsapp_order_updates_opt_in
+     FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
+    [orderId]
+  );
   if (orders.length === 0) return null;
   const o = orders[0];
   const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [o.id]);

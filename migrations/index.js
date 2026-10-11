@@ -146,6 +146,20 @@ const migrations = [
       }
     },
   },
+  {
+    version: 38,
+    name: 'record customer WhatsApp order update preferences',
+    up: async () => {
+      const [columns] = await pool.query("SHOW COLUMNS FROM users LIKE 'whatsapp_order_updates_opt_in'");
+      if (columns.length === 0) {
+        await pool.query('ALTER TABLE users ADD COLUMN whatsapp_order_updates_opt_in TINYINT(1) NOT NULL DEFAULT 0');
+      }
+      const [consentColumns] = await pool.query("SHOW COLUMNS FROM users LIKE 'whatsapp_order_updates_consent_at'");
+      if (consentColumns.length === 0) {
+        await pool.query('ALTER TABLE users ADD COLUMN whatsapp_order_updates_consent_at DATETIME DEFAULT NULL');
+      }
+    },
+  },
 ];
 
 module.exports = migrations;
