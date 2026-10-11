@@ -1,4 +1,5 @@
 const COD_REQUIRED_DELIVERED_ORDERS = 2;
+const { ensureWalletAccount } = require('../utils/walletAccount');
 
 const calculateReferralWalletRedemption = (balance, perOrderLimit, subtotal) => {
   const toCents = value => Math.round(Math.max(0, Number(value) || 0) * 100);
@@ -15,10 +16,7 @@ const assertCodEligibility = (paymentMode, deliveredOrderCount) => {
 };
 
 const debitWalletForOrder = async (connection, userId, amount, orderId) => {
-  await connection.query(
-    'INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0.00)',
-    [userId]
-  );
+  await ensureWalletAccount(connection, userId);
   const [[wallet]] = await connection.query(
     'SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE',
     [userId]

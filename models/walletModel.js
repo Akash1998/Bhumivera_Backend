@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { ensureWalletAccount } = require('../utils/walletAccount');
 
 async function initWalletTables() {
   const walletQuery = `
@@ -35,12 +36,9 @@ async function initWalletTables() {
 
 const WalletModel = {
   getWalletBalance: async (userId) => {
+    await ensureWalletAccount(pool, userId);
     const [rows] = await pool.query('SELECT balance FROM wallets WHERE user_id = ?', [userId]);
-    if (rows.length === 0) {
-      await pool.query('INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0.00)', [userId]);
-      return 0.00;
-    }
-    return parseFloat(rows[0].balance);
+    return Number(rows[0]?.balance) || 0;
   },
 
   getTransactions: async (userId) => {
@@ -65,15 +63,9 @@ const WalletModel = {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-
+      await ensureWalletAccount(connection, userId);
       const [wallet] = await connection.query('SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE', [userId]);
-      
-      let currentBalance = 0.00;
-      if (wallet.length === 0) {
-        await connection.query('INSERT INTO wallets (user_id, balance) VALUES (?, 0.00)', [userId]);
-      } else {
-        currentBalance = parseFloat(wallet[0].balance);
-      }
+      const currentBalance = Number(wallet[0]?.balance) || 0;
 
       if (type === 'debit' && currentBalance < amount) {
         throw new Error('Insufficient wallet balance');
@@ -101,5 +93,5 @@ const WalletModel = {
 
 module.exports = {
   initWalletTables,
-  WalletModel
+  WalletModel,
 };

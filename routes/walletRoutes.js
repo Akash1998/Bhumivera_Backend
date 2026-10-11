@@ -3,7 +3,7 @@ const router = express.Router();
 const pool = require("../config/db");
 const { authenticateUser, authenticateAdmin } = require("../middleware/authMiddleware");
 const { WalletModel } = require("../models/walletModel");
-const { reconcileReferralRewards } = require("../models/referralModel");
+const { ensureWalletAccount } = require("../utils/walletAccount");
 const { getRazorpayClient, isValidPaymentSignature, verifyRazorpayPayment } = require('../services/razorpayService');
 const crypto = require('crypto');
 
@@ -14,17 +14,25 @@ const syncUserWallet = async userId => {
 
 router.get("/balance", authenticateUser, async (req, res) => {
   try {
-    await reconcileReferralRewards(req.user.id);
     const balance = await WalletModel.getWalletBalance(req.user.id);
-    const [[referralWallet]] = await pool.query(
-      'SELECT balance FROM referral_wallets WHERE user_id = ?',
-      [req.user.id]
-    );
+    let referralBalance = null;
+    let referralBalanceAvailable = false;
+    try {
+      const [[referralWallet]] = await pool.query(
+        'SELECT balance FROM referral_wallets WHERE user_id = ?',
+        [req.user.id]
+      );
+      referralBalance = Number(referralWallet?.balance) || 0;
+      referralBalanceAvailable = true;
+    } catch (error) {
+      console.error(`[WALLET_REFERRAL_BALANCE_UNAVAILABLE] code=${error.code || 'UNKNOWN'} message=${error.message}`);
+    }
     await syncUserWallet(req.user.id);
     res.json({
       success: true,
       balance,
-      referralBalance: Number(referralWallet?.balance) || 0,
+      referralBalance,
+      referralBalanceAvailable,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -33,7 +41,6 @@ router.get("/balance", authenticateUser, async (req, res) => {
 
 router.get("/history", authenticateUser, async (req, res) => {
   try {
-    await reconcileReferralRewards(req.user.id);
     const transactions = await WalletModel.getTransactions(req.user.id);
     res.json({ success: true, transactions });
   } catch (error) {
@@ -120,6 +127,7 @@ router.post('/top-up/confirm', authenticateUser, async (req, res) => {
         await connection.rollback();
         return res.status(409).json({ success: false, message: 'This payment has already been applied to another account.' });
       }
+      await ensureWalletAccount(connection, req.user.id);
       const [[wallet]] = await connection.query('SELECT balance FROM wallets WHERE user_id = ?', [req.user.id]);
       await connection.commit();
       return res.json({ success: true, alreadyCredited: true, balance: Number(wallet?.balance) || 0 });
@@ -129,7 +137,7 @@ router.post('/top-up/confirm', authenticateUser, async (req, res) => {
       'INSERT INTO wallet_topups (user_id, payment_id, payment_order_id, amount) VALUES (?, ?, ?, ?)',
       [req.user.id, paymentId, orderId, amount]
     );
-    await connection.query('INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0.00)', [req.user.id]);
+    await ensureWalletAccount(connection, req.user.id);
     const [[wallet]] = await connection.query('SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE', [req.user.id]);
     const balance = (Number(wallet?.balance) || 0) + amount;
     await connection.query('UPDATE wallets SET balance = ? WHERE user_id = ?', [balance, req.user.id]);

@@ -312,6 +312,17 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 42,
+    name: 'preserve legacy spendable wallet balances',
+    up: async () => {
+      await pool.query(`
+        INSERT IGNORE INTO wallets (user_id, balance)
+        SELECT id, COALESCE(wallet_balance, 0.00)
+        FROM users
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

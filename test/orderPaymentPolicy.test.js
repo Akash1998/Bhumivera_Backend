@@ -40,6 +40,11 @@ describe('order payment policies', () => {
     await debitWalletForOrder(connection, 7, 100, 42);
 
     assert.ok(calls.some(({ sql, values }) =>
+      sql.includes('INSERT IGNORE INTO wallets (user_id, balance)') &&
+      sql.includes('SELECT id, COALESCE(wallet_balance, 0.00) FROM users') &&
+      values[0] === 7
+    ));
+    assert.ok(calls.some(({ sql, values }) =>
       sql.startsWith('UPDATE wallets SET balance') && values[0] === 25
     ));
     assert.ok(calls.some(({ sql, values }) =>
