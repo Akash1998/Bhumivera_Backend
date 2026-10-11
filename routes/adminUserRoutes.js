@@ -97,16 +97,35 @@ router.post('/users/notifications', authenticateAdmin, async (req, res) => {
   }
 });
 
+router.get('/users/email-campaigns/recipients', authenticateAdmin, async (req, res) => {
+  try {
+    const [[result]] = await db.query(
+      `SELECT COUNT(DISTINCT email) AS recipientCount
+       FROM users
+       WHERE role = 'customer'
+         AND is_active = 1
+         AND marketing_email_opt_in = 1
+         AND email IS NOT NULL
+         AND TRIM(email) <> ''`
+    );
+    return res.json({ recipientCount: Number(result?.recipientCount || 0) });
+  } catch (error) {
+    console.error('[ADMIN_EMAIL_CAMPAIGN_RECIPIENTS]', error);
+    return res.status(500).json({ message: 'Could not count customers opted in to promotional email.' });
+  }
+});
+
 router.post('/users/email-campaigns', authenticateAdmin, async (req, res) => {
+  const audience = req.body?.audience === 'all_opted_in' ? 'all_opted_in' : 'selected';
   const requestedIds = req.body?.userIds;
   const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
   const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
-  if (
+  if (audience === 'selected' && (
     !Array.isArray(requestedIds) ||
     requestedIds.length < 1 ||
     requestedIds.length > 500 ||
     requestedIds.some(id => !isPositiveId(id))
-  ) {
+  )) {
     return res.status(400).json({ message: 'Select between 1 and 500 valid customers.' });
   }
   if (!title || title.length > 200 || !message || message.length > 10000) {
@@ -114,15 +133,36 @@ router.post('/users/email-campaigns', authenticateAdmin, async (req, res) => {
   }
 
   try {
-    const ids = [...new Set(requestedIds.map(Number))];
-    const placeholders = ids.map(() => '?').join(',');
-    const [recipients] = await db.query(
-      `SELECT email FROM users
-       WHERE role = 'customer' AND marketing_email_opt_in = 1 AND id IN (${placeholders})`,
-      ids
-    );
+    let recipients;
+    if (audience === 'all_opted_in') {
+      [recipients] = await db.query(
+        `SELECT DISTINCT email FROM users
+         WHERE role = 'customer'
+           AND is_active = 1
+           AND marketing_email_opt_in = 1
+           AND email IS NOT NULL
+           AND TRIM(email) <> ''`
+      );
+    } else {
+      const ids = [...new Set(requestedIds.map(Number))];
+      const placeholders = ids.map(() => '?').join(',');
+      [recipients] = await db.query(
+        `SELECT DISTINCT email FROM users
+         WHERE role = 'customer'
+           AND is_active = 1
+           AND marketing_email_opt_in = 1
+           AND email IS NOT NULL
+           AND TRIM(email) <> ''
+           AND id IN (${placeholders})`,
+        ids
+      );
+    }
     if (recipients.length === 0) {
-      return res.status(409).json({ message: 'None of the selected customers have opted in to promotional emails.' });
+      return res.status(409).json({
+        message: audience === 'all_opted_in'
+          ? 'There are no active customers opted in to promotional emails.'
+          : 'None of the selected active customers have opted in to promotional emails.'
+      });
     }
 
     const safeSubject = title.replace(/[\r\n]+/g, ' ');
