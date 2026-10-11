@@ -60,6 +60,76 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
         );
         updated = result.affectedRows === 1;
       }
+    } else if (['refund.created', 'refund.processed', 'refund.failed'].includes(event.event)) {
+      const refund = event.payload?.refund?.entity;
+      if (!refund?.id || !refund?.payment_id ||
+          !Number.isSafeInteger(refund.amount) || refund.amount < 1) {
+        throw Object.assign(new Error('Webhook refund details are invalid.'), { status: 400 });
+      }
+      const [requests] = await connection.query(
+        `SELECT id, return_id, payment_id, amount_paise, status
+         FROM return_refund_requests
+         WHERE provider_refund_id = ? OR receipt = ?
+         ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+        [refund.id, refund.receipt || null]
+      );
+      let request = requests[0];
+      if (!request && !refund.receipt) {
+        const [candidates] = await connection.query(
+          `SELECT id, return_id, payment_id, amount_paise, status
+           FROM return_refund_requests
+           WHERE payment_id = ? AND amount_paise = ? AND provider_refund_id IS NULL
+             AND status IN ('requesting', 'pending', 'unknown')
+           ORDER BY id ASC LIMIT 2 FOR UPDATE`,
+          [refund.payment_id, refund.amount]
+        );
+        if (candidates.length === 1) {
+          [request] = candidates;
+        } else if (candidates.length > 1) {
+          console.error('[RAZORPAY_WEBHOOK_REFUND_AMBIGUOUS]', {
+            eventId,
+            refundId: refund.id,
+            paymentId: refund.payment_id,
+          });
+        }
+      }
+      if (request) {
+        if (request.payment_id !== refund.payment_id || Number(request.amount_paise) !== refund.amount) {
+          console.error('[RAZORPAY_WEBHOOK_REFUND_MISMATCH]', {
+            eventId,
+            refundId: refund.id,
+            paymentId: refund.payment_id,
+          });
+        } else {
+          const nextStatus = event.event === 'refund.processed'
+            ? 'processed'
+            : event.event === 'refund.failed'
+              ? 'failed'
+              : 'pending';
+          const canUpdate = request.status !== 'processed' &&
+            !(request.status === 'failed' && nextStatus === 'pending');
+          if (canUpdate) {
+            await connection.query(
+              `UPDATE return_refund_requests
+               SET provider_refund_id = COALESCE(provider_refund_id, ?), status = ?,
+                   failure_code = CASE WHEN ? = 'failed' THEN 'PROVIDER_REFUND_FAILED' ELSE NULL END
+               WHERE id = ?`,
+              [refund.id, nextStatus, nextStatus, request.id]
+            );
+            const returnStatus = nextStatus === 'processed'
+              ? 'refunded'
+              : nextStatus === 'pending'
+                ? 'refund_pending'
+                : 'received';
+            await connection.query(
+              `UPDATE returns SET status = ?
+               WHERE id = ? AND status IN ('received', 'refund_pending')`,
+              [returnStatus, request.return_id]
+            );
+            updated = true;
+          }
+        }
+      }
     }
 
     await connection.commit();

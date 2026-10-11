@@ -13,6 +13,12 @@ const {
 } = require('../models/returnModel');
 const { getOrderById } = require('../models/orderModel');
 const { getSetting } = require('../models/settingsModel');
+const { getRazorpayClient } = require('../services/razorpayService');
+const {
+  createReturnRefund,
+  reconcileReturnRefund,
+  toPaise,
+} = require('../services/returnRefundService');
 
 const REQUEST_REVIEW_DELAY_MS = 30 * 60 * 1000;
 const MAX_RETURN_IMAGES = 5;
@@ -22,7 +28,8 @@ const ADMIN_TRANSITIONS = Object.freeze({
   pending_admin_review: ['return_in_progress', 'waiting_customer_service_review', 'rejected'],
   waiting_customer_service_review: ['return_in_progress', 'rejected'],
   return_in_progress: ['received'],
-  received: ['refunded', 'replacement_sent'],
+  received: ['replacement_sent'],
+  refund_pending: [],
   rejected: [],
   refunded: [],
   replacement_sent: [],
@@ -220,6 +227,12 @@ router.get('/admin/all', authenticateAdmin, async (req, res) => {
 router.put('/admin/:id', authenticateAdmin, async (req, res) => {
   try {
     const { status, admin_notes, refund_amount, condition_grade } = req.body || {};
+    if (['refunded', 'refund_pending'].includes(status)) {
+      return res.status(409).json({
+        code: 'REFUND_PROVIDER_REQUIRED',
+        message: 'Use the provider-backed refund action; return status cannot be changed manually.',
+      });
+    }
     const existing = await getReturnById(req.params.id);
     if (!existing) return res.status(404).json({ message: 'Return request not found.' });
     if (!ADMIN_TRANSITIONS[existing.status]?.includes(status)) {
@@ -244,6 +257,81 @@ router.put('/admin/:id', authenticateAdmin, async (req, res) => {
   } catch (error) {
     console.error('[RETURNS_ADMIN_UPDATE]', error);
     return res.status(500).json({ message: 'Failed to update the return request.' });
+  }
+});
+
+router.post('/admin/:id/refund', authenticateAdmin, async (req, res) => {
+  const returnId = Number(req.params.id);
+  const amountPaise = toPaise(req.body?.refund_amount);
+  if (!Number.isSafeInteger(returnId) || returnId < 1) {
+    return res.status(400).json({ code: 'INVALID_RETURN_ID', message: 'Choose a valid return request.' });
+  }
+  if (amountPaise === null || amountPaise < 100) {
+    return res.status(400).json({ code: 'INVALID_REFUND_AMOUNT', message: 'Enter a refund amount of at least ₹1.00 with up to two decimal places.' });
+  }
+  const adminNotes = typeof req.body?.admin_notes === 'string' ? req.body.admin_notes.trim() : '';
+  if (adminNotes.length > 10000) {
+    return res.status(400).json({ code: 'INVALID_ADMIN_NOTES', message: 'Admin notes cannot exceed 10000 characters.' });
+  }
+  try {
+    const result = await createReturnRefund({
+      pool,
+      razorpay: getRazorpayClient(),
+      returnId,
+      amountPaise,
+      admin: req.admin,
+      adminNotes: adminNotes || null,
+    });
+    if (result.status === 'failed') {
+      return res.status(502).json({
+        code: 'REFUND_PROVIDER_FAILED',
+        message: 'Razorpay reported that the refund failed. The return remains available for review.',
+        data: result,
+      });
+    }
+    return res.status(result.status === 'pending' ? 202 : 200).json({
+      success: true,
+      message: result.status === 'processed'
+        ? 'Razorpay processed the refund.'
+        : 'Razorpay accepted the refund; processing confirmation is pending.',
+      data: result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        code: error.code,
+        message: error.message,
+        ...(error.remainingPaise !== undefined ? { remainingPaise: error.remainingPaise } : {}),
+        ...(error.receipt ? { receipt: error.receipt } : {}),
+      });
+    }
+    console.error('[RETURN_REFUND_CREATE]', error);
+    return res.status(500).json({ code: 'REFUND_PROCESSING_FAILED', message: 'The refund result could not be saved. Check the refund receipt before retrying.' });
+  }
+});
+
+router.post('/admin/:id/refund/reconcile', authenticateAdmin, async (req, res) => {
+  const returnId = Number(req.params.id);
+  if (!Number.isSafeInteger(returnId) || returnId < 1) {
+    return res.status(400).json({ code: 'INVALID_RETURN_ID', message: 'Choose a valid return request.' });
+  }
+  try {
+    const result = await reconcileReturnRefund({
+      pool,
+      razorpay: getRazorpayClient(),
+      returnId,
+    });
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        code: error.code,
+        message: error.message,
+        ...(error.receipt ? { receipt: error.receipt } : {}),
+      });
+    }
+    console.error('[RETURN_REFUND_RECONCILE]', error);
+    return res.status(500).json({ code: 'REFUND_RECONCILIATION_FAILED', message: 'Could not reconcile the refund with Razorpay.' });
   }
 });
 

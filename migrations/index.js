@@ -4,7 +4,7 @@ const { createCartTable } = require('../models/cartModel');
 const { createOrdersTables } = require('../models/orderModel');
 const { createAddressTable } = require('../models/addressModel');
 const { initProductsTable } = require('../models/productModel');
-const { initCategoriesTable } = require('../models/categoryModel');
+const { initCategoriesTable, initCategoryAuditTable } = require('../models/categoryModel');
 const { initReturnsTable } = require('../models/returnModel');
 const { initContactTable } = require('../models/contactModel');
 const { initAdminTable } = require('../models/adminModel');
@@ -26,6 +26,8 @@ const { createCouponTable } = require('../models/couponModel');
 const { initShippingLabelTables } = require('../models/shippingLabelModel');
 const { initGstAccountingTables } = require('../models/gstAccountingModel');
 const { initWarrantyTable } = require('../models/warrantyModel');
+const { initReturnRefundTable } = require('../models/returnRefundModel');
+const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
 const pool = require('../config/db');
 
 const migrations = [
@@ -114,6 +116,21 @@ const migrations = [
     version: 33,
     name: 'associate warranty registrations with customers',
     up: initWarrantyTable,
+  },
+  {
+    version: 34,
+    name: 'record category administration audit history',
+    up: initCategoryAuditTable,
+  },
+  {
+    version: 35,
+    name: 'record provider-backed return refund requests',
+    up: initReturnRefundTable,
+  },
+  {
+    version: 36,
+    name: 'correct legacy electronics SEO defaults',
+    up: () => correctOutdatedSiteMetadata(pool),
   },
 ];
 

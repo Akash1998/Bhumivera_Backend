@@ -51,6 +51,7 @@ const ADMIN_PERMISSION_ROUTES = [
   { pattern: /^\/api\/products(?:\/|$)/, permission: 'products.manage' },
   { pattern: /^\/api\/categories(?:\/|$)/, permission: 'categories.manage' },
   { pattern: /^\/api\/subcategories(?:\/|$)/, permission: 'categories.manage' },
+  { pattern: /^\/api\/returns\/admin\/[^/]+\/refund(?:\/reconcile)?$/, permission: 'orders.refund', methods: ['POST'] },
   { pattern: /^\/api\/returns\/admin(?:\/|$)/, permission: 'returns.manage' },
   { pattern: /^\/api\/returns(?:\/|$)/, permission: 'returns.manage', methods: ['PUT', 'PATCH', 'DELETE'] },
   { pattern: /^\/api\/contact(?:\/|$)/, permission: 'support.manage' },

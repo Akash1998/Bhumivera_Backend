@@ -2,7 +2,11 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { after, before, describe, it } = require('node:test');
 const express = require('express');
-const { createRazorpayWebhookRouter, isValidWebhookSignature } = require('../services/razorpayWebhook');
+const {
+  createRazorpayWebhookRouter,
+  isValidWebhookSignature,
+  processRazorpayWebhook,
+} = require('../services/razorpayWebhook');
 
 const secret = 'webhook-secret-for-test-only';
 
@@ -61,6 +65,71 @@ const createPool = () => {
 };
 
 const sign = body => crypto.createHmac('sha256', secret).update(body).digest('hex');
+
+const createRefundWebhookPool = () => {
+  const eventIds = new Set();
+  const request = {
+    id: 19,
+    return_id: 4,
+    payment_id: 'pay_123',
+    amount_paise: 500,
+    receipt: 'bvrma-4-1',
+    provider_refund_id: null,
+    status: 'requesting',
+  };
+  const result = { request, returnStatus: 'refund_pending', eventIds };
+  return {
+    result,
+    async getConnection() {
+      return {
+        async beginTransaction() {},
+        async commit() {},
+        async rollback() {},
+        release() {},
+        async query(sql, params) {
+          if (sql.includes('INSERT IGNORE INTO razorpay_webhook_events')) {
+            if (eventIds.has(params[0])) return [{ affectedRows: 0 }];
+            eventIds.add(params[0]);
+            return [{ affectedRows: 1 }];
+          }
+          if (sql.includes('WHERE provider_refund_id = ? OR receipt = ?')) {
+            return [[request.provider_refund_id === params[0] || request.receipt === params[1]
+              ? { ...request }
+              : null].filter(Boolean)];
+          }
+          if (sql.includes('provider_refund_id IS NULL')) {
+            return [[{ ...request }]];
+          }
+          if (sql.includes('UPDATE return_refund_requests')) {
+            request.provider_refund_id = params[0];
+            request.status = params[1];
+            return [{ affectedRows: 1 }];
+          }
+          if (sql.includes('UPDATE returns SET status')) {
+            result.returnStatus = params[0];
+            return [{ affectedRows: 1 }];
+          }
+          throw new Error(`Unexpected refund webhook SQL: ${sql}`);
+        },
+      };
+    },
+  };
+};
+
+const createRefundEvent = (event, status) => ({
+  event,
+  payload: {
+    refund: {
+      entity: {
+        id: 'rfnd_123',
+        payment_id: 'pay_123',
+        amount: 500,
+        receipt: 'bvrma-4-1',
+        status,
+      },
+    },
+  },
+});
 
 describe('Razorpay webhooks', () => {
   let server;
@@ -153,5 +222,60 @@ describe('Razorpay webhooks', () => {
     });
     assert.equal(response.status, 400);
     assert.equal(pool.order.payment_status, 'pending');
+  });
+
+  it('marks returns refunded only on refund.processed and deduplicates provider events', async () => {
+    const refundPool = createRefundWebhookPool();
+    const created = await processRazorpayWebhook({
+      pool: refundPool,
+      eventId: 'evt_refund_created',
+      event: createRefundEvent('refund.created', 'pending'),
+    });
+    assert.equal(created.updated, true);
+    assert.equal(refundPool.result.request.status, 'pending');
+    assert.equal(refundPool.result.returnStatus, 'refund_pending');
+
+    const processed = await processRazorpayWebhook({
+      pool: refundPool,
+      eventId: 'evt_refund_processed',
+      event: createRefundEvent('refund.processed', 'processed'),
+    });
+    assert.equal(processed.updated, true);
+    assert.equal(refundPool.result.request.status, 'processed');
+    assert.equal(refundPool.result.returnStatus, 'refunded');
+
+    const duplicate = await processRazorpayWebhook({
+      pool: refundPool,
+      eventId: 'evt_refund_processed',
+      event: createRefundEvent('refund.processed', 'processed'),
+    });
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(refundPool.result.returnStatus, 'refunded');
+  });
+
+  it('returns a failed provider refund to received status without marking it refunded', async () => {
+    const refundPool = createRefundWebhookPool();
+    const result = await processRazorpayWebhook({
+      pool: refundPool,
+      eventId: 'evt_refund_failed',
+      event: createRefundEvent('refund.failed', 'failed'),
+    });
+    assert.equal(result.updated, true);
+    assert.equal(refundPool.result.request.status, 'failed');
+    assert.equal(refundPool.result.returnStatus, 'received');
+  });
+
+  it('matches a webhook without a receipt only when one pending payment-and-amount request is unambiguous', async () => {
+    const refundPool = createRefundWebhookPool();
+    const event = createRefundEvent('refund.processed', 'processed');
+    event.payload.refund.entity.receipt = null;
+    const result = await processRazorpayWebhook({
+      pool: refundPool,
+      eventId: 'evt_refund_no_receipt',
+      event,
+    });
+    assert.equal(result.updated, true);
+    assert.equal(refundPool.result.request.provider_refund_id, 'rfnd_123');
+    assert.equal(refundPool.result.returnStatus, 'refunded');
   });
 });

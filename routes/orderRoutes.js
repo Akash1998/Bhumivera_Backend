@@ -16,6 +16,8 @@ const { getSetting, getSettingsByGroup } = require('../models/settingsModel');
 const { listCartRules } = require('../models/cartRulesModel');
 const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
+const { getRazorpayClient } = require('../services/razorpayService');
+const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../services/paymentReconciliationService');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -32,6 +34,38 @@ router.get("/all", authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error("Admin Fetch Orders Error:", err);
     return res.status(500).json({ message: "Failed to load global orders ledger" });
+  }
+});
+
+router.get('/admin/reconciliation/payments', authenticateAdmin, async (req, res) => {
+  const rawOrderIds = req.query.order_ids;
+  if (typeof rawOrderIds !== 'string' || !rawOrderIds.trim()) {
+    return res.status(400).json({
+      code: 'INVALID_RECONCILIATION_ORDER_IDS',
+      message: `Provide 1 to ${MAX_RECONCILIATION_ORDERS} comma-separated order IDs.`,
+    });
+  }
+  const orderIds = rawOrderIds.split(',').map(value => {
+    if (!/^[1-9]\d*$/.test(value)) return NaN;
+    const id = Number(value);
+    return Number.isSafeInteger(id) ? id : NaN;
+  });
+  try {
+    const rows = await reconcileOrderPayments({
+      pool,
+      razorpay: getRazorpayClient(),
+      orderIds,
+    });
+    return res.json({ success: true, readOnly: true, rows });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ code: error.code, message: error.message });
+    }
+    console.error('[ORDER_PAYMENT_RECONCILIATION]', error);
+    return res.status(500).json({
+      code: 'ORDER_PAYMENT_RECONCILIATION_FAILED',
+      message: 'Could not reconcile the selected orders with Razorpay.',
+    });
   }
 });
 

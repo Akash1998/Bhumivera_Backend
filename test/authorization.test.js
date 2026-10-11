@@ -79,6 +79,10 @@ describe('central admin route authorization', () => {
     assert.equal((await request('warehouse_admin', 'POST', '/shipping/labels', { provider: 'shiprocket' })).status, 200);
     assert.equal((await request('warehouse_admin', 'GET', '/gst/documents')).status, 403);
     assert.equal((await request('warehouse_admin', 'GET', '/orders/all')).status, 403);
+    assert.equal((await request('admin', 'GET', '/orders/admin/reconciliation/payments')).status, 200);
+    const reconciliation = await request('warehouse_admin', 'GET', '/orders/admin/reconciliation/payments');
+    assert.equal(reconciliation.status, 403);
+    assert.equal((await reconciliation.json()).permission, 'orders.manage');
   });
 
   it('permits fulfillment statuses for warehouse users but blocks financial/order-management statuses', async () => {
@@ -101,5 +105,17 @@ describe('central admin route authorization', () => {
     assert.equal((await request('warehouse_admin', 'PUT', '/returns/admin/7', { status: 'refunded' })).status, 403);
     assert.equal((await request('admin', 'GET', '/affiliate/partners')).status, 200);
     assert.equal((await request('warehouse_admin', 'GET', '/affiliate/partners')).status, 403);
+    assert.equal((await request('admin', 'POST', '/returns/admin/7/refund')).status, 200);
+    assert.equal((await request('admin', 'POST', '/returns/admin/7/refund/reconcile')).status, 200);
+    const deniedRefund = await request('warehouse_admin', 'POST', '/returns/admin/7/refund');
+    assert.equal(deniedRefund.status, 403);
+    assert.equal((await deniedRefund.json()).permission, 'orders.refund');
+  });
+
+  it('restricts category audit history to administrators with taxonomy permissions', async () => {
+    assert.equal((await request('admin', 'GET', '/categories/admin/audit')).status, 200);
+    const denied = await request('warehouse_admin', 'GET', '/categories/admin/audit');
+    assert.equal(denied.status, 403);
+    assert.equal((await denied.json()).permission, 'categories.manage');
   });
 });

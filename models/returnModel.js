@@ -130,8 +130,14 @@ const getReturnsByOrderAndUser = async (orderId, userId) => {
 
 const getAllReturns = async statusFilter => {
   let sql = `SELECT r.*, u.email AS user_email, u.name AS customer_name, o.id AS order_number
+               , rr.status AS refund_request_status, rr.receipt AS refund_receipt,
+                 rr.provider_refund_id, o.payment_mode, o.payment_status
              FROM returns r LEFT JOIN users u ON r.user_id = u.id
-             JOIN orders o ON r.order_id = o.id`;
+             JOIN orders o ON r.order_id = o.id
+             LEFT JOIN return_refund_requests rr ON rr.id = (
+               SELECT MAX(rr_latest.id) FROM return_refund_requests rr_latest
+               WHERE rr_latest.return_id = r.id
+             )`;
   const params = [];
   if (statusFilter) {
     sql += ' WHERE r.status = ?';
