@@ -1,32 +1,19 @@
-// backend-Bhumivera/routes/affiliateRoutes.js
 const express = require('express');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
+
 const router = express.Router();
 router.use(authenticateAdmin);
 
-// Mock endpoints to satisfy the frontend's API calls and stop the 404s
-router.get('/partners', (req, res) => {
-    res.json({ partners: [] });
+const unavailable = (_req, res) => res.status(501).json({
+  code: 'AFFILIATE_WORKFLOW_UNAVAILABLE',
+  message: 'Affiliate management is unavailable until partner, commission, and payout workflows are persisted and audited.',
 });
 
-router.get('/withdrawals', (req, res) => {
-    res.json({ withdrawals: [] });
-});
-
-router.get('/config', (req, res) => {
-    res.json({ config: { commission_percent: 10, min_payout: 500 } });
-});
-
-router.put('/config', (req, res) => {
-    res.json({ success: true, message: "Config updated" });
-});
-
-router.put('/partners/:id/status', (req, res) => {
-    res.json({ success: true, message: "Status updated" });
-});
-
-router.post('/withdrawals/:id/approve', (req, res) => {
-    res.json({ success: true, message: "Withdrawal approved" });
-});
+router.get('/partners', unavailable);
+router.get('/withdrawals', unavailable);
+router.get('/config', unavailable);
+router.put('/config', unavailable);
+router.route('/partners/:id/status').put(unavailable).patch(unavailable);
+router.route('/withdrawals/:id/approve').post(unavailable).patch(unavailable);
 
 module.exports = router;

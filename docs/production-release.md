@@ -17,6 +17,12 @@ The backend runs schema migrations before declaring readiness. Migration 33 adds
 
 Customer cancellation is limited to pending or confirmed orders and rechecks that state while holding the order row lock, so a concurrent fulfillment update cannot be overwritten by a stale cancellation request. An already-paid online order returns `409 REFUND_REQUIRED`; the application does not issue provider refunds, so process the refund through the payment provider and customer-support workflow rather than marking the order cancelled first.
 
+Affiliate administration currently returns `501 AFFILIATE_WORKFLOW_UNAVAILABLE`; partner, commission, and payout actions are not persisted and must not be treated as successful. Dashboard order-value metrics sum stored totals for orders not marked cancelled; they are not reconciled net sales, settled cash, tax collected, or profit.
+
+The A/B Experiment page is informationally disabled: the settings registry stores labels only and does not assign customer variants or record impressions, conversions, or statistical results. Do not use it to make product or marketing decisions.
+
+Category management does not currently persist an audit trail; its panel now states that rather than showing locally generated sample events.
+
 For better key-compromise isolation, generate an independent `OTP_SECRET` locally with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` and save it directly as a Railway service variable. Never commit or send the generated value in chat. The service remains operational without it by deriving a stable, OTP-specific key from the required strong `JWT_SECRET`.
 
 ## Frontend environment
