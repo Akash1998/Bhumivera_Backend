@@ -4,7 +4,6 @@ const router = express.Router();
 const pool = require('../config/db');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { createCouponTable, createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
-const { reconcileReferralRewards } = require('../models/referralModel');
 const { validateDateRange } = require('../utils/dateValidation');
 
 const sendInvalidDate = (res, result) => res.status(400).json({
@@ -31,10 +30,15 @@ router.use(async (req, res, next) => {
 router.post('/validate', authenticateUser, async (req, res) => {
   try {
     const { code, orderTotal } = req.body;
-    if (!code) return res.status(400).json({ message: 'Coupon code is required' });
-    await reconcileReferralRewards(req.user.id);
-    const result = await validateCoupon(code, parseFloat(orderTotal) || 0, req.user.id);
-    if (!result.valid) return res.status(400).json({ message: result.message });
+    if (typeof code !== 'string' || !code.trim()) {
+      return res.status(400).json({ code: 'COUPON_CODE_REQUIRED', message: 'Coupon code is required.' });
+    }
+    const parsedOrderTotal = orderTotal === undefined ? 0 : Number(orderTotal);
+    if (!Number.isFinite(parsedOrderTotal) || parsedOrderTotal < 0) {
+      return res.status(400).json({ code: 'INVALID_ORDER_TOTAL', message: 'Enter a valid order total.' });
+    }
+    const result = await validateCoupon(code.trim(), parsedOrderTotal, req.user.id);
+    if (!result.valid) return res.status(400).json({ code: 'INVALID_COUPON', message: result.message });
     res.json({
       valid: true,
       discount: result.discount,
@@ -48,7 +52,7 @@ router.post('/validate', authenticateUser, async (req, res) => {
       },
     });
   } catch (err) {
-    console.error(`[COUPON_VALIDATE] code=${err.code || 'UNKNOWN'} table=${err.table || 'unknown'} message=${err.message}`);
+    console.error(`[COUPON_VALIDATE] code=${err.code || 'UNKNOWN'} table=${err.table || 'unknown'} message=${err.sqlMessage || err.message}`);
     res.status(500).json({
       code: 'COUPON_VALIDATION_FAILED',
       message: 'Could not validate this coupon right now. Please try again shortly.',
