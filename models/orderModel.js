@@ -415,7 +415,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
   try {
     await conn.beginTransaction();
     const [orders] = await conn.query(
-      'SELECT user_id, status, loyalty_points_awarded FROM orders WHERE id = ? FOR UPDATE',
+      'SELECT user_id, status, payment_mode, payment_status, loyalty_points_awarded FROM orders WHERE id = ? FOR UPDATE',
       [orderId]
     );
     const order = orders?.[0];
@@ -423,6 +423,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
       await conn.rollback();
       return false;
     }
+    assertOrderStatusTransition(order, status, metadata);
     if (statusRank[status] < statusRank[order.status]) {
       await conn.rollback();
       throw { status: 400, message: `Order cannot move backward from ${order.status} to ${status}.` };
@@ -464,6 +465,24 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
   }
 };
 
+const assertOrderStatusTransition = (order, status, metadata = {}) => {
+  if (Array.isArray(metadata.allowedCurrentStatuses) &&
+      !metadata.allowedCurrentStatuses.includes(order.status)) {
+    throw {
+      status: 409,
+      code: 'ORDER_STATUS_CHANGED',
+      message: `The order is now ${order.status} and can no longer be cancelled from its current status.`,
+    };
+  }
+  if (status === 'cancelled' && order.payment_mode === 'online' && order.payment_status === 'paid') {
+    throw {
+      status: 409,
+      code: 'REFUND_REQUIRED',
+      message: 'This online payment must be refunded before the order can be cancelled. Contact customer support to complete the refund safely.',
+    };
+  }
+};
+
 const updatePaymentStatus = async (orderId, paymentStatus, paymentId) => {
   await pool.query(
     'UPDATE orders SET payment_status=?, payment_id=? WHERE id=?',
@@ -476,6 +495,7 @@ module.exports = {
   getOrdersByUser,
   getAllOrders,
   getOrderById,
+  assertOrderStatusTransition,
   updateOrderStatus,
   updatePaymentStatus,
   createOrdersTables,
