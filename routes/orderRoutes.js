@@ -46,14 +46,16 @@ router.patch("/:id/status", authenticateUser, async (req, res) => {
     if (status === "cancelled") {
       const order = await getOrderById(id);
       if (!order) return res.status(404).json({ message: "Order not found" });
-      if (order.user_id !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+      if (Number(order.user_id) !== Number(req.user.id)) return res.status(403).json({ message: "Forbidden" });
 
       const cancellableStatuses = ["pending", "confirmed"];
       if (!cancellableStatuses.includes(order.status)) {
         return res.status(400).json({ message: `Cannot cancel order with status '${order.status}'` });
       }
 
-      await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer");
+      await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer", {
+        allowedCurrentStatuses: cancellableStatuses,
+      });
       return res.json({ success: true, message: "Order cancelled successfully" });
     }
 
@@ -61,6 +63,7 @@ router.patch("/:id/status", authenticateUser, async (req, res) => {
     return res.status(403).json({ message: `Cannot change order status to '${status}'` });
   } catch (err) {
     console.error("[Order User PATCH Error]:", err);
+    if (err.status === 409) return res.status(409).json({ code: err.code, message: err.message });
     res.status(500).json({ message: err.message });
   }
 });
@@ -71,15 +74,18 @@ router.post("/:id/cancel", authenticateUser, async (req, res) => {
     const { id } = req.params;
     const order = await getOrderById(id);
     if (!order) return res.status(404).json({ message: "Order not found" });
-    if (order.user_id !== req.user.id) return res.status(403).json({ message: "Forbidden" });
+    if (Number(order.user_id) !== Number(req.user.id)) return res.status(403).json({ message: "Forbidden" });
     const cancellableStatuses = ["pending", "confirmed"];
     if (!cancellableStatuses.includes(order.status)) {
       return res.status(400).json({ message: `Cannot cancel order with status '${order.status}'` });
     }
-    await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer");
+    await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer", {
+      allowedCurrentStatuses: cancellableStatuses,
+    });
     return res.json({ success: true, message: "Order cancelled successfully" });
   } catch (err) {
     console.error("[Order Cancel Error]:", err);
+    if (err.status === 409) return res.status(409).json({ code: err.code, message: err.message });
     res.status(500).json({ message: err.message });
   }
 });
@@ -111,6 +117,7 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
     res.json({ success: true, message: "Order status updated." });
   } catch (err) {
     console.error("[OrderUpdate Error]:", err);
+    if (err.status === 409) return res.status(409).json({ code: err.code, message: err.message });
     res.status(500).json({ success: false, message: err.message });
   }
 });

@@ -15,6 +15,8 @@ For more than one backend instance, set the same `RATE_LIMIT_REDIS_URL` on every
 
 The backend runs schema migrations before declaring readiness. Migration 33 adds the nullable customer association to warranty registrations; warranty ownership is saved in the registration transaction, and serial rows are locked to prevent duplicate registrations. Configure the deployment platform to use `/health/live` for liveness and `/health/ready` for readiness. A migration failure leaves the service unready and is retried; inspect the server logs for the failing migration before changing production data.
 
+Customer cancellation is limited to pending or confirmed orders and rechecks that state while holding the order row lock, so a concurrent fulfillment update cannot be overwritten by a stale cancellation request. An already-paid online order returns `409 REFUND_REQUIRED`; the application does not issue provider refunds, so process the refund through the payment provider and customer-support workflow rather than marking the order cancelled first.
+
 For better key-compromise isolation, generate an independent `OTP_SECRET` locally with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` and save it directly as a Railway service variable. Never commit or send the generated value in chat. The service remains operational without it by deriving a stable, OTP-specific key from the required strong `JWT_SECRET`.
 
 ## Frontend environment
