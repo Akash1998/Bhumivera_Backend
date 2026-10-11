@@ -100,9 +100,25 @@ const getReferralSummary = async userId => {
      WHERE u.referred_by_user_id = ?`,
     [userId]
   );
+  const [referrals] = await pool.query(
+    `SELECT referred.id, referred.name, referred.created_at,
+       rr.wallet_amount, rr.coupon_code, rr.created_at AS rewarded_at
+     FROM users referred
+     LEFT JOIN referral_rewards rr ON rr.referred_user_id = referred.id
+     WHERE referred.referred_by_user_id = ?
+     ORDER BY referred.created_at DESC
+     LIMIT 100`,
+    [userId]
+  );
   const config = await getReferralConfig();
   const token = `${userId}.${signReferralId(userId)}`;
-  return { code, referralUrl: `${process.env.FRONTEND_URL || 'https://www.bhumivera.com'}/register?ref=${encodeURIComponent(token)}`, ...summary, rewardMode: config.reward_mode };
+  return {
+    code,
+    referralUrl: `${process.env.FRONTEND_URL || 'https://www.bhumivera.com'}/register?ref=${encodeURIComponent(token)}`,
+    ...summary,
+    referrals,
+    rewardMode: config.reward_mode,
+  };
 };
 
 const applyReferralRewardForOrder = async orderId => {
