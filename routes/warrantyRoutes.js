@@ -2,24 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
-const { initWarrantyTable, validateSerial, registerWarranty, getAllRegistrations, updatGenuiine_testStatus, deletGenuiine_test } = require('../models/warrantyModel');
-
-const ensureUserIdColumn = async () => {
-  try {
-    const [cols] = await pool.query(`SHOW COLUMNS FROM warranty_registrations LIKE 'user_id'`);
-    if (cols.length === 0) {
-      await pool.query(`ALTER TABLE warranty_registrations ADD COLUMN user_id INT NULL AFTER id`);
-    }
-  } catch (e) {}
-};
-
-router.use(async (req, res, next) => {
-  try {
-    await initWarrantyTable();
-    await ensureUserIdColumn();
-  } catch (e) {}
-  next();
-});
+const { validateSerial, registerWarranty, getAllRegistrations, updatGenuiine_testStatus, deletGenuiine_test } = require('../models/warrantyModel');
 
 router.post('/validate', async (req, res) => {
   try {
@@ -35,17 +18,12 @@ router.post('/register', authenticateUser, async (req, res) => {
     const user = (await pool.query('SELECT name, email, phone FROM users WHERE id = ?', [req.user.id]))[0][0] || {};
     const payload = {
       ...req.body,
+      userId: req.user.id,
       customerName: req.body.customerName || req.body.user_name || user.name,
       email: req.body.email || req.body.user_email || user.email,
       phone: req.body.phone || req.body.user_phone || user.phone,
     };
     const result = await registerWarranty(payload);
-    try {
-      const [[reg]] = await pool.query('SELECT id FROM warranty_registrations ORDER BY id DESC LIMIT 1');
-      if (reg) {
-        await pool.query('UPDATE warranty_registrations SET user_id = ? WHERE id = ?', [req.user.id, reg.id]);
-      }
-    } catch (_) {}
     res.status(201).json({ success: true, message: 'Warranty registered successfully', ...result });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });

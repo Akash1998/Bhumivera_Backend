@@ -10,16 +10,33 @@ const getISTDateString = () => {
   return istDate.toISOString().split('T')[0];
 };
 
+const parseDate = dateString => {
+  if (typeof dateString !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateString)) return null;
+  const date = new Date(`${dateString}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === dateString
+    ? date
+    : null;
+};
+
 const daysDiff = (dateStrA, dateStrB) => {
-  const a = new Date(dateStrA);
-  const b = new Date(dateStrB);
+  const a = parseDate(dateStrA);
+  const b = parseDate(dateStrB);
+  if (!a || !b) return NaN;
   return Math.round((a - b) / (1000 * 60 * 60 * 24));
 };
 
 const addMonths = (dateStr, months) => {
-  const d = new Date(dateStr);
-  d.setMonth(d.getMonth() + months);
-  return d.toISOString().split('T')[0];
+  const date = parseDate(dateStr);
+  if (!date) throw new Error('Cannot calculate warranty expiry from an invalid purchase date.');
+  const targetMonth = date.getUTCMonth() + months;
+  const firstOfTargetMonth = new Date(Date.UTC(date.getUTCFullYear(), targetMonth, 1));
+  const lastDay = new Date(Date.UTC(
+    firstOfTargetMonth.getUTCFullYear(),
+    firstOfTargetMonth.getUTCMonth() + 1,
+    0
+  )).getUTCDate();
+  firstOfTargetMonth.setUTCDate(Math.min(date.getUTCDate(), lastDay));
+  return firstOfTargetMonth.toISOString().slice(0, 10);
 };
 
 const initWarrantyTable = async () => {
@@ -61,6 +78,7 @@ const initWarrantyTable = async () => {
   await addCol('warranty_registrations', 'warranty_end_date', 'DATE NULL DEFAULT NULL AFTER registration_date');
   await addCol('warranty_registrations', 'invoice_url', 'VARCHAR(500) NULL DEFAULT NULL AFTER warranty_end_date');
   await addCol('warranty_registrations', 'is_legacy', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER invoice_url');
+  await addCol('warranty_registrations', 'user_id', 'INT NULL AFTER id');
 };
 
 const validateSerial = async (serial) => {
@@ -93,14 +111,16 @@ const validateSerial = async (serial) => {
 };
 
 const registerWarranty = async (data) => {
-  await initWarrantyTable();
-
-  const { serialNumber, serial, productId, customerName, email, phone,
+  const { serialNumber, serial, productId, userId, customerName, email, phone,
           purchaseDate, shopName, invoiceUrl } = data;
   const targetSerial = serialNumber || serial;
+  const customerId = userId === undefined || userId === null ? null : Number(userId);
 
   if (!targetSerial) throw { status: 400, message: "Serial number is required." };
   if (!productId) throw { status: 400, message: "Product ID is required." };
+  if (customerId !== null && (!Number.isSafeInteger(customerId) || customerId < 1)) {
+    throw { status: 400, message: "User ID must be a positive integer." };
+  }
 
   const rec = await validateSerial(targetSerial);
 
@@ -114,7 +134,9 @@ const registerWarranty = async (data) => {
   let warrantyEndDate = null;
 
   if (!isLegacySerial) {
-    if (!purchaseDate) throw { status: 400, message: "Purchase date is required for e-warranty registration." };
+    if (!parseDate(purchaseDate)) {
+      throw { status: 400, message: "Enter a valid purchase date using YYYY-MM-DD." };
+    }
 
     registrationDate = getISTDateString();
     const diff = daysDiff(registrationDate, purchaseDate);
@@ -136,14 +158,25 @@ const registerWarranty = async (data) => {
   try {
     await conn.beginTransaction();
 
+    const [serialRows] = await conn.query(
+      'SELECT status FROM product_serials WHERE id = ? FOR UPDATE',
+      [rec.serial_id]
+    );
+    if (!serialRows.length) {
+      throw { status: 404, message: "Serial number not found in our database." };
+    }
+    if (serialRows[0].status === 'registered' || serialRows[0].status === 'sold') {
+      throw { status: 409, message: "This serial number is already registered for warranty." };
+    }
+
     const [result] = await conn.query(
       `INSERT INTO warranty_registrations
-        (registered_serial, serial_number_id, product_id, user_name, user_email,
+        (user_id, registered_serial, serial_number_id, product_id, user_name, user_email,
          user_phone, purchase_date, shop_name, registration_date, warranty_end_date,
          invoice_url, is_legacy, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted')`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted')`,
       [
-        rec.serial_number, rec.serial_id, productId,
+        customerId, rec.serial_number, rec.serial_id, productId,
         customerName || null, email || null, phone || null,
         purchaseDate || null, shopName || null,
         registrationDate, warrantyEndDate,
@@ -170,7 +203,6 @@ const registerWarranty = async (data) => {
 };
 
 const getAllRegistrations = async () => {
-  await initWarrantyTable();
   const [rows] = await pool.query(
     `SELECT wr.*, p.name AS product_name
      FROM warranty_registrations wr

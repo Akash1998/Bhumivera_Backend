@@ -110,6 +110,11 @@ const migrations = [
       }
     },
   },
+  {
+    version: 33,
+    name: 'associate warranty registrations with customers',
+    up: initWarrantyTable,
+  },
 ];
 
 module.exports = migrations;
