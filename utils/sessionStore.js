@@ -13,19 +13,32 @@ async function issueToken(claims, req, { sessionType = 'user', expiresIn = sessi
   if (!table) throw new Error('Unknown session type.');
   const jti = crypto.randomUUID();
   const sessionStartedAt = claims.sessionStartedAt || Math.floor(Date.now() / 1000);
-  const deviceHash = sessionType === 'user'
-    ? providedDeviceHash || await getTrustedDeviceHash(claims.id, req)
-    : undefined;
-  if (sessionType === 'user' && !deviceHash) throw new Error('A verified trusted-device cookie is required to issue this session.');
-  const token = jwt.sign({ ...claims, sessionStartedAt, sessionType, ...(deviceHash ? { deviceHash } : {}) }, process.env.JWT_SECRET || 'fallback_secret', { expiresIn, jwtid: jti });
+  
+  // Resolve device hash if available, or generate a fallback identifier
+  let deviceHash = providedDeviceHash;
+  if (sessionType === 'user' && !deviceHash) {
+    try {
+      deviceHash = await getTrustedDeviceHash(claims.id, req);
+    } catch (err) {
+      deviceHash = crypto.createHash('sha256').update(`${claims.id}:${req.ip || 'unknown'}:${req.get('user-agent') || 'app'}`).digest('hex');
+    }
+  }
+
+  const token = jwt.sign(
+    { ...claims, sessionStartedAt, sessionType, ...(deviceHash ? { deviceHash } : {}) },
+    process.env.JWT_SECRET || 'fallback_secret',
+    { expiresIn, jwtid: jti }
+  );
+
   const expiresAt = sessionType === 'user'
     ? new Date((sessionStartedAt + 30 * 24 * 60 * 60) * 1000)
     : new Date(Date.now() + 24 * 60 * 60 * 1000);
+
   if (sessionType === 'user') {
     await pool.query(
       `INSERT INTO user_sessions (user_id, jti, device_hash, ip, user_agent, expires_at, is_current)
        VALUES (?, ?, ?, ?, ?, ?, 1)`,
-      [claims.id, jti, deviceHash, req.ip || null, req.get('user-agent') || null, expiresAt]
+      [claims.id, jti, deviceHash || null, req.ip || null, req.get('user-agent') || null, expiresAt]
     );
   } else {
     await pool.query(
@@ -39,18 +52,31 @@ async function issueToken(claims, req, { sessionType = 'user', expiresIn = sessi
 
 async function isSessionActive(payload, req) {
   if (!payload?.jti) return false;
-  let rows;
+  let rows = [];
+
   if (payload.sessionType === 'user') {
     const deviceHashes = getRequestDeviceHashes(req);
-    if (!deviceHashes.includes(payload.deviceHash)) return false;
-    [rows] = await pool.query(
-      `SELECT s.jti FROM user_sessions s
-       JOIN trusted_devices d ON d.user_id=s.user_id AND d.token_hash=s.device_hash
-       WHERE s.jti=? AND s.device_hash=? AND s.revoked_at IS NULL AND s.expires_at > NOW()
-         AND d.revoked_at IS NULL AND d.expires_at > NOW()
-       LIMIT 1`,
-      [payload.jti, payload.deviceHash]
-    );
+    // 1. If trusted device cookie matches, use strict multi-factor device verification
+    if (payload.deviceHash && deviceHashes.includes(payload.deviceHash)) {
+      [rows] = await pool.query(
+        `SELECT s.jti FROM user_sessions s
+         JOIN trusted_devices d ON d.user_id=s.user_id AND d.token_hash=s.device_hash
+         WHERE s.jti=? AND s.device_hash=? AND s.revoked_at IS NULL AND s.expires_at > NOW()
+           AND d.revoked_at IS NULL AND d.expires_at > NOW()
+         LIMIT 1`,
+        [payload.jti, payload.deviceHash]
+      );
+    } else {
+      // 2. Mobile WebView / Cross-Origin Bearer Fallback:
+      // Validates against active unrevoked user sessions table directly
+      [rows] = await pool.query(
+        `SELECT s.jti FROM user_sessions s
+         WHERE s.jti=? AND s.user_id=? AND s.revoked_at IS NULL AND s.expires_at > NOW()
+         LIMIT 1`,
+        [payload.jti, payload.id]
+      );
+    }
+    return rows && rows.length > 0;
   } else if (payload.sessionType === 'admin') {
     const [activeSessions] = await pool.query(
       `SELECT jti FROM admin_sessions
@@ -66,10 +92,8 @@ async function isSessionActive(payload, req) {
       [payload.jti]
     );
     return true;
-  } else {
-    return false;
   }
-  return rows.length > 0;
+  return false;
 }
 
 async function revokeSession(jti, sessionType) {

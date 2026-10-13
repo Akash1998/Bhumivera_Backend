@@ -1127,4 +1127,6 @@ router.post("/admin/reset-password", async (req, res) => {
   }
 });
 
+router.use('/passkey', require('./passkeyRoutes'));
+
 module.exports = router;
