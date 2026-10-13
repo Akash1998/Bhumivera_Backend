@@ -57,6 +57,26 @@ describe('runMigrations', () => {
     });
   });
 
+  it('expands the customer reset OTP column to hold its hash', async () => {
+    const migration = migrations.find(candidate => candidate.name === 'expand customer password reset OTP hashes');
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      return [{}, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.deepEqual(statements, [
+      'ALTER TABLE users MODIFY COLUMN reset_otp VARCHAR(64) DEFAULT NULL',
+    ]);
+  });
+
   it('records each successful migration and skips it on later runs', async () => {
     const pool = createPool();
     let executionCount = 0;

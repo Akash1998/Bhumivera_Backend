@@ -82,9 +82,7 @@ const createUsersTable = async () => {
   }
 
   
-  try {
-    await pool.query('ALTER TABLE users MODIFY COLUMN reset_otp VARCHAR(64) DEFAULT NULL');
-  } catch (err) {}
+  await pool.query('ALTER TABLE users MODIFY COLUMN reset_otp VARCHAR(64) DEFAULT NULL');
   try {
     await pool.query('ALTER TABLE pending_registrations MODIFY COLUMN otp VARCHAR(64) NOT NULL');
   } catch (err) {}

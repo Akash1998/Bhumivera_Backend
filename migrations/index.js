@@ -478,6 +478,13 @@ const migrations = [
       await pool.query('ALTER TABLE webauthn_challenges MODIFY COLUMN account_id INT NULL');
     },
   },
+  {
+    version: 50,
+    name: 'expand customer password reset OTP hashes',
+    up: async () => {
+      await pool.query('ALTER TABLE users MODIFY COLUMN reset_otp VARCHAR(64) DEFAULT NULL');
+    },
+  },
 ];
 
 module.exports = migrations;
