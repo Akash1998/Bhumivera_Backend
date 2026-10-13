@@ -91,8 +91,7 @@ const corsOptions = {
   origin: function (origin, callback) {
     const currentEnv = process.env.NODE_ENV || process.env.access_ENV || "production";
     if (!origin) {
-      if (currentEnv === "development") return callback(null, true);
-      return callback(new Error("Not allowed by CORS: Missing or empty origin"));
+      return callback(null, true);
     }
     const isAllowed = allowedOrigins.has(origin) || ALLOWED_NATIVE_ORIGINS.has(origin) || (currentEnv === "development" && origin.includes("localhost"));
     if (isAllowed) callback(null, true);
