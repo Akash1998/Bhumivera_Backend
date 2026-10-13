@@ -323,6 +323,22 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 43,
+    name: 'configure automatic referral wallet redemption',
+    up: async () => {
+      const [tiersColumn] = await pool.query("SHOW COLUMNS FROM referral_settings LIKE 'referral_redemption_tiers'");
+      if (!tiersColumn.length) {
+        await pool.query('ALTER TABLE referral_settings ADD COLUMN referral_redemption_tiers TEXT DEFAULT NULL');
+      }
+      await pool.query(
+        `UPDATE referral_settings SET reward_mode = 'wallet_coupon',
+          wallet_reward_amount = CASE WHEN wallet_reward_amount IN (100, 1000) THEN 500 ELSE wallet_reward_amount END
+         WHERE id = 1 AND (reward_mode = 'wallet' OR
+           (reward_mode = 'wallet_coupon' AND wallet_reward_amount IN (100, 1000)))`
+      );
+    },
+  },
 ];
 
 module.exports = migrations;

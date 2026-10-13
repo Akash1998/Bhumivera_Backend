@@ -85,7 +85,7 @@ describe('referral model', () => {
     assert.equal(queries.filter(({ sql }) => sql.includes('INSERT INTO wallet_transactions')).length, 0);
   });
 
-  it('issues restricted referral credit with a multi-use personal coupon', async () => {
+  it('issues restricted referral credit without a separate spending coupon', async () => {
     const queries = [];
     state.poolQuery = async sql => {
       if (sql.includes('SELECT id, name, email FROM users')) return [[
@@ -113,7 +113,7 @@ describe('referral model', () => {
           return [[{
             enabled: 1,
             reward_mode: 'wallet_coupon',
-            wallet_reward_amount: '1000.00',
+            wallet_reward_amount: '500.00',
             wallet_reward_per_order_limit: '100.00',
             coupon_discount_type: 'fixed',
             coupon_discount_value: '100.00',
@@ -127,18 +127,16 @@ describe('referral model', () => {
 
     const result = await referralModel.decideReferralClaim(12, 'approved', 3);
 
-    assert.equal(result.walletAmount, 1000);
-    assert.ok(result.couponCode);
+    assert.equal(result.walletAmount, 500);
+    assert.equal(result.couponCode, null);
     assert.equal(result.walletBucket, 'referral');
     assert.equal(result.status, 'approved');
     assert.ok(queries.some(({ sql, params }) =>
-      sql.includes('UPDATE referral_wallets SET balance = balance + ?') && params[0] === 1000
+      sql.includes('UPDATE referral_wallets SET balance = balance + ?') && params[0] === 500
     ));
     assert.ok(queries.some(({ sql, params }) =>
-      sql.includes('INSERT INTO referral_wallet_transactions') && params[2] === 'referral-claim-12'
+      sql.includes('INSERT INTO referral_wallet_transactions') && params[1] === 500 && params[2] === 'referral-claim-12'
     ));
-    assert.ok(queries.some(({ sql, params }) =>
-      sql.includes('INSERT INTO coupons') && sql.includes('usage_limit') && params[3] === 10 && params[4] === 7
-    ));
+    assert.equal(queries.some(({ sql }) => sql.includes('INSERT INTO coupons')), false);
   });
 });

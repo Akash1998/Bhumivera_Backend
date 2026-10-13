@@ -6,6 +6,21 @@ const calculateReferralWalletRedemption = (balance, perOrderLimit, subtotal) => 
   return Math.min(toCents(balance), toCents(perOrderLimit), toCents(subtotal)) / 100;
 };
 
+const calculateTieredReferralWalletRedemption = (balance, orderSubtotal, tiers = [], eligibleSubtotal = orderSubtotal) => {
+  const toCents = value => Math.round(Math.max(0, Number(value) || 0) * 100);
+  const orderCents = toCents(orderSubtotal);
+  const eligibleCents = toCents(eligibleSubtotal);
+  const eligibleTier = (Array.isArray(tiers) ? tiers : [])
+    .filter(tier => orderCents >= toCents(tier?.min_order_amount))
+    .sort((first, second) => toCents(second.min_order_amount) - toCents(first.min_order_amount))[0];
+  if (!eligibleTier) return 0;
+  return Math.min(
+    toCents(balance),
+    eligibleCents,
+    toCents(eligibleTier.referral_amount)
+  ) / 100;
+};
+
 const assertCodEligibility = (paymentMode, deliveredOrderCount) => {
   if (paymentMode === 'COD' && deliveredOrderCount < COD_REQUIRED_DELIVERED_ORDERS) {
     throw Object.assign(
@@ -41,6 +56,7 @@ const debitWalletForOrder = async (connection, userId, amount, orderId) => {
 module.exports = {
   assertCodEligibility,
   calculateReferralWalletRedemption,
+  calculateTieredReferralWalletRedemption,
   debitWalletForOrder,
   COD_REQUIRED_DELIVERED_ORDERS,
 };

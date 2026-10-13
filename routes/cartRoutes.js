@@ -17,6 +17,8 @@ const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { getSetting } = require('../models/settingsModel');
 const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
 const { createCouponTable } = require('../models/couponModel');
+const { getReferralConfig } = require('../models/referralModel');
+const { calculateTieredReferralWalletRedemption } = require('../services/orderPaymentPolicy');
 
 router.post('/abandoned-coupon', authenticateUser, async (req, res) => {
   let connection;
@@ -99,6 +101,20 @@ router.get('/', authenticateUser, async (req, res) => {
       loyaltyTierId: loyaltyTier?.id,
       loyaltyTierName: loyaltyTier?.name,
     });
+    let referralReward = { balance: 0, estimatedAmount: 0, tiers: [] };
+    try {
+      const config = await getReferralConfig();
+      const [[wallet]] = await pool.query('SELECT balance FROM referral_wallets WHERE user_id = ?', [req.user.id]);
+      const balance = Math.max(0, Number(wallet?.balance) || 0);
+      const eligibleSubtotal = Math.max(0, (Number(total) || 0) - (Number(rulePreview.totalDiscount) || 0));
+      referralReward = {
+        balance,
+        estimatedAmount: calculateTieredReferralWalletRedemption(balance, Number(total) || 0, config.referral_redemption_tiers, eligibleSubtotal),
+        tiers: config.referral_redemption_tiers,
+      };
+    } catch (error) {
+      if (error.code !== 'ER_NO_SUCH_TABLE') throw error;
+    }
     const couponStackPolicy = await getSetting('coupon_stack_policy') || 'rule_first';
     const abandonmentEnabled = (await getSetting('cart_abandonment_coupon_enabled')) !== '0';
     const delayMinutes = Math.max(1, Math.min(10080, Number.parseInt(await getSetting('cart_abandonment_coupon_delay_minutes'), 10) || 30));
@@ -110,6 +126,7 @@ router.get('/', authenticateUser, async (req, res) => {
       items: safeItems,
       total: total || 0,
       rulePreview,
+      referralReward,
       couponStackPolicy,
       abandonment: { enabled: abandonmentEnabled, delayMinutes, lastActivityAt: lastActivity ? new Date(lastActivity).toISOString() : null },
     });

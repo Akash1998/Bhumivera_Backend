@@ -15,7 +15,7 @@ const {
 } = require("../models/orderModel");
 const {
   COD_REQUIRED_DELIVERED_ORDERS,
-  calculateReferralWalletRedemption,
+  calculateTieredReferralWalletRedemption,
 } = require('../services/orderPaymentPolicy');
 const { getCartTotal, clearCart } = require("../models/cartModel");
 const { getSetting, getSettingsByGroup } = require('../models/settingsModel');
@@ -24,7 +24,7 @@ const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
 const { getRazorpayClient } = require('../services/razorpayService');
 const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../services/paymentReconciliationService');
-const { reconcileReferralRewards } = require('../models/referralModel');
+const { reconcileReferralRewards, getReferralConfig } = require('../models/referralModel');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -259,30 +259,15 @@ router.post("/", authenticateUser, async (req, res) => {
       if (cartTotal < (Number(coupon.min_order_amount) || 0)) {
         return res.status(400).json({ code: 'COUPON_MINIMUM_NOT_MET', message: `Add ₹${(Number(coupon.min_order_amount) - cartTotal).toFixed(2)} more to use this coupon.` });
       }
-      if (coupon.reward_type === 'referral_wallet') {
-        const [[referralWallet]] = await pool.query(
-          'SELECT balance FROM referral_wallets WHERE user_id = ?',
-          [req.user.id]
-        );
-        const available = Math.max(0, Number(referralWallet?.balance) || 0);
-        const perOrderLimit = Number(coupon.wallet_per_order_limit) || Number(coupon.discount_value) || 0;
-        referralWalletAmount = calculateReferralWalletRedemption(
-          available,
-          perOrderLimit,
-          cartTotal
-        );
-        if (referralWalletAmount <= 0) {
-          return res.status(400).json({ code: 'REFERRAL_WALLET_EMPTY', message: 'No referral reward balance remains for this coupon.' });
-        }
-      } else {
+      if (coupon.reward_type !== 'referral_wallet') {
         couponDiscount = coupon.discount_type === "percentage"
           ? Math.min((cartTotal * Number(coupon.discount_value)) / 100, Number(coupon.max_discount) || Infinity)
           : Number(coupon.discount_value) || 0;
         couponDiscount = Math.max(0, Math.min(couponDiscount, cartTotal));
+        resolvedCoupon = coupon.code;
+        couponId = coupon.id;
+        recoveryCoupon = Boolean(coupon.restricted_user_id) && String(coupon.restricted_user_id) === String(req.user.id);
       }
-      resolvedCoupon = coupon.code;
-      couponId = coupon.id;
-      recoveryCoupon = Boolean(coupon.restricted_user_id) && String(coupon.restricted_user_id) === String(req.user.id);
     }
 
     const couponStackPolicy = await getSetting('coupon_stack_policy') || 'rule_first';
@@ -292,8 +277,15 @@ router.post("/", authenticateUser, async (req, res) => {
     else if (couponStackPolicy === 'coupon_first' && couponDiscount > 0) discount = couponDiscount;
     else if (ruleDiscount <= 0) discount = couponDiscount;
     discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount));
-    referralWalletAmount = Math.min(
-      referralWalletAmount,
+    const referralConfig = await getReferralConfig();
+    const [[referralWallet]] = await pool.query(
+      'SELECT balance FROM referral_wallets WHERE user_id = ?',
+      [req.user.id]
+    );
+    referralWalletAmount = calculateTieredReferralWalletRedemption(
+      Math.max(0, Number(referralWallet?.balance) || 0),
+      Number(cartTotal) || 0,
+      referralConfig.referral_redemption_tiers,
       Math.max(0, Number(cartTotal) - discount)
     );
 

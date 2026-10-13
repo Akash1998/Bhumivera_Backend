@@ -6,13 +6,17 @@ const REFERRAL_LINK_DAYS = 90;
 const AUTO_APPROVAL_MINUTES = 60;
 const defaultConfig = {
   enabled: 1,
-  reward_mode: 'wallet',
-  wallet_reward_amount: 100,
+  reward_mode: 'wallet_coupon',
+  wallet_reward_amount: 500,
   wallet_reward_per_order_limit: 100,
   coupon_discount_type: 'fixed',
   coupon_discount_value: 100,
   coupon_min_order_amount: 0,
   coupon_valid_days: 30,
+  referral_redemption_tiers: [
+    { min_order_amount: 700, referral_amount: 100 },
+    { min_order_amount: 1100, referral_amount: 200 },
+  ],
 };
 
 const signingSecret = () => {
@@ -88,7 +92,18 @@ const ensureReferralCode = async userId => {
 
 const getReferralConfig = async (connection = pool) => {
   const [rows] = await connection.query('SELECT * FROM referral_settings WHERE id = 1');
-  return { ...defaultConfig, ...(rows[0] || {}) };
+  const config = { ...defaultConfig, ...(rows[0] || {}) };
+  try {
+    config.referral_redemption_tiers = typeof config.referral_redemption_tiers === 'string'
+      ? JSON.parse(config.referral_redemption_tiers)
+      : config.referral_redemption_tiers;
+  } catch {
+    config.referral_redemption_tiers = defaultConfig.referral_redemption_tiers;
+  }
+  if (!Array.isArray(config.referral_redemption_tiers)) {
+    config.referral_redemption_tiers = defaultConfig.referral_redemption_tiers;
+  }
+  return config;
 };
 
 const saveReferralConfig = async config => {
@@ -101,20 +116,21 @@ const saveReferralConfig = async config => {
     coupon_discount_value: Number(config.coupon_discount_value),
     coupon_min_order_amount: Number(config.coupon_min_order_amount),
     coupon_valid_days: Number(config.coupon_valid_days),
+    referral_redemption_tiers: JSON.stringify(config.referral_redemption_tiers || defaultConfig.referral_redemption_tiers),
   };
   await pool.query(
     `INSERT INTO referral_settings
-      (id, enabled, reward_mode, wallet_reward_amount, wallet_reward_per_order_limit, coupon_discount_type, coupon_discount_value, coupon_min_order_amount, coupon_valid_days)
-     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, enabled, reward_mode, wallet_reward_amount, wallet_reward_per_order_limit, coupon_discount_type, coupon_discount_value, coupon_min_order_amount, coupon_valid_days, referral_redemption_tiers)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), reward_mode = VALUES(reward_mode),
        wallet_reward_amount = VALUES(wallet_reward_amount),
        wallet_reward_per_order_limit = VALUES(wallet_reward_per_order_limit),
        coupon_discount_type = VALUES(coupon_discount_type),
        coupon_discount_value = VALUES(coupon_discount_value), coupon_min_order_amount = VALUES(coupon_min_order_amount),
-       coupon_valid_days = VALUES(coupon_valid_days)`,
+       coupon_valid_days = VALUES(coupon_valid_days), referral_redemption_tiers = VALUES(referral_redemption_tiers)`,
     Object.values(settings)
   );
-  return settings;
+  return { ...settings, referral_redemption_tiers: JSON.parse(settings.referral_redemption_tiers) };
 };
 
 const createReferralClaim = async (connection, referredUserId, referrerUserId) => {
@@ -178,7 +194,7 @@ const getReferralSummary = async userId => {
 
 const createRewardForClaim = async (connection, claim, config) => {
   const shouldCreditWallet = ['wallet', 'wallet_coupon'].includes(config.reward_mode);
-  const shouldIssueCoupon = ['coupon', 'wallet_coupon'].includes(config.reward_mode);
+  const shouldIssueCoupon = config.reward_mode === 'coupon';
   const restrictedReferralCredit = config.reward_mode === 'wallet_coupon';
   const walletAmount = shouldCreditWallet ? Number(config.wallet_reward_amount) : 0;
   const perOrderLimit = Number(config.wallet_reward_per_order_limit);
@@ -545,7 +561,7 @@ const notifyReferralDecision = async notification => {
   const rewardMessage = [
     notification.walletAmount > 0
       ? notification.walletBucket === 'referral'
-        ? `₹${Number(notification.walletAmount).toFixed(2)} was added to your referral balance and can be used through your personal coupon up to the per-order limit.`
+        ? `₹${Number(notification.walletAmount).toFixed(2)} was added to your order-only referral balance and will be applied automatically when an order reaches an eligible threshold.`
         : `₹${Number(notification.walletAmount).toFixed(2)} was added to your wallet.`
       : '',
     notification.couponCode ? `Your personal coupon code is ${notification.couponCode}.` : '',

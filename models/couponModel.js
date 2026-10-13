@@ -1,6 +1,7 @@
 //Coupon
 const pool = require('../config/db');
-const { calculateReferralWalletRedemption } = require('../services/orderPaymentPolicy');
+const { calculateTieredReferralWalletRedemption } = require('../services/orderPaymentPolicy');
+const { getReferralConfig } = require('./referralModel');
 
 let couponTablePromise;
 
@@ -142,8 +143,13 @@ const validateCoupon = async (code, orderTotal, userId = null) => {
     const [[wallet]] = await pool.query('SELECT balance FROM referral_wallets WHERE user_id = ?', [userId]);
     const available = Math.max(0, Number(wallet?.balance) || 0);
     if (available <= 0) return { valid: false, message: 'No referral reward balance remains for this coupon.' };
-    const perOrderLimit = Number(coupon.wallet_per_order_limit) || Number(coupon.discount_value);
-    const discount = calculateReferralWalletRedemption(available, perOrderLimit, orderTotal);
+    const config = await getReferralConfig();
+    const discount = calculateTieredReferralWalletRedemption(
+      available,
+      orderTotal,
+      config.referral_redemption_tiers,
+      orderTotal
+    );
     if (discount <= 0) return { valid: false, message: 'This order does not meet the minimum required to use the referral reward.' };
     return {
       valid: true,

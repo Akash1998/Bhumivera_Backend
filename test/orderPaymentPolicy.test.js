@@ -3,6 +3,7 @@ const { describe, it } = require('node:test');
 const {
   assertCodEligibility,
   calculateReferralWalletRedemption,
+  calculateTieredReferralWalletRedemption,
   debitWalletForOrder,
 } = require('../services/orderPaymentPolicy');
 
@@ -13,6 +14,20 @@ describe('order payment policies', () => {
     assert.equal(calculateReferralWalletRedemption(1000, 100, 60), 60);
     assert.equal(calculateReferralWalletRedemption(1000, 100, 999.999), 100);
     assert.equal(calculateReferralWalletRedemption(-10, 100, 999), 0);
+  });
+
+  it('selects the highest eligible referral tier and caps it by balance and subtotal', () => {
+    const tiers = [
+      { min_order_amount: 700, referral_amount: 100 },
+      { min_order_amount: 1100, referral_amount: 200 },
+    ];
+    assert.equal(calculateTieredReferralWalletRedemption(500, 699.99, tiers), 0);
+    assert.equal(calculateTieredReferralWalletRedemption(500, 700, tiers), 100);
+    assert.equal(calculateTieredReferralWalletRedemption(500, 1100, tiers), 200);
+    assert.equal(calculateTieredReferralWalletRedemption(75, 1200, tiers), 75);
+    assert.equal(calculateTieredReferralWalletRedemption(500, 1100, tiers, 900), 200);
+    assert.equal(calculateTieredReferralWalletRedemption(500, 1100, tiers, 80), 80);
+    assert.equal(calculateTieredReferralWalletRedemption(500, 80, [{ min_order_amount: 0, referral_amount: 100 }]), 80);
   });
 
   it('requires two successfully delivered orders before COD is allowed', () => {

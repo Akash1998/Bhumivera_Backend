@@ -50,6 +50,15 @@ router.put('/admin/config', authenticateAdmin, async (req, res) => {
   const couponValue = Number(config.coupon_discount_value);
   const minimum = Number(config.coupon_min_order_amount);
   const validDays = Number(config.coupon_valid_days);
+  const tiers = config.referral_redemption_tiers;
+  const validTiers = Array.isArray(tiers) && tiers.length > 0 && tiers.length <= 10 &&
+    tiers.every(tier => tier?.min_order_amount !== '' && tier?.min_order_amount !== null && tier?.min_order_amount !== undefined &&
+      tier?.referral_amount !== '' && tier?.referral_amount !== null && tier?.referral_amount !== undefined &&
+      Number.isFinite(Number(tier?.min_order_amount)) &&
+      Number(tier.min_order_amount) >= 0 && Number(tier.min_order_amount) <= 1000000 &&
+      Number.isFinite(Number(tier?.referral_amount)) && Number(tier.referral_amount) > 0 &&
+      Number(tier.referral_amount) <= 100000) &&
+    new Set(tiers.map(tier => Number(tier.min_order_amount))).size === tiers.length;
   if (
     !modes.includes(config.reward_mode) ||
     !['fixed', 'percentage'].includes(config.coupon_discount_type) ||
@@ -58,9 +67,9 @@ router.put('/admin/config', authenticateAdmin, async (req, res) => {
     (config.reward_mode === 'wallet_coupon' && amount > 0 && walletPerOrderLimit <= 0) ||
     !Number.isFinite(couponValue) || couponValue <= 0 || couponValue > (config.coupon_discount_type === 'percentage' ? 100 : 100000) ||
     !Number.isFinite(minimum) || minimum < 0 ||
-    !Number.isInteger(validDays) || validDays < 1 || validDays > 365
+    !Number.isInteger(validDays) || validDays < 1 || validDays > 365 || !validTiers
   ) {
-    return res.status(400).json({ code: 'INVALID_REFERRAL_CONFIG', message: 'Enter a valid referral reward amount, coupon, minimum order, and expiry.' });
+    return res.status(400).json({ code: 'INVALID_REFERRAL_CONFIG', message: 'Enter valid reward settings and one to ten unique order thresholds with positive referral amounts.' });
   }
   try {
     const saved = await saveReferralConfig({ ...defaultConfig, ...config, enabled: config.enabled === true || config.enabled === 1 || config.enabled === '1' });

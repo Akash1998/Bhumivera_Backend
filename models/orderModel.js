@@ -1,10 +1,11 @@
 const pool = require('../config/db');
 const {
   assertCodEligibility,
-  calculateReferralWalletRedemption,
+  calculateTieredReferralWalletRedemption,
   debitWalletForOrder,
   COD_REQUIRED_DELIVERED_ORDERS,
 } = require('../services/orderPaymentPolicy');
+const { getReferralConfig } = require('./referralModel');
 
 const getDeliveredOrderCount = async userId => {
   const [[result]] = await pool.query(
@@ -138,7 +139,6 @@ const createOrder = async ({
       }
     }
 
-    let referralWalletOrderLimit = 0;
     if (couponId) {
       const [[coupon]] = await conn.query(
         'SELECT reward_type, restricted_user_id, wallet_per_order_limit, discount_value FROM coupons WHERE id = ? FOR UPDATE',
@@ -161,9 +161,6 @@ const createOrder = async ({
            Number(referralWalletAmount) > Number(coupon.wallet_per_order_limit))) {
         throw Object.assign(new Error('This referral reward coupon is not available to this account.'), { status: 400 });
       }
-      referralWalletOrderLimit = Number(coupon?.wallet_per_order_limit) || Number(coupon?.discount_value) || 0;
-    } else if (Number(referralWalletAmount) > 0) {
-      throw Object.assign(new Error('A valid referral reward coupon is required to use referral balance.'), { status: 400 });
     }
 
     let backendSubtotal = 0;
@@ -232,12 +229,14 @@ const createOrder = async ({
         [userId]
       );
       const availableReferralBalance = Math.max(0, Number(referralWallet?.balance) || 0);
-      const maxReferralRedemption = calculateReferralWalletRedemption(
+      const referralConfig = await getReferralConfig(conn);
+      const maxReferralRedemption = calculateTieredReferralWalletRedemption(
         availableReferralBalance,
-        referralWalletOrderLimit,
+        backendSubtotal,
+        referralConfig.referral_redemption_tiers,
         backendSubtotal - safeDiscount
       );
-      if (maxReferralRedemption < requestedReferralWalletAmount) {
+      if (Math.abs(maxReferralRedemption - requestedReferralWalletAmount) >= 0.005) {
         throw Object.assign(new Error('Your referral reward balance changed. Reapply the coupon and try again.'), {
           status: 409,
           code: 'REFERRAL_WALLET_BALANCE_CHANGED',

@@ -36,6 +36,12 @@ describe('referral wallet coupon validation', () => {
         }], []];
       }
       if (sql.includes('FROM referral_wallets')) return [[{ balance: '1000.00' }], []];
+      if (sql.includes('SELECT * FROM referral_settings')) return [[{
+        referral_redemption_tiers: JSON.stringify([
+          { min_order_amount: 700, referral_amount: 100 },
+          { min_order_amount: 1100, referral_amount: 200 },
+        ]),
+      }], []];
       throw new Error(`Unexpected query: ${sql}`);
     };
 
