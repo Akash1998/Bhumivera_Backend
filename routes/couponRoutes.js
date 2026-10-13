@@ -4,6 +4,7 @@ const router = express.Router();
 const pool = require('../config/db');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { createCouponTable, createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
+const { reconcileReferralRewards } = require('../models/referralModel');
 const { validateDateRange } = require('../utils/dateValidation');
 
 const sendInvalidDate = (res, result) => res.status(400).json({
