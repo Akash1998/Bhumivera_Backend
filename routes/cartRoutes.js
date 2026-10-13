@@ -112,7 +112,7 @@ router.get('/', authenticateUser, async (req, res) => {
       maxRedemptionPercent: loyaltyConfig.max_redemption_percent,
       minimumRedemptionPoints: loyaltyConfig.minimum_redemption_points,
       currentTier: loyaltyTier,
-      nextTier: nextLoyaltyTier,
+      nextTier,
     };
     const rulePreview = evaluateCartRules(Number(total) || 0, rules, {
       userId: req.user.id,

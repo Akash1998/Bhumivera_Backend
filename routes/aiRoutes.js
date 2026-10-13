@@ -57,4 +57,22 @@ Do not invent ingredients, certifications, product category classifications, hea
   }
 });
 
+
+const { identifyFromImage } = require('../services/visualSearchService');
+
+// POST /api/ai/visual-search - Public or authenticated visual product discovery
+router.post('/visual-search', async (req, res) => {
+  try {
+    const { imageBase64, mimeType } = req.body || {};
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({ success: false, message: 'Image base64 data is required for visual search.' });
+    }
+    const result = await identifyFromImage(imageBase64, mimeType || 'image/jpeg');
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[VISUAL_SEARCH_ERROR]', err);
+    return res.status(500).json({ success: false, message: 'Visual search failed. Please try again.' });
+  }
+});
+
 module.exports = router;

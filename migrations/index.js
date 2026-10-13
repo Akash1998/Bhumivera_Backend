@@ -434,50 +434,6 @@ const migrations = [
       `);
     },
   },
-  {
-    version: 48,
-    name: 'add webauthn passkey authentication',
-    up: async () => {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS webauthn_credentials (
-          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-          account_type ENUM('customer','admin') NOT NULL,
-          account_id INT NOT NULL,
-          credential_id VARCHAR(1024) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-          public_key VARBINARY(4096) NOT NULL,
-          counter BIGINT UNSIGNED NOT NULL DEFAULT 0,
-          transports JSON DEFAULT NULL,
-          device_name VARCHAR(100) NOT NULL DEFAULT 'Passkey device',
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          last_used_at DATETIME(6) DEFAULT NULL,
-          UNIQUE KEY uq_webauthn_credential_id (credential_id),
-          INDEX idx_webauthn_account (account_type, account_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS webauthn_challenges (
-          challenge_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
-          purpose ENUM('registration','authentication') NOT NULL,
-          account_type ENUM('customer','admin') NOT NULL,
-          account_id INT NOT NULL,
-          challenge VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-          origin VARCHAR(255) NOT NULL,
-          rp_id VARCHAR(255) NOT NULL,
-          expires_at DATETIME NOT NULL,
-          consumed_at DATETIME DEFAULT NULL,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_webauthn_challenges_expiry (expires_at, consumed_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-      `);
-    },
-  },
-  {
-    version: 49,
-    name: 'allow discoverable passkey sign-in',
-    up: async () => {
-      await pool.query('ALTER TABLE webauthn_challenges MODIFY COLUMN account_id INT NULL');
-    },
-  },
 ];
 
 module.exports = migrations;

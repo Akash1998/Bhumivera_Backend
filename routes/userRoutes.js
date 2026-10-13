@@ -481,4 +481,52 @@ router.put('/security-question', authenticateUser, async (req, res) => {
   } catch (err) { res.status(500).json({ message: "Server error" }); }
 });
 
+
+// DELETE /api/users/me/account - Apple App Store Guideline 5.1.1(v) & Google Play Store self-service account deletion
+router.delete('/me/account', authenticateUser, async (req, res) => {
+  try {
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({
+        code: 'PASSWORD_REQUIRED',
+        message: 'Password confirmation is required to permanently delete your account.',
+      });
+    }
+
+    const [users] = await pool.query('SELECT password_hash FROM users WHERE id = ?', [req.user.id]);
+    const user = users[0];
+    if (!user) return res.status(404).json({ message: 'User not found.' });
+
+    const passwordValid = await bcrypt.compare(password, user.password_hash);
+    if (!passwordValid) {
+      return res.status(401).json({ code: 'INVALID_PASSWORD', message: 'Current password incorrect.' });
+    }
+
+    // Zero-Trust Anonymization & Revocation per ASVS and Privacy Regulations
+    const anonymizedName = 'Deleted User ' + crypto.randomBytes(3).toString('hex');
+    const anonymizedEmail = `deleted_${req.user.id}_${Date.now()}@anonymized.bhumivera.com`;
+
+    await pool.query(
+      `UPDATE users
+       SET name = ?, email = ?, phone = NULL, password_hash = 'DELETED',
+           is_active = 0, two_factor_secret = NULL, two_factor_enabled = 0,
+           loyalty_points = 0, loyalty_lifetime_points = 0
+       WHERE id = ?`,
+      [anonymizedName, anonymizedEmail, req.user.id]
+    );
+
+    // Invalidate all active sessions across web, Android, and iOS devices
+    const { revokeAllSessions } = require('../utils/sessionStore');
+    await revokeAllSessions('user', req.user.id);
+
+    return res.json({
+      success: true,
+      message: 'Your account has been permanently deleted and personal data anonymized.',
+    });
+  } catch (err) {
+    console.error('[ACCOUNT_DELETION_ERROR]', err);
+    return res.status(500).json({ message: 'Account deletion failed. Please contact support.' });
+  }
+});
+
 module.exports = { router, userAuth: authenticateUser };

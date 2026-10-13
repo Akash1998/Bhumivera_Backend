@@ -145,4 +145,40 @@ router.delete('/:id', authenticateUser, async (req, res) => {
   }
 });
 
+
+// --- NATIVE PUSH NOTIFICATION TOKEN REGISTRATION ---
+const { registerDeviceToken, unregisterDeviceToken } = require('../models/deviceTokenModel');
+
+router.post('/register-device', authenticateUser, async (req, res) => {
+  try {
+    const { token, platform, deviceId } = req.body || {};
+    if (!token || typeof token !== 'string' || token.trim().length < 10) {
+      return res.status(400).json({ success: false, message: 'Valid push notification token is required.' });
+    }
+    const cleanPlatform = ['android', 'ios', 'web'].includes(platform) ? platform : req.clientContext?.platform || 'web';
+    await registerDeviceToken({
+      userId: req.user.id,
+      token: token.trim(),
+      platform: cleanPlatform,
+      deviceId: deviceId || req.clientContext?.deviceId || null,
+    });
+    return res.json({ success: true, message: 'Device token registered successfully.' });
+  } catch (error) {
+    console.error('[PUSH_TOKEN_REGISTRATION_ERROR]', error);
+    return res.status(500).json({ success: false, message: 'Failed to register push token.' });
+  }
+});
+
+router.post('/unregister-device', authenticateUser, async (req, res) => {
+  try {
+    const { token } = req.body || {};
+    if (token) {
+      await unregisterDeviceToken(String(token).trim());
+    }
+    return res.json({ success: true, message: 'Device token unregistered.' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to unregister push token.' });
+  }
+});
+
 module.exports = router;

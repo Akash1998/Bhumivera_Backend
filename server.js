@@ -10,6 +10,7 @@ const pool = require("./config/db");
 const path = require("path");
 const { connectRateLimitStore, closeRateLimitStore } = require("./middleware/rateLimiter");
 const { createRequestObservability } = require("./middleware/requestObservability");
+const { clientContextMiddleware, ALLOWED_NATIVE_ORIGINS } = require("./middleware/clientContext");
 const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
 const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
 const { runMigrations } = require("./utils/migrationRunner");
@@ -70,6 +71,7 @@ let databaseReady = false;
 let startupFailure = null;
 let referralApprovalTimer = null;
 app.use(createRequestObservability());
+app.use(clientContextMiddleware());
 
 // --- SECURITY & CORS POLICIES ---
 const defaultAllowedOrigins = [
@@ -92,7 +94,7 @@ const corsOptions = {
       if (currentEnv === "development") return callback(null, true);
       return callback(new Error("Not allowed by CORS: Missing or empty origin"));
     }
-    const isAllowed = allowedOrigins.has(origin) || (currentEnv === "development" && origin.includes("localhost"));
+    const isAllowed = allowedOrigins.has(origin) || ALLOWED_NATIVE_ORIGINS.has(origin) || (currentEnv === "development" && origin.includes("localhost"));
     if (isAllowed) callback(null, true);
     else callback(new Error("Not allowed by CORS"));
   },
