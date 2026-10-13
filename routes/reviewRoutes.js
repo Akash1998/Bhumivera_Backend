@@ -151,15 +151,16 @@ router.put('/:id', authenticateUser, async (req, res) => {
 });
 
 // DELETE /api/reviews/:id - owner: delete own review
-router.delete('/:id', authenticateUser, async (req, res, next) => {
+router.delete('/:id', authenticateUser, async (req, res) => {
   try {
     const [[existing]] = await pool.query(
       'SELECT id, user_id, product_id, images FROM reviews WHERE id = ?',
       [req.params.id]
     );
     if (!existing) return res.status(404).json({ message: 'Review not found' });
-    if (req.user.role === 'admin' || req.user.role === 'superadmin') return next();
-    if (existing.user_id !== req.user.id) return res.status(403).json({ message: 'Forbidden' });
+    const isOwner = Number(existing.user_id) === Number(req.user.id);
+    const isAdminUser = ['admin', 'superadmin'].includes(req.user.role);
+    if (!isOwner && !isAdminUser) return res.status(403).json({ message: 'Forbidden: You cannot delete another customer’s review.' });
 
     await pool.query('DELETE FROM reviews WHERE id = ?', [req.params.id]);
     await syncProductStats(existing.product_id);

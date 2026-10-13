@@ -447,7 +447,7 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     }
     if (err.message?.includes("Insufficient stock")) return res.status(400).json({ message: err.message });
     if (err.message?.includes("not found")) return res.status(400).json({ message: "Product no longer available." });
-    return res.status(500).json({ message: `Checkout Error: ${err.sqlMessage || err.message}` });
+    return res.status(500).json({ message: "Checkout failed due to a server error. Please try again." });
   }
 });
 

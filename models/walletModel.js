@@ -60,24 +60,35 @@ const WalletModel = {
   },
 
   processTransaction: async (userId, amount, type, description, reference_id = null) => {
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      throw new Error('Transaction amount must be a positive number.');
+    }
+    if (!['credit', 'debit'].includes(type)) {
+      throw new Error('Transaction type must be credit or debit.');
+    }
+
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
       await ensureWalletAccount(connection, userId);
       const [wallet] = await connection.query('SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE', [userId]);
       const currentBalance = Number(wallet[0]?.balance) || 0;
+      const currentPaise = Math.round(currentBalance * 100);
+      const deltaPaise = Math.round(numericAmount * 100);
 
-      if (type === 'debit' && currentBalance < amount) {
+      if (type === 'debit' && currentPaise < deltaPaise) {
         throw new Error('Insufficient wallet balance');
       }
 
-      const newBalance = type === 'credit' ? currentBalance + parseFloat(amount) : currentBalance - parseFloat(amount);
+      const newPaise = type === 'credit' ? currentPaise + deltaPaise : currentPaise - deltaPaise;
+      const newBalance = Number((newPaise / 100).toFixed(2));
 
       await connection.query('UPDATE wallets SET balance = ? WHERE user_id = ?', [newBalance, userId]);
       
       await connection.query(
         'INSERT INTO wallet_transactions (user_id, amount, type, description, reference_id) VALUES (?, ?, ?, ?, ?)',
-        [userId, amount, type, description, reference_id]
+        [userId, numericAmount.toFixed(2), type, description, reference_id]
       );
 
       await connection.commit();

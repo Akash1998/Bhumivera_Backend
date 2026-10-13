@@ -168,66 +168,19 @@ router.patch('/loyalty/matrix/members/:id', authenticateAdmin, async (req, res) 
 
 authenticator.options = { window: 1 };
 
-router.post('/register', async (req, res) => {
-  try {
-    const { name, email, password, phone, marketingEmailOptIn = false } = req.body;
-    if (!name || !email || !password) return res.status(400).json({ message: 'Name, email and password are required' });
-    if (typeof marketingEmailOptIn !== 'boolean') {
-      return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
-    }
-    
-    const existing = await getUserByEmail(email);
-    if (existing) return res.status(409).json({ message: 'Email already registered' });
-    
-    const id = await createUser({ name, email, password, phone, marketingEmailOptIn });
-    const deviceHash = await issueTrustedDevice(id, req, res);
-    const token = await issueToken({ id, email, role: 'customer' }, req, { sessionType: 'user', deviceHash });
-    return res.status(201).json({ token, user: { id, name, email, phone, role: 'customer' } });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: 'Registration failed' });
-  }
+// Shadow authentication routes deprecated and redirected to hardened auth routes
+router.post('/register', (_req, res) => {
+  return res.status(410).json({
+    code: 'ENDPOINT_DEPRECATED',
+    message: 'Direct user registration has been deprecated for security. Use POST /api/auth/register.',
+  });
 });
 
-router.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const user = await getUserByEmail(email);
-    if (!user) return res.status(401).json({ message: 'Invalid email or password' });
-    if (!user.is_active) return res.status(403).json({ message: 'Account is disabled' });
-    
-    const ok = await verifyPassword(password, user.password_hash);
-    if (!ok) return res.status(401).json({ message: 'Invalid email or password' });
-    if (user.two_factor_enabled) {
-      return res.status(202).json({ requires2FA: true, factor: 'authenticator', email: user.email });
-    }
-    let deviceHash;
-    try {
-      deviceHash = await isTrustedDevice(user.id, req);
-      if (!deviceHash) {
-        await sendDeviceChallenge(user, req);
-        return res.status(202).json({
-          requires2FA: true,
-          factor: 'email',
-          message: 'We sent a verification code to your email because this browser is not trusted yet.',
-          email: user.email
-        });
-      }
-    } catch (challengeError) {
-      console.error('[NEW_DEVICE_CHALLENGE_ERROR]:', challengeError);
-      return res.status(503).json({ message: 'Could not verify this browser. Please try again later.' });
-    }
-    
-    const token = await issueToken(
-      { id: user.id, email: user.email, role: user.role },
-      req,
-      { sessionType: 'user', deviceHash }
-    );
-    return res.json({ token, user: { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role } });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: 'Login failed' });
-  }
+router.post('/login', (_req, res) => {
+  return res.status(410).json({
+    code: 'ENDPOINT_DEPRECATED',
+    message: 'Direct user authentication has been deprecated for security. Use POST /api/auth/login.',
+  });
 });
 
 router.get('/profile', authenticateUser, async (req, res) => {
@@ -444,6 +397,8 @@ router.post('/change-password', authenticateUser, async (req, res) => {
       [hash, user.id]
     );
     await insertPasswordHistory(user.id, 'customer', hash);
+    const { revokeAllSessions } = require('../utils/sessionStore');
+    await revokeAllSessions('user', user.id);
 
     return res.json({ message: 'Password updated successfully' });
   } catch (err) {
@@ -484,9 +439,36 @@ router.post('/2fa/enable', authenticateUser, async (req, res) => {
 
 router.post('/2fa/disable', authenticateUser, async (req, res) => {
   try {
+    const { password, token } = req.body || {};
+    if (!password || !token) {
+      return res.status(400).json({
+        code: 'REAUTH_REQUIRED',
+        message: 'Current password and an authenticator code are required to disable 2FA.',
+      });
+    }
+
+    const [users] = await pool.query('SELECT password_hash, two_factor_secret, two_factor_enabled FROM users WHERE id = ?', [req.user.id]);
+    const user = users[0];
+    if (!user || !user.two_factor_enabled) {
+      return res.status(400).json({ message: '2FA is not enabled on this account.' });
+    }
+
+    const passwordOk = await bcrypt.compare(password, user.password_hash);
+    if (!passwordOk) {
+      return res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Current password incorrect.' });
+    }
+
+    const tokenOk = authenticator.verify({ token: String(token), secret: user.two_factor_secret });
+    if (!tokenOk) {
+      return res.status(401).json({ code: 'INVALID_MFA_TOKEN', message: 'Invalid authenticator token.' });
+    }
+
     await pool.query('UPDATE users SET two_factor_secret=NULL, two_factor_enabled=0 WHERE id=?', [req.user.id]);
-    res.json({ message: "2FA Disabled." });
-  } catch (err) { res.status(500).json({ message: "Server error" }); }
+    res.json({ message: "2FA Disabled successfully." });
+  } catch (err) {
+    console.error('[2FA_DISABLE_ERROR]', err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 router.put('/security-question', authenticateUser, async (req, res) => {

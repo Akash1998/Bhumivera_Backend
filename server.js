@@ -87,9 +87,12 @@ const allowedOrigins = new Set(parseOrigins(
 
 const corsOptions = {
   origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
     const currentEnv = process.env.NODE_ENV || process.env.access_ENV || "production";
-    const isAllowed = allowedOrigins.has(origin) || currentEnv === "development";
+    if (!origin) {
+      if (currentEnv === "development") return callback(null, true);
+      return callback(new Error("Not allowed by CORS: Missing or empty origin"));
+    }
+    const isAllowed = allowedOrigins.has(origin) || (currentEnv === "development" && origin.includes("localhost"));
     if (isAllowed) callback(null, true);
     else callback(new Error("Not allowed by CORS"));
   },
@@ -141,8 +144,8 @@ app.use((req, res, next) => {
 
 app.set("trust proxy", 1);
 app.use("/api/webhooks/razorpay", createRazorpayWebhookRouter({ pool }));
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(express.json({ limit: "10kb" }));
+app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(normalizeErrorResponses);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 

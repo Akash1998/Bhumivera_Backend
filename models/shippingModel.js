@@ -60,10 +60,42 @@ const createZone = async (data) => {
   return result.insertId;
 };
 
+const ALLOWED_SHIPPING_FIELDS = Object.freeze({
+  name: 'name',
+  regions: 'regions',
+  base_charge: 'base_charge',
+  per_kg_charge: 'per_kg_charge',
+  free_above: 'free_above',
+  estimated_days: 'estimated_days',
+  is_active: 'is_active',
+});
+
 const updateZone = async (id, data) => {
-  const fields = Object.keys(data).map(k => `${k} = ?`).join(', ');
-  const values = [...Object.values(data), id];
-  await pool.query(`UPDATE shipping_zones SET ${fields} WHERE id = ?`, values);
+  if (!id || typeof data !== 'object' || data === null) {
+    throw new TypeError('Valid zone ID and update data object are required.');
+  }
+
+  const updates = [];
+  const values = [];
+
+  for (const [key, value] of Object.entries(data)) {
+    if (Object.prototype.hasOwnProperty.call(ALLOWED_SHIPPING_FIELDS, key)) {
+      const dbColumn = ALLOWED_SHIPPING_FIELDS[key];
+      updates.push(`\`${dbColumn}\` = ?`);
+      values.push(value);
+    }
+  }
+
+  if (updates.length === 0) {
+    return false;
+  }
+
+  values.push(id);
+  const [result] = await pool.query(
+    `UPDATE shipping_zones SET ${updates.join(', ')} WHERE id = ?`,
+    values
+  );
+  return result.affectedRows > 0;
 };
 
 const deleteZone = async (id) => {

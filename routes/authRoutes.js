@@ -271,7 +271,7 @@ router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
     return res.json({ token, user: { id: u.id, name: u.name || "Administrator", email: u.email, role: role } });
   } catch (err) {
     console.error("Universal Login Error:", err);
-    res.status(500).json({ message: "Server error", error: err.message, stack: err.stack });
+    res.status(500).json({ message: "Internal server error occurred." });
   }
 });
 
@@ -314,7 +314,7 @@ router.post("/login-request-otp", otpRequestLimiter, async (req, res) => {
     res.json({ success: true, message: "OTP dispatched to registered email." });
   } catch (err) {
     console.error("Login OTP Error:", err);
-    res.status(500).json({ message: "Fatal dispatch error.", error: err.message, stack: err.stack });
+    res.status(500).json({ message: "Could not dispatch verification code." });
   }
 });
 
@@ -336,12 +336,15 @@ router.post("/2fa/verify", otpVerificationLimiter, async (req, res) => {
     } else {
       verifiedByEmail = await consumeDeviceChallenge(c.id, normalizedOtp);
       if (!verifiedByEmail) {
-        if (!c.reset_otp || normalizedOtp !== String(c.reset_otp) || !c.reset_otp_expires || new Date() > new Date(c.reset_otp_expires)) {
+        const isExpired = !c.reset_otp_expires || new Date() > new Date(c.reset_otp_expires);
+        const isValidHash = compareOtp('email-verification', c.email.toLowerCase().trim(), normalizedOtp, c.reset_otp) ||
+                            compareOtp('reset-password', c.email.toLowerCase().trim(), normalizedOtp, c.reset_otp);
+        if (!c.reset_otp || isExpired || !isValidHash) {
           return res.status(401).json({ message: "Invalid or expired MFA token." });
         }
         const [consumed] = await pool.query(
-          'UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=? AND reset_otp_expires >= NOW()',
-          [c.id, normalizedOtp]
+          'UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=?',
+          [c.id]
         );
         if (!consumed.affectedRows) return res.status(401).json({ message: "Invalid or expired MFA token." });
         verifiedByEmail = true;
@@ -677,10 +680,14 @@ router.post("/refresh", async (req, res) => {
     }
     const sessionType = payload.sessionType;
     if (!sessionType || !await isSessionActive(payload, req)) {
+      console.warn(`[SECURITY ALERT] Invalidated or replayed token refresh attempt for user ${payload.id}. Revoking session family.`);
+      if (sessionType && payload.id) {
+        try { await revokeAllSessions(sessionType, payload.id); } catch (e) {}
+      }
       return res.status(401).json({
         code: 'SESSION_REAUTH_REQUIRED',
-        message: 'Your sign-in on this device has expired or needs verification. Please sign in again; other devices are not affected.',
-        userAction: 'Sign in again on this device. Other devices remain signed in.'
+        message: 'Your sign-in has expired or was revoked. Please sign in again on this device.',
+        userAction: 'Sign in again on this device.'
       });
     }
     const now = Math.floor(Date.now() / 1000);

@@ -312,29 +312,28 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
   }
 });
 
+function sanitizeCsvCell(value) {
+  if (value === null || value === undefined) return '""';
+  const str = String(value);
+  const sanitized = /^[=+\-@\t\r]/.test(str) ? "'" + str : str;
+  return '"' + sanitized.replace(/"/g, '""') + '"';
+}
+
 router.get('/orders/export/csv', authenticateAdmin, async (req, res) => {
   try {
     const orders = await getAllOrders();
     const headers = ['ID', 'Status', 'Total', 'Customer Email', 'Created'];
-    const rows = orders.map(o => [
-      o.id,
-      o.status,
-      o.total || 0,
-      o.user_email || '',
-      o.created_at || ''
-    ]);
-    
-    let csv = headers.join(',') + '\n';
-    rows.forEach(row => {
-      csv += row.join(',') + '\n';
-    });
+    let csv = headers.map(sanitizeCsvCell).join(',') + '\r\n';
+    for (const o of orders) {
+      const row = [o.id, o.status, o.total || 0, o.user_email || '', o.created_at || ''];
+      csv += row.map(sanitizeCsvCell).join(',') + '\r\n';
+    }
 
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename=orders.csv');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="orders.csv"');
     return res.status(200).send(csv);
   } catch (err) {
     return res.status(500).json({ message: 'Failed to export orders' });
   }
 });
-
 module.exports = router;
