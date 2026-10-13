@@ -5,7 +5,9 @@ const {
   debitWalletForOrder,
   COD_REQUIRED_DELIVERED_ORDERS,
 } = require('../services/orderPaymentPolicy');
+const { calculateTierDiscount, calculateLoyaltyRedemption, calculateLoyaltyPointsAward } = require('../services/loyaltyPolicy');
 const { getReferralConfig } = require('./referralModel');
+const { getLoyaltyConfig, listLoyaltyTiers, getLoyaltyTierForPoints } = require('./loyaltyTierModel');
 
 const getDeliveredOrderCount = async userId => {
   const [[result]] = await pool.query(
@@ -69,6 +71,7 @@ const createOrdersTables = async () => {
     await addCol('orders', 'impact_project', 'VARCHAR(50) DEFAULT NULL');
     await addCol('orders', 'loyalty_points_awarded', 'INT NOT NULL DEFAULT 0');
     await addCol('orders', 'loyalty_points_redeemed', 'INT NOT NULL DEFAULT 0');
+    await addCol('orders', 'tier_discount', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
     await addCol('orders', 'total', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'coupon_code', 'VARCHAR(100)');
     await addCol('orders', 'terms_version', 'VARCHAR(20) DEFAULT NULL');
@@ -120,12 +123,12 @@ const createOrder = async ({
   impactProject = null,
   couponId = null,
   referralWalletAmount = 0,
-  loyaltyPointsAwarded = 0,
+  loyaltyRuleBonusPoints = 0,
+  tierDiscount = 0,
   termsVersion = null,
   lifecycleGiftProductId = null,
   whatsappUpdatesOptIn = false,
   loyaltyPointsToRedeem = 0,
-  loyaltyPointsPerRupee = 10
 }) => {
   const conn = await pool.getConnection();
   try {
@@ -176,7 +179,7 @@ const createOrder = async ({
     );
     assertCodEligibility(paymentMode, deliveredOrders.length);
 
-    const [userRows] = await conn.query('SELECT pending_lifecycle_gift_product_id, loyalty_points FROM users WHERE id = ? FOR UPDATE', [userId]);
+    const [userRows] = await conn.query('SELECT pending_lifecycle_gift_product_id, loyalty_points, loyalty_lifetime_points FROM users WHERE id = ? FOR UPDATE', [userId]);
     const pendingGiftProductId = userRows?.[0]?.pending_lifecycle_gift_product_id;
     if (pendingGiftProductId) {
       orderItems.push({ product_id: pendingGiftProductId, quantity: 1, is_gift: true, lifecycle_gift: true });
@@ -224,6 +227,23 @@ const createOrder = async ({
 
     // Step 3: Finalize Totals
     const safeDiscount = Math.min(backendSubtotal, Math.max(0, parseFloat(discount) || 0));
+    const loyaltyConfig = await getLoyaltyConfig(conn);
+    const activeLoyaltyTiers = await listLoyaltyTiers({ activeOnly: true, connection: conn });
+    const currentLoyaltyTier = getLoyaltyTierForPoints(userRows?.[0]?.loyalty_lifetime_points, activeLoyaltyTiers);
+    const calculatedTierDiscount = calculateTierDiscount(
+      backendSubtotal,
+      safeDiscount,
+      currentLoyaltyTier?.tier_discount_percent,
+      Boolean(loyaltyConfig.enabled)
+    );
+    const requestedTierDiscount = Math.max(0, Number(tierDiscount) || 0);
+    if (Math.abs(calculatedTierDiscount - requestedTierDiscount) >= 0.005) {
+      throw Object.assign(new Error('Your loyalty tier benefits changed. Refresh checkout and try again.'), {
+        status: 409,
+        code: 'LOYALTY_TIER_BENEFIT_CHANGED',
+      });
+    }
+    const safeTierDiscount = requestedTierDiscount;
     const requestedReferralWalletAmount = Math.max(0, Number(referralWalletAmount) || 0);
     let safeReferralWalletAmount = 0;
     if (requestedReferralWalletAmount > 0) {
@@ -237,7 +257,7 @@ const createOrder = async ({
         availableReferralBalance,
         backendSubtotal,
         referralConfig.referral_redemption_tiers,
-        backendSubtotal - safeDiscount
+        backendSubtotal - safeDiscount - safeTierDiscount
       );
       if (Math.abs(maxReferralRedemption - requestedReferralWalletAmount) >= 0.005) {
         throw Object.assign(new Error('Your referral reward balance changed. Reapply the coupon and try again.'), {
@@ -249,26 +269,48 @@ const createOrder = async ({
     }
     const safeShippingCost = Math.max(0, parseFloat(shippingCost) || 0);
     const safeImpactAmount = Math.max(0, Math.min(500, Number(impactAmount) || 0));
-    const safeLoyaltyPoints = Math.max(0, Math.trunc(Number(loyaltyPointsAwarded) || 0));
-    const pointsPerRupee = Math.max(1, Math.trunc(Number(loyaltyPointsPerRupee) || 10));
     const pointsAvailable = Math.max(0, Math.trunc(Number(userRows?.[0]?.loyalty_points) || 0));
     const requestedPoints = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
-    const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount - safeReferralWalletAmount + safeShippingCost) * pointsPerRupee);
-    const pointsRedeemed = Math.min(requestedPoints, pointsAvailable, maxAffordablePoints);
-    const loyaltyDiscount = pointsRedeemed / pointsPerRupee;
-    const backendTotal = Math.max(0, backendSubtotal - safeDiscount - safeReferralWalletAmount + safeShippingCost - loyaltyDiscount + safeImpactAmount);
+    const redemption = calculateLoyaltyRedemption({
+      pointsBalance: pointsAvailable,
+      eligibleSubtotal: backendSubtotal - safeDiscount - safeTierDiscount - safeReferralWalletAmount,
+      redemptionPointsPerRupee: loyaltyConfig.redemption_points_per_rupee,
+      maxRedemptionPercent: loyaltyConfig.max_redemption_percent,
+      minimumRedemptionPoints: loyaltyConfig.minimum_redemption_points,
+      enabled: Boolean(loyaltyConfig.enabled),
+    });
+    if (requestedPoints > redemption.points) {
+      throw Object.assign(new Error('Your loyalty points or eligible order amount changed. Refresh checkout and try again.'), {
+        status: 409,
+        code: 'LOYALTY_POINTS_BALANCE_CHANGED',
+      });
+    }
+    const pointsRedeemed = requestedPoints;
+    const loyaltyDiscount = Math.min(redemption.discount, pointsRedeemed / loyaltyConfig.redemption_points_per_rupee);
+    const eligibleSpend = Math.max(0, backendSubtotal - safeDiscount - safeTierDiscount - safeReferralWalletAmount - loyaltyDiscount);
+    const loyaltyPointsAwarded = calculateLoyaltyPointsAward({
+      eligibleSpend,
+      pointsPerRupee: loyaltyConfig.points_per_rupee,
+      tierMultiplier: currentLoyaltyTier?.points_multiplier,
+      tierBonusPoints: (Number(currentLoyaltyTier?.bonus_points) || 0) + (Number(loyaltyRuleBonusPoints) || 0),
+      cashbackPercent: currentLoyaltyTier?.cashback_percent,
+      redemptionPointsPerRupee: loyaltyConfig.redemption_points_per_rupee,
+      enabled: Boolean(loyaltyConfig.enabled),
+    });
+    const backendTotal = Math.max(0, backendSubtotal - safeDiscount - safeTierDiscount - safeReferralWalletAmount + safeShippingCost - loyaltyDiscount + safeImpactAmount);
     if (pointsRedeemed > 0) {
       await conn.query('UPDATE users SET loyalty_points = loyalty_points - ? WHERE id = ? AND loyalty_points >= ?', [pointsRedeemed, userId, pointsRedeemed]);
     }
 
     // Step 4: Insert the Order
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at, terms_version, terms_accepted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END, ?, NOW())`,
+      `INSERT INTO orders (user_id, subtotal, discount, tier_discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at, terms_version, terms_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END, ?, NOW())`,
       [
         userId,
         backendSubtotal,
         safeDiscount,
+        safeTierDiscount,
         safeReferralWalletAmount,
         safeShippingCost,
         safeImpactAmount,
@@ -290,6 +332,15 @@ const createOrder = async ({
     );
 
     const orderId = res.insertId;
+
+    if (pointsRedeemed > 0) {
+      await conn.query(
+        `INSERT INTO loyalty_point_transactions
+          (user_id, points_delta, balance_after, type, description, reference_id, order_id)
+         VALUES (?, ?, ?, 'redeem', ?, ?, ?)`,
+        [userId, -pointsRedeemed, pointsAvailable - pointsRedeemed, `Redeemed points on order #${orderId}`, `loyalty-order-${orderId}-redeem`, orderId]
+      );
+    }
 
     if (safeReferralWalletAmount > 0) {
       const [referralDebit] = await conn.query(
@@ -517,7 +568,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
   try {
     await conn.beginTransaction();
     const [orders] = await conn.query(
-      'SELECT user_id, status, payment_mode, payment_status, loyalty_points_awarded FROM orders WHERE id = ? FOR UPDATE',
+      'SELECT user_id, status, payment_mode, payment_status, loyalty_points_awarded, loyalty_points_redeemed FROM orders WHERE id = ? FOR UPDATE',
       [orderId]
     );
     const order = orders?.[0];
@@ -533,11 +584,46 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
 
     if (status === 'confirmed' && order.status === 'pending') {
       const points = Math.max(0, Math.trunc(Number(order.loyalty_points_awarded) || 0));
-      if (points > 0) await conn.query('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id = ?', [points, order.user_id]);
+      if (points > 0) {
+        const [[user]] = await conn.query('SELECT loyalty_points FROM users WHERE id = ? FOR UPDATE', [order.user_id]);
+        const balanceAfter = Math.max(0, Number(user?.loyalty_points) || 0) + points;
+        await conn.query(
+          'UPDATE users SET loyalty_points = ?, loyalty_lifetime_points = loyalty_lifetime_points + ? WHERE id = ?',
+          [balanceAfter, points, order.user_id]
+        );
+        await conn.query(
+          `INSERT INTO loyalty_point_transactions
+            (user_id, points_delta, balance_after, type, description, reference_id, order_id)
+           VALUES (?, ?, ?, 'earn', ?, ?, ?)`,
+          [order.user_id, points, balanceAfter, `Points earned on confirmed order #${orderId}`, `loyalty-order-${orderId}-earn`, orderId]
+        );
+      }
     }
 
     const alreadyRestocked = ['cancelled', 'returned'].includes(order.status);
     if (['cancelled', 'returned'].includes(status) && !alreadyRestocked) {
+      const earnedPoints = ['confirmed', 'packed', 'shipped', 'delivered'].includes(order.status)
+        ? Math.max(0, Math.trunc(Number(order.loyalty_points_awarded) || 0))
+        : 0;
+      const redeemedPoints = Math.max(0, Math.trunc(Number(order.loyalty_points_redeemed) || 0));
+      if (earnedPoints > 0 || redeemedPoints > 0) {
+        const [[user]] = await conn.query('SELECT loyalty_points, loyalty_lifetime_points FROM users WHERE id = ? FOR UPDATE', [order.user_id]);
+        const previousBalance = Math.max(0, Number(user?.loyalty_points) || 0);
+        const balanceAfter = Math.max(0, previousBalance - earnedPoints) + redeemedPoints;
+        await conn.query(
+          `UPDATE users
+           SET loyalty_points = ?,
+               loyalty_lifetime_points = GREATEST(0, loyalty_lifetime_points - ?)
+           WHERE id = ?`,
+          [balanceAfter, earnedPoints, order.user_id]
+        );
+        await conn.query(
+          `INSERT INTO loyalty_point_transactions
+            (user_id, points_delta, balance_after, type, description, reference_id, order_id)
+           VALUES (?, ?, ?, 'reversal', ?, ?, ?)`,
+          [order.user_id, balanceAfter - previousBalance, balanceAfter, `Reversed points for ${status} order #${orderId}`, `loyalty-order-${orderId}-reversal`, orderId]
+        );
+      }
       const [items] = await conn.query('SELECT product_id, quantity FROM order_items WHERE order_id = ?', [orderId]);
       for (const item of items) {
         if (item.product_id) {

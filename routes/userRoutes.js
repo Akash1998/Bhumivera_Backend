@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { authenticator } = require('otplib');
 const qrcode = require('qrcode');
@@ -21,8 +22,149 @@ const { issueToken } = require('../utils/sessionStore');
 const { isTrustedDevice, sendDeviceChallenge, issueTrustedDevice } = require('../utils/trustedDevice');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const pool = require('../config/db');
-const { listLoyaltyTiers, createLoyaltyTier, updateLoyaltyTier, deleteLoyaltyTier } = require('../models/loyaltyTierModel');
+const {
+  listLoyaltyTiers,
+  getLoyaltyConfig,
+  saveLoyaltyConfig,
+  createLoyaltyTier,
+  updateLoyaltyTier,
+  deleteLoyaltyTier,
+} = require('../models/loyaltyTierModel');
 const { computeLoyaltyTier } = require('../utils/loyaltyTier');
+
+const validateLoyaltyTier = tier => {
+  const name = typeof tier?.name === 'string' ? tier.name.trim() : '';
+  const minPoints = Number(tier?.min_points);
+  const multiplier = Number(tier?.points_multiplier);
+  const discount = Number(tier?.tier_discount_percent);
+  const cashback = Number(tier?.cashback_percent);
+  const bonus = Number(tier?.bonus_points);
+  const validBoolean = value => [true, false, 0, 1, '0', '1'].includes(value);
+  return Boolean(name) && name.length <= 80 && Number.isSafeInteger(minPoints) && minPoints >= 0 &&
+    Number.isFinite(multiplier) && multiplier >= 0.1 && multiplier <= 10 &&
+    Number.isFinite(discount) && discount >= 0 && discount <= 25 &&
+    Number.isFinite(cashback) && cashback >= 0 && cashback <= 25 &&
+    Number.isSafeInteger(bonus) && bonus >= 0 && bonus <= 1000000 &&
+    validBoolean(tier?.free_shipping) && validBoolean(tier?.is_active);
+};
+
+router.get('/loyalty/matrix', authenticateAdmin, async (_req, res) => {
+  try {
+    const [config, tiers] = await Promise.all([getLoyaltyConfig(), listLoyaltyTiers()]);
+    res.json({ data: { config, tiers } });
+  } catch (err) {
+    console.error('[LOYALTY_MATRIX_LOAD]', err);
+    res.status(500).json({ code: 'LOYALTY_MATRIX_LOAD_FAILED', message: 'Failed to load the loyalty matrix.' });
+  }
+});
+
+router.put('/loyalty/matrix/config', authenticateAdmin, async (req, res) => {
+  const config = req.body || {};
+  const pointsPerRupee = Number(config.points_per_rupee);
+  const redemptionRate = Number(config.redemption_points_per_rupee);
+  const maxRedemption = Number(config.max_redemption_percent);
+  const minimumPoints = Number(config.minimum_redemption_points);
+  if (typeof config.enabled !== 'boolean' || !Number.isFinite(pointsPerRupee) || pointsPerRupee < 0 || pointsPerRupee > 100 ||
+      !Number.isSafeInteger(redemptionRate) || redemptionRate < 1 || redemptionRate > 100000 ||
+      !Number.isFinite(maxRedemption) || maxRedemption < 0 || maxRedemption > 100 ||
+      !Number.isSafeInteger(minimumPoints) || minimumPoints < 0 || minimumPoints > 1000000) {
+    return res.status(400).json({ code: 'INVALID_LOYALTY_CONFIG', message: 'Check the earning rate, redemption conversion, order cap, and minimum points.' });
+  }
+  try {
+    res.json({ data: await saveLoyaltyConfig({ enabled: config.enabled, points_per_rupee: pointsPerRupee, redemption_points_per_rupee: redemptionRate, max_redemption_percent: maxRedemption, minimum_redemption_points: minimumPoints }) });
+  } catch (err) {
+    console.error('[LOYALTY_MATRIX_CONFIG_SAVE]', err);
+    res.status(500).json({ code: 'LOYALTY_MATRIX_CONFIG_SAVE_FAILED', message: 'Failed to save loyalty settings.' });
+  }
+});
+
+router.get('/loyalty/matrix/members', authenticateAdmin, async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, name, email, loyalty_points, loyalty_lifetime_points
+       FROM users WHERE role = 'customer' AND is_active = 1
+       ORDER BY loyalty_lifetime_points DESC, id DESC LIMIT 500`
+    );
+    res.json({ data: rows });
+  } catch (err) {
+    console.error('[LOYALTY_MATRIX_MEMBERS]', err);
+    res.status(500).json({ code: 'LOYALTY_MEMBERS_LOAD_FAILED', message: 'Failed to load loyalty members.' });
+  }
+});
+
+router.get('/loyalty/matrix/transactions', authenticateAdmin, async (req, res) => {
+  const limit = Math.max(1, Math.min(100, Number.parseInt(req.query.limit, 10) || 50));
+  const userId = req.query.user_id ? Number(req.query.user_id) : null;
+  if (req.query.user_id && (!Number.isSafeInteger(userId) || userId < 1)) {
+    return res.status(400).json({ code: 'INVALID_LOYALTY_MEMBER', message: 'Member ID must be a positive whole number.' });
+  }
+  try {
+    const [rows] = await pool.query(
+      `SELECT t.id, t.user_id, u.name, u.email, t.points_delta, t.balance_after,
+        t.type, t.description, t.reference_id, t.order_id, t.created_by_admin_id, t.created_at
+       FROM loyalty_point_transactions t
+       JOIN users u ON u.id = t.user_id
+       WHERE (? IS NULL OR t.user_id = ?)
+       ORDER BY t.created_at DESC, t.id DESC LIMIT ?`,
+      [userId, userId, limit]
+    );
+    res.json({ data: rows });
+  } catch (err) {
+    console.error('[LOYALTY_MATRIX_TRANSACTIONS]', err);
+    res.status(500).json({ code: 'LOYALTY_TRANSACTIONS_LOAD_FAILED', message: 'Failed to load loyalty transactions.' });
+  }
+});
+
+router.patch('/loyalty/matrix/members/:id', authenticateAdmin, async (req, res) => {
+  const userId = Number(req.params.id);
+  const pointsDelta = Number(req.body?.points_delta);
+  const lifetimeDelta = req.body?.lifetime_points_delta === undefined
+    ? Math.max(0, pointsDelta)
+    : Number(req.body.lifetime_points_delta);
+  const description = typeof req.body?.description === 'string' ? req.body.description.trim().slice(0, 240) : '';
+    if (!Number.isSafeInteger(userId) || userId < 1 || !Number.isSafeInteger(pointsDelta) ||
+      Math.abs(pointsDelta) > 1000000 || !Number.isSafeInteger(lifetimeDelta) || Math.abs(lifetimeDelta) > 1000000 ||
+      (pointsDelta === 0 && lifetimeDelta === 0) ||
+      description.length < 5) {
+    return res.status(400).json({ code: 'INVALID_LOYALTY_ADJUSTMENT', message: 'Enter a valid member, non-zero point adjustment, lifetime adjustment, and reason.' });
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [[user]] = await connection.query(
+      "SELECT id, loyalty_points, loyalty_lifetime_points FROM users WHERE id = ? AND role = 'customer' AND is_active = 1 FOR UPDATE",
+      [userId]
+    );
+    if (!user) {
+      await connection.rollback();
+      return res.status(404).json({ code: 'LOYALTY_MEMBER_NOT_FOUND', message: 'Active customer not found.' });
+    }
+    const balanceAfter = Number(user.loyalty_points) + pointsDelta;
+    const lifetimeAfter = Math.max(0, Number(user.loyalty_lifetime_points) + lifetimeDelta);
+    if (balanceAfter < 0) {
+      await connection.rollback();
+      return res.status(409).json({ code: 'INSUFFICIENT_LOYALTY_POINTS', message: 'This adjustment would make the available points balance negative.' });
+    }
+    await connection.query(
+      'UPDATE users SET loyalty_points = ?, loyalty_lifetime_points = ? WHERE id = ?',
+      [balanceAfter, lifetimeAfter, userId]
+    );
+    await connection.query(
+      `INSERT INTO loyalty_point_transactions
+        (user_id, points_delta, balance_after, type, description, reference_id, created_by_admin_id)
+       VALUES (?, ?, ?, 'adjustment', ?, ?, ?)`,
+      [userId, pointsDelta, balanceAfter, description, `loyalty-admin-${crypto.randomUUID()}`, req.user.id]
+    );
+    await connection.commit();
+    return res.json({ success: true, data: { userId, pointsBalance: balanceAfter, lifetimePoints: lifetimeAfter } });
+  } catch (err) {
+    await connection.rollback();
+    console.error('[LOYALTY_MATRIX_ADJUSTMENT]', err);
+    return res.status(500).json({ code: 'LOYALTY_ADJUSTMENT_FAILED', message: 'Could not adjust loyalty points.' });
+  } finally {
+    connection.release();
+  }
+});
 
 authenticator.options = { window: 1 };
 
@@ -92,14 +234,14 @@ router.get('/profile', authenticateUser, async (req, res) => {
   try {
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, marketing_email_opt_in, whatsapp_order_updates_opt_in FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, loyalty_lifetime_points, marketing_email_opt_in, whatsapp_order_updates_opt_in FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) {
         user = rows[0];
       }
     }
     if (!user) return res.status(404).json({ message: 'User not found' });
     const tiers = await listLoyaltyTiers({ activeOnly: true });
-    const loyalty = computeLoyaltyTier(user.loyalty_points, tiers);
+    const loyalty = computeLoyaltyTier(user.loyalty_lifetime_points ?? user.loyalty_points, tiers);
     user.loyalty = loyalty;
     user.loyaltyProgress = loyalty;
     return res.json(user);
@@ -158,9 +300,11 @@ router.get('/loyalty/tiers', authenticateAdmin, async (req, res) => {
 router.post('/loyalty/tiers', authenticateAdmin, async (req, res) => {
   try {
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-    if (!name || !Number.isFinite(Number(req.body?.min_points)) || Number(req.body.min_points) < 0) {
-      return res.status(400).json({ code: 'INVALID_LOYALTY_TIER', message: 'Tier name and a non-negative points threshold are required.' });
+    if (!validateLoyaltyTier({ ...req.body, name })) {
+      return res.status(400).json({ code: 'INVALID_LOYALTY_TIER', message: 'Enter a tier name, unique non-negative threshold, multiplier from 0.1–10, discount/cashback from 0–25%, and whole bonus points.' });
     }
+    const [thresholdMatches] = await pool.query('SELECT id FROM loyalty_tiers WHERE min_points = ?', [Number(req.body.min_points)]);
+    if (thresholdMatches.length) return res.status(409).json({ code: 'LOYALTY_THRESHOLD_EXISTS', message: 'Each loyalty tier must have a unique lifetime-points threshold.' });
     res.status(201).json({ data: await createLoyaltyTier({ ...req.body, name }) });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ code: 'LOYALTY_TIER_EXISTS', message: 'A tier with that name already exists.' });
@@ -171,10 +315,24 @@ router.post('/loyalty/tiers', authenticateAdmin, async (req, res) => {
 
 router.put('/loyalty/tiers/:id', authenticateAdmin, async (req, res) => {
   try {
+    const [existing] = await pool.query('SELECT * FROM loyalty_tiers WHERE id = ?', [req.params.id]);
+    if (!existing.length) return res.status(404).json({ code: 'LOYALTY_TIER_NOT_FOUND', message: 'Loyalty tier not found.' });
+    const merged = { ...existing[0], ...(req.body || {}) };
+    if (!validateLoyaltyTier(merged)) {
+      return res.status(400).json({ code: 'INVALID_LOYALTY_TIER', message: 'Enter a tier name, unique non-negative threshold, multiplier from 0.1–10, discount/cashback from 0–25%, and whole bonus points.' });
+    }
+    const [thresholdMatches] = await pool.query('SELECT id FROM loyalty_tiers WHERE min_points = ? AND id <> ?', [Number(merged.min_points), req.params.id]);
+    if (thresholdMatches.length) return res.status(409).json({ code: 'LOYALTY_THRESHOLD_EXISTS', message: 'Each loyalty tier must have a unique lifetime-points threshold.' });
+    const staysActiveBase = Number(merged.min_points) === 0 && (merged.is_active === true || Number(merged.is_active) === 1);
+    if (!staysActiveBase) {
+      const [otherBaseTiers] = await pool.query('SELECT id FROM loyalty_tiers WHERE min_points = 0 AND is_active = 1 AND id <> ?', [req.params.id]);
+      if (!otherBaseTiers.length) return res.status(409).json({ code: 'LOYALTY_BASE_TIER_REQUIRED', message: 'Keep at least one active tier at zero lifetime points.' });
+    }
     const tier = await updateLoyaltyTier(req.params.id, req.body || {});
     if (!tier) return res.status(404).json({ code: 'LOYALTY_TIER_NOT_FOUND', message: 'Loyalty tier not found.' });
     res.json({ data: tier });
   } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ code: 'LOYALTY_TIER_EXISTS', message: 'A loyalty tier with that name already exists.' });
     console.error('[LOYALTY_TIER_UPDATE]', err);
     res.status(500).json({ code: 'LOYALTY_TIER_UPDATE_FAILED', message: 'Failed to update loyalty tier.' });
   }
@@ -182,6 +340,15 @@ router.put('/loyalty/tiers/:id', authenticateAdmin, async (req, res) => {
 
 router.delete('/loyalty/tiers/:id', authenticateAdmin, async (req, res) => {
   try {
+    const [activeTiers] = await pool.query('SELECT id FROM loyalty_tiers WHERE is_active = 1');
+    const [selectedTier] = await pool.query('SELECT id, is_active, min_points FROM loyalty_tiers WHERE id = ?', [req.params.id]);
+    if (selectedTier[0]?.is_active && activeTiers.length <= 1) {
+      return res.status(409).json({ code: 'LAST_ACTIVE_LOYALTY_TIER', message: 'Keep at least one active loyalty tier.' });
+    }
+    if (Number(selectedTier[0]?.min_points) === 0 && selectedTier[0]?.is_active) {
+      const [otherBaseTiers] = await pool.query('SELECT id FROM loyalty_tiers WHERE min_points = 0 AND is_active = 1 AND id <> ?', [req.params.id]);
+      if (!otherBaseTiers.length) return res.status(409).json({ code: 'LOYALTY_BASE_TIER_REQUIRED', message: 'Keep at least one active tier at zero lifetime points.' });
+    }
     if (!await deleteLoyaltyTier(req.params.id)) return res.status(404).json({ code: 'LOYALTY_TIER_NOT_FOUND', message: 'Loyalty tier not found.' });
     res.json({ success: true });
   } catch (err) {
@@ -208,11 +375,11 @@ router.put('/profile', authenticateUser, async (req, res) => {
     });
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, marketing_email_opt_in, whatsapp_order_updates_opt_in FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, loyalty_lifetime_points, marketing_email_opt_in, whatsapp_order_updates_opt_in FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) user = rows[0];
     }
     const tiers = await listLoyaltyTiers({ activeOnly: true });
-    const loyalty = computeLoyaltyTier(user?.loyalty_points ?? 0, tiers);
+    const loyalty = computeLoyaltyTier(user?.loyalty_lifetime_points ?? user?.loyalty_points ?? 0, tiers);
     if (user) {
       user.loyalty = loyalty;
       user.loyaltyProgress = loyalty;

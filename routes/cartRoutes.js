@@ -16,6 +16,7 @@ const { listCartRules } = require('../models/cartRulesModel');
 const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { getSetting } = require('../models/settingsModel');
 const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
+const { getLoyaltyConfig, listLoyaltyTiers } = require('../models/loyaltyTierModel');
 const { createCouponTable } = require('../models/couponModel');
 const { getReferralConfig } = require('../models/referralModel');
 const { calculateTieredReferralWalletRedemption } = require('../services/orderPaymentPolicy');
@@ -95,6 +96,24 @@ router.get('/', authenticateUser, async (req, res) => {
     const rules = await listCartRules({ activeOnly: true });
     const enforceMinimum = (await getSetting('enforce_cart_rule_minimum')) === '1';
     const loyaltyTier = await getUserLoyaltyTier(req.user.id);
+    const loyaltyConfig = await getLoyaltyConfig();
+    const loyaltyTiers = await listLoyaltyTiers({ activeOnly: true });
+    const [[loyaltyUser]] = await pool.query(
+      'SELECT loyalty_points, loyalty_lifetime_points FROM users WHERE id = ?',
+      [req.user.id]
+    );
+    const nextLoyaltyTier = loyaltyTiers.find(tier => Number(tier.min_points) > Number(loyaltyUser?.loyalty_lifetime_points || 0)) || null;
+    const loyalty = {
+      enabled: Boolean(loyaltyConfig.enabled),
+      pointsBalance: Math.max(0, Number(loyaltyUser?.loyalty_points) || 0),
+      lifetimePoints: Math.max(0, Number(loyaltyUser?.loyalty_lifetime_points) || 0),
+      pointsPerRupee: loyaltyConfig.points_per_rupee,
+      redemptionPointsPerRupee: loyaltyConfig.redemption_points_per_rupee,
+      maxRedemptionPercent: loyaltyConfig.max_redemption_percent,
+      minimumRedemptionPoints: loyaltyConfig.minimum_redemption_points,
+      currentTier: loyaltyTier,
+      nextTier,
+    };
     const rulePreview = evaluateCartRules(Number(total) || 0, rules, {
       userId: req.user.id,
       enforceMinimum,
@@ -127,6 +146,7 @@ router.get('/', authenticateUser, async (req, res) => {
       total: total || 0,
       rulePreview,
       referralReward,
+      loyalty,
       couponStackPolicy,
       abandonment: { enabled: abandonmentEnabled, delayMinutes, lastActivityAt: lastActivity ? new Date(lastActivity).toISOString() : null },
     });

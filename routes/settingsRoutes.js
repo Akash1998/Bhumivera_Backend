@@ -17,7 +17,7 @@ const { listLoyaltyTiers } = require('../models/loyaltyTierModel');
 // GET /api/settings/public - public: get non-sensitive settings (store info, SEO, social)
 router.get('/public', async (req, res) => {
   try {
-    const groups = ['general', 'seo', 'social', 'policy', 'shipping', 'gamification'];
+    const groups = ['general', 'seo', 'social', 'policy', 'shipping', 'gamification', 'loyalty'];
     const result = {};
     for (const g of groups) {
       const data = await getSettingsByGroup(g);
@@ -26,6 +26,18 @@ router.get('/public', async (req, res) => {
       Object.assign(result, data);
     }
     const cartRules = await listCartRules({ activeOnly: true });
+    result.loyalty_tiers = (await listLoyaltyTiers({ activeOnly: true })).map(tier => ({
+      id: tier.id,
+      name: tier.name,
+      min_points: Number(tier.min_points),
+      benefits: tier.benefits,
+      points_multiplier: Number(tier.points_multiplier),
+      tier_discount_percent: Number(tier.tier_discount_percent),
+      cashback_percent: Number(tier.cashback_percent),
+      free_shipping: Number(tier.free_shipping) === 1,
+      bonus_points: Number(tier.bonus_points),
+      color: tier.color,
+    }));
     result.cart_rules_flat = cartRules.filter(rule => !rule.customer_id).map(rule => ({
       id: rule.id,
       name: rule.name,

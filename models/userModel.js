@@ -18,6 +18,7 @@ const createUsersTable = async () => {
       whatsapp_order_updates_consent_at DATETIME NULL,
       wallet_balance DECIMAL(10,2) DEFAULT 0.00,
       loyalty_points INT NOT NULL DEFAULT 0,
+      loyalty_lifetime_points INT UNSIGNED NOT NULL DEFAULT 0,
       pending_lifecycle_gift_product_id INT DEFAULT NULL,
       two_factor_secret VARCHAR(255),
       two_factor_enabled TINYINT(1) DEFAULT 0,
@@ -42,6 +43,7 @@ const createUsersTable = async () => {
     { name: 'whatsapp_order_updates_consent_at', type: `DATETIME NULL` },
     { name: 'wallet_balance', type: `DECIMAL(10,2) DEFAULT 0.00` },
     { name: 'loyalty_points', type: `INT NOT NULL DEFAULT 0` },
+    { name: 'loyalty_lifetime_points', type: `INT UNSIGNED NOT NULL DEFAULT 0` },
     { name: 'pending_lifecycle_gift_product_id', type: `INT DEFAULT NULL` },
     { name: 'two_factor_secret', type: `VARCHAR(255)` },
     { name: 'two_factor_enabled', type: `TINYINT(1) DEFAULT 0` },
@@ -350,7 +352,7 @@ const getUserByEmail = async (email) => {
 
 const getUserById = async (id) => {
   const [rows] = await pool.query(
-    `SELECT id, name, email, phone, role, is_active, wallet_balance, loyalty_points,
+    `SELECT id, name, email, phone, role, is_active, wallet_balance, loyalty_points, loyalty_lifetime_points,
       two_factor_enabled, security_question, marketing_email_opt_in, marketing_email_consent_at,
       whatsapp_order_updates_opt_in, whatsapp_order_updates_consent_at, created_at
      FROM users WHERE id = ?`,

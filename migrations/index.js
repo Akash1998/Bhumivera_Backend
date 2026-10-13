@@ -372,6 +372,68 @@ const migrations = [
       }
     },
   },
+  {
+    version: 46,
+    name: 'activate loyalty matrix and lifetime tier points',
+    up: async () => {
+      for (const [table, column, definition] of [
+        ['users', 'loyalty_lifetime_points', 'INT UNSIGNED NOT NULL DEFAULT 0'],
+        ['orders', 'tier_discount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00'],
+        ['loyalty_tiers', 'points_multiplier', 'DECIMAL(6,2) NOT NULL DEFAULT 1.00'],
+        ['loyalty_tiers', 'tier_discount_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0.00'],
+        ['loyalty_tiers', 'cashback_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0.00'],
+        ['loyalty_tiers', 'free_shipping', 'TINYINT(1) NOT NULL DEFAULT 0'],
+        ['loyalty_tiers', 'bonus_points', 'INT UNSIGNED NOT NULL DEFAULT 0'],
+      ]) {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+        if (!columns.length) await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+      }
+      await pool.query('UPDATE users SET loyalty_lifetime_points = loyalty_points WHERE loyalty_lifetime_points = 0 AND loyalty_points > 0');
+      await pool.query("UPDATE settings SET value = '0.1' WHERE key_name = 'loyalty_points_per_rupee' AND value = '10'");
+      for (const [key, value] of [
+        ['loyalty_program_enabled', '1'],
+        ['loyalty_redemption_points_per_rupee', '10'],
+        ['loyalty_max_redemption_percent', '20'],
+        ['loyalty_minimum_redemption_points', '100'],
+      ]) {
+        await pool.query(
+          "INSERT IGNORE INTO settings (key_name, value, group_name) VALUES (?, ?, 'loyalty')",
+          [key, value]
+        );
+      }
+      await pool.query(`
+        UPDATE loyalty_tiers SET
+          points_multiplier = CASE name WHEN 'Silver' THEN 1.25 WHEN 'Gold' THEN 1.5 WHEN 'Platinum' THEN 2 ELSE points_multiplier END,
+          tier_discount_percent = CASE name WHEN 'Gold' THEN 2 WHEN 'Platinum' THEN 3 ELSE tier_discount_percent END,
+          cashback_percent = CASE name WHEN 'Gold' THEN 0.5 WHEN 'Platinum' THEN 1 ELSE cashback_percent END,
+          free_shipping = CASE WHEN name IN ('Silver', 'Gold', 'Platinum') THEN 1 ELSE free_shipping END
+        WHERE points_multiplier = 1 AND tier_discount_percent = 0 AND cashback_percent = 0 AND free_shipping = 0
+      `);
+    },
+  },
+  {
+    version: 47,
+    name: 'audit loyalty point transactions',
+    up: async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS loyalty_point_transactions (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          points_delta INT NOT NULL,
+          balance_after INT UNSIGNED NOT NULL,
+          type ENUM('earn','redeem','reversal','adjustment') NOT NULL,
+          description VARCHAR(255) NOT NULL,
+          reference_id VARCHAR(120) NOT NULL UNIQUE,
+          order_id INT DEFAULT NULL,
+          created_by_admin_id INT DEFAULT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_loyalty_points_user_created (user_id, created_at),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

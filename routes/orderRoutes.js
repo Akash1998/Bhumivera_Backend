@@ -22,6 +22,8 @@ const { getSetting, getSettingsByGroup } = require('../models/settingsModel');
 const { listCartRules } = require('../models/cartRulesModel');
 const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
+const { getLoyaltyConfig } = require('../models/loyaltyTierModel');
+const { calculateTierDiscount, calculateLoyaltyRedemption } = require('../services/loyaltyPolicy');
 const { getRazorpayClient } = require('../services/razorpayService');
 const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../services/paymentReconciliationService');
 const { reconcileReferralRewards, getReferralConfig } = require('../models/referralModel');
@@ -281,6 +283,14 @@ router.post("/", authenticateUser, async (req, res) => {
     else if (couponStackPolicy === 'coupon_first' && couponDiscount > 0) discount = couponDiscount;
     else if (ruleDiscount <= 0) discount = couponDiscount;
     discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount));
+    const loyaltyConfig = await getLoyaltyConfig();
+    const loyaltyTier = await getUserLoyaltyTier(req.user.id);
+    const tierDiscount = calculateTierDiscount(
+      Number(cartTotal) || 0,
+      discount,
+      loyaltyTier?.tier_discount_percent,
+      Boolean(loyaltyConfig.enabled)
+    );
     const referralConfig = await getReferralConfig();
     const [[referralWallet]] = await pool.query(
       'SELECT balance FROM referral_wallets WHERE user_id = ?',
@@ -290,13 +300,15 @@ router.post("/", authenticateUser, async (req, res) => {
       Math.max(0, Number(referralWallet?.balance) || 0),
       Number(cartTotal) || 0,
       referralConfig.referral_redemption_tiers,
-      Math.max(0, Number(cartTotal) - discount)
+      Math.max(0, Number(cartTotal) - discount - tierDiscount)
     );
 
     const shippingSettings = await getSettingsByGroup('shipping');
     const shippingKey = deliveryType === 'express' ? 'express_charge' : 'standard_charge';
     const configuredShipping = Number(shippingSettings[shippingKey] ?? (deliveryType === 'express' ? 150 : shippingSettings.default_shipping_charge ?? 50));
-    const shippingCost = rulePreview.freeShipping ? 0 : (Number.isFinite(configuredShipping) ? Math.max(0, configuredShipping) : 0);
+    const shippingCost = rulePreview.freeShipping || (Boolean(loyaltyConfig.enabled) && Number(loyaltyTier?.free_shipping) === 1)
+      ? 0
+      : (Number.isFinite(configuredShipping) ? Math.max(0, configuredShipping) : 0);
 
     const giftItems = [];
     for (const gift of rulePreview.gifts) {
@@ -309,9 +321,9 @@ router.post("/", authenticateUser, async (req, res) => {
     const lifecycleGiftProductId = lifecycleSettings.lifecycle_third_order_enabled === '1'
       ? Number(lifecycleSettings.lifecycle_third_order_gift_product_id) || null
       : null;
-    const loyaltyPointsPerRupee = Math.max(1, Number(await getSetting('loyalty_points_per_rupee')) || 10);
     const orderItems = [...items, ...giftItems];
     let verifiedPayment = null;
+    let pointsToRedeemForOrder = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
     if (paymentMode === 'online') {
       const {
         razorpay_order_id: razorpayOrderId,
@@ -327,11 +339,25 @@ router.post("/", authenticateUser, async (req, res) => {
         return sum + unitPrice * (Number(item.quantity) || 1);
       }, 0);
       const safeDiscount = Math.min(backendSubtotal, Math.max(0, Number(discount) || 0));
+      const safeTierDiscount = calculateTierDiscount(
+        backendSubtotal,
+        safeDiscount,
+        loyaltyTier?.tier_discount_percent,
+        Boolean(loyaltyConfig.enabled)
+      );
       const requestedPoints = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
       const [[userPoints]] = await pool.query('SELECT loyalty_points FROM users WHERE id = ?', [req.user.id]);
-      const maxAffordablePoints = Math.floor(Math.max(0, backendSubtotal - safeDiscount - referralWalletAmount + shippingCost) * loyaltyPointsPerRupee);
-      const pointsRedeemed = Math.min(requestedPoints, Math.max(0, Math.trunc(Number(userPoints?.loyalty_points) || 0)), maxAffordablePoints);
-      const expectedTotal = Math.max(0, backendSubtotal - safeDiscount - referralWalletAmount + shippingCost - pointsRedeemed / loyaltyPointsPerRupee);
+      const redemption = calculateLoyaltyRedemption({
+        pointsBalance: userPoints?.loyalty_points,
+        eligibleSubtotal: backendSubtotal - safeDiscount - safeTierDiscount - referralWalletAmount,
+        redemptionPointsPerRupee: loyaltyConfig.redemption_points_per_rupee,
+        maxRedemptionPercent: loyaltyConfig.max_redemption_percent,
+        minimumRedemptionPoints: loyaltyConfig.minimum_redemption_points,
+        enabled: Boolean(loyaltyConfig.enabled),
+      });
+      pointsToRedeemForOrder = Math.min(requestedPoints, redemption.points);
+      const pointsDiscount = Math.min(redemption.discount, pointsToRedeemForOrder / loyaltyConfig.redemption_points_per_rupee);
+      const expectedTotal = Math.max(0, backendSubtotal - safeDiscount - safeTierDiscount - referralWalletAmount + shippingCost - pointsDiscount);
       verifiedPayment = await verifyRazorpayPayment({
         orderId: razorpayOrderId,
         paymentId: razorpayPaymentId,
@@ -348,6 +374,7 @@ router.post("/", authenticateUser, async (req, res) => {
       couponCode: resolvedCoupon,
       couponId,
       referralWalletAmount,
+      tierDiscount,
       addressSnapshot: address,
       deliveryType: deliveryType || "standard",
       paymentMode,
@@ -357,12 +384,11 @@ router.post("/", authenticateUser, async (req, res) => {
       shippingCost,
       impactAmount,
       impactProject,
-      loyaltyPointsAwarded: rulePreview.loyaltyBonusPoints,
+      loyaltyRuleBonusPoints: rulePreview.loyaltyBonusPoints,
       termsVersion: TERMS_VERSION,
       lifecycleGiftProductId,
       whatsappUpdatesOptIn,
-      loyaltyPointsToRedeem,
-      loyaltyPointsPerRupee,
+      loyaltyPointsToRedeem: pointsToRedeemForOrder,
     });
     const orderId = orderResult.id;
     if (orderResult.reused) {
@@ -390,7 +416,7 @@ router.post("/", authenticateUser, async (req, res) => {
       console.error("[Mailer] DB Query Error during placement:", mailErr);
     }
 
-    return res.status(201).json({ orderId, message: "Order placed successfully", discount, referralWalletAmount, shippingCost, rulePreview });
+    return res.status(201).json({ orderId, message: "Order placed successfully", discount, tierDiscount, referralWalletAmount, shippingCost, rulePreview });
   } catch (err) {
     console.error("Place order error:", err);
     if (err.status === 403 && err.code === 'COD_DELIVERY_REQUIREMENT') {
