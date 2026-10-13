@@ -3,7 +3,8 @@ const express = require("express"),
   crypto = require("crypto"),
   jwt = require("jsonwebtoken"),
   bcrypt = require("bcryptjs"),
-  { authenticator } = require('otplib'),
+qrcode = require('qrcode'),
+{ authenticator } = require('otplib'),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
   { registerLimiter, loginLimiter, loginIpLimiter, otpRequestLimiter, otpVerificationLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
@@ -58,6 +59,17 @@ const TERMS_VERSION = '2026-10-13';
 const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
 const hashAdminOtp = (adminId, otp) => hashOtp('admin-login', adminId, otp);
 const hashAdminResetOtp = (adminId, otp) => hashOtp('admin-password-reset', adminId, otp);
+const createAdminSecondFactorChallenge = (admin, trustDevice = false) => jwt.sign(
+  {
+    sub: String(admin.id),
+    email: admin.email,
+    role: admin.role || 'admin',
+    scope: 'admin-2fa-login',
+    trustDevice,
+  },
+  process.env.JWT_SECRET || 'fallback_secret',
+  { audience: 'admin-2fa', expiresIn: '5m', jwtid: crypto.randomUUID() }
+);
 
 const DISPOSABLE_DOMAINS = [
   'mailinator.com', 'tempmail.com', 'guerrillamail.com', '10minutemail.com', 
@@ -109,7 +121,20 @@ async function adminPasswordLogin(req, res) {
     }
 
     await updateAdminFailedAttempts(admin.id, true);
+    const [securityRows] = await pool.query(
+      'SELECT two_factor_enabled FROM admin_users WHERE id = ? LIMIT 1',
+      [admin.id]
+    );
+    const security = securityRows?.[0];
     if (await getTrustedAdminDevice(admin.id, req)) {
+      if (security?.two_factor_enabled) {
+        return res.status(202).json({
+          requires2FA: true,
+          challengeToken: createAdminSecondFactorChallenge(admin),
+          email: admin.email,
+          message: 'Enter your authenticator code to continue.',
+        });
+      }
       const role = admin.role || 'admin';
       const token = await issueToken({ id: admin.id, email: admin.email, role }, req, { sessionType: 'admin' });
       return res.json({
@@ -771,12 +796,181 @@ router.post('/admin/verify-otp', adminStrictLimiter, otpVerificationLimiter, asy
       return res.status(401).json({ message: expiry?.valid ? 'Invalid OTP.' : 'OTP expired. Request a new one.' });
     }
 
-    await trustAdminDevice(a.id, req, res);
     const role = a.role || 'admin';
+    const [securityRows] = await pool.query(
+      'SELECT two_factor_enabled FROM admin_users WHERE id = ? LIMIT 1',
+      [a.id]
+    );
+    const security = securityRows?.[0];
+    if (security?.two_factor_enabled) {
+      return res.status(202).json({
+        requires2FA: true,
+        challengeToken: createAdminSecondFactorChallenge(a, true),
+        email: a.email,
+        message: 'Email verified. Enter your authenticator code to finish signing in.',
+      });
+    }
+    await trustAdminDevice(a.id, req, res);
     const token = await issueToken({ id: a.id, email: a.email, role }, req, { sessionType: 'admin' });
     res.json({ token, admin: { id: a.id, email: a.email, role } });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/admin/security', authenticateAdmin, async (req, res) => {
+  try {
+    const [adminRows] = await pool.query(
+      'SELECT id, email, role, two_factor_enabled FROM admin_users WHERE id = ? LIMIT 1',
+      [req.admin.id]
+    );
+    const admin = adminRows?.[0];
+    if (!admin) return res.status(404).json({ message: 'Admin account not found.' });
+    return res.json({
+      email: admin.email,
+      role: admin.role || 'admin',
+      twoFactorEnabled: Boolean(admin.two_factor_enabled),
+    });
+  } catch (error) {
+    console.error('[ADMIN_SECURITY_STATUS]', error);
+    return res.status(500).json({ message: 'Could not load admin security settings.' });
+  }
+});
+
+router.post('/admin/2fa/setup', authenticateAdmin, async (req, res) => {
+  try {
+    const [adminRows] = await pool.query(
+      'SELECT email, two_factor_enabled FROM admin_users WHERE id = ? LIMIT 1',
+      [req.admin.id]
+    );
+    const admin = adminRows?.[0];
+    if (!admin) return res.status(404).json({ message: 'Admin account not found.' });
+    if (admin.two_factor_enabled) {
+      return res.status(409).json({ message: 'Two-factor authentication is already enabled.' });
+    }
+    const secret = authenticator.generateSecret();
+    const otpauthUrl = authenticator.keyuri(admin.email, 'Bhumivera Admin', secret);
+    const qrCode = await qrcode.toDataURL(otpauthUrl);
+    return res.json({ secret, qrCode });
+  } catch (error) {
+    console.error('[ADMIN_2FA_SETUP]', error);
+    return res.status(500).json({ message: 'Could not start authenticator setup.' });
+  }
+});
+
+router.post('/admin/2fa/enable', authenticateAdmin, async (req, res) => {
+  try {
+    const secret = typeof req.body?.secret === 'string' ? req.body.secret.trim() : '';
+    const token = String(req.body?.token || '').trim();
+    if (!secret || !/^\d{6}$/.test(token)) {
+      return res.status(400).json({ message: 'A setup secret and 6-digit authenticator code are required.' });
+    }
+    if (!authenticator.verify({ token, secret })) {
+      return res.status(400).json({ code: 'INVALID_MFA_TOKEN', message: 'Authenticator code is invalid or expired.' });
+    }
+    const [result] = await pool.query(
+      'UPDATE admin_users SET two_factor_secret = ?, two_factor_enabled = 1 WHERE id = ? AND two_factor_enabled = 0',
+      [secret, req.admin.id]
+    );
+    if (!result.affectedRows) {
+      return res.status(409).json({ message: 'Two-factor authentication is already enabled. Refresh security settings.' });
+    }
+    return res.json({ message: 'Two-factor authentication is enabled.' });
+  } catch (error) {
+    console.error('[ADMIN_2FA_ENABLE]', error);
+    return res.status(500).json({ message: 'Could not enable two-factor authentication.' });
+  }
+});
+
+router.post('/admin/2fa/disable', authenticateAdmin, async (req, res) => {
+  try {
+    const { currentPassword, token } = req.body || {};
+    if (typeof currentPassword !== 'string' || !currentPassword || !/^\d{6}$/.test(String(token || ''))) {
+      return res.status(400).json({
+        code: 'REAUTH_REQUIRED',
+        message: 'Current password and a 6-digit authenticator code are required to disable two-factor authentication.',
+      });
+    }
+    const admin = await getAdminByEmail(req.admin.email);
+    if (!admin || !await verifyAdminPassword(currentPassword, admin.password_hash)) {
+      return res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect.' });
+    }
+    const [securityRows] = await pool.query(
+      'SELECT two_factor_secret, two_factor_enabled FROM admin_users WHERE id = ? LIMIT 1',
+      [req.admin.id]
+    );
+    const security = securityRows?.[0];
+    if (!security?.two_factor_enabled || !security.two_factor_secret) {
+      return res.status(400).json({ message: 'Two-factor authentication is not enabled.' });
+    }
+    if (!authenticator.verify({ token: String(token), secret: security.two_factor_secret })) {
+      return res.status(401).json({ code: 'INVALID_MFA_TOKEN', message: 'Authenticator code is invalid or expired.' });
+    }
+    await pool.query(
+      'UPDATE admin_users SET two_factor_secret = NULL, two_factor_enabled = 0 WHERE id = ?',
+      [req.admin.id]
+    );
+    await revokeTrustedAdminDevices(req.admin.id);
+    return res.json({ message: 'Two-factor authentication is disabled. Sign in again on untrusted browsers.' });
+  } catch (error) {
+    console.error('[ADMIN_2FA_DISABLE]', error);
+    return res.status(500).json({ message: 'Could not disable two-factor authentication.' });
+  }
+});
+
+router.post('/admin/2fa/verify-login', adminStrictLimiter, loginIpLimiter, otpVerificationLimiter, async (req, res) => {
+  try {
+    const challengeToken = typeof req.body?.challengeToken === 'string' ? req.body.challengeToken : '';
+    const token = String(req.body?.token || '').trim();
+    if (!challengeToken || !/^\d{6}$/.test(token)) {
+      return res.status(400).json({ message: 'A sign-in challenge and 6-digit authenticator code are required.' });
+    }
+    let challenge;
+    try {
+      challenge = jwt.verify(challengeToken, process.env.JWT_SECRET || 'fallback_secret', {
+        audience: 'admin-2fa',
+      });
+    } catch {
+      return res.status(401).json({ message: 'Admin verification expired. Sign in again.' });
+    }
+    if (challenge.scope !== 'admin-2fa-login' || !challenge.sub || !challenge.jti) {
+      return res.status(401).json({ message: 'Admin verification challenge is invalid.' });
+    }
+    const [adminRows] = await pool.query(
+      'SELECT id, email, role, two_factor_secret, two_factor_enabled FROM admin_users WHERE id = ? LIMIT 1',
+      [challenge.sub]
+    );
+    const admin = adminRows?.[0];
+    if (!admin || !admin.two_factor_enabled || !admin.two_factor_secret ||
+        String(admin.email).toLowerCase() !== String(challenge.email).toLowerCase()) {
+      return res.status(401).json({ message: 'Admin two-factor sign-in is not available. Start again.' });
+    }
+    if (!authenticator.verify({ token, secret: admin.two_factor_secret })) {
+      return res.status(401).json({ code: 'INVALID_MFA_TOKEN', message: 'Authenticator code is invalid or expired.' });
+    }
+    const challengeUsed = await consumeOneTimeToken(challenge.jti, challenge.exp);
+    if (!challengeUsed) {
+      return res.status(401).json({ message: 'This sign-in challenge has already been used. Sign in again.' });
+    }
+    const lockStatus = await getAdminLockStatus(admin.id);
+    if (lockStatus.locked) {
+      return res.status(423).json({ message: 'This admin account is temporarily locked. Please try again later.' });
+    }
+    await updateAdminFailedAttempts(admin.id, true);
+    if (challenge.trustDevice) await trustAdminDevice(admin.id, req, res);
+    const role = admin.role || 'admin';
+    const sessionToken = await issueToken(
+      { id: admin.id, email: admin.email, role },
+      req,
+      { sessionType: 'admin' }
+    );
+    return res.json({
+      token: sessionToken,
+      admin: { id: admin.id, email: admin.email, role },
+    });
+  } catch (error) {
+    console.error('[ADMIN_2FA_LOGIN_VERIFY]', error);
+    return res.status(500).json({ message: 'Could not complete admin two-factor sign-in.' });
   }
 });
 
