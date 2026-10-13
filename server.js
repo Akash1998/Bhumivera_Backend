@@ -64,7 +64,7 @@ const gamificationRoutes = require("./routes/gamificationRoutes");
 const impactRoutes = require("./routes/impactRoutes");
 const systemAdminRoutes = require("./routes/systemAdminRoutes");
 
-const { createError, normalizeErrorResponses, sendError } = require("./utils/errorReporting");
+const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
 
 const app = express();
 let databaseReady = false;
@@ -226,18 +226,7 @@ app.use("/api", (req, res) => {
   res.status(404).json({ success: false, message: `API Endpoint Not Found: ${req.originalUrl}` });
 });
 
-app.use((err, req, res, next) => {
-  if (err.message === "Not allowed by CORS") {
-    return sendError(res, createError(403, 'CORS_ORIGIN_REJECTED', 'CORS origin rejected.'));
-  }
-  if (err.name === "JsonWebTokenError" || err.name === "TokenExpiredError") {
-    return sendError(res, createError(401, 'TOKEN_INVALID', 'Session invalid or expired.'));
-  }
-  console.error('[UNHANDLED_REQUEST_ERROR]', err);
-  const status = Number.isInteger(err.status) && err.status >= 400 && err.status <= 599 ? err.status : 500;
-  const message = status >= 500 ? 'An unexpected server error occurred.' : (err.message || 'The request could not be processed.');
-  return sendError(res, createError(status, status >= 500 ? 'INTERNAL_SERVER_ERROR' : 'REQUEST_FAILED', message));
-});
+app.use(requestErrorHandler);
 
 const PORT = process.env.PORT || 5000;
 const httpServer = app.listen(PORT, () => {

@@ -69,4 +69,21 @@ function normalizeErrorResponses(req, res, next) {
   next();
 }
 
-module.exports = { createError, serializeError, sendError, normalizeErrorResponses };
+function requestErrorHandler(err, req, res, next) {
+  if (err.message === "Not allowed by CORS") {
+    return sendError(res, createError(403, 'CORS_ORIGIN_REJECTED', 'CORS origin rejected.'));
+  }
+  if (err.name === "JsonWebTokenError" || err.name === "TokenExpiredError") {
+    return sendError(res, createError(401, 'TOKEN_INVALID', 'Session invalid or expired.'));
+  }
+  if (err.type === 'entity.parse.failed') {
+    return sendError(res, createError(400, 'INVALID_JSON_BODY', 'Request body must be valid JSON.'));
+  }
+
+  console.error('[UNHANDLED_REQUEST_ERROR]', err);
+  const status = Number.isInteger(err.status) && err.status >= 400 && err.status <= 599 ? err.status : 500;
+  const message = status >= 500 ? 'An unexpected server error occurred.' : (err.message || 'The request could not be processed.');
+  return sendError(res, createError(status, status >= 500 ? 'INTERNAL_SERVER_ERROR' : 'REQUEST_FAILED', message));
+}
+
+module.exports = { createError, serializeError, sendError, normalizeErrorResponses, requestErrorHandler };
