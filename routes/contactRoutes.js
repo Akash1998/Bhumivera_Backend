@@ -12,11 +12,6 @@ const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 })[character]);
 
-const optionalAuth = (req, res, next) => {
-  if (!req.headers.authorization) return next();
-  return authenticateUser(req, res, next);
-};
-
 const attachMessages = async tickets => {
   if (!tickets.length) return tickets;
   const messages = await ContactModel.getMessagesByTicketIds(tickets.map(ticket => ticket.id));
@@ -43,12 +38,15 @@ const attachMessages = async tickets => {
 const validateMessage = value =>
   typeof value === 'string' && value.trim().length > 0 && value.trim().length <= MAX_MESSAGE_LENGTH;
 
-router.post('/', optionalAuth, async (req, res) => {
+router.post('/', authenticateUser, async (req, res) => {
   try {
     const { name, email, subject, message, order_id, product_id } = req.body;
-    const ticketEmail = req.user?.email || email;
+    const ticketName = typeof name === 'string' && name.trim()
+      ? name.trim()
+      : (req.user.name || req.user.email?.split('@')[0] || '').trim();
+    const ticketEmail = req.user.email || email;
     if (
-      typeof name !== 'string' || !name.trim() || name.trim().length > 100 ||
+      !ticketName || ticketName.length > 100 ||
       typeof ticketEmail !== 'string' || !validEmail(ticketEmail.trim()) || ticketEmail.trim().length > 150 ||
       typeof subject !== 'string' || !subject.trim() || subject.trim().length > 200 ||
       !validateMessage(message) ||
@@ -57,9 +55,6 @@ router.post('/', optionalAuth, async (req, res) => {
       (product_id && !order_id)
     ) {
       return res.status(400).json({ success: false, message: 'Enter a valid name, email, subject, and message.' });
-    }
-    if ((order_id || product_id) && !req.user) {
-      return res.status(401).json({ success: false, message: 'Sign in to link a support request to an order.' });
     }
     if (order_id) {
       const params = [order_id, req.user.id];
@@ -81,7 +76,7 @@ router.post('/', optionalAuth, async (req, res) => {
       user_id: req.user ? req.user.id : null,
       order_id: order_id || null,
       product_id: product_id || null,
-      name: name.trim(),
+      name: ticketName,
       email: ticketEmail.trim(),
       subject: subject.trim(),
       message: message.trim()
@@ -168,8 +163,10 @@ const updateTicketStatus = async (req, res) => {
     let emailSent;
     let emailError;
     if (reply) {
-      const text = `Hello ${ticket.name},\n\nOur support team has replied to your request "${ticket.subject}". Sign in to the Bhumivera app and open Profile > Support to read the reply and continue the conversation.\n\n${reply}\n\nBhumivera Support\nsupport@bhumivera.com`;
-      const html = `<p>Hello ${escapeHtml(ticket.name)},</p><p>Our support team has replied to your request <strong>${escapeHtml(ticket.subject)}</strong>. Sign in to the Bhumivera app and open <strong>Profile &gt; Support</strong> to read the reply and continue the conversation.</p><blockquote>${escapeHtml(reply).replace(/\n/g, '<br>')}</blockquote><p>Bhumivera Support<br><a href="mailto:support@bhumivera.com">support@bhumivera.com</a></p>`;
+      const supportUrl = 'https://www.bhumivera.com/profile?tab=support';
+      const safeReply = escapeHtml(reply).replace(/\n/g, '<br>');
+      const text = `Hello ${ticket.name},\n\nOur support team replied to "${ticket.subject}". Sign in to view the full conversation and reply: ${supportUrl}\n\n${reply}\n\nNeed help? WhatsApp: https://wa.me/917430985647 | Email: support@bhumivera.com\nBhumivera Concierge`;
+      const html = `<!doctype html><html lang="en"><body style="margin:0;padding:32px 16px;background:#faf8f5;font-family:Arial,Helvetica,sans-serif;color:#1f2937"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #e7e5e4;border-radius:12px;overflow:hidden"><tr><td style="padding:24px;text-align:center;border-bottom:3px solid #d4af37"><a href="https://www.bhumivera.com" style="text-decoration:none"><img src="https://www.bhumivera.com/logo.webp" width="56" height="56" alt="Bhumivera" style="display:block;margin:0 auto 8px;border:0"><span style="font-family:Georgia,serif;font-size:22px;font-weight:bold;letter-spacing:3px;color:#0b2419">BHUMIVERA</span></a><div style="margin-top:6px;font-size:11px;letter-spacing:1px;color:#8b5a2b">CUSTOMER CONCIERGE</div></td></tr><tr><td style="padding:32px"><h1 style="margin:0 0 18px;font-size:22px;color:#0b2419">Our team has replied</h1><p style="font-size:15px;line-height:1.7">Hello ${escapeHtml(ticket.name)}, we replied to your support request <strong>${escapeHtml(ticket.subject)}</strong>.</p><div style="margin:24px 0;padding:18px;border-left:4px solid #d4af37;background:#faf8f5;font-size:15px;line-height:1.7">${safeReply}</div><p style="font-size:14px;line-height:1.7">Sign in to view the full conversation and send a reply:</p><p style="text-align:center;margin:28px 0"><a href="${supportUrl}" style="display:inline-block;padding:14px 24px;border-radius:6px;background:#0b2419;color:#fff;text-decoration:none;font-weight:bold">Open support conversation</a></p></td></tr><tr><td style="padding:22px;background:#faf8f5;border-top:1px solid #e7e5e4;text-align:center;font-size:13px;line-height:1.8;color:#64748b">Need more help? <a href="https://wa.me/917430985647" style="color:#8b5a2b">Chat on WhatsApp</a> · <a href="mailto:support@bhumivera.com" style="color:#8b5a2b">Email support</a><br>© 2026 Bhumivera</td></tr></table></body></html>`;
       try {
         await sendMail({
           to: ticket.email,

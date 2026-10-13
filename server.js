@@ -10,6 +10,7 @@ const pool = require("./config/db");
 const path = require("path");
 const { connectRateLimitStore, closeRateLimitStore } = require("./middleware/rateLimiter");
 const { createRequestObservability } = require("./middleware/requestObservability");
+const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
 const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
 const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
@@ -60,6 +61,7 @@ const logsRoutes = require("./routes/logsRoutes");
 const newsletterRoutes = require("./routes/newsletterRoutes");
 const gamificationRoutes = require("./routes/gamificationRoutes");
 const impactRoutes = require("./routes/impactRoutes");
+const systemAdminRoutes = require("./routes/systemAdminRoutes");
 
 const { createError, normalizeErrorResponses, sendError } = require("./utils/errorReporting");
 
@@ -145,42 +147,45 @@ app.use(normalizeErrorResponses);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // --- ROUTE REGISTRATION ---
-app.use("/api/flash-sales", flashSalesRoutes);
+app.use("/api/admin/system", systemAdminRoutes);
+app.use("/api/flash-sales", createModuleAvailabilityMiddleware('flash_sales'), flashSalesRoutes);
 app.use("/api/client-log", clientLogRoutes);
 app.use("/api/logs", logsRoutes);
-app.use("/api/newsletter", newsletterRoutes);
-app.use("/api/ai", aiRoutes); 
-app.use("/api/affiliate", affiliateRoutes);
-app.use("/api/tax", taxRoutes);
-app.use("/api/wallet", walletRoutes);
-app.use("/api/search", searchRoutes);
-app.use("/api/categories", categoryRoutes);
-app.use("/api/subcategories", subcategoryRoutes);
-app.use("/api/products", productRoutes);
-app.use("/api/recommendations", recommendationRoutes);
-app.use("/api/warranty", warrantyRoutes);
-app.use("/api/contact", contactRoutes);
+app.use("/api/newsletter", createModuleAvailabilityMiddleware('newsletter'), newsletterRoutes);
+app.use("/api/ai", createModuleAvailabilityMiddleware('ai'), aiRoutes);
+app.use("/api/affiliate", createModuleAvailabilityMiddleware('affiliate'), affiliateRoutes);
+app.use("/api/tax", createModuleAvailabilityMiddleware('tax'), taxRoutes);
+app.use("/api/wallet", createModuleAvailabilityMiddleware('wallet'), walletRoutes);
+app.use("/api/search", createModuleAvailabilityMiddleware('search'), searchRoutes);
+app.use("/api/categories", createModuleAvailabilityMiddleware('categories'), categoryRoutes);
+app.use("/api/subcategories", createModuleAvailabilityMiddleware('categories'), subcategoryRoutes);
+app.use("/api/products", createModuleAvailabilityMiddleware('products'), productRoutes);
+app.use("/api/recommendations", createModuleAvailabilityMiddleware('recommendations'), recommendationRoutes);
+app.use("/api/warranty", createModuleAvailabilityMiddleware('warranty'), warrantyRoutes);
+app.use("/api/contact", createModuleAvailabilityMiddleware('support'), contactRoutes);
 app.use("/api/auth", authRoutes);
-app.use("/api/serials", serialRoutes);
+app.use("/api/serials", createModuleAvailabilityMiddleware('serials'), serialRoutes);
 app.use("/api/users", userRoutes);
-app.use("/api/cart", cartRoutes);
-app.use("/api/orders", orderRoutes);
-app.use("/api", paymentRoutes);
-app.use("/api/impact", impactRoutes);
-app.use("/api/addresses", addressRoutes);
+app.use("/api/cart", createModuleAvailabilityMiddleware('cart'), cartRoutes);
+app.use("/api/orders", createModuleAvailabilityMiddleware('orders'), orderRoutes);
+app.use("/api", createModuleAvailabilityMiddleware('payments', req =>
+  ['/create-order', '/verify-payment'].includes(req.path)
+), paymentRoutes);
+app.use("/api/impact", createModuleAvailabilityMiddleware('impact'), impactRoutes);
+app.use("/api/addresses", createModuleAvailabilityMiddleware('addresses'), addressRoutes);
 app.use("/api/admin", adminUserRoutes);
-app.use("/api/wishlist", wishlistRoutes);
-app.use("/api/coupons", couponRoutes);
-app.use("/api/reviews", reviewRoutes);
-app.use("/api/notifications", notificationRoutes);
-app.use("/api/gamification", gamificationRoutes);
-app.use("/api/analytics", analyticsRoutes);
+app.use("/api/wishlist", createModuleAvailabilityMiddleware('wishlist'), wishlistRoutes);
+app.use("/api/coupons", createModuleAvailabilityMiddleware('coupons'), couponRoutes);
+app.use("/api/reviews", createModuleAvailabilityMiddleware('reviews'), reviewRoutes);
+app.use("/api/notifications", createModuleAvailabilityMiddleware('notifications'), notificationRoutes);
+app.use("/api/gamification", createModuleAvailabilityMiddleware('gamification'), gamificationRoutes);
+app.use("/api/analytics", createModuleAvailabilityMiddleware('analytics'), analyticsRoutes);
 app.use("/api/settings", settingsRoutes);
-app.use("/api/shipping", shippingRoutes);
-app.use("/api/returns", returnRoutes);
-app.use("/api/inventory", inventoryRoutes);
-app.use("/api/warehouse", warehouseRoutes);
-app.use("/api/gst", gstRoutes);
+app.use("/api/shipping", createModuleAvailabilityMiddleware('shipping'), shippingRoutes);
+app.use("/api/returns", createModuleAvailabilityMiddleware('returns'), returnRoutes);
+app.use("/api/inventory", createModuleAvailabilityMiddleware('inventory'), inventoryRoutes);
+app.use("/api/warehouse", createModuleAvailabilityMiddleware('warehouse'), warehouseRoutes);
+app.use("/api/gst", createModuleAvailabilityMiddleware('gst'), gstRoutes);
 
 // --- SEO: DYNAMIC XML SITEMAP GENERATOR ---
 app.get("/sitemap.xml", async (req, res) => {

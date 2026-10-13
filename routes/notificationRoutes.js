@@ -118,9 +118,8 @@ router.get('/admin/all', authenticateAdmin, async (req, res) => {
     const notifications = await getAllNotifications();
     res.json(notifications);
   } catch (err) {
-    // FIXED: Return empty array natively to prevent UI telemetry loops
-    console.warn("Admin Notifications table sync fallback trigger:", err.message);
-    res.json([]);
+    console.error('[ADMIN_NOTIFICATIONS_READ]', err);
+    res.status(500).json({ code: 'ADMIN_NOTIFICATIONS_READ_FAILED', message: 'Failed to load admin notifications.' });
   }
 });
 

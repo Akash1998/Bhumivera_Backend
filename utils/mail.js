@@ -1,5 +1,56 @@
 const https = require("https");
 
+const mailMetrics = {
+  requestCount: 0,
+  acceptedCount: 0,
+  failedCount: 0,
+  recipientCount: 0,
+  lastAcceptedAt: null,
+  lastFailureAt: null,
+  lastFailureCode: null,
+};
+
+const recordMailAttempt = ({ accepted, recipients, code = null }) => {
+  const now = new Date().toISOString();
+  mailMetrics.requestCount += 1;
+  mailMetrics.recipientCount += recipients;
+  if (accepted) {
+    mailMetrics.acceptedCount += 1;
+    mailMetrics.lastAcceptedAt = now;
+  } else {
+    mailMetrics.failedCount += 1;
+    mailMetrics.lastFailureAt = now;
+    mailMetrics.lastFailureCode = code || 'MAIL_DELIVERY_FAILED';
+  }
+};
+
+const getMailMetrics = () => ({ ...mailMetrics });
+
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+})[character]);
+
+const brandEmail = ({ html, text }) => {
+  const logoUrl = 'https://www.bhumivera.com/logo.webp';
+  const header = `<div style="padding:24px 20px;text-align:center;background:#fff;border-bottom:3px solid #d4af37"><a href="https://www.bhumivera.com" style="text-decoration:none"><img src="${logoUrl}" width="56" height="56" alt="Bhumivera" style="display:block;width:56px;height:56px;margin:0 auto 8px;object-fit:contain;border:0"><span style="font-family:Georgia,serif;font-size:22px;font-weight:bold;letter-spacing:3px;color:#0b2419">BHUMIVERA</span></a><div style="margin-top:6px;font-family:Arial,Helvetica,sans-serif;font-size:11px;letter-spacing:1px;color:#8b5a2b">PURE BOTANICAL SCIENCE</div></div>`;
+  const footer = `<div style="margin-top:28px;padding:22px 18px;background:#faf8f5;border-top:1px solid #e7e5e4;text-align:center;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.8;color:#64748b">Need help? <a href="https://www.bhumivera.com/contact" style="color:#8b5a2b">Open the support portal</a> · <a href="https://wa.me/917430985647" style="color:#8b5a2b">Chat on WhatsApp</a> · <a href="mailto:support@bhumivera.com" style="color:#8b5a2b">Email support</a><br>© 2026 Bhumivera</div>`;
+  let brandedHtml = html;
+  if (typeof brandedHtml === 'string' && !brandedHtml.includes(logoUrl)) {
+    if (/<body\b[^>]*>/i.test(brandedHtml)) {
+      brandedHtml = brandedHtml
+        .replace(/(<body\b[^>]*>)/i, `$1${header}`)
+        .replace(/<\/body>/i, `${footer}</body>`);
+    } else {
+      brandedHtml = `<!doctype html><html lang="en"><body style="margin:0;padding:24px 16px;background:#faf8f5;font-family:Arial,Helvetica,sans-serif;color:#1f2937">${header}<main style="max-width:600px;margin:0 auto;padding:28px;background:#fff;line-height:1.7">${brandedHtml}</main>${footer}</body></html>`;
+    }
+  }
+  let brandedText = text;
+  if (typeof brandedText === 'string' && !brandedText.includes('wa.me/917430985647')) {
+    brandedText += '\n\nNeed help? Support portal: https://www.bhumivera.com/contact | WhatsApp: https://wa.me/917430985647 | Email: support@bhumivera.com';
+  }
+  return { html: brandedHtml, text: brandedText };
+};
+
 const getMailConfig = () => {
   const getEnv = (key) => (process.env[key] ? String(process.env[key]).trim() : null);
   
@@ -20,6 +71,7 @@ function sendMail({ to, subject, html, text, from, timeoutMs }) {
     const config = getMailConfig();
 
     if (!config.apiKey || !config.domain) {
+      recordMailAttempt({ accepted: false, recipients: Array.isArray(to) ? to.length : 1, code: 'MAIL_CONFIGURATION_MISSING' });
       return reject(new Error("FATAL: MAILRELAY_API_KEY or MAILRELAY_DOMAIN missing in Railway variables."));
     }
 
@@ -27,6 +79,7 @@ function sendMail({ to, subject, html, text, from, timeoutMs }) {
     const recipients = Array.isArray(to) 
       ? to.map(email => ({ email: typeof email === 'string' ? email.trim() : (email.Email || email.email) })) 
       : [{ email: to.trim() }];
+    const brandedMessage = brandEmail({ html, text });
 
     const payload = {
       from: {
@@ -38,8 +91,8 @@ function sendMail({ to, subject, html, text, from, timeoutMs }) {
     };
 
     // Mailrelay API uses html_part and text_part instead of standard html/text
-    if (html && String(html).trim().length > 0) payload.html_part = html;
-    if (text && String(text).trim().length > 0) payload.text_part = text;
+    if (brandedMessage.html && String(brandedMessage.html).trim().length > 0) payload.html_part = brandedMessage.html;
+    if (brandedMessage.text && String(brandedMessage.text).trim().length > 0) payload.text_part = brandedMessage.text;
 
     const data = JSON.stringify(payload);
 
@@ -59,15 +112,20 @@ function sendMail({ to, subject, html, text, from, timeoutMs }) {
       res.on("data", (chunk) => (body += chunk.toString()));
       res.on("end", () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
+          recordMailAttempt({ accepted: true, recipients: recipients.length });
           resolve({ success: true, message: "Mailrelay API Delivery Successful" });
         } else {
+          recordMailAttempt({ accepted: false, recipients: recipients.length, code: `MAILRELAY_HTTP_${res.statusCode}` });
           reject(new Error(`Mailrelay REST API Error [${res.statusCode}]: ${body}`));
         }
       });
     });
 
     // If an error triggers here, it is usually a malformed URL, not a firewall block
-    req.on("error", (err) => reject(new Error(`HTTPS Connection Error: ${err.message}`)));
+    req.on("error", (err) => {
+      recordMailAttempt({ accepted: false, recipients: recipients.length, code: err.code || 'MAIL_NETWORK_ERROR' });
+      reject(new Error(`HTTPS Connection Error: ${err.message}`));
+    });
     if (timeoutMs) {
       req.setTimeout(timeoutMs, () => req.destroy(new Error(`Mailrelay request timed out after ${timeoutMs}ms.`)));
     }
@@ -78,6 +136,7 @@ function sendMail({ to, subject, html, text, from, timeoutMs }) {
 
 const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null) => {
   const formattedId = String(orderId).padStart(10, '0');
+  const safeName = escapeHtml(name || 'Bhumivera customer');
   
   const statusConfig = {
     pending: { color: '#10b981', title: 'Order Confirmation', quote: '"Bringing the purity of nature to your doorstep."', msg: 'Thank you for choosing Bhumivera. We have successfully received your order and our fulfillment team is currently preparing your natural formulations. We will notify you via email once your package is dispatched.' },
@@ -93,9 +152,9 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
   const trackingHtml = (trackingNumber && courier) ? `
       <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 20px; margin-top: 30px;">
         <h4 style="margin: 0 0 10px 0; color: #166534; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Tracking Information</h4>
-        <p style="margin: 0 0 5px 0; color: #374151; font-size: 15px;"><strong>Courier:</strong> ${courier}</p>
-        <p style="margin: 0 0 20px 0; color: #374151; font-size: 15px;"><strong>Tracking Number:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 3px 8px; border-radius: 4px;">${trackingNumber}</span></p>
-        <a href="https://www.google.com/search?q=${trackingNumber}+${courier}+tracking" style="display: inline-block; background-color: #10b981; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 13px; font-weight: bold; text-align: center;">Track Your Package</a>
+        <p style="margin: 0 0 5px 0; color: #374151; font-size: 15px;"><strong>Courier:</strong> ${escapeHtml(courier)}</p>
+        <p style="margin: 0 0 20px 0; color: #374151; font-size: 15px;"><strong>Tracking Number:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 3px 8px; border-radius: 4px;">${escapeHtml(trackingNumber)}</span></p>
+        <a href="https://www.google.com/search?q=${encodeURIComponent(`${trackingNumber} ${courier} tracking`)}" style="display: inline-block; background-color: #10b981; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 13px; font-weight: bold; text-align: center;">Track Your Package</a>
       </div>` : '';
 
   const htmlTemplate = `
@@ -104,6 +163,7 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
     <body style="margin: 0; padding: 40px 20px; background-color: #f4f7f6; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333333; -webkit-font-smoothing: antialiased;">
       <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
         <div style="padding: 30px; text-align: center; border-bottom: 3px solid #10b981; background-color: #ffffff;">
+          <a href="https://www.bhumivera.com" style="display: inline-block; text-decoration: none;"><img src="https://www.bhumivera.com/logo.webp" width="64" height="64" alt="Bhumivera" style="display: block; width: 64px; height: 64px; margin: 0 auto 8px; object-fit: contain; border: 0;"></a>
           <h1 style="color: #064e3b; margin: 0; font-size: 26px; letter-spacing: 2px; font-weight: 700; text-transform: uppercase;">BHUMIVERA</h1>
           <p style="color: #10b981; margin: 5px 0 0 0; font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 600;">Pure Botanical Science</p>
         </div>
@@ -113,13 +173,14 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
         <div style="padding: 20px 40px 40px 40px;">
           <h2 style="color: ${config.color}; margin-top: 0; font-size: 22px; font-weight: 600;">${config.title}</h2>
           <p style="color: #6b7280; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 25px;">Order ID: <strong style="color: #111827;">#${formattedId}</strong></p>
-          <p style="font-size: 16px; margin-bottom: 20px; color: #1f2937;">Dear ${name},</p>
+          <p style="font-size: 16px; margin-bottom: 20px; color: #1f2937;">Dear ${safeName},</p>
           <p style="font-size: 15px; line-height: 1.7; color: #4b5563; margin-bottom: 30px;">${config.msg}</p>
           ${trackingHtml}
         </div>
         <div style="background-color: #f8fafc; padding: 30px 40px; border-top: 1px solid #e2e8f0;">
           <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px;">Need Assistance?</h3>
-          <p style="margin: 0 0 25px 0; font-size: 14px; color: #64748b; line-height: 1.6;">Our customer concierge team is available to assist you with your order. Contact us anytime at <a href="mailto:support@bhumivera.com" style="color: #10b981; text-decoration: none; font-weight: 600;">support@bhumivera.com</a>.</p>
+          <p style="margin: 0 0 16px 0; font-size: 14px; color: #64748b; line-height: 1.6;">Need help with this order? Sign in to your <a href="https://www.bhumivera.com/contact" style="color: #10b981; text-decoration: none; font-weight: 600;">support portal</a>, <a href="https://wa.me/917430985647" style="color: #10b981; text-decoration: none; font-weight: 600;">chat on WhatsApp</a>, or email <a href="mailto:support@bhumivera.com" style="color: #10b981; text-decoration: none; font-weight: 600;">support@bhumivera.com</a>.</p>
+          <p style="margin: 0; font-size: 11px; color: #94a3b8; line-height: 1.6;">This is an automated order update. Please use the support options above to reach our team.</p>
         </div>
       </div>
     </body>
@@ -129,11 +190,13 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
     return await sendMail({
       to: email,
       subject: `[Bhumivera] Update on Order #${formattedId}`,
-      html: htmlTemplate
+      html: htmlTemplate,
+      text: `${config.title} for Bhumivera order #${formattedId}\n\nDear ${name || 'Bhumivera customer'},\n${config.msg}${trackingNumber && courier ? `\n\nCourier: ${courier}\nTracking number: ${trackingNumber}\nTrack: https://www.google.com/search?q=${encodeURIComponent(`${trackingNumber} ${courier} tracking`)}` : ''}\n\nSupport: https://www.bhumivera.com/contact\nWhatsApp: https://wa.me/917430985647\nEmail: support@bhumivera.com`
     });
   } catch (error) {
     console.error("Mailrelay Delivery Error:", error);
+    throw error;
   }
 };
 
-module.exports = { sendMail, sendOrderStatusEmail };
+module.exports = { sendMail, sendOrderStatusEmail, getMailMetrics };

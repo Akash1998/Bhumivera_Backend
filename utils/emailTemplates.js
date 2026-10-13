@@ -2,7 +2,8 @@ const PALETTE_A_WRAP_OPEN = '<!DOCTYPE html>\n' +
 '<html lang="en">\n' +
 '<body style="margin: 0; padding: 40px 20px; background-color: #FAF8F5; font-family: \'Georgia\', \'Times New Roman\', serif; color: #1F2937; -webkit-font-smoothing: antialiased;">\n' +
 '  <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid rgba(11,36,25,0.10); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 40px rgba(11,36,25,0.08);">\n' +
-'    <div style="padding: 28px 40px 16px 40px; text-align: center; background-color: #ffffff;">\n' +
+'    <div style="padding: 28px 32px 18px 32px; text-align: center; background-color: #ffffff;">\n' +
+'      <a href="https://www.bhumivera.com" style="display: inline-block; text-decoration: none;" aria-label="Visit Bhumivera"><img src="https://www.bhumivera.com/logo.webp" width="64" height="64" alt="Bhumivera" style="display: block; width: 64px; height: 64px; margin: 0 auto 8px; object-fit: contain; border: 0;"></a>\n' +
 '      <div style="font-family: \'Georgia\', \'Times New Roman\', serif; font-size: 26px; color: #0B2419; letter-spacing: 4px; font-weight: 700;">BHUMIVERA</div>\n' +
 '      <div style="margin-top: 6px; font-size: 11px; color: #8B5A2B; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 600;">Pure Botanical Science</div>\n' +
 '    </div>\n' +
@@ -13,12 +14,14 @@ const PALETTE_A_WRAP_CLOSE = '    </div>\n' +
 '    <div style="background-color: #FAF8F5; padding: 28px 40px; border-top: 1px solid rgba(11,36,25,0.08);">\n' +
 '      <div style="text-align: center;">\n' +
 '        <div style="margin-bottom: 16px;">\n' +
+'          <a href="https://www.bhumivera.com/contact" style="color: #8B5A2B; text-decoration: none; font-size: 13px; margin: 0 10px;">Support portal</a>\n' +
+'          <a href="https://wa.me/917430985647" style="color: #8B5A2B; text-decoration: none; font-size: 13px; margin: 0 10px;">Chat with us</a>\n' +
 '          <a href="https://www.bhumivera.com/legal#privacy" style="color: #9CA3AF; text-decoration: none; font-size: 13px; margin: 0 10px;">Privacy Policy</a>\n' +
 '          <a href="https://www.bhumivera.com/legal#terms" style="color: #9CA3AF; text-decoration: none; font-size: 13px; margin: 0 10px;">Terms of Service</a>\n' +
 '          <a href="mailto:support@bhumivera.com" style="color: #9CA3AF; text-decoration: none; font-size: 13px; margin: 0 10px;">Contact</a>\n' +
 '        </div>\n' +
 '        <div style="color: #9CA3AF; font-size: 12px; line-height: 1.6;">\n' +
-'          This is an automated email. Please do not reply directly to this message. For assistance, reach out to <a href="mailto:support@bhumivera.com" style="color: #8B5A2B; text-decoration: none;">support@bhumivera.com</a>.\n' +
+'          This is an automated email. For account-specific help, sign in and visit the <a href="https://www.bhumivera.com/contact" style="color: #8B5A2B; text-decoration: none;">support portal</a>, chat with us on <a href="https://wa.me/917430985647" style="color: #8B5A2B; text-decoration: none;">WhatsApp</a>, or email <a href="mailto:support@bhumivera.com" style="color: #8B5A2B; text-decoration: none;">support@bhumivera.com</a>.\n' +
 '        </div>\n' +
 '        <div style="margin-top: 12px; color: #9CA3AF; font-size: 12px;">&copy; 2026 Bhumivera. All rights reserved.</div>\n' +
 '      </div>\n' +
@@ -31,7 +34,8 @@ const PALETTE_B_WRAP_OPEN = '<!DOCTYPE html>\n' +
 '<html lang="en">\n' +
 '<body style="margin: 0; padding: 40px 20px; background-color: #0A0F1E; font-family: \'Courier New\', Courier, monospace; color: #E2E8F0; -webkit-font-smoothing: antialiased;">\n' +
 '  <div style="max-width: 600px; margin: 0 auto; background-color: #0F172A; border: 1px solid rgba(34,211,238,0.2); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 40px rgba(34,211,238,0.1);">\n' +
-'    <div style="padding: 28px 40px 16px 40px; text-align: center; background-color: #0F172A; border-bottom: 1px solid rgba(34,211,238,0.15);">\n' +
+'    <div style="padding: 28px 32px 18px 32px; text-align: center; background-color: #0F172A; border-bottom: 1px solid rgba(34,211,238,0.15);">\n' +
+'      <a href="https://www.bhumivera.com" style="display: inline-block; text-decoration: none;" aria-label="Visit Bhumivera"><img src="https://www.bhumivera.com/logo.webp" width="56" height="56" alt="Bhumivera" style="display: block; width: 56px; height: 56px; margin: 0 auto 8px; object-fit: contain; border: 0;"></a>\n' +
 '      <div style="font-family: \'Courier New\', Courier, monospace; font-size: 26px; color: #22D3EE; letter-spacing: 3px; font-weight: 700; text-transform: uppercase;">BHUMIVERA</div>\n' +
 '      <div style="margin-top: 8px; font-size: 11px; color: rgba(34,211,238,0.6); letter-spacing: 2px; text-transform: uppercase; font-weight: 600;">ADMIN CONTROL PANEL</div>\n' +
 '    </div>\n' +
@@ -41,6 +45,10 @@ const PALETTE_B_WRAP_OPEN = '<!DOCTYPE html>\n' +
 const PALETTE_B_WRAP_CLOSE = '    </div>\n' +
 '    <div style="background-color: #0A0F1E; padding: 28px 40px; border-top: 1px solid rgba(34,211,238,0.15);">\n' +
 '      <div style="text-align: center;">\n' +
+'        <div style="margin-bottom: 14px;">\n' +
+'          <a href="https://www.bhumivera.com" style="color: #22D3EE; text-decoration: none; font-size: 12px; margin: 0 10px;">Bhumivera site</a>\n' +
+'          <a href="mailto:support@bhumivera.com" style="color: #22D3EE; text-decoration: none; font-size: 12px; margin: 0 10px;">Support email</a>\n' +
+'        </div>\n' +
 '        <div style="color: rgba(148,163,184,0.8); font-size: 12px; line-height: 1.6;">\n' +
 '          You are receiving this because your email is registered as an authorized admin account. If this was not you, immediately revoke all active sessions in the admin dashboard security tab.\n' +
 '        </div>\n' +
@@ -330,8 +338,8 @@ async function sendTemplate(opts) {
     if (process.env.NODE_ENV !== 'production') {
       console.log("[sendTemplate] Mail transport unavailable; would send " + template + " to " + to + ": subject=" + subject + "\nHTML preview 200 chars: " + html.slice(0, 200) + "\nTEXT: " + text.slice(0, 200) + "\nRaw error: " + (err && err.message));
     }
-    if (process.env.FORCE_MAIL_FAIL !== '1') {
-      return Promise.resolve({ devMode: true, success: true, reason: 'Mail transport missing; logged to console.' });
+    if (process.env.NODE_ENV !== 'production' && process.env.MAIL_PREVIEW_MODE === '1') {
+      return { devMode: true, success: false, reason: 'Preview mode does not send email.' };
     }
     throw err;
   }
