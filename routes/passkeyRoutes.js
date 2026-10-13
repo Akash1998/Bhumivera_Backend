@@ -180,7 +180,7 @@ router.post('/register-challenge', getAuthenticatedOwner, challengeLimiter, asyn
           : credential.transports || undefined,
       })),
       authenticatorSelection: {
-        residentKey: 'preferred',
+        residentKey: 'required',
         userVerification: 'required',
       },
     });
@@ -263,33 +263,38 @@ router.post('/login-challenge', loginIpLimiter, challengeLimiter, async (req, re
   try {
     const accountType = getAccountType(req.body?.accountType);
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-    if (!accountType || !email) {
-      return res.status(400).json({ message: 'A valid email and account type are required.' });
+    if (!accountType) {
+      return res.status(400).json({ message: 'A valid account type is required.' });
     }
-    const account = await getAccountForLogin(accountType, email);
-    if (!account) return res.status(404).json({ message: 'No passkey sign-in is available for this account.' });
-
-    const credentials = await getPasskeys(accountType, account.id);
-    if (!credentials.length) {
-      return res.status(404).json({ message: 'No passkey is registered for this account. Sign in another way and add one in Security settings.' });
+    let account = null;
+    let credentials = [];
+    if (email) {
+      account = await getAccountForLogin(accountType, email);
+      if (!account) return res.status(404).json({ message: 'No passkey sign-in is available for this account.' });
+      credentials = await getPasskeys(accountType, account.id);
+      if (!credentials.length) {
+        return res.status(404).json({ message: 'No passkey is registered for this account. Sign in another way and add one in Security settings.' });
+      }
     }
 
     const { origin, rpID } = getWebAuthnConfig(req);
     const { generateAuthenticationOptions } = await getWebAuthn();
     const options = await generateAuthenticationOptions({
       rpID,
-      allowCredentials: credentials.map(credential => ({
-        id: credential.credential_id,
-        transports: typeof credential.transports === 'string'
-          ? JSON.parse(credential.transports)
-          : credential.transports || undefined,
-      })),
+      ...(email ? {
+        allowCredentials: credentials.map(credential => ({
+          id: credential.credential_id,
+          transports: typeof credential.transports === 'string'
+            ? JSON.parse(credential.transports)
+            : credential.transports || undefined,
+        })),
+      } : {}),
       userVerification: 'required',
     });
     const challengeId = await createChallenge({
       purpose: 'authentication',
       accountType,
-      accountId: account.id,
+      accountId: account?.id ?? null,
       challenge: options.challenge,
       origin,
       rpID,
@@ -314,18 +319,21 @@ router.post('/login-verify', loginIpLimiter, loginLimiter, async (req, res) => {
     if (!challenge) return res.status(401).json({ message: 'Passkey sign-in challenge expired. Please try again.' });
 
     const credentialId = typeof response.id === 'string' ? response.id : response.rawId;
+    if (typeof credentialId !== 'string' || !credentialId) {
+      return res.status(400).json({ message: 'Passkey response is missing its credential ID.' });
+    }
     const [credentialRows] = await pool.query(
       `SELECT id, account_type, account_id, credential_id, public_key, counter, transports
-       FROM webauthn_credentials WHERE credential_id = ? LIMIT 1`,
-      [credentialId]
+       FROM webauthn_credentials WHERE credential_id = ? AND account_type = ? LIMIT 1`,
+      [credentialId, challenge.account_type]
     );
     const credential = credentialRows[0];
-    if (!credential || credential.account_type !== challenge.account_type ||
-        String(credential.account_id) !== String(challenge.account_id)) {
+    if (!credential || (challenge.account_id !== null &&
+        String(credential.account_id) !== String(challenge.account_id))) {
       return res.status(401).json({ message: 'Passkey could not be verified for this account.' });
     }
 
-    const account = await getAccountById(challenge.account_type, challenge.account_id);
+    const account = await getAccountById(challenge.account_type, credential.account_id);
     if (!account) return res.status(401).json({ message: 'This account is not available for sign-in.' });
 
     const { verifyAuthenticationResponse } = await getWebAuthn();
@@ -413,6 +421,8 @@ router.get('/list', getAuthenticatedOwner, async (req, res) => {
       passkeys: passkeys.map(passkey => ({
         id: passkey.id,
         device_name: passkey.device_name,
+        created_at: passkey.created_at,
+        last_used_at: passkey.last_used_at,
       })),
     });
   } catch (error) {

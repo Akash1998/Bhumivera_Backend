@@ -471,6 +471,13 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 49,
+    name: 'allow discoverable passkey sign-in',
+    up: async () => {
+      await pool.query('ALTER TABLE webauthn_challenges MODIFY COLUMN account_id INT NULL');
+    },
+  },
 ];
 
 module.exports = migrations;
