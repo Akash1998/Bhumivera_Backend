@@ -71,6 +71,8 @@ const createOrdersTables = async () => {
     await addCol('orders', 'loyalty_points_redeemed', 'INT NOT NULL DEFAULT 0');
     await addCol('orders', 'total', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'coupon_code', 'VARCHAR(100)');
+    await addCol('orders', 'terms_version', 'VARCHAR(20) DEFAULT NULL');
+    await addCol('orders', 'terms_accepted_at', 'DATETIME DEFAULT NULL');
     await addCol('orders', 'payment_status', "ENUM('pending', 'paid', 'failed') DEFAULT 'pending'");
     await addCol('orders', 'payment_id', 'VARCHAR(255)');
     await addCol('orders', 'cancel_reason', 'TEXT');
@@ -119,6 +121,7 @@ const createOrder = async ({
   couponId = null,
   referralWalletAmount = 0,
   loyaltyPointsAwarded = 0,
+  termsVersion = null,
   lifecycleGiftProductId = null,
   whatsappUpdatesOptIn = false,
   loyaltyPointsToRedeem = 0,
@@ -260,8 +263,8 @@ const createOrder = async ({
 
     // Step 4: Insert the Order
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
+      `INSERT INTO orders (user_id, subtotal, discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at, terms_version, terms_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END, ?, NOW())`,
       [
         userId,
         backendSubtotal,
@@ -281,7 +284,8 @@ const createOrder = async ({
         paymentId,
         notes || null,
         whatsappUpdatesOptIn ? 1 : 0,
-        whatsappUpdatesOptIn ? 1 : 0
+        whatsappUpdatesOptIn ? 1 : 0,
+        termsVersion
       ]
     );
 

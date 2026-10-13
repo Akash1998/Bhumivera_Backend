@@ -36,6 +36,8 @@ const createUsersTable = async () => {
     { name: 'is_active', type: `TINYINT(1) DEFAULT 1` },
     { name: 'marketing_email_opt_in', type: `TINYINT(1) NOT NULL DEFAULT 0` },
     { name: 'marketing_email_consent_at', type: `DATETIME NULL` },
+    { name: 'terms_version', type: `VARCHAR(20) DEFAULT NULL` },
+    { name: 'terms_accepted_at', type: `DATETIME DEFAULT NULL` },
     { name: 'whatsapp_order_updates_opt_in', type: `TINYINT(1) NOT NULL DEFAULT 0` },
     { name: 'whatsapp_order_updates_consent_at', type: `DATETIME NULL` },
     { name: 'wallet_balance', type: `DECIMAL(10,2) DEFAULT 0.00` },
@@ -316,9 +318,16 @@ const initAuthTables = async () => {
       'ALTER TABLE pending_registrations ADD COLUMN marketing_email_opt_in TINYINT(1) NOT NULL DEFAULT 0'
     );
   }
+  for (const [column, definition] of [
+    ['terms_version', 'VARCHAR(20) DEFAULT NULL'],
+    ['terms_accepted_at', 'DATETIME DEFAULT NULL'],
+  ]) {
+    const [columns] = await pool.query('SHOW COLUMNS FROM pending_registrations LIKE ?', [column]);
+    if (!columns.length) await pool.query(`ALTER TABLE pending_registrations ADD COLUMN ${column} ${definition}`);
+  }
 };
 
-const createUser = async ({ name, email, password, phone, securityAnswer, marketingEmailOptIn = false, referrerUserId = null }, connection = pool) => {
+const createUser = async ({ name, email, password, phone, securityAnswer, marketingEmailOptIn = false, referrerUserId = null, termsVersion = null }, connection = pool) => {
   const isHashed = password.startsWith('$2b$');
   const hash = isHashed ? password : await bcrypt.hash(password, 10);
   
@@ -327,9 +336,9 @@ const createUser = async ({ name, email, password, phone, securityAnswer, market
   
   const [result] = await connection.query(
     `INSERT INTO users
-      (name, email, password_hash, phone, security_answer_hash, marketing_email_opt_in, marketing_email_consent_at, referred_by_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, IF(? = 1, CURRENT_TIMESTAMP, NULL), ?)`,
-    [name, email, hash, phone || null, secHash, marketingEmailOptIn ? 1 : 0, marketingEmailOptIn ? 1 : 0, referrerUserId]
+      (name, email, password_hash, phone, security_answer_hash, marketing_email_opt_in, marketing_email_consent_at, referred_by_user_id, terms_version, terms_accepted_at)
+     VALUES (?, ?, ?, ?, ?, ?, IF(? = 1, CURRENT_TIMESTAMP, NULL), ?, ?, IF(? IS NOT NULL, CURRENT_TIMESTAMP, NULL))`,
+    [name, email, hash, phone || null, secHash, marketingEmailOptIn ? 1 : 0, marketingEmailOptIn ? 1 : 0, referrerUserId, termsVersion, termsVersion]
   );
   return result.insertId;
 };

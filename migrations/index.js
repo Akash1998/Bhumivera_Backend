@@ -339,6 +339,39 @@ const migrations = [
       );
     },
   },
+  {
+    version: 44,
+    name: 'reward both referral participants and stack promotions',
+    up: async () => {
+      const addColumn = async (table, column, definition) => {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+        if (!columns.length) await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+      };
+      await addColumn('referral_settings', 'referred_reward_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 500.00');
+      await addColumn('referral_claims', 'referred_wallet_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+      await addColumn('referral_rewards', 'referred_wallet_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+      await pool.query(
+        `UPDATE referral_settings
+         SET reward_mode = 'wallet_coupon', wallet_reward_amount = 500, referred_reward_amount = 500
+         WHERE id = 1`
+      );
+      await pool.query("UPDATE settings SET value = 'both' WHERE key_name = 'coupon_stack_policy' AND value = 'rule_first'");
+    },
+  },
+  {
+    version: 45,
+    name: 'record customer terms acceptance',
+    up: async () => {
+      const addColumn = async (table, column, definition) => {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+        if (!columns.length) await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+      };
+      for (const table of ['users', 'pending_registrations', 'orders']) {
+        await addColumn(table, 'terms_version', 'VARCHAR(20) DEFAULT NULL');
+        await addColumn(table, 'terms_accepted_at', 'DATETIME DEFAULT NULL');
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

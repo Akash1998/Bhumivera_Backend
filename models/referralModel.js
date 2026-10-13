@@ -8,6 +8,7 @@ const defaultConfig = {
   enabled: 1,
   reward_mode: 'wallet_coupon',
   wallet_reward_amount: 500,
+  referred_reward_amount: 500,
   wallet_reward_per_order_limit: 100,
   coupon_discount_type: 'fixed',
   coupon_discount_value: 100,
@@ -67,6 +68,16 @@ const findReferralUser = async code => {
   return rows[0]?.user_id || null;
 };
 
+const previewReferral = async ({ code, token }) => {
+  const userId = token ? await verifyReferralToken(token) : await findReferralUser(code);
+  if (!userId) return null;
+  const [rows] = await pool.query(
+    "SELECT name FROM users WHERE id = ? AND role = 'customer' AND is_active = 1",
+    [userId]
+  );
+  return rows[0]?.name ? { referrerName: rows[0].name } : null;
+};
+
 const ensureReferralCode = async userId => {
   const [customers] = await pool.query(
     "SELECT id FROM users WHERE id = ? AND role = 'customer' AND is_active = 1",
@@ -111,6 +122,7 @@ const saveReferralConfig = async config => {
     enabled: config.enabled ? 1 : 0,
     reward_mode: config.reward_mode,
     wallet_reward_amount: Number(config.wallet_reward_amount),
+    referred_reward_amount: Number(config.referred_reward_amount ?? defaultConfig.referred_reward_amount),
     wallet_reward_per_order_limit: Number(config.wallet_reward_per_order_limit ?? defaultConfig.wallet_reward_per_order_limit),
     coupon_discount_type: config.coupon_discount_type,
     coupon_discount_value: Number(config.coupon_discount_value),
@@ -120,10 +132,11 @@ const saveReferralConfig = async config => {
   };
   await pool.query(
     `INSERT INTO referral_settings
-      (id, enabled, reward_mode, wallet_reward_amount, wallet_reward_per_order_limit, coupon_discount_type, coupon_discount_value, coupon_min_order_amount, coupon_valid_days, referral_redemption_tiers)
-     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, enabled, reward_mode, wallet_reward_amount, referred_reward_amount, wallet_reward_per_order_limit, coupon_discount_type, coupon_discount_value, coupon_min_order_amount, coupon_valid_days, referral_redemption_tiers)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), reward_mode = VALUES(reward_mode),
        wallet_reward_amount = VALUES(wallet_reward_amount),
+       referred_reward_amount = VALUES(referred_reward_amount),
        wallet_reward_per_order_limit = VALUES(wallet_reward_per_order_limit),
        coupon_discount_type = VALUES(coupon_discount_type),
        coupon_discount_value = VALUES(coupon_discount_value), coupon_min_order_amount = VALUES(coupon_min_order_amount),
@@ -189,6 +202,8 @@ const getReferralSummary = async userId => {
     pending_referrals: Number(summary.pending_referrals) || 0,
     referrals,
     rewardMode: config.reward_mode,
+    referrerRewardAmount: Number(config.wallet_reward_amount) || 0,
+    referredRewardAmount: Number(config.referred_reward_amount) || 0,
   };
 };
 
@@ -197,6 +212,7 @@ const createRewardForClaim = async (connection, claim, config) => {
   const shouldIssueCoupon = config.reward_mode === 'coupon';
   const restrictedReferralCredit = config.reward_mode === 'wallet_coupon';
   const walletAmount = shouldCreditWallet ? Number(config.wallet_reward_amount) : 0;
+  const referredWalletAmount = restrictedReferralCredit ? Number(config.referred_reward_amount) : 0;
   const perOrderLimit = Number(config.wallet_reward_per_order_limit);
   let couponCode = null;
 
@@ -269,21 +285,33 @@ const createRewardForClaim = async (connection, claim, config) => {
     }
   }
 
+  if (referredWalletAmount > 0) {
+    await connection.query('INSERT IGNORE INTO referral_wallets (user_id, balance) VALUES (?, 0.00)', [claim.referred_user_id]);
+    await connection.query('UPDATE referral_wallets SET balance = balance + ? WHERE user_id = ?', [referredWalletAmount, claim.referred_user_id]);
+    await connection.query(
+      `INSERT INTO referral_wallet_transactions (user_id, amount, type, description, reference_id)
+       VALUES (?, ?, 'credit', 'Approved new-customer referral reward', ?)`,
+      [claim.referred_user_id, referredWalletAmount, `referral-claim-${claim.id}-referred`]
+    );
+  }
+
   await connection.query(
     `INSERT INTO referral_rewards
-      (referred_user_id, referrer_user_id, order_id, wallet_amount, coupon_code)
-     VALUES (?, ?, NULL, ?, ?)`,
-    [claim.referred_user_id, claim.referrer_user_id, walletAmount, couponCode]
+      (referred_user_id, referrer_user_id, order_id, wallet_amount, referred_wallet_amount, coupon_code)
+     VALUES (?, ?, NULL, ?, ?, ?)`,
+    [claim.referred_user_id, claim.referrer_user_id, walletAmount, referredWalletAmount, couponCode]
   );
-  return { walletAmount, couponCode, walletBucket: restrictedReferralCredit ? 'referral' : 'cash' };
+  return { walletAmount, referredWalletAmount, couponCode, walletBucket: restrictedReferralCredit ? 'referral' : 'cash' };
 };
 
 const reconcileReferralRewards = async userId => {
   const [claims] = await pool.query(
     `SELECT id FROM referral_claims
-     WHERE referrer_user_id = ? AND status IN ('approved', 'auto_approved')
-       AND (wallet_amount > 0 OR coupon_code IS NOT NULL)`,
-    [userId]
+     WHERE status IN ('approved', 'auto_approved') AND (
+       (referrer_user_id = ? AND (wallet_amount > 0 OR coupon_code IS NOT NULL)) OR
+       (referred_user_id = ? AND referred_wallet_amount > 0)
+     )`,
+    [userId, userId]
   );
 
   for (const row of claims) {
@@ -292,10 +320,10 @@ const reconcileReferralRewards = async userId => {
       await connection.beginTransaction();
       const [lockedClaims] = await connection.query(
         `SELECT * FROM referral_claims
-         WHERE id = ? AND referrer_user_id = ?
+         WHERE id = ? AND (referrer_user_id = ? OR referred_user_id = ?)
            AND status IN ('approved', 'auto_approved')
          FOR UPDATE`,
-        [row.id, userId]
+        [row.id, userId, userId]
       );
       const claim = lockedClaims[0];
       if (!claim) {
@@ -303,20 +331,23 @@ const reconcileReferralRewards = async userId => {
         continue;
       }
 
-      if (Number(claim.wallet_amount) > 0) {
-        const reference = `referral-claim-${claim.id}`;
-        if (claim.wallet_bucket === 'referral') {
+      const isReferrer = String(claim.referrer_user_id) === String(userId);
+      const walletAmount = Number(isReferrer ? claim.wallet_amount : claim.referred_wallet_amount) || 0;
+      const walletBucket = isReferrer ? claim.wallet_bucket : 'referral';
+      if (walletAmount > 0) {
+        const reference = isReferrer ? `referral-claim-${claim.id}` : `referral-claim-${claim.id}-referred`;
+        if (walletBucket === 'referral') {
           await connection.query('INSERT IGNORE INTO referral_wallets (user_id, balance) VALUES (?, 0.00)', [userId]);
           const [transactions] = await connection.query(
             'SELECT id FROM referral_wallet_transactions WHERE user_id = ? AND reference_id = ? LIMIT 1',
             [userId, reference]
           );
           if (!transactions.length) {
-            await connection.query('UPDATE referral_wallets SET balance = balance + ? WHERE user_id = ?', [Number(claim.wallet_amount), userId]);
+            await connection.query('UPDATE referral_wallets SET balance = balance + ? WHERE user_id = ?', [walletAmount, userId]);
             await connection.query(
               `INSERT INTO referral_wallet_transactions (user_id, amount, type, description, reference_id, coupon_code)
                VALUES (?, ?, 'credit', 'Approved restricted referral reward', ?, ?)`,
-              [userId, Number(claim.wallet_amount), reference, claim.coupon_code]
+              [userId, walletAmount, reference, isReferrer ? claim.coupon_code : null]
             );
           }
         } else {
@@ -330,7 +361,6 @@ const reconcileReferralRewards = async userId => {
             [userId, reference]
           );
           if (!transactions.length) {
-            const walletAmount = Number(claim.wallet_amount);
             const [[wallet]] = await connection.query(
               `SELECT w.balance, u.wallet_balance
                FROM wallets w JOIN users u ON u.id = w.user_id
@@ -376,7 +406,7 @@ const reconcileReferralRewards = async userId => {
         }
       }
 
-      if (claim.coupon_code) {
+      if (isReferrer && claim.coupon_code) {
         const [coupons] = await connection.query(
           'SELECT id, restricted_user_id, usage_limit, reward_type, wallet_per_order_limit FROM coupons WHERE code = ? FOR UPDATE',
           [claim.coupon_code]
@@ -453,7 +483,7 @@ const decideReferralClaim = async (claimId, decision, adminId = null, reason = n
       return { notDue: true };
     }
 
-    let reward = { walletAmount: 0, couponCode: null, walletBucket: 'cash' };
+    let reward = { walletAmount: 0, referredWalletAmount: 0, couponCode: null, walletBucket: 'cash' };
     if (decision === 'approved') {
       const config = await getReferralConfig(connection);
       if (!Number(config.enabled)) {
@@ -468,9 +498,9 @@ const decideReferralClaim = async (claimId, decision, adminId = null, reason = n
     await connection.query(
       `UPDATE referral_claims
        SET status = ?, reviewed_at = NOW(), reviewed_by_admin_id = ?, decision_reason = ?,
-           wallet_amount = ?, coupon_code = ?, wallet_bucket = ?
+           wallet_amount = ?, referred_wallet_amount = ?, coupon_code = ?, wallet_bucket = ?
        WHERE id = ? AND status = 'pending'`,
-      [status, automatic ? null : adminId, decision === 'rejected' ? reason : null, reward.walletAmount, reward.couponCode, reward.walletBucket, claim.id]
+        [status, automatic ? null : adminId, decision === 'rejected' ? reason : null, reward.walletAmount, reward.referredWalletAmount, reward.couponCode, reward.walletBucket, claim.id]
     );
     notification = {
       referrerUserId: claim.referrer_user_id,
@@ -566,6 +596,9 @@ const notifyReferralDecision = async notification => {
       : '',
     notification.couponCode ? `Your personal coupon code is ${notification.couponCode}.` : '',
   ].filter(Boolean).join(' ');
+  const referredRewardMessage = notification.referredWalletAmount > 0
+    ? `₹${Number(notification.referredWalletAmount).toFixed(2)} was added to your order-only referral balance and will apply automatically when your order reaches an eligible threshold.`
+    : '';
   const safe = value => String(value || '').replace(/[&<>"]/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
   })[character]);
@@ -573,8 +606,8 @@ const notifyReferralDecision = async notification => {
   const messages = recipients.map(user => sendMail({
     to: user.email,
     subject: notification.status === 'rejected' ? 'Bhumivera referral update' : 'Your Bhumivera referral reward is ready',
-    html: `<p>Hi ${safe(user.name || 'there')},</p><p>${safe(statusMessage)}</p><p>${safe(rewardMessage)}</p><p>Open your Bhumivera account to see your referral status and any rewards.</p>`,
-    text: `Hi ${user.name || 'there'}, ${statusMessage} ${rewardMessage} Open your Bhumivera account to see your referral status and rewards.`,
+    html: `<p>Hi ${safe(user.name || 'there')},</p><p>${safe(statusMessage)}</p><p>${safe(String(user.id) === String(notification.referredUserId) ? referredRewardMessage : rewardMessage)}</p><p>Open your Bhumivera account to see your referral status and any rewards.</p>`,
+    text: `Hi ${user.name || 'there'}, ${statusMessage} ${String(user.id) === String(notification.referredUserId) ? referredRewardMessage : rewardMessage} Open your Bhumivera account to see your referral status and rewards.`,
   }));
   const results = await Promise.allSettled(messages);
   results.filter(result => result.status === 'rejected').forEach(result => {
@@ -604,6 +637,7 @@ module.exports = {
   defaultConfig,
   ensureReferralCode,
   findReferralUser,
+  previewReferral,
   verifyReferralToken,
   getReferralConfig,
   saveReferralConfig,

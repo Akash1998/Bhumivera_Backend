@@ -28,7 +28,7 @@ const createSettingsTable = async () => {
     ['default_shipping_charge', '50', 'shipping'],
     ['standard_charge', '50', 'shipping'],
     ['express_charge', '150', 'shipping'],
-    ['coupon_stack_policy', 'rule_first', 'cart_rules'],
+    ['coupon_stack_policy', 'both', 'cart_rules'],
     ['cart_rules_schema_version', '1', 'cart_rules'],
     ['enforce_cart_rule_minimum', '0', 'cart_rules'],
     ['tax_rate', '0', 'tax'],

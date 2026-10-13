@@ -29,6 +29,7 @@ const { reconcileReferralRewards, getReferralConfig } = require('../models/refer
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
 const { verifyRazorpayPayment } = require('../services/razorpayService');
+const TERMS_VERSION = '2026-10-13';
 
 router.get("/all", authenticateAdmin, async (req, res) => {
   try {
@@ -182,6 +183,9 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 
 router.post("/", authenticateUser, async (req, res) => {
   try {
+    if (req.body?.termsAccepted !== true) {
+      return res.status(400).json({ code: 'TERMS_ACCEPTANCE_REQUIRED', message: 'Accept the Conditions of Sale before placing your order.' });
+    }
     const {
       addressId,
       deliveryType,
@@ -270,7 +274,7 @@ router.post("/", authenticateUser, async (req, res) => {
       }
     }
 
-    const couponStackPolicy = await getSetting('coupon_stack_policy') || 'rule_first';
+    const couponStackPolicy = await getSetting('coupon_stack_policy') || 'both';
     const ruleDiscount = Number(rulePreview.totalDiscount) || 0;
     let discount = ruleDiscount;
     if (recoveryCoupon || couponStackPolicy === 'both') discount = ruleDiscount + couponDiscount;
@@ -354,6 +358,7 @@ router.post("/", authenticateUser, async (req, res) => {
       impactAmount,
       impactProject,
       loyaltyPointsAwarded: rulePreview.loyaltyBonusPoints,
+      termsVersion: TERMS_VERSION,
       lifecycleGiftProductId,
       whatsappUpdatesOptIn,
       loyaltyPointsToRedeem,

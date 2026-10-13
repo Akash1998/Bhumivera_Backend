@@ -133,6 +133,15 @@ const registerLimiter = createLimiter('register', {
   message: 'Too many accounts have been created from this network.',
 });
 
+const referralPreviewLimiter = createLimiter('referral-preview', {
+  windowMs: 60 * 1000,
+  max: 30,
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'REFERRAL_PREVIEW_LIMIT',
+  message: 'Too many referral lookups. Please wait before checking another code.',
+  userAction: 'Wait a minute, then try again.',
+});
+
 const loginLimiter = createLimiter('login-account', {
   windowMs: FIFTEEN_MINUTES,
   max: 5,
@@ -241,6 +250,7 @@ const newsletterLimiter = createLimiter('newsletter', {
 
 module.exports = {
   registerLimiter,
+  referralPreviewLimiter,
   loginLimiter,
   loginIpLimiter,
   otpRequestLimiter,

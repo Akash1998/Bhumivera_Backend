@@ -1,10 +1,12 @@
 const express = require('express');
 const pool = require('../config/db');
 const { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware');
+const { referralPreviewLimiter } = require('../middleware/rateLimiter');
 const {
   defaultConfig,
   getReferralConfig,
   getReferralSummary,
+  previewReferral,
   saveReferralConfig,
   decideReferralClaim,
   reissueReferralCoupon,
@@ -12,6 +14,21 @@ const {
 } = require('../models/referralModel');
 
 const router = express.Router();
+
+router.get('/referral/preview', referralPreviewLimiter, async (req, res) => {
+  try {
+    const code = typeof req.query.code === 'string' ? req.query.code : '';
+    const token = typeof req.query.token === 'string' ? req.query.token : '';
+    if (!code && !token) {
+      return res.status(400).json({ success: false, message: 'Provide a referral code or link token.' });
+    }
+    const referral = await previewReferral({ code, token });
+    return res.json({ success: true, valid: Boolean(referral), referrerName: referral?.referrerName || null });
+  } catch (error) {
+    console.error('[REFERRAL_PREVIEW]', error);
+    return res.status(500).json({ success: false, message: 'Could not verify this referral.' });
+  }
+});
 
 router.get('/referral/link', authenticateUser, async (req, res) => {
   try {
@@ -46,6 +63,7 @@ router.put('/admin/config', authenticateAdmin, async (req, res) => {
   const config = req.body || {};
   const modes = ['wallet', 'coupon', 'wallet_coupon'];
   const amount = Number(config.wallet_reward_amount);
+  const referredAmount = Number(config.referred_reward_amount);
   const walletPerOrderLimit = Number(config.wallet_reward_per_order_limit);
   const couponValue = Number(config.coupon_discount_value);
   const minimum = Number(config.coupon_min_order_amount);
@@ -63,6 +81,7 @@ router.put('/admin/config', authenticateAdmin, async (req, res) => {
     !modes.includes(config.reward_mode) ||
     !['fixed', 'percentage'].includes(config.coupon_discount_type) ||
     !Number.isFinite(amount) || amount < 0 || amount > 100000 ||
+    !Number.isFinite(referredAmount) || referredAmount < 0 || referredAmount > 100000 ||
     !Number.isFinite(walletPerOrderLimit) || walletPerOrderLimit < 0 || walletPerOrderLimit > 100000 ||
     (config.reward_mode === 'wallet_coupon' && amount > 0 && walletPerOrderLimit <= 0) ||
     !Number.isFinite(couponValue) || couponValue <= 0 || couponValue > (config.coupon_discount_type === 'percentage' ? 100 : 100000) ||
@@ -87,12 +106,14 @@ router.get('/admin/referrals', authenticateAdmin, async (req, res) => {
     await approveDueReferralClaims();
     const [rows] = await pool.query(
       `SELECT c.id AS claim_id, c.status, c.verified_at, c.auto_approve_at,
-        c.reviewed_at, c.decision_reason, c.wallet_amount, c.coupon_code,
+        c.reviewed_at, c.decision_reason, c.wallet_amount, c.referred_wallet_amount, c.coupon_code,
         c.wallet_bucket, COALESCE(rw.balance, 0) AS referral_wallet_balance,
+        COALESCE(rwr.balance, 0) AS referred_referral_wallet_balance,
         referrer.id AS referrer_id, referrer.name AS referrer_name, referrer.email AS referrer_email,
         referred.id AS referred_id, referred.name AS referred_name, referred.email AS referred_email
        FROM referral_claims c
        LEFT JOIN referral_wallets rw ON rw.user_id = c.referrer_user_id
+      LEFT JOIN referral_wallets rwr ON rwr.user_id = c.referred_user_id
        JOIN users referred ON referred.id = c.referred_user_id
        JOIN users referrer ON referrer.id = c.referrer_user_id
        ORDER BY (c.status = 'pending') DESC, c.verified_at DESC LIMIT ? OFFSET ?`,

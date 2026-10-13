@@ -115,7 +115,7 @@ router.get('/', authenticateUser, async (req, res) => {
     } catch (error) {
       if (error.code !== 'ER_NO_SUCH_TABLE') throw error;
     }
-    const couponStackPolicy = await getSetting('coupon_stack_policy') || 'rule_first';
+    const couponStackPolicy = await getSetting('coupon_stack_policy') || 'both';
     const abandonmentEnabled = (await getSetting('cart_abandonment_coupon_enabled')) !== '0';
     const delayMinutes = Math.max(1, Math.min(10080, Number.parseInt(await getSetting('cart_abandonment_coupon_delay_minutes'), 10) || 30));
     const lastActivity = safeItems.reduce((latest, item) => {

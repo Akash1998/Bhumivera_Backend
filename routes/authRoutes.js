@@ -52,6 +52,7 @@ const {
 } = require("../models/userModel");
 
 const router = express.Router();
+const TERMS_VERSION = '2026-10-13';
 
 const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
 const hashAdminOtp = (adminId, otp) => hashOtp('admin-login', adminId, otp);
@@ -518,6 +519,9 @@ router.post("/register", registerLimiter, async (req, res) => {
   try {
     const { name, email, password } = req.body;
     const marketingEmailOptIn = req.body?.marketingEmailOptIn === true;
+    if (req.body?.termsAccepted !== true) {
+      return res.status(400).json({ code: 'TERMS_ACCEPTANCE_REQUIRED', message: 'Accept the Conditions of Use and acknowledge the Privacy Notice to create an account.' });
+    }
     if (req.body?.marketingEmailOptIn !== undefined && typeof req.body.marketingEmailOptIn !== 'boolean') {
       return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
     }
@@ -551,16 +555,18 @@ router.post("/register", registerLimiter, async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     
     await pool.query(`
-      INSERT INTO pending_registrations (name, email, password, marketing_email_opt_in, otp, otp_expiry, referrer_user_id)
-      VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), ?)
+      INSERT INTO pending_registrations (name, email, password, marketing_email_opt_in, otp, otp_expiry, referrer_user_id, terms_version, terms_accepted_at)
+      VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), ?, ?, NOW())
       ON DUPLICATE KEY UPDATE 
         name=VALUES(name), 
         password=VALUES(password),
         marketing_email_opt_in=VALUES(marketing_email_opt_in),
+        terms_version=VALUES(terms_version),
+        terms_accepted_at=VALUES(terms_accepted_at),
         otp=VALUES(otp), 
         otp_expiry=DATE_ADD(NOW(), INTERVAL 10 MINUTE), 
         created_at=NOW()
-    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, otp, referrerUserId]);
+    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, otp, referrerUserId, TERMS_VERSION]);
     
     try {
       await sendMail({ to: email, subject: 'Verify your account', html: `<div style="font-family: sans-serif; padding: 20px;"><h2>Welcome!</h2><p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p><p>Expires in 10 minutes.</p></div>` });
@@ -613,7 +619,8 @@ router.post("/verify-email", otpVerificationLimiter, async (req, res) => {
       password: p.password,
       securityAnswer: securityAnswer || null,
       marketingEmailOptIn: p.marketing_email_opt_in === 1 || p.marketing_email_opt_in === true,
-      referrerUserId: p.referrer_user_id || null
+      referrerUserId: p.referrer_user_id || null,
+      termsVersion: p.terms_version || TERMS_VERSION,
     }, connection);
     const referralClaimId = await createReferralClaim(connection, id, p.referrer_user_id || null);
     await connection.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
