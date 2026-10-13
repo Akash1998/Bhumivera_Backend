@@ -12,6 +12,8 @@ process.env.JWT_SECRET = secret;
 
 const state = {
   admin: { id: 17, email: 'admin@example.com', role: 'admin', login_otp: 'hashed-123456' },
+  recoveryUser: null,
+  sentMail: null,
   activeSession: true,
   otpConsumed: true,
   expiryValid: false,
@@ -21,11 +23,18 @@ const state = {
 
 const pass = (_req, _res, next) => next();
 const pool = {
-  async query(sql) {
+  async query(sql, params = []) {
     if (sql.includes('UPDATE admin_users SET login_otp=NULL')) {
       const affectedRows = state.otpConsumed ? 1 : 0;
       state.otpConsumed = false;
       return [{ affectedRows }];
+    }
+    if (sql.includes('UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=?')) {
+      const matchesOtp = state.recoveryUser?.id === params[0] &&
+        state.recoveryUser.reset_otp === params[1] &&
+        state.recoveryUser.reset_otp_expires > new Date();
+      if (matchesOtp) state.recoveryUser.reset_otp = null;
+      return [{ affectedRows: matchesOtp ? 1 : 0 }];
     }
     if (sql.includes('SELECT login_otp_expires >= NOW() AS valid')) {
       return [[{ valid: state.expiryValid ? 1 : 0 }]];
@@ -36,7 +45,7 @@ const pool = {
 
 const mocks = new Map([
   ['../config/db', pool],
-  ['../utils/mail', { sendMail: async () => {} }],
+  ['../utils/mail', { sendMail: async message => { state.sentMail = message; } }],
   ['../middleware/rateLimiter', new Proxy({}, { get: () => pass })],
   ['../middleware/authMiddleware', { authenticateAdmin: pass, authenticateUser: pass }],
   ['../utils/passwordPolicy', {}],
@@ -63,7 +72,10 @@ const mocks = new Map([
     revokeTrustedDevices: async () => {},
     clearTrustedDeviceCookie: () => {},
   }],
-  ['../utils/otpCrypto', { hashOtp: (_purpose, _id, otp) => `hashed-${otp}` }],
+  ['../utils/otpCrypto', {
+    hashOtp: (_purpose, _id, otp) => `hashed-${otp}`,
+    compareOtp: (_purpose, _id, otp, candidateHash) => candidateHash === `hashed-${otp}`,
+  }],
   ['../utils/adminTrustedDevice', {
     getTrustedAdminDevice: async () => false,
     trustAdminDevice: async () => {},
@@ -72,7 +84,18 @@ const mocks = new Map([
   ['../models/adminModel', {
     getAdminByEmail: async email => email === state.admin.email ? state.admin : null,
   }],
-  ['../models/userModel', {}],
+  ['../models/userModel', {
+    getUserByEmail: async email => email === state.recoveryUser?.email ? state.recoveryUser : null,
+    saveResetOtp: async (userId, otp) => {
+      if (state.recoveryUser?.id === userId) {
+        state.recoveryUser.reset_otp = `hashed-${otp}`;
+        state.recoveryUser.reset_otp_expires = new Date(Date.now() + 10 * 60 * 1000);
+      }
+    },
+    clearResetOtp: async userId => {
+      if (state.recoveryUser?.id === userId) state.recoveryUser.reset_otp = null;
+    },
+  }],
 ]);
 
 for (const request of [
@@ -115,7 +138,9 @@ before(async () => {
 });
 
 after(async () => {
-  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  const serverClosed = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  server.closeAllConnections();
+  await serverClosed;
   for (const request of [
     '../models/adminModel',
     '../models/userModel',
@@ -131,6 +156,14 @@ beforeEach(() => {
   state.activeSession = true;
   state.otpConsumed = true;
   state.expiryValid = false;
+  state.recoveryUser = {
+    id: 42,
+    email: 'customer@example.com',
+    role: 'customer',
+    reset_otp: null,
+    reset_otp_expires: null,
+  };
+  state.sentMail = null;
   state.issued.length = 0;
   state.revoked.length = 0;
 });
@@ -142,6 +175,7 @@ describe('admin OTP and token refresh flows', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ email: ' ADMIN@example.com ', otp: '123456' }),
     });
+
     const response = await request();
     const body = await response.json();
 
@@ -227,5 +261,45 @@ describe('admin OTP and token refresh flows', () => {
     assert.equal(response.status, 401);
     assert.equal((await response.json()).code, 'SESSION_REAUTH_REQUIRED');
     assert.equal(state.issued.length, 0);
+  });
+});
+
+describe('customer password recovery', () => {
+  it('stores and verifies a hashed reset OTP using the normalized account email', async () => {
+    const request = await fetch(`${baseUrl}/forgot-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: '  CUSTOMER@EXAMPLE.COM  ' }),
+    });
+
+    assert.equal(request.status, 200);
+    assert.equal(state.sentMail.to, state.recoveryUser.email);
+    assert.match(state.recoveryUser.reset_otp, /^hashed-\d{6}$/);
+
+    const otp = state.sentMail.html.match(/<h1[^>]*>(\d{6})<\/h1>/)?.[1];
+    assert.ok(otp, 'recovery email should contain the generated OTP');
+
+    const verify = await fetch(`${baseUrl}/verify-reset-otp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: state.recoveryUser.email, otp }),
+    });
+    const body = await verify.json();
+
+    assert.equal(verify.status, 200);
+    assert.equal(jwt.verify(body.resetJwt, secret).scope, 'reset-password');
+    assert.equal(state.recoveryUser.reset_otp, null);
+  });
+
+  it('rejects malformed recovery email addresses before querying the account', async () => {
+    const response = await fetch(`${baseUrl}/forgot-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'not-an-email' }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).message, /valid email/i);
+    assert.equal(state.sentMail, null);
   });
 });

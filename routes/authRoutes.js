@@ -387,18 +387,21 @@ router.post("/2fa/verify", otpVerificationLimiter, async (req, res) => {
 // --- PASSWORD RECOVERY FLOW ---
 router.post("/forgot-password", forgotLimiter, async (req, res) => {
   try {
-    const { email } = req.body;
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: "Enter a valid email address." });
+    }
+
     const u = await getUserByEmail(email);
     if (!u) return res.status(404).json({ message: "Designation not found in registry." });
     if (!u.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
 
     const otp = generateOtp();
-    const hashedOtp = hashOtp('email-verification', email.toLowerCase().trim(), String(otp));
-    await saveResetOtp(u.id, otp, u.email);
+    await saveResetOtp(u.id, otp, u.email || email);
 
     try {
       await sendMail({
-        to: email,
+        to: u.email || email,
         subject: 'Security Key Recovery Protocol',
         html: `<div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #00ff00;"><h2>Hardware access Access</h2><p>A request was made to recover the security key for this access.</p><h1 style="font-size: 32px; letter-spacing: 4px;">${otp}</h1><p>Token self-destructs in 10 minutes.</p></div>`
       });
@@ -1071,7 +1074,7 @@ router.post("/verify-reset-otp", otpVerificationLimiter, async (req, res) => {
     if (!u.reset_otp_expires || new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: genericFail });
     const [consumed] = await pool.query(
       'UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=? AND reset_otp_expires >= NOW()',
-      [u.id, String(otp)]
+      [u.id, u.reset_otp]
     );
     if (!consumed.affectedRows) return res.status(400).json({ message: genericFail });
 
