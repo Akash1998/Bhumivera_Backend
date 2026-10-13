@@ -284,7 +284,6 @@ router.post("/", authenticateUser, async (req, res) => {
     else if (ruleDiscount <= 0) discount = couponDiscount;
     discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount));
     const loyaltyConfig = await getLoyaltyConfig();
-    const loyaltyTier = await getUserLoyaltyTier(req.user.id);
     const tierDiscount = calculateTierDiscount(
       Number(cartTotal) || 0,
       discount,
