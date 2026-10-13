@@ -442,6 +442,88 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
 // ==========================================
 // 13. SMART IDENTIFIER (ID or Slug) (Public)
 // ==========================================
+
+// Table initialization for Product Q&A
+pool.query(`
+  CREATE TABLE IF NOT EXISTS product_questions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id INT NOT NULL,
+    user_id INT NULL,
+    user_name VARCHAR(100) DEFAULT 'Customer',
+    question TEXT NOT NULL,
+    answer TEXT NULL,
+    is_approved TINYINT(1) DEFAULT 1,
+    helpful_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_prod (product_id)
+  )
+`).catch(err => console.warn('[product_questions] Init notice:', err.message));
+
+// GET /api/products/:productId/qa (Public Q&A list)
+router.get('/:productId/qa', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.productId, 10);
+    if (!productId || isNaN(productId)) {
+      return res.json([]);
+    }
+    const [rows] = await pool.query(
+      'SELECT id, product_id, user_name, question, answer, helpful_count, created_at FROM product_questions WHERE product_id = ? AND is_approved = 1 ORDER BY created_at DESC LIMIT 50',
+      [productId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[PRODUCT_QA_GET_ERROR]', err);
+    res.json([]);
+  }
+});
+
+// POST /api/products/:productId/qa (Submit question)
+router.post('/:productId/qa', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.productId, 10);
+    const { question } = req.body || {};
+    if (!productId || isNaN(productId)) {
+      return res.status(400).json({ success: false, message: 'Valid product ID is required.' });
+    }
+    if (!question || typeof question !== 'string' || !question.trim()) {
+      return res.status(400).json({ success: false, message: 'Question text is required.' });
+    }
+    const userName = req.user?.name || req.body?.userName || 'Customer';
+    const userId = req.user?.id || null;
+
+    const [result] = await pool.query(
+      'INSERT INTO product_questions (product_id, user_id, user_name, question) VALUES (?, ?, ?, ?)',
+      [productId, userId, userName.slice(0, 100), question.trim().slice(0, 1000)]
+    );
+    res.status(201).json({ success: true, message: 'Question submitted successfully.', id: result.insertId });
+  } catch (err) {
+    console.error('[PRODUCT_QA_POST_ERROR]', err);
+    res.status(500).json({ success: false, message: 'Failed to submit question.' });
+  }
+});
+
+// GET /api/products/slug/:slug (Explicit slug lookup)
+router.get('/slug/:slug', async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const query = `
+      SELECT p.*, 
+      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
+      FROM products p
+      WHERE p.slug = ? AND p.status = 'active'
+    `;
+    const [rows] = await pool.query(query, [slug]);
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+    const product = parseImages(rows)[0];
+    res.json({ success: true, data: product });
+  } catch (error) {
+    console.error('[PRODUCT_BY_SLUG_ERROR]', error);
+    res.status(500).json({ success: false, message: 'Database query failed' });
+  }
+});
+
 router.get('/:identifier', async (req, res) => {
   try {
     const { identifier } = req.params;
@@ -475,7 +557,7 @@ router.get('/:identifier', async (req, res) => {
       "name": product.name,
       "image": product.images && product.images.length > 0 ? product.images.map(img => {
         const path = typeof img === 'object' ? (img.file_path || img.url || img.path) : img;
-        return `https://pub-22cd43cce9bc475680ad496e199706c4.r2.dev/${path}`;
+        return `https://pub-70fdb5d94df347c4bed417c28b066c02.r2.dev/${path}`;
       }) : [],
       "description": product.meta_description || product.description,
       "sku": product.sku || `BHUMI-${product.id}`,

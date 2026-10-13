@@ -1,3 +1,4 @@
+const { contactLimiter } = require('../middleware/rateLimiter');
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
@@ -38,7 +39,7 @@ const attachMessages = async tickets => {
 const validateMessage = value =>
   typeof value === 'string' && value.trim().length > 0 && value.trim().length <= MAX_MESSAGE_LENGTH;
 
-router.post('/', authenticateUser, async (req, res) => {
+router.post('/', contactLimiter, authenticateUser, async (req, res) => {
   try {
     const { name, email, subject, message, order_id, product_id } = req.body;
     const ticketName = typeof name === 'string' && name.trim()

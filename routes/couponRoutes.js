@@ -1,6 +1,19 @@
+const { couponValidateLimiter } = require('../middleware/rateLimiter');
 // backend/routes/couponRoutes.js
 const express = require('express');
 const router = express.Router();
+const jwt = require('jsonwebtoken');
+
+const optionalAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return next();
+  try {
+    const payload = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET || 'fallback_secret');
+    req.user = payload;
+  } catch (err) {}
+  next();
+};
+
 const pool = require('../config/db');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { createCouponTable, createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
@@ -28,7 +41,7 @@ router.use(async (req, res, next) => {
 });
 
 // POST /api/coupons/validate - validate coupon (public)
-router.post('/validate', authenticateUser, async (req, res) => {
+router.post('/validate', couponValidateLimiter, optionalAuth, async (req, res) => {
   try {
     const { code, orderTotal } = req.body;
     if (typeof code !== 'string' || !code.trim()) {
@@ -38,7 +51,7 @@ router.post('/validate', authenticateUser, async (req, res) => {
     if (!Number.isFinite(parsedOrderTotal) || parsedOrderTotal < 0) {
       return res.status(400).json({ code: 'INVALID_ORDER_TOTAL', message: 'Enter a valid order total.' });
     }
-    const result = await validateCoupon(code.trim(), parsedOrderTotal, req.user.id);
+    const result = await validateCoupon(code.trim(), parsedOrderTotal, req.user?.id || null);
     if (!result.valid) return res.status(400).json({ code: 'INVALID_COUPON', message: result.message });
     res.json({
       valid: true,
@@ -63,7 +76,7 @@ router.post('/validate', authenticateUser, async (req, res) => {
 
 router.get('/mine', authenticateUser, async (req, res) => {
   try {
-    await reconcileReferralRewards(req.user.id);
+    await reconcileReferralRewards(req.user?.id || null);
     const [coupons] = await pool.query(
       `SELECT id, code, description, discount_type, discount_value, min_order_amount,
               max_discount, usage_limit, used_count, valid_from, expires_at,
@@ -75,7 +88,7 @@ router.get('/mine', authenticateUser, async (req, res) => {
          AND (expires_at IS NULL OR expires_at >= NOW())
          AND (usage_limit IS NULL OR used_count < usage_limit)
        ORDER BY created_at DESC`,
-      [req.user.id]
+      [req.user?.id || null]
     );
     return res.json({ success: true, coupons });
   } catch (error) {

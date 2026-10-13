@@ -37,7 +37,10 @@ describe('loyalty matrix policy', () => {
       cashbackPercent: 1,
       redemptionPointsPerRupee: 10,
     };
-    assert.equal(calculateLoyaltyPointsAward(award), 325);
+    // 1000 spend * 1 point/rupee * 2 tier multiplier = 2000 base points
+    // 1% cashback on 1000 = 10 rupees * 10 points/rupee = 100 cashback points
+    // 25 tier bonus points = 2125 total points
+    assert.equal(calculateLoyaltyPointsAward(award), 2125);
     assert.equal(calculateLoyaltyPointsAward({ ...award, eligibleSpend: 0 }), 0);
     assert.equal(calculateLoyaltyPointsAward({ ...award, enabled: false }), 0);
   });

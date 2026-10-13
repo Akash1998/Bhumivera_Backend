@@ -1,3 +1,4 @@
+const { searchLimiter } = require('../middleware/rateLimiter');
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
@@ -17,7 +18,7 @@ const parseImages = (rows) => {
 };
 
 // GET /api/search?q=dry+skin+soap
-router.get('/', async (req, res) => {
+router.get('/', searchLimiter, async (req, res) => {
   try {
     const { q, limit = 10 } = req.query;
 

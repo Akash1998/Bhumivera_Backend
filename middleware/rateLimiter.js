@@ -248,7 +248,53 @@ const newsletterLimiter = createLimiter('newsletter', {
   userAction: 'Try again later.',
 });
 
+
+const contactLimiter = createLimiter('contact', {
+  windowMs: FIFTEEN_MINUTES,
+  max: 15,
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'CONTACT_RATE_LIMIT',
+  message: 'Too many contact submissions from this network. Please try again later.',
+});
+
+const reviewLimiter = createLimiter('reviews', {
+  windowMs: FIFTEEN_MINUTES,
+  max: 15,
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'REVIEW_RATE_LIMIT',
+  message: 'Too many review actions from this network. Please try again shortly.',
+});
+
+const orderLimiter = createLimiter('orders', {
+  windowMs: FIFTEEN_MINUTES,
+  max: 30,
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'ORDER_RATE_LIMIT',
+  message: 'Too many order requests. Please wait a moment before trying again.',
+});
+
+const searchLimiter = createLimiter('search', {
+  windowMs: 60 * 1000,
+  max: 60,
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'SEARCH_RATE_LIMIT',
+  message: 'Too many search queries. Please slow down.',
+});
+
+const couponValidateLimiter = createLimiter('coupon-validate', {
+  windowMs: TEN_MINUTES,
+  max: 30,
+  keyGenerator: req => getLoginIpKey(req.ip),
+  code: 'COUPON_RATE_LIMIT',
+  message: 'Too many coupon validation attempts. Please wait before trying another code.',
+});
+
 module.exports = {
+  contactLimiter,
+  reviewLimiter,
+  orderLimiter,
+  searchLimiter,
+  couponValidateLimiter,
   registerLimiter,
   referralPreviewLimiter,
   loginLimiter,

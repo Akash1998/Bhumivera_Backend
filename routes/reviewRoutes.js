@@ -1,3 +1,4 @@
+const { reviewLimiter } = require('../middleware/rateLimiter');
 // backend/routes/reviewRoutes.js
 const express = require('express');
 const router = express.Router();
@@ -174,7 +175,7 @@ router.delete('/:id', authenticateUser, async (req, res, next) => {
 });
 
 // POST /api/reviews - user: submit review
-router.post('/', authenticateUser, async (req, res) => {
+router.post('/', reviewLimiter, authenticateUser, async (req, res) => {
   try {
     const { product_id, order_id, rating, title, body, comment, images = [], public_story_consent = false } = req.body;
     const reviewText = body || comment;

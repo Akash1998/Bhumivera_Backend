@@ -1,3 +1,4 @@
+const { turnstileMiddleware } = require('../utils/turnstile');
 const express = require("express"),
   crypto = require("crypto"),
   jwt = require("jsonwebtoken"),
@@ -18,7 +19,7 @@ const {
   revokeTrustedDevices,
   clearTrustedDeviceCookie,
 } = require('../utils/trustedDevice');
-const { hashOtp } = require('../utils/otpCrypto');
+const { hashOtp, compareOtp } = require('../utils/otpCrypto');
 const { getTrustedAdminDevice, trustAdminDevice, revokeTrustedAdminDevices } = require('../utils/adminTrustedDevice');
 const { createReferralClaim, findReferralUser, verifyReferralToken } = require('../models/referralModel');
 
@@ -119,6 +120,7 @@ async function adminPasswordLogin(req, res) {
     }
 
     const otp = generateOtp();
+    const hashedOtp = hashOtp('email-verification', email.toLowerCase().trim(), String(otp));
     const otpHash = hashAdminOtp(admin.id, otp);
     await pool.query(
       'UPDATE admin_users SET login_otp=?, login_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?',
@@ -288,7 +290,8 @@ router.post("/login-request-otp", otpRequestLimiter, async (req, res) => {
     if (!target.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
 
     const otp = generateOtp();
-    await saveResetOtp(target.id, otp);
+    const hashedOtp = hashOtp('email-verification', email.toLowerCase().trim(), String(otp));
+    await saveResetOtp(target.id, otp, target.email);
 
     try {
       await sendMail({
@@ -362,7 +365,8 @@ router.post("/forgot-password", forgotLimiter, async (req, res) => {
     if (!u.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
 
     const otp = generateOtp();
-    await saveResetOtp(u.id, otp);
+    const hashedOtp = hashOtp('email-verification', email.toLowerCase().trim(), String(otp));
+    await saveResetOtp(u.id, otp, u.email);
 
     try {
       await sendMail({
@@ -388,7 +392,8 @@ router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
     const { email, otp } = req.body;
     const u = await getUserByEmail(email);
     if (!u) return res.status(404).json({ message: "User not found." });
-    if (u.reset_otp !== otp) return res.status(400).json({ message: "Invalid Token." });
+    const isResetOtpValid = compareOtp('reset-password', email.toLowerCase().trim(), String(otp), u.reset_otp) || u.reset_otp === otp;
+    if (!isResetOtpValid) return res.status(400).json({ message: "Invalid Token." });
     
     if (new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: "Token Expired." });
     
@@ -515,7 +520,7 @@ router.post("/security-question/verify", otpVerificationLimiter, async (req, res
 });
 
 // --- REGISTRATION FLOW ---
-router.post("/register", registerLimiter, async (req, res) => {
+router.post("/register", turnstileMiddleware, registerLimiter, async (req, res) => {
   try {
     const { name, email, password } = req.body;
     const marketingEmailOptIn = req.body?.marketingEmailOptIn === true;
@@ -549,6 +554,7 @@ router.post("/register", registerLimiter, async (req, res) => {
     if (ex) return res.status(409).json({ message: "Email already registered" });
     
     const otp = generateOtp();
+    const hashedOtp = hashOtp('email-verification', email.toLowerCase().trim(), String(otp));
     
     // [FIXED CRITICAL]: Hashing the password prior to placing it in pending_registrations.
     // Plaintext passwords in pending tables present a systemic security risk if accessed.
@@ -566,7 +572,7 @@ router.post("/register", registerLimiter, async (req, res) => {
         otp=VALUES(otp), 
         otp_expiry=DATE_ADD(NOW(), INTERVAL 10 MINUTE), 
         created_at=NOW()
-    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, otp, referrerUserId, TERMS_VERSION]);
+    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, hashedOtp, referrerUserId, TERMS_VERSION]);
     
     try {
       await sendMail({ to: email, subject: 'Verify your account', html: `<div style="font-family: sans-serif; padding: 20px;"><h2>Welcome!</h2><p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p><p>Expires in 10 minutes.</p></div>` });
@@ -599,7 +605,8 @@ router.post("/verify-email", otpVerificationLimiter, async (req, res) => {
       connection = null;
       return res.status(404).json({ message: "Registration session expired. Please sign up again." });
     }
-    if (String(p.otp) !== String(otp)) {
+    const isOtpValid = compareOtp('email-verification', email.toLowerCase().trim(), String(otp), p.otp) || String(p.otp) === String(otp);
+    if (!isOtpValid) {
       await connection.rollback();
       connection.release();
       connection = null;
@@ -858,7 +865,8 @@ router.post("/verify-reset-otp", otpVerificationLimiter, async (req, res) => {
     const u = await getUserByEmail(email);
     const genericFail = "Invalid or expired verification code.";
     if (!u) return res.status(400).json({ message: genericFail });
-    if (!u.reset_otp || String(u.reset_otp) !== String(otp)) return res.status(400).json({ message: genericFail });
+    const isPremiumOtpValid = compareOtp('reset-password', email.toLowerCase().trim(), String(otp), u.reset_otp) || String(u.reset_otp) === String(otp);
+    if (!u.reset_otp || !isPremiumOtpValid) return res.status(400).json({ message: genericFail });
     if (!u.reset_otp_expires || new Date() > new Date(u.reset_otp_expires)) return res.status(400).json({ message: genericFail });
     const [consumed] = await pool.query(
       'UPDATE users SET reset_otp=NULL, reset_otp_expires=NULL WHERE id=? AND reset_otp=? AND reset_otp_expires >= NOW()',
@@ -908,6 +916,7 @@ router.post("/admin/forgot-password", forgotLimiter, async (req, res) => {
     const a = await getAdminByEmail(email);
     if (a && a.id) {
       const otp = generateOtp();
+    const hashedOtp = hashOtp('email-verification', email.toLowerCase().trim(), String(otp));
       await saveAdminResetOtp(a.id, hashAdminResetOtp(a.id, otp));
       try {
         await sendMail({

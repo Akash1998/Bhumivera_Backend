@@ -1,3 +1,4 @@
+const { orderLimiter } = require('../middleware/rateLimiter');
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
@@ -183,7 +184,7 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
   }
 });
 
-router.post("/", authenticateUser, async (req, res) => {
+router.post("/", orderLimiter, authenticateUser, async (req, res) => {
   try {
     if (req.body?.termsAccepted !== true) {
       return res.status(400).json({ code: 'TERMS_ACCEPTANCE_REQUIRED', message: 'Accept the Conditions of Sale before placing your order.' });
@@ -418,6 +419,24 @@ router.post("/", authenticateUser, async (req, res) => {
     return res.status(201).json({ orderId, message: "Order placed successfully", discount, tierDiscount, referralWalletAmount, shippingCost, rulePreview });
   } catch (err) {
     console.error("Place order error:", err);
+    if (verifiedPayment?.payment?.id) {
+      console.error("[CRITICAL_PAYMENT_CAPTURED_ORDER_FAILED]", { paymentId: verifiedPayment.payment.id, error: err.message });
+      try {
+        const razorpay = getRazorpayClient();
+        await razorpay.payments.refund(verifiedPayment.payment.id, {
+          notes: { reason: 'Order creation failed after payment capture; automated rollback refund', userId: String(req.user.id) }
+        });
+        console.info('[AUTO_REFUND_ISSUED]', verifiedPayment.payment.id);
+        return res.status(409).json({
+          code: 'PAYMENT_REFUNDED_ORDER_FAILED',
+          message: (err.message || "Checkout failed.") + " Your payment (ID: " + verifiedPayment.payment.id + ") has been automatically refunded.",
+          refunded: true,
+          paymentId: verifiedPayment.payment.id
+        });
+      } catch (refundErr) {
+        console.error('[AUTO_REFUND_FAILED]', refundErr.message);
+      }
+    }
     if (err.status === 403 && err.code === 'COD_DELIVERY_REQUIREMENT') {
       return res.status(403).json({ code: err.code, message: err.message });
     }

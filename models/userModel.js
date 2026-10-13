@@ -1,3 +1,4 @@
+const { hashOtp } = require('../utils/otpCrypto');
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
@@ -24,7 +25,7 @@ const createUsersTable = async () => {
       two_factor_enabled TINYINT(1) DEFAULT 0,
       security_question VARCHAR(255) DEFAULT 'What is your mother''s maiden name?',
       security_answer_hash VARCHAR(255),
-      reset_otp VARCHAR(10),
+      reset_otp VARCHAR(64),
       reset_otp_expires DATETIME,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -49,7 +50,7 @@ const createUsersTable = async () => {
     { name: 'two_factor_enabled', type: `TINYINT(1) DEFAULT 0` },
     { name: 'security_question', type: `VARCHAR(255) DEFAULT 'What is your mother''s maiden name?'` },
     { name: 'security_answer_hash', type: `VARCHAR(255)` },
-    { name: 'reset_otp', type: `VARCHAR(10)` },
+    { name: 'reset_otp', type: `VARCHAR(64)` },
     { name: 'reset_otp_expires', type: `DATETIME` },
     { name: 'failed_attempts', type: `INT DEFAULT 0` },
     { name: 'locked_until', type: `DATETIME` },
@@ -79,6 +80,14 @@ const createUsersTable = async () => {
     console.warn(`[DB_SYNC] Info: Could not modify reset_otp_expires (ignoring):`, err.message);
     throw err;
   }
+
+  
+  try {
+    await pool.query('ALTER TABLE users MODIFY COLUMN reset_otp VARCHAR(64) DEFAULT NULL');
+  } catch (err) {}
+  try {
+    await pool.query('ALTER TABLE pending_registrations MODIFY COLUMN otp VARCHAR(64) NOT NULL');
+  } catch (err) {}
 
   await createAuthSecurityTables();
 };
@@ -307,7 +316,7 @@ const initAuthTables = async () => {
       name VARCHAR(100) NOT NULL,
       password VARCHAR(255) NOT NULL,
       marketing_email_opt_in TINYINT(1) NOT NULL DEFAULT 0,
-      otp VARCHAR(10) NOT NULL,
+      otp VARCHAR(64) NOT NULL,
       otp_expiry DATETIME NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -528,8 +537,18 @@ const adjustWallet = async (conn, userId, amount, type, desc, refId = null) => {
   return newBalance;
 };
 
-const saveResetOtp = async (userId, otp) => {
-  await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [otp, userId]);
+const saveResetOtp = async (userId, otp, email = null) => {
+  let identifier = String(userId);
+  if (email) {
+    identifier = email.toLowerCase().trim();
+  } else {
+    try {
+      const [u] = await pool.query('SELECT email FROM users WHERE id = ?', [userId]);
+      if (u.length && u[0].email) identifier = u[0].email.toLowerCase().trim();
+    } catch (e) {}
+  }
+  const hashed = hashOtp('reset-password', identifier, String(otp));
+  await pool.query('UPDATE users SET reset_otp=?, reset_otp_expires=DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE id=?', [hashed, userId]);
 };
 
 const clearResetOtp = async (userId) => {

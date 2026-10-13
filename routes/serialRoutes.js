@@ -20,6 +20,39 @@ const generateChecksum = (baseString) => {
   return sum.toString(36).toUpperCase().slice(-1);
 };
 
+// POST /api/serials/validate - Public validation of serial authenticity
+router.post("/validate", async (req, res) => {
+  try {
+    const { serial } = req.body;
+    if (!serial || typeof serial !== 'string' || !serial.trim()) {
+      return res.status(400).json({ success: false, valid: false, message: "Serial number is required." });
+    }
+    const cleanSerial = serial.trim().toUpperCase();
+    const [rows] = await pool.query(
+      `SELECT ps.id, ps.serial_number, ps.status, ps.product_id, p.name AS product_name
+       FROM product_serials ps
+       LEFT JOIN products p ON p.id = ps.product_id
+       WHERE ps.serial_number = ?`,
+      [cleanSerial]
+    );
+    if (!rows || rows.length === 0) {
+      return res.json({ success: true, valid: false, message: "Serial number not found in authentic registry." });
+    }
+    const record = rows[0];
+    res.json({
+      success: true,
+      valid: true,
+      serial: record.serial_number,
+      productName: record.product_name,
+      status: record.status || 'active',
+      isRegistered: record.status?.toLowerCase() === 'registered'
+    });
+  } catch (err) {
+    console.error("[SERIAL_VALIDATE_ERROR]:", err);
+    res.status(500).json({ success: false, message: "Serial validation error." });
+  }
+});
+
 // GET /api/serials/admin/all - View all serial numbers across all products
 router.get("/admin/all", authenticateAdmin, async (req, res) => {
   try {
