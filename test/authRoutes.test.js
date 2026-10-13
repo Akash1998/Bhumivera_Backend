@@ -302,4 +302,19 @@ describe('customer password recovery', () => {
     assert.match((await response.json()).message, /valid email/i);
     assert.equal(state.sentMail, null);
   });
+
+  it('returns an account-neutral success response when no account matches', async () => {
+    state.recoveryUser = null;
+
+    const response = await fetch(`${baseUrl}/forgot-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'unknown@example.com' }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.message, 'If an account exists for this email, password recovery instructions will be sent.');
+    assert.equal(state.sentMail, null);
+  });
 });

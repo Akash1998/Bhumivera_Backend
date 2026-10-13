@@ -393,7 +393,8 @@ router.post("/forgot-password", forgotLimiter, async (req, res) => {
     }
 
     const u = await getUserByEmail(email);
-    if (!u) return res.status(404).json({ message: "Designation not found in registry." });
+    const responseMessage = "If an account exists for this email, password recovery instructions will be sent.";
+    if (!u) return res.json({ message: responseMessage });
     if (!u.id) return res.status(500).json({ message: "Internal DB Error: Missing User ID." });
 
     const otp = generateOtp();
@@ -411,7 +412,7 @@ router.post("/forgot-password", forgotLimiter, async (req, res) => {
       return res.status(503).json({ message: "Could not deliver the verification code. Please try again later." });
     }
 
-    res.json({ message: "Recovery token dispatched." });
+    res.json({ message: responseMessage });
   } catch (err) {
     console.error("Forgot Password Error:", err);
     res.status(500).json({ message: "Fatal Server Error.", error: err.message });
