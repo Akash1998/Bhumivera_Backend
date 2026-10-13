@@ -4,6 +4,16 @@ const pool = require('../config/db');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { validateSerial, registerWarranty, getAllRegistrations, updatGenuiine_testStatus, deletGenuiine_test } = require('../models/warrantyModel');
 
+
+router.get('/validate/:serial', async (req, res) => {
+  try {
+    const info = await validateSerial(req.params.serial);
+    res.json({ success: true, ...info });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
 router.post('/validate', async (req, res) => {
   try {
     const info = await validateSerial(req.body.serial);

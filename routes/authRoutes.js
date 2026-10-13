@@ -1136,4 +1136,16 @@ router.post("/admin/reset-password", async (req, res) => {
 
 router.use('/passkey', require('./passkeyRoutes'));
 
+
+// --- MOBILE LOGIN ALIASES FOR NATIVE PWA & APP BRIDGES ---
+router.post('/mobile-login/request', otpRequestLimiter, async (req, res, next) => {
+  req.url = '/login-request-otp';
+  router.handle(req, res, next);
+});
+
+router.post('/mobile-login/verify', otpVerificationLimiter, async (req, res, next) => {
+  req.url = '/2fa/verify';
+  router.handle(req, res, next);
+});
+
 module.exports = router;
