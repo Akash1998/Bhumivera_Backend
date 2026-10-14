@@ -36,6 +36,9 @@ app.get('/api/products/active/private-response', (_req, res) => {
   privateRequestCount += 1;
   res.set('Cache-Control', 'private, no-store').json({ request: privateRequestCount });
 });
+app.get('/api/products/active/unkeyed-vary-response', (_req, res) => {
+  res.set('Vary', 'x-test-variant').json({ request: true });
+});
 app.get('/api/products/active/large-response', (_req, res) => {
   res.json({ payload: 'x'.repeat(128 * 1024) });
 });
@@ -61,15 +64,27 @@ after(async () => {
 
 describe('Redis response cache', () => {
   it('serves the second anonymous public API request from Redis', async () => {
-    const first = await fetch(`${baseUrl}/api/products/active`);
+    const first = await fetch(`${baseUrl}/api/products/active`, {
+      headers: { 'x-request-id': 'first-request' },
+    });
     const firstBody = await first.json();
-    const second = await fetch(`${baseUrl}/api/products/active`);
+    const second = await fetch(`${baseUrl}/api/products/active`, {
+      headers: { 'x-request-id': 'second-request' },
+    });
     const secondBody = await second.json();
 
     assert.deepEqual(firstBody, { request: 1 });
     assert.deepEqual(secondBody, firstBody);
     assert.equal(first.headers.get('x-redis-cache'), 'MISS');
     assert.equal(second.headers.get('x-redis-cache'), 'HIT');
+  });
+
+  it('does not cache responses that vary by a header absent from the cache key', async () => {
+    const first = await fetch(`${baseUrl}/api/products/active/unkeyed-vary-response`);
+    const second = await fetch(`${baseUrl}/api/products/active/unkeyed-vary-response`);
+
+    assert.equal(first.headers.get('x-redis-cache'), 'MISS');
+    assert.equal(second.headers.get('x-redis-cache'), 'MISS');
   });
 
   it('does not cache authenticated, cookie-bearing, or explicitly private responses', async () => {

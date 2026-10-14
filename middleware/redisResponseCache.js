@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const CACHE_TTL_SECONDS = 60;
 const REDIS_READ_TIMEOUT_MS = 100;
 const MAX_CACHEABLE_RESPONSE_BYTES = 128 * 1024;
-const CACHE_PREFIX = 'bhumivera:response-cache:v1:';
+const CACHE_PREFIX = 'bhumivera:response-cache:v2:';
 const RATE_LIMITED_PUBLIC_PATHS = new Set([
   '/api/affiliate/referral/preview',
   '/api/search',
@@ -15,6 +15,7 @@ const CACHEABLE_PUBLIC_PATHS = [
   '/api/flash-sales',
 ];
 const CACHEABLE_HEADERS = ['content-type', 'cache-control', 'content-language', 'vary'];
+const CACHE_KEY_HEADERS = ['accept', 'accept-language', 'accept-encoding', 'origin'];
 
 const redisUrl = process.env.CACHE_REDIS_URL || process.env.RATE_LIMIT_REDIS_URL || process.env.REDIS_URL;
 const redisClient = redisUrl
@@ -39,8 +40,7 @@ const cacheMetrics = {
 };
 
 const hashRequest = req => {
-  const headers = Object.entries(req.headers)
-    .sort(([left], [right]) => left.localeCompare(right));
+  const headers = CACHE_KEY_HEADERS.map(name => [name, req.get(name) || '']);
   const requestKey = JSON.stringify([req.get('host'), req.originalUrl, headers]);
   return `${CACHE_PREFIX}${crypto.createHash('sha256').update(requestKey).digest('hex')}`;
 };
@@ -62,11 +62,16 @@ const canCacheRequest = req => {
 
 const isCacheableResponse = (req, res, body) => {
   const cacheControl = String(res.getHeader('Cache-Control') || '');
+  const varyHeaders = String(res.getHeader('Vary') || '')
+    .split(',')
+    .map(name => name.trim().toLowerCase())
+    .filter(Boolean);
   return req.method === 'GET' &&
     res.statusCode === 200 &&
     /^application\/json\b/i.test(String(res.getHeader('Content-Type') || '')) &&
     !/\b(private|no-store|no-cache)\b/i.test(cacheControl) &&
-    String(res.getHeader('Vary') || '').trim() !== '*' &&
+    !varyHeaders.includes('*') &&
+    varyHeaders.every(name => CACHE_KEY_HEADERS.includes(name)) &&
     !res.hasHeader('Set-Cookie') &&
     (typeof body === 'string' || Buffer.isBuffer(body));
 };
