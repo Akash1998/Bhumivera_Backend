@@ -1,11 +1,12 @@
 const crypto = require('crypto');
 const net = require('net');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
 
-function getLoginIpKey(ip) {
+function getLoginIpKey(ip, normalizedIp = ipKeyGenerator(ip, 56)) {
   const address = String(ip || '');
   if (net.isIP(address) === 4) return `v4:${address}`;
   if (net.isIP(address) !== 6) return `unknown:${address}`;
@@ -13,42 +14,15 @@ function getLoginIpKey(ip) {
   const normalized = address.toLowerCase();
   const mappedIpv4 = normalized.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
   if (mappedIpv4) return `v4:${mappedIpv4[1]}`;
-
-  const segments = normalized.split(':');
-  const lastSegment = segments[segments.length - 1];
-  if (lastSegment.includes('.')) {
-    const octets = lastSegment.split('.').map(Number);
-    segments.splice(
-      segments.length - 1,
-      1,
-      ((octets[0] << 8) | octets[1]).toString(16),
-      ((octets[2] << 8) | octets[3]).toString(16)
-    );
-  }
-
-  const compressed = segments.indexOf('');
-  let groups;
-  if (compressed >= 0) {
-    const left = segments.slice(0, compressed).filter(Boolean);
-    const right = segments.slice(compressed + 1).filter(Boolean);
-    groups = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right];
-  } else {
-    groups = segments;
-  }
-  if (groups.length !== 8) return `v6:${normalized}`;
-
-  const prefix = groups.slice(0, 3)
-    .map(group => parseInt(group, 16).toString(16).padStart(4, '0'))
-    .join('');
-  const fourthGroupPrefix = (parseInt(groups[3], 16) & 0xff00).toString(16).padStart(4, '0');
-  return `v6:${prefix}${fourthGroupPrefix}`;
+  return `v6:${normalizedIp}`;
 }
 
 const normalizeEmail = req => typeof req.body?.email === 'string'
   ? req.body.email.trim().toLowerCase()
   : '';
 const hashEmail = email => crypto.createHash('sha256').update(email).digest('hex');
-const accountNetworkKey = req => `${getLoginIpKey(req.ip)}:${hashEmail(normalizeEmail(req))}`;
+const accountNetworkKey = (req, normalizedIp) =>
+  `${getLoginIpKey(req.ip, normalizedIp)}:${hashEmail(normalizeEmail(req))}`;
 const retryAfterSeconds = (req, windowMs) => {
   const resetAt = req.rateLimit?.resetTime?.getTime?.();
   return resetAt
@@ -128,7 +102,7 @@ function createLimiter(name, {
 const registerLimiter = createLimiter('register', {
   windowMs: 60 * 60 * 1000,
   max: 100,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'REGISTER_NETWORK_LIMIT',
   message: 'Too many accounts have been created from this network.',
 });
@@ -136,7 +110,7 @@ const registerLimiter = createLimiter('register', {
 const referralPreviewLimiter = createLimiter('referral-preview', {
   windowMs: 60 * 1000,
   max: 30,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'REFERRAL_PREVIEW_LIMIT',
   message: 'Too many referral lookups. Please wait before checking another code.',
   userAction: 'Wait a minute, then try again.',
@@ -147,7 +121,7 @@ const loginLimiter = createLimiter('login-account', {
   max: 5,
   skipSuccessfulRequests: true,
   ignoreServerErrors: true,
-  keyGenerator: req => accountNetworkKey(req),
+  keyGenerator: req => accountNetworkKey(req, ipKeyGenerator(req.ip, 56)),
   code: 'LOGIN_ATTEMPTS_LIMIT',
   message: 'Too many unsuccessful sign-in attempts for this account from this network.',
   userAction: 'Wait for the retry interval to expire before trying again.',
@@ -158,7 +132,7 @@ const loginIpLimiter = createLimiter('login-network', {
   max: 100,
   skipSuccessfulRequests: true,
   ignoreServerErrors: true,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'LOGIN_NETWORK_LIMIT',
   message: 'Too many unsuccessful sign-in attempts from this network.',
   userAction: 'Wait for the retry interval to expire before trying again.',
@@ -167,7 +141,7 @@ const loginIpLimiter = createLimiter('login-network', {
 const otpRequestLimiter = createLimiter('otp-request-account-network', {
   windowMs: FIFTEEN_MINUTES,
   max: 10,
-  keyGenerator: req => accountNetworkKey(req),
+  keyGenerator: req => accountNetworkKey(req, ipKeyGenerator(req.ip, 56)),
   code: 'OTP_REQUEST_LIMIT',
   message: 'Too many OTP requests for this account from this network.',
   userAction: 'Request a new code after the retry interval expires.',
@@ -178,7 +152,7 @@ const otpVerificationLimiter = createLimiter('otp-verification-account-network',
   max: 10,
   skipSuccessfulRequests: true,
   ignoreServerErrors: true,
-  keyGenerator: req => accountNetworkKey(req),
+  keyGenerator: req => accountNetworkKey(req, ipKeyGenerator(req.ip, 56)),
   code: 'OTP_VERIFICATION_LIMIT',
   message: 'Too many unsuccessful OTP verification attempts for this account from this network.',
   userAction: 'Wait for the retry interval to expire before entering another code.',
@@ -188,8 +162,8 @@ const forgotLimiter = createLimiter('password-reset', {
   windowMs: TEN_MINUTES,
   max: req => normalizeEmail(req) ? 3 : 10,
   keyGenerator: req => normalizeEmail(req)
-    ? accountNetworkKey(req)
-    : getLoginIpKey(req.ip),
+    ? accountNetworkKey(req, ipKeyGenerator(req.ip, 56))
+    : getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'TOO_MANY_RESET_REQUESTS',
   message: 'Too many password reset requests. Please try again later.',
   userAction: 'Wait for the retry interval to expire before requesting another reset.',
@@ -198,7 +172,7 @@ const forgotLimiter = createLimiter('password-reset', {
 const magicLinkLimiter = createLimiter('magic-link', {
   windowMs: TEN_MINUTES,
   max: 5,
-  keyGenerator: req => accountNetworkKey(req),
+  keyGenerator: req => accountNetworkKey(req, ipKeyGenerator(req.ip, 56)),
   code: 'TOO_MANY_MAGIC_LINKS',
   message: 'Too many magic link requests.',
 });
@@ -206,7 +180,7 @@ const magicLinkLimiter = createLimiter('magic-link', {
 const googleCallbackLimiter = createLimiter('google-callback', {
   windowMs: 60 * 1000,
   max: 20,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'GOOGLE_RATE_LIMIT',
   message: 'Too many Google OAuth callback attempts.',
 });
@@ -216,7 +190,7 @@ const adminStrictLimiter = createLimiter('admin-authentication', {
   max: 10,
   skipSuccessfulRequests: true,
   ignoreServerErrors: true,
-  keyGenerator: req => accountNetworkKey(req),
+  keyGenerator: req => accountNetworkKey(req, ipKeyGenerator(req.ip, 56)),
   code: 'ADMIN_RATE_LIMIT',
   message: 'Too many unsuccessful admin authentication attempts.',
   userAction: 'Wait for the retry interval to expire before trying again.',
@@ -225,7 +199,7 @@ const adminStrictLimiter = createLimiter('admin-authentication', {
 const challengeLimiter = createLimiter('device-challenge', {
   windowMs: TEN_MINUTES,
   max: 10,
-  keyGenerator: req => accountNetworkKey(req),
+  keyGenerator: req => accountNetworkKey(req, ipKeyGenerator(req.ip, 56)),
   code: 'CHALLENGE_RATE_LIMIT',
   message: 'Too many device challenge attempts for this account from this network.',
 });
@@ -233,7 +207,7 @@ const challengeLimiter = createLimiter('device-challenge', {
 const clientErrorLimiter = createLimiter('client-error', {
   windowMs: 5 * 60 * 1000,
   max: 30,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'CLIENT_LOG_RATE_LIMIT',
   message: 'Too many client error reports.',
   userAction: 'Wait a few minutes before submitting another report.',
@@ -242,7 +216,7 @@ const clientErrorLimiter = createLimiter('client-error', {
 const newsletterLimiter = createLimiter('newsletter', {
   windowMs: 60 * 60 * 1000,
   max: 10,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'NEWSLETTER_RATE_LIMIT',
   message: 'Too many subscription attempts.',
   userAction: 'Try again later.',
@@ -252,7 +226,7 @@ const newsletterLimiter = createLimiter('newsletter', {
 const contactLimiter = createLimiter('contact', {
   windowMs: FIFTEEN_MINUTES,
   max: 15,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'CONTACT_RATE_LIMIT',
   message: 'Too many contact submissions from this network. Please try again later.',
 });
@@ -260,7 +234,7 @@ const contactLimiter = createLimiter('contact', {
 const reviewLimiter = createLimiter('reviews', {
   windowMs: FIFTEEN_MINUTES,
   max: 15,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'REVIEW_RATE_LIMIT',
   message: 'Too many review actions from this network. Please try again shortly.',
 });
@@ -268,7 +242,7 @@ const reviewLimiter = createLimiter('reviews', {
 const orderLimiter = createLimiter('orders', {
   windowMs: FIFTEEN_MINUTES,
   max: 30,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'ORDER_RATE_LIMIT',
   message: 'Too many order requests. Please wait a moment before trying again.',
 });
@@ -276,7 +250,7 @@ const orderLimiter = createLimiter('orders', {
 const searchLimiter = createLimiter('search', {
   windowMs: 60 * 1000,
   max: 60,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'SEARCH_RATE_LIMIT',
   message: 'Too many search queries. Please slow down.',
 });
@@ -284,7 +258,7 @@ const searchLimiter = createLimiter('search', {
 const couponValidateLimiter = createLimiter('coupon-validate', {
   windowMs: TEN_MINUTES,
   max: 30,
-  keyGenerator: req => getLoginIpKey(req.ip),
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
   code: 'COUPON_RATE_LIMIT',
   message: 'Too many coupon validation attempts. Please wait before trying another code.',
 });

@@ -4,7 +4,7 @@ const express = require("express"),
   jwt = require("jsonwebtoken"),
   bcrypt = require("bcryptjs"),
 qrcode = require('qrcode'),
-{ authenticator } = require('otplib'),
+{ generateSecret, generateURI, verify } = require('otplib'),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
   { registerLimiter, loginLimiter, loginIpLimiter, otpRequestLimiter, otpVerificationLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
@@ -23,6 +23,8 @@ const {
 const { hashOtp, compareOtp } = require('../utils/otpCrypto');
 const { getTrustedAdminDevice, trustAdminDevice, revokeTrustedAdminDevices } = require('../utils/adminTrustedDevice');
 const { createReferralClaim, findReferralUser, verifyReferralToken } = require('../models/referralModel');
+const verifyAuthenticator = async (token, secret) =>
+  (await verify({ token, secret, epochTolerance: 30 })).valid;
 
 const {
   getAdminByEmail,
@@ -355,7 +357,7 @@ router.post("/2fa/verify", otpVerificationLimiter, async (req, res) => {
     const normalizedOtp = String(otpVal);
     let verifiedByEmail = false;
     if (c.two_factor_enabled) {
-      if (!c.two_factor_secret || !authenticator.check(normalizedOtp, c.two_factor_secret)) {
+      if (!c.two_factor_secret || !await verifyAuthenticator(normalizedOtp, c.two_factor_secret)) {
         return res.status(401).json({ message: "Invalid MFA token." });
       }
     } else {
@@ -852,8 +854,8 @@ router.post('/admin/2fa/setup', authenticateAdmin, async (req, res) => {
     if (admin.two_factor_enabled) {
       return res.status(409).json({ message: 'Two-factor authentication is already enabled.' });
     }
-    const secret = authenticator.generateSecret();
-    const otpauthUrl = authenticator.keyuri(admin.email, 'Bhumivera Admin', secret);
+    const secret = generateSecret();
+    const otpauthUrl = generateURI({ label: admin.email, issuer: 'Bhumivera Admin', secret });
     const qrCode = await qrcode.toDataURL(otpauthUrl);
     return res.json({ secret, qrCode });
   } catch (error) {
@@ -869,7 +871,7 @@ router.post('/admin/2fa/enable', authenticateAdmin, async (req, res) => {
     if (!secret || !/^\d{6}$/.test(token)) {
       return res.status(400).json({ message: 'A setup secret and 6-digit authenticator code are required.' });
     }
-    if (!authenticator.verify({ token, secret })) {
+    if (!await verifyAuthenticator(token, secret)) {
       return res.status(400).json({ code: 'INVALID_MFA_TOKEN', message: 'Authenticator code is invalid or expired.' });
     }
     const [result] = await pool.query(
@@ -907,7 +909,7 @@ router.post('/admin/2fa/disable', authenticateAdmin, async (req, res) => {
     if (!security?.two_factor_enabled || !security.two_factor_secret) {
       return res.status(400).json({ message: 'Two-factor authentication is not enabled.' });
     }
-    if (!authenticator.verify({ token: String(token), secret: security.two_factor_secret })) {
+    if (!await verifyAuthenticator(String(token), security.two_factor_secret)) {
       return res.status(401).json({ code: 'INVALID_MFA_TOKEN', message: 'Authenticator code is invalid or expired.' });
     }
     await pool.query(
@@ -949,7 +951,7 @@ router.post('/admin/2fa/verify-login', adminStrictLimiter, loginIpLimiter, otpVe
         String(admin.email).toLowerCase() !== String(challenge.email).toLowerCase()) {
       return res.status(401).json({ message: 'Admin two-factor sign-in is not available. Start again.' });
     }
-    if (!authenticator.verify({ token, secret: admin.two_factor_secret })) {
+    if (!await verifyAuthenticator(token, admin.two_factor_secret)) {
       return res.status(401).json({ code: 'INVALID_MFA_TOKEN', message: 'Authenticator code is invalid or expired.' });
     }
     const challengeUsed = await consumeOneTimeToken(challenge.jti, challenge.exp);

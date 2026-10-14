@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { authenticator } = require('otplib');
+const { generateSecret, generateURI, verify } = require('otplib');
 const qrcode = require('qrcode');
 const router = express.Router();
 const {
@@ -31,6 +31,8 @@ const {
   deleteLoyaltyTier,
 } = require('../models/loyaltyTierModel');
 const { computeLoyaltyTier } = require('../utils/loyaltyTier');
+const verifyAuthenticator = async (token, secret) =>
+  (await verify({ token, secret, epochTolerance: 30 })).valid;
 
 const validateLoyaltyTier = tier => {
   const name = typeof tier?.name === 'string' ? tier.name.trim() : '';
@@ -165,8 +167,6 @@ router.patch('/loyalty/matrix/members/:id', authenticateAdmin, async (req, res) 
     connection.release();
   }
 });
-
-authenticator.options = { window: 1 };
 
 // Shadow authentication routes deprecated and redirected to hardened auth routes
 router.post('/register', (_req, res) => {
@@ -409,8 +409,8 @@ router.post('/change-password', authenticateUser, async (req, res) => {
 
 router.post('/2fa/generate', authenticateUser, async (req, res) => {
   try {
-    const secret = authenticator.generateSecret();
-    const otpauth = authenticator.keyuri(req.user.email, 'Bhumivera Store', secret);
+    const secret = generateSecret();
+    const otpauth = generateURI({ label: req.user.email, issuer: 'Bhumivera Store', secret });
     const qrCodeUrl = await qrcode.toDataURL(otpauth);
     res.json({ secret, qrCode: qrCodeUrl });
   } catch (err) { res.status(500).json({ message: "Server error" }); }
@@ -419,8 +419,8 @@ router.post('/2fa/generate', authenticateUser, async (req, res) => {
 // Alias for frontend users.generate2FA() — identical to above
 router.post('/2fa/generate-setup', authenticateUser, async (req, res) => {
   try {
-    const secret = authenticator.generateSecret();
-    const otpauth = authenticator.keyuri(req.user.email, 'Bhumivera Store', secret);
+    const secret = generateSecret();
+    const otpauth = generateURI({ label: req.user.email, issuer: 'Bhumivera Store', secret });
     const qrCodeUrl = await qrcode.toDataURL(otpauth);
     res.json({ secret, qrCode: qrCodeUrl, qrCodeUrl });
   } catch (err) { res.status(500).json({ message: "Server error" }); }
@@ -429,7 +429,7 @@ router.post('/2fa/generate-setup', authenticateUser, async (req, res) => {
 router.post('/2fa/enable', authenticateUser, async (req, res) => {
   try {
     const { token, secret } = req.body;
-    const isValid = authenticator.verify({ token, secret });
+    const isValid = await verifyAuthenticator(token, secret);
     if (!isValid) return res.status(400).json({ message: "Invalid Authenticator Code." });
 
     await pool.query('UPDATE users SET two_factor_secret=?, two_factor_enabled=1 WHERE id=?', [secret, req.user.id]);
@@ -458,7 +458,7 @@ router.post('/2fa/disable', authenticateUser, async (req, res) => {
       return res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Current password incorrect.' });
     }
 
-    const tokenOk = authenticator.verify({ token: String(token), secret: user.two_factor_secret });
+    const tokenOk = await verifyAuthenticator(String(token), user.two_factor_secret);
     if (!tokenOk) {
       return res.status(401).json({ code: 'INVALID_MFA_TOKEN', message: 'Invalid authenticator token.' });
     }

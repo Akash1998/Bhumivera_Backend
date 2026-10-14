@@ -22,7 +22,7 @@ let extractorPipeline;
 async function getExtractor() {
   if (!extractorPipeline) {
     // Dynamically import the local AI model
-    const { pipeline } = await import('@xenova/transformers');
+    const { pipeline } = await import('@huggingface/transformers');
     // Using MiniLM: extremely fast, lightweight, and 100% free
     extractorPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
   }
@@ -59,16 +59,18 @@ async function syncProductToVectorDB(product) {
 
     const embedding = await generateEmbedding(contentToEmbed);
 
-    await index.upsert([{
-      id: product.id.toString(),
-      values: embedding,
-      metadata: {
-        name: product.name,
-        category_id: product.category_id,
-        price: product.price,
-        status: product.status
-      }
-    }]);
+    await index.upsert({
+      records: [{
+        id: product.id.toString(),
+        values: embedding,
+        metadata: {
+          name: product.name,
+          category_id: product.category_id,
+          price: product.price,
+          status: product.status
+        }
+      }]
+    });
 
     console.log(`[AI Search] Synced product ID ${product.id} to Vector DB`);
   } catch (error) {
