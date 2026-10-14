@@ -4,6 +4,7 @@ const express = require('express');
 const {
   accountNetworkKey,
   createLimiter,
+  createRedisCommand,
   getLoginIpKey,
   loginLimiter,
   otpRequestLimiter,
@@ -38,6 +39,22 @@ const post = (url, body) => fetch(url, {
 });
 
 describe('authentication rate limiting', () => {
+  it('connects Redis before issuing commands from rate-limit store initialization', async () => {
+    let isReady = false;
+    const client = {
+      sendCommand: async args => {
+        assert.equal(isReady, true);
+        return args.join(' ');
+      },
+    };
+    const command = createRedisCommand(client, async () => {
+      await Promise.resolve();
+      isReady = true;
+    });
+
+    assert.equal(await command('SCRIPT', 'LOAD', 'return 1'), 'SCRIPT LOAD return 1');
+  });
+
   it('does not count successful logins and returns a useful Retry-After after failures', async () => {
     const email = `rate-limit-${Date.now()}@example.com`;
     const sendAttempt = success => post(baseUrl, { email, success });

@@ -46,6 +46,7 @@ const rateLimitRedisUrl = process.env.RATE_LIMIT_REDIS_URL || process.env.REDIS_
 const sharedRedisClient = rateLimitRedisUrl
   ? require('redis').createClient({ url: rateLimitRedisUrl })
   : null;
+let rateLimitConnectionPromise;
 
 if (sharedRedisClient) {
   sharedRedisClient.on('error', error => {
@@ -56,14 +57,39 @@ if (sharedRedisClient) {
 }
 
 async function connectRateLimitStore() {
-  if (!sharedRedisClient || sharedRedisClient.isOpen) return;
-  await sharedRedisClient.connect();
+  if (!sharedRedisClient || sharedRedisClient.isReady) return;
+  if (!rateLimitConnectionPromise) {
+    rateLimitConnectionPromise = (async () => {
+      if (!sharedRedisClient.isOpen) {
+        await sharedRedisClient.connect();
+        return;
+      }
+      await new Promise((resolve, reject) => {
+        const onReady = () => {
+          sharedRedisClient.off('error', onError);
+          resolve();
+        };
+        const onError = error => {
+          sharedRedisClient.off('ready', onReady);
+          reject(error);
+        };
+        sharedRedisClient.once('ready', onReady);
+        sharedRedisClient.once('error', onError);
+      });
+    })().finally(() => {
+      rateLimitConnectionPromise = null;
+    });
+  }
+  await rateLimitConnectionPromise;
   console.info('[RATE_LIMIT_STORE] Shared Redis rate-limit storage connected.');
 }
 
 async function closeRateLimitStore() {
   if (sharedRedisClient?.isOpen) await sharedRedisClient.quit();
 }
+
+const createRedisCommand = (client, ensureConnected) => (...args) =>
+  Promise.resolve().then(ensureConnected).then(() => client.sendCommand(args));
 
 function getRateLimitStoreStatus() {
   return {
@@ -102,7 +128,7 @@ function createLimiter(name, {
     const { RedisStore } = require('rate-limit-redis');
     options.store = new RedisStore({
       prefix: `bhumivera:rate-limit:${name}:`,
-      sendCommand: (...args) => sharedRedisClient.sendCommand(args),
+      sendCommand: createRedisCommand(sharedRedisClient, connectRateLimitStore),
     });
   }
   return rateLimit(options);
@@ -295,6 +321,7 @@ module.exports = {
   closeRateLimitStore,
   getRateLimitStoreStatus,
   createLimiter,
+  createRedisCommand,
   getLoginIpKey,
   accountNetworkKey,
 };
