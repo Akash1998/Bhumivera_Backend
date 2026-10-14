@@ -2,14 +2,21 @@ const crypto = require('node:crypto');
 
 const CACHE_TTL_SECONDS = 60;
 const REDIS_READ_TIMEOUT_MS = 100;
+const MAX_CACHEABLE_RESPONSE_BYTES = 128 * 1024;
 const CACHE_PREFIX = 'bhumivera:response-cache:v1:';
 const RATE_LIMITED_PUBLIC_PATHS = new Set([
   '/api/affiliate/referral/preview',
   '/api/search',
 ]);
+const CACHEABLE_PUBLIC_PATHS = [
+  '/api/products/active',
+  '/api/categories',
+  '/api/subcategories',
+  '/api/flash-sales',
+];
 const CACHEABLE_HEADERS = ['content-type', 'cache-control', 'content-language', 'vary'];
 
-const redisUrl = process.env.CACHE_REDIS_URL || process.env.RATE_LIMIT_REDIS_URL;
+const redisUrl = process.env.CACHE_REDIS_URL || process.env.RATE_LIMIT_REDIS_URL || process.env.REDIS_URL;
 const redisClient = redisUrl
   ? require('redis').createClient({ url: redisUrl })
   : null;
@@ -21,6 +28,15 @@ if (redisClient) {
 } else if (process.env.NODE_ENV === 'production') {
   console.warn('[RESPONSE_CACHE] CACHE_REDIS_URL is not configured; response caching is disabled.');
 }
+
+const cacheMetrics = {
+  hits: 0,
+  misses: 0,
+  readErrors: 0,
+  writeErrors: 0,
+  skippedLargeResponses: 0,
+  writes: 0,
+};
 
 const hashRequest = req => {
   const headers = Object.entries(req.headers)
@@ -34,6 +50,8 @@ const canCacheRequest = req => {
   const cacheControl = `${req.get('cache-control') || ''},${req.get('pragma') || ''}`;
   return req.method === 'GET' &&
     path.startsWith('/api/') &&
+    (CACHEABLE_PUBLIC_PATHS.some(prefix => path === prefix || path.startsWith(`${prefix}/`)) ||
+      path.startsWith('/api/products/slug/')) &&
     !RATE_LIMITED_PUBLIC_PATHS.has(path) &&
     !req.get('authorization') &&
     !req.get('cookie') &&
@@ -78,6 +96,7 @@ const createRedisResponseCache = (client, {
         const entry = JSON.parse(cached);
         if (entry.statusCode === 200 && typeof entry.body === 'string' &&
             entry.headers && typeof entry.headers === 'object') {
+          cacheMetrics.hits += 1;
           for (const name of CACHEABLE_HEADERS) {
             const value = entry.headers[name];
             if (typeof value === 'string' ||
@@ -93,10 +112,16 @@ const createRedisResponseCache = (client, {
       }
     }
 
+    cacheMetrics.misses += 1;
     res.setHeader('X-Redis-Cache', 'MISS');
     const send = res.send;
     res.send = function sendWithCache(body) {
       if (isCacheableResponse(req, res, body)) {
+        const bodyBytes = Buffer.isBuffer(body) ? body.length : Buffer.byteLength(body);
+        if (bodyBytes > MAX_CACHEABLE_RESPONSE_BYTES) {
+          cacheMetrics.skippedLargeResponses += 1;
+          return send.call(this, body);
+        }
         const headers = Object.fromEntries(CACHEABLE_HEADERS
           .filter(name => res.hasHeader(name))
           .map(name => [name, res.getHeader(name)]));
@@ -105,7 +130,10 @@ const createRedisResponseCache = (client, {
           headers,
           body: Buffer.isBuffer(body) ? body.toString('utf8') : body,
         });
-        Promise.resolve().then(() => client.set(key, entry, { EX: ttlSeconds })).catch(error => {
+        Promise.resolve().then(() => client.set(key, entry, { EX: ttlSeconds })).then(() => {
+          cacheMetrics.writes += 1;
+        }).catch(error => {
+          cacheMetrics.writeErrors += 1;
           logger.error('[RESPONSE_CACHE_WRITE_ERROR]', error.message);
         });
       }
@@ -113,6 +141,7 @@ const createRedisResponseCache = (client, {
     };
     return next();
   }).catch(error => {
+    cacheMetrics.readErrors += 1;
     logger.error('[RESPONSE_CACHE_READ_ERROR]', error.message);
     next();
   }).finally(() => {
@@ -130,9 +159,23 @@ const closeResponseCache = async () => {
   if (redisClient?.isOpen) await redisClient.quit();
 };
 
+const getResponseCacheStatus = () => ({
+  status: !redisClient ? 'not_configured' : redisClient.isReady ? 'connected' : 'configured_but_disconnected',
+  configured: Boolean(redisClient),
+  ttlSeconds: CACHE_TTL_SECONDS,
+  maxCacheableResponseBytes: MAX_CACHEABLE_RESPONSE_BYTES,
+  metrics: {
+    ...cacheMetrics,
+    hitRatePercent: cacheMetrics.hits + cacheMetrics.misses
+      ? Number(((cacheMetrics.hits / (cacheMetrics.hits + cacheMetrics.misses)) * 100).toFixed(2))
+      : 0,
+  },
+});
+
 module.exports = {
   createRedisResponseCache,
   redisResponseCache: createRedisResponseCache(redisClient),
   connectResponseCache,
   closeResponseCache,
+  getResponseCacheStatus,
 };

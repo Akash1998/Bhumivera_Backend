@@ -42,8 +42,9 @@ const createRateLimitHandler = ({ code, message, windowMs, userAction }) =>
     });
   };
 
-const sharedRedisClient = process.env.RATE_LIMIT_REDIS_URL
-  ? require('redis').createClient({ url: process.env.RATE_LIMIT_REDIS_URL })
+const rateLimitRedisUrl = process.env.RATE_LIMIT_REDIS_URL || process.env.REDIS_URL;
+const sharedRedisClient = rateLimitRedisUrl
+  ? require('redis').createClient({ url: rateLimitRedisUrl })
   : null;
 
 if (sharedRedisClient) {
@@ -62,6 +63,14 @@ async function connectRateLimitStore() {
 
 async function closeRateLimitStore() {
   if (sharedRedisClient?.isOpen) await sharedRedisClient.quit();
+}
+
+function getRateLimitStoreStatus() {
+  return {
+    status: !sharedRedisClient ? 'process_local' : sharedRedisClient.isReady ? 'connected' : 'configured_but_disconnected',
+    configured: Boolean(sharedRedisClient),
+    sharedAcrossInstances: Boolean(sharedRedisClient),
+  };
 }
 
 function createLimiter(name, {
@@ -284,6 +293,7 @@ module.exports = {
   newsletterLimiter,
   connectRateLimitStore,
   closeRateLimitStore,
+  getRateLimitStoreStatus,
   createLimiter,
   getLoginIpKey,
   accountNetworkKey,

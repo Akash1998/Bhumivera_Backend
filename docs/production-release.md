@@ -11,9 +11,11 @@ Set `NODE_ENV=production` and provide:
 
 If the corresponding feature is enabled, configure both Razorpay API credentials. To receive Razorpay events, configure `RAZORPAY_WEBHOOK_SECRET` and point the provider to `POST /api/webhooks/razorpay`, subscribing to `payment.captured`, `payment.failed`, `refund.created`, `refund.processed`, and `refund.failed`. Use the webhook secret from the provider dashboard, which is separate from the API key secret.
 
-For more than one backend instance, set the same `RATE_LIMIT_REDIS_URL` on every instance. A single instance can use the built-in in-memory rate-limit store.
+For more than one backend instance, set the same `REDIS_URL` or `RATE_LIMIT_REDIS_URL` on every instance to share rate-limit counters. A single instance can use the built-in in-memory rate-limit store.
 
-Set `CACHE_REDIS_URL` on each backend instance to enable shared response caching for anonymous JSON `GET /api/...` requests. It falls back to `RATE_LIMIT_REDIS_URL` when unset. Responses are cached for 60 seconds; authenticated/cookie requests, explicitly private or no-store responses, and search/referral-preview endpoints are not cached. Redis cache connection or request failures do not prevent API requests from continuing.
+Set `REDIS_URL` or `CACHE_REDIS_URL` on each backend instance to enable Redis response caching. The cache is restricted to public product, category, subcategory and active flash-sale GET endpoints; authenticated/cookie requests, explicitly private or no-store responses, and search/referral-preview endpoints are not cached. Entries expire after 60 seconds, and responses larger than 128 KiB are skipped. Redis cache connection or request failures do not prevent API requests from continuing. The cache reduces repeated eligible MySQL reads but does not replace persistent MySQL data or configure Railway's MySQL RAM limit.
+
+The MySQL client pool defaults to at most 3 connections, 1 idle connection and 100 queued operations (`DB_POOL_SIZE` can override the connection cap). This limits per-connection server overhead while bounding application-side queue growth. Check the Railway MySQL service Metrics tab for actual database RAM; the admin health page reports application pool limits, not Railway's server memory allocation.
 
 ### Production system logs
 

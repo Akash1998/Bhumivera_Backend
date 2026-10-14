@@ -3,6 +3,8 @@ const { authenticateAdmin } = require('../middleware/authMiddleware');
 const pool = require('../config/db');
 const { getMailMetrics } = require('../utils/mail');
 const { getRequestMetrics } = require('../middleware/requestObservability');
+const { getRateLimitStoreStatus } = require('../middleware/rateLimiter');
+const { getResponseCacheStatus } = require('../middleware/redisResponseCache');
 const {
   fetchRailwayHttpErrors,
   fetchVercelDeploymentEvents,
@@ -75,6 +77,8 @@ router.get('/health', authenticateAdmin, async (_req, res) => {
         healthStatus: recentServerErrorCount ? 'errors_detected' : 'no_recent_errors',
       };
     });
+    const rateLimitStore = getRateLimitStoreStatus();
+    const responseCache = getResponseCacheStatus();
     const services = {
       database,
       email: {
@@ -86,19 +90,68 @@ router.get('/health', authenticateAdmin, async (_req, res) => {
         status: process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET ? 'configured' : 'not_configured',
       },
       rateLimits: {
-        status: process.env.RATE_LIMIT_REDIS_URL ? 'redis_configured' : 'process_local',
-        note: process.env.RATE_LIMIT_REDIS_URL ? undefined : 'Limits are isolated per running process.',
+        ...rateLimitStore,
+        note: rateLimitStore.status === 'process_local'
+          ? 'Limits are isolated per running process; configure REDIS_URL or RATE_LIMIT_REDIS_URL to share limits across instances.'
+          : undefined,
+      },
+      responseCache: {
+        ...responseCache,
+        note: responseCache.status === 'connected'
+          ? 'Public JSON responses are cached in Redis for up to 60 seconds; responses over 128 KiB are not cached.'
+          : responseCache.status === 'not_configured'
+            ? 'Redis response caching is disabled; the API reads directly from MySQL.'
+            : 'Redis is configured but not ready; cache reads are skipped and the API reads directly from MySQL.',
       },
     };
-    const degraded = Object.values(services).some(service =>
-      ['unavailable', 'not_configured'].includes(service.status)
-    ) || requestMetrics.serverErrorCount > 0 || services.email.deliveryMetrics.failedCount > 0;
+    const healthIssues = [];
+    if (database.status !== 'healthy') {
+      healthIssues.push({ severity: 'critical', code: 'DATABASE_UNAVAILABLE', message: `Database health check failed (${database.code || 'unknown error'}).` });
+    }
+    if (services.email.status === 'not_configured') {
+      healthIssues.push({ severity: 'high', code: 'EMAIL_NOT_CONFIGURED', message: 'Email provider credentials are missing; verification and notification emails may fail.' });
+    }
+    if (services.payments.status === 'not_configured') {
+      healthIssues.push({ severity: 'high', code: 'PAYMENTS_NOT_CONFIGURED', message: 'Payment provider credentials are missing; online checkout cannot be completed.' });
+    }
+    if (requestMetrics.serverErrorCount > 0) {
+      const commonFailurePaths = Object.entries(requestMetrics.errorCountsByPath)
+        .sort((first, second) => second[1] - first[1])
+        .slice(0, 3)
+        .map(([path, count]) => `${path} (${count})`);
+      healthIssues.push({
+        severity: 'high',
+        code: 'RECENT_SERVER_ERRORS',
+        message: `${requestMetrics.serverErrorCount} HTTP 5xx error(s) were recorded by this process in the last ${requestMetrics.windowMinutes} minutes.${commonFailurePaths.length ? ` Most affected paths: ${commonFailurePaths.join(', ')}.` : ''}`,
+      });
+    }
+    if (services.email.deliveryMetrics.failedCount > 0) {
+      healthIssues.push({
+        severity: 'medium',
+        code: 'EMAIL_DELIVERY_FAILURES',
+        message: `${services.email.deliveryMetrics.failedCount} email send attempt(s) failed since this process started.`,
+      });
+    }
+    if (rateLimitStore.status === 'configured_but_disconnected') {
+      healthIssues.push({ severity: 'high', code: 'RATE_LIMIT_REDIS_DISCONNECTED', message: 'Redis is configured for shared rate limits but is not connected.' });
+    }
+    if (responseCache.status === 'configured_but_disconnected') {
+      healthIssues.push({ severity: 'medium', code: 'RESPONSE_CACHE_REDIS_DISCONNECTED', message: 'Redis response caching is unavailable; API reads are falling back to MySQL.' });
+    }
+    const degraded = healthIssues.length > 0;
+    const poolConfig = pool.appConfig || {};
     return res.status(database.status === 'healthy' ? 200 : 503).json({
       status: degraded ? 'degraded' : 'healthy',
+      healthIssues,
       checkedAt: new Date().toISOString(),
       process: {
         uptimeSeconds: Math.floor(process.uptime()),
-        memoryUsedBytes: process.memoryUsage().heapUsed,
+        ...process.memoryUsage(),
+      },
+      databaseUsage: {
+        connectionLimit: poolConfig.connectionLimit ?? null,
+        maxIdleConnections: poolConfig.maxIdle ?? null,
+        queueLimit: poolConfig.queueLimit ?? null,
       },
       services,
       modules,

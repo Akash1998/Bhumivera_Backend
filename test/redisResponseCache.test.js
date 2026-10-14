@@ -28,13 +28,16 @@ let baseUrl;
 app.use(createRedisResponseCache(redis, {
   logger: { error: error => { throw error; } },
 }));
-app.get('/api/public', (_req, res) => {
+app.get('/api/products/active', (_req, res) => {
   publicRequestCount += 1;
   res.json({ request: publicRequestCount });
 });
-app.get('/api/private-response', (_req, res) => {
+app.get('/api/products/active/private-response', (_req, res) => {
   privateRequestCount += 1;
   res.set('Cache-Control', 'private, no-store').json({ request: privateRequestCount });
+});
+app.get('/api/products/active/large-response', (_req, res) => {
+  res.json({ payload: 'x'.repeat(128 * 1024) });
 });
 app.get('/api/search', (_req, res) => {
   publicRequestCount += 1;
@@ -58,9 +61,9 @@ after(async () => {
 
 describe('Redis response cache', () => {
   it('serves the second anonymous public API request from Redis', async () => {
-    const first = await fetch(`${baseUrl}/api/public`);
+    const first = await fetch(`${baseUrl}/api/products/active`);
     const firstBody = await first.json();
-    const second = await fetch(`${baseUrl}/api/public`);
+    const second = await fetch(`${baseUrl}/api/products/active`);
     const secondBody = await second.json();
 
     assert.deepEqual(firstBody, { request: 1 });
@@ -70,14 +73,14 @@ describe('Redis response cache', () => {
   });
 
   it('does not cache authenticated, cookie-bearing, or explicitly private responses', async () => {
-    const authenticated = await fetch(`${baseUrl}/api/public`, {
+    const authenticated = await fetch(`${baseUrl}/api/products/active`, {
       headers: { authorization: 'Bearer user-token' },
     });
-    const cookieRequest = await fetch(`${baseUrl}/api/public`, {
+    const cookieRequest = await fetch(`${baseUrl}/api/products/active`, {
       headers: { cookie: 'session=user-session' },
     });
-    const privateFirst = await fetch(`${baseUrl}/api/private-response`);
-    const privateSecond = await fetch(`${baseUrl}/api/private-response`);
+    const privateFirst = await fetch(`${baseUrl}/api/products/active/private-response`);
+    const privateSecond = await fetch(`${baseUrl}/api/products/active/private-response`);
 
     assert.equal(authenticated.headers.get('x-redis-cache'), null);
     assert.equal(cookieRequest.headers.get('x-redis-cache'), null);
@@ -98,6 +101,13 @@ describe('Redis response cache', () => {
     assert.equal(publicRequestCount, 7);
   });
 
+  it('skips caching a response larger than the configured per-entry memory cap', async () => {
+    const response = await fetch(`${baseUrl}/api/products/active/large-response`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-redis-cache'), 'MISS');
+    assert.equal(redis.entries.size, 1);
+  });
+
   it('continues serving requests when Redis reads fail', async () => {
     const errors = [];
     const failingApp = express();
@@ -107,13 +117,13 @@ describe('Redis response cache', () => {
     }, {
       logger: { error: (...args) => errors.push(args) },
     }));
-    failingApp.get('/api/public', (_req, res) => res.json({ available: true }));
+    failingApp.get('/api/products/active', (_req, res) => res.json({ available: true }));
 
     const failingServer = await new Promise(resolve => {
       const listeningServer = failingApp.listen(0, '127.0.0.1', () => resolve(listeningServer));
     });
     try {
-      const response = await fetch(`http://127.0.0.1:${failingServer.address().port}/api/public`);
+      const response = await fetch(`http://127.0.0.1:${failingServer.address().port}/api/products/active`);
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { available: true });
       assert.equal(errors.length, 1);
