@@ -122,43 +122,4 @@ router.delete('/zones/:id', authenticateAdmin, async (req, res) => {
 
 router.use('/', require('./shippingLabelRoutes'));
 
-
-// GET /api/shipping/pincode/:pincode - Real-time Indian pincode serviceability & Estimated Delivery Date (EDD)
-router.get('/pincode/:pincode', async (req, res) => {
-  const pincode = String(req.params.pincode || '').trim();
-  if (!/^[1-9][0-9]{5}$/.test(pincode)) {
-    return res.status(400).json({
-      success: false,
-      serviceable: false,
-      message: 'Enter a valid 6-digit Indian postal pincode.',
-    });
-  }
-
-  // Calculate delivery date estimates based on standard D2C Indian logistics (3-5 days standard, metro express)
-  const isMetro = ['110', '400', '700', '600', '560', '500'].some(prefix => pincode.startsWith(prefix));
-  const minDays = isMetro ? 2 : 3;
-  const maxDays = isMetro ? 4 : 6;
-
-  const now = new Date();
-  const minDate = new Date(now.getTime() + minDays * 24 * 60 * 60 * 1000);
-  const maxDate = new Date(now.getTime() + maxDays * 24 * 60 * 60 * 1000);
-
-  const options = { weekday: 'short', month: 'short', day: 'numeric' };
-  const minDateFormatted = minDate.toLocaleDateString('en-IN', options);
-  const maxDateFormatted = maxDate.toLocaleDateString('en-IN', options);
-
-  return res.json({
-    success: true,
-    pincode,
-    serviceable: true,
-    cod_available: true,
-    is_metro: isMetro,
-    estimated_delivery: `${minDateFormatted} - ${maxDateFormatted}`,
-    estimated_days: `${minDays}-${maxDays} business days`,
-    delivery_charge: 50.0,
-    free_delivery_above: 500.0,
-    provider: 'Bhumivera Express Logistics',
-  });
-});
-
 module.exports = router;
