@@ -28,6 +28,7 @@ const { calculateTierDiscount, calculateLoyaltyRedemption } = require('../servic
 const { getRazorpayClient } = require('../services/razorpayService');
 const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../services/paymentReconciliationService');
 const { reconcileReferralRewards, getReferralConfig } = require('../models/referralModel');
+const { calculateShippingCost } = require('../services/shippingPolicy');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -304,11 +305,15 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     );
 
     const shippingSettings = await getSettingsByGroup('shipping');
-    const shippingKey = deliveryType === 'express' ? 'express_charge' : 'standard_charge';
-    const configuredShipping = Number(shippingSettings[shippingKey] ?? (deliveryType === 'express' ? 150 : shippingSettings.default_shipping_charge ?? 50));
-    const shippingCost = rulePreview.freeShipping || (Boolean(loyaltyConfig.enabled) && Number(loyaltyTier?.free_shipping) === 1)
-      ? 0
-      : (Number.isFinite(configuredShipping) ? Math.max(0, configuredShipping) : 0);
+    const shippingCost = calculateShippingCost({
+      deliveryType,
+      cartSubtotal: cartTotal,
+      standardCharge: shippingSettings.standard_charge ?? shippingSettings.default_shipping_charge ?? 50,
+      premiumCharge: shippingSettings.express_charge ?? 150,
+      freeShippingThreshold: shippingSettings.free_shipping_threshold,
+      freeShipping: Boolean(rulePreview.freeShipping) ||
+        (Boolean(loyaltyConfig.enabled) && Number(loyaltyTier?.free_shipping) === 1),
+    });
 
     const giftItems = [];
     for (const gift of rulePreview.gifts) {
