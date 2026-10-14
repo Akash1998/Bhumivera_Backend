@@ -8,7 +8,10 @@ const {
 const { calculateTierDiscount, calculateLoyaltyRedemption, calculateLoyaltyPointsAward } = require('../services/loyaltyPolicy');
 const { getReferralConfig } = require('./referralModel');
 const { getLoyaltyConfig, listLoyaltyTiers, getLoyaltyTierForPoints } = require('./loyaltyTierModel');
-const { issueOrderCouponCredit, updateCouponCreditReversal } = require('./couponCreditModel');
+const {
+  issueOrderShoppingWalletReward,
+  updateShoppingWalletRewardReversal,
+} = require('./shoppingWalletRewardModel');
 
 const getDeliveredOrderCount = async userId => {
   const [[result]] = await pool.query(
@@ -76,6 +79,9 @@ const createOrdersTables = async () => {
     await addCol('orders', 'coupon_credit_awarded_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
     await addCol('orders', 'coupon_credit_reversed_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
     await addCol('orders', 'coupon_credit_awarded_at', 'DATETIME DEFAULT NULL');
+    await addCol('orders', 'shopping_wallet_reward_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+    await addCol('orders', 'shopping_wallet_reward_reversed_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+    await addCol('orders', 'shopping_wallet_reward_awarded_at', 'DATETIME DEFAULT NULL');
     await addCol('orders', 'tier_discount', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
     await addCol('orders', 'total', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'coupon_code', 'VARCHAR(100)');
@@ -340,7 +346,7 @@ const createOrder = async ({
 
     const orderId = res.insertId;
     if (paymentStatus === 'paid') {
-      await issueOrderCouponCredit(conn, {
+      await issueOrderShoppingWalletReward(conn, {
         userId,
         orderId,
         eligibleSubtotal: couponCreditEligibleSubtotal,
@@ -582,7 +588,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
   try {
     await conn.beginTransaction();
     const [orders] = await conn.query(
-      'SELECT user_id, status, payment_mode, payment_status, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, coupon_credit_awarded_at FROM orders WHERE id = ? FOR UPDATE',
+      'SELECT user_id, status, payment_mode, payment_status, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, shopping_wallet_reward_awarded_at FROM orders WHERE id = ? FOR UPDATE',
       [orderId]
     );
     const order = orders?.[0];
@@ -614,8 +620,8 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
       }
     }
 
-    if (status === 'delivered' && order.payment_mode === 'COD' && !order.coupon_credit_awarded_at) {
-      await issueOrderCouponCredit(conn, {
+    if (status === 'delivered' && order.payment_mode === 'COD' && !order.shopping_wallet_reward_awarded_at) {
+      await issueOrderShoppingWalletReward(conn, {
         userId: order.user_id,
         orderId,
         eligibleSubtotal: order.coupon_credit_eligible_subtotal,
@@ -623,7 +629,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
     }
 
     if (['cancelled', 'returned'].includes(status)) {
-      await updateCouponCreditReversal(conn, { orderId, refundRatio: 1 });
+      await updateShoppingWalletRewardReversal(conn, { orderId, refundRatio: 1 });
     }
 
     const alreadyRestocked = ['cancelled', 'returned'].includes(order.status);

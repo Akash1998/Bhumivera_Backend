@@ -454,11 +454,19 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
 router.get('/cod-eligibility', authenticateUser, async (req, res) => {
   try {
     const deliveredOrderCount = await getDeliveredOrderCount(req.user.id);
+    const [[orderCountRow]] = await pool.query(
+      `SELECT COUNT(*) AS order_count FROM orders
+       WHERE user_id = ? AND status NOT IN ('cancelled', 'returned')
+         AND (payment_status = 'paid' OR (payment_mode = 'COD' AND delivered_at IS NOT NULL))`,
+      [req.user.id]
+    );
+    const orderCount = Number(orderCountRow?.order_count) || 0;
     const requiredDeliveredOrders = COD_REQUIRED_DELIVERED_ORDERS;
     return res.json({
       eligible: deliveredOrderCount >= requiredDeliveredOrders,
       deliveredOrderCount,
       requiredDeliveredOrders,
+      isNewCustomer: orderCount === 0,
     });
   } catch (error) {
     console.error('[CUSTOMER_COD_ELIGIBILITY]', error);

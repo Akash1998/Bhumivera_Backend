@@ -2,7 +2,7 @@ const MIN_REFUND_PAISE = 100;
 const REFUND_PAGE_SIZE = 100;
 const MAX_REFUND_HISTORY = 1000;
 const ACTIVE_REFUND_STATES = new Set(['requesting', 'pending', 'processed', 'unknown']);
-const { reconcileCouponCreditRefund } = require('../models/couponCreditModel');
+const { reconcileShoppingWalletRewardRefund } = require('../models/shoppingWalletRewardModel');
 
 const toPaise = value => {
   const amount = String(value ?? '');
@@ -112,7 +112,7 @@ const reconcileReturnRefund = async ({ pool, razorpay, returnId }) => {
       [returnStatus, returnId]
     );
     if (status === 'processed') {
-       await reconcileCouponCreditRefund(connection, locked.order_id);
+       await reconcileShoppingWalletRewardRefund(connection, locked.order_id);
     }
     await connection.commit();
     return {
@@ -374,7 +374,7 @@ const createReturnRefund = async ({
         [returnStatus, returnId]
       );
       if (requestStatus === 'processed') {
-        await reconcileCouponCreditRefund(resultConnection, initial.order_id);
+        await reconcileShoppingWalletRewardRefund(resultConnection, initial.order_id);
       }
     } else if (current) {
       await resultConnection.query(

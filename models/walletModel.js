@@ -49,7 +49,8 @@ const WalletModel = {
         [userId]
       ),
       pool.query(
-        `SELECT id, amount, type, description, reference_id, coupon_code, order_id, created_at, 'referral' AS wallet_bucket
+        `SELECT id, amount, type, description, reference_id, coupon_code, order_id, created_at,
+                CASE WHEN reference_id LIKE 'shopping-reward-%' THEN 'shopping' ELSE 'referral' END AS wallet_bucket
          FROM referral_wallet_transactions WHERE user_id = ?`,
         [userId]
       ),

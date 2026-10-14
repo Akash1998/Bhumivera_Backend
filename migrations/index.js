@@ -619,6 +619,20 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 55,
+    name: 'add shopping-only wallet rewards',
+    up: async () => {
+      const addColumn = async (table, column, definition) => {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+        if (!columns.length) await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+      };
+
+      await addColumn('orders', 'shopping_wallet_reward_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+      await addColumn('orders', 'shopping_wallet_reward_reversed_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+      await addColumn('orders', 'shopping_wallet_reward_awarded_at', 'DATETIME DEFAULT NULL');
+    },
+  },
 ];
 
 module.exports = migrations;

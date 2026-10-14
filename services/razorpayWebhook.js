@@ -1,6 +1,9 @@
 const crypto = require('node:crypto');
 const express = require('express');
-const { issueOrderCouponCredit, reconcileCouponCreditRefund } = require('../models/couponCreditModel');
+const {
+  issueOrderShoppingWalletReward,
+  reconcileShoppingWalletRewardRefund,
+} = require('../models/shoppingWalletRewardModel');
 
 const isValidWebhookSignature = (rawBody, signature, secret) => {
   if (!Buffer.isBuffer(rawBody) || typeof signature !== 'string' ||
@@ -41,7 +44,7 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
 
       const [orders] = await connection.query(
         `SELECT id, user_id, total, payment_status, payment_mode,
-                coupon_credit_eligible_subtotal, coupon_credit_awarded_at
+                coupon_credit_eligible_subtotal, shopping_wallet_reward_awarded_at
          FROM orders
          WHERE payment_id = ? FOR UPDATE`,
         [payment.id]
@@ -62,8 +65,8 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
           [nextStatus, order.id]
         );
         updated = result.affectedRows === 1;
-        if (updated && nextStatus === 'paid' && !order.coupon_credit_awarded_at) {
-          await issueOrderCouponCredit(connection, {
+        if (updated && nextStatus === 'paid' && !order.shopping_wallet_reward_awarded_at) {
+          await issueOrderShoppingWalletReward(connection, {
             userId: order.user_id,
             orderId: order.id,
             eligibleSubtotal: order.coupon_credit_eligible_subtotal,
@@ -137,7 +140,7 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
               [returnStatus, request.return_id]
             );
             if (nextStatus === 'processed') {
-              await reconcileCouponCreditRefund(connection, request.order_id);
+              await reconcileShoppingWalletRewardRefund(connection, request.order_id);
             }
             updated = true;
           }
