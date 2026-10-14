@@ -161,6 +161,7 @@ const validateCoupon = async (code, orderTotal, userId = null) => {
   let discount = coupon.discount_type === 'percentage'
     ? (orderTotal * coupon.discount_value) / 100
     : coupon.discount_value;
+  if (coupon.reward_type === 'coupon_credit') discount = Math.min(discount, orderTotal);
   if (coupon.max_discount) discount = Math.min(discount, coupon.max_discount);
   return { valid: true, discount: parseFloat(discount.toFixed(2)), coupon };
 };

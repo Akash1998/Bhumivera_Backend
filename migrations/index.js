@@ -582,6 +582,43 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 54,
+    name: 'add restricted coupon credit rewards',
+    up: async () => {
+      const addColumn = async (table, column, definition) => {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+        if (!columns.length) await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+      };
+
+      await pool.query(
+        "ALTER TABLE coupons MODIFY COLUMN reward_type ENUM('standard','referral_wallet','coupon_credit') NOT NULL DEFAULT 'standard'"
+      );
+      await addColumn('coupons', 'reward_order_id', 'INT DEFAULT NULL');
+      const [rewardOrderIndex] = await pool.query("SHOW INDEX FROM coupons WHERE Key_name = 'uq_coupon_reward_order'");
+      if (!rewardOrderIndex.length) {
+        await pool.query('CREATE UNIQUE INDEX uq_coupon_reward_order ON coupons (reward_order_id)');
+      }
+      await addColumn('orders', 'coupon_credit_eligible_subtotal', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+      await addColumn('orders', 'coupon_credit_awarded_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+      await addColumn('orders', 'coupon_credit_reversed_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+      await addColumn('orders', 'coupon_credit_awarded_at', 'DATETIME DEFAULT NULL');
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS coupon_credit_offsets (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          source_order_id INT NOT NULL,
+          amount_due DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_coupon_credit_offset_source (source_order_id),
+          INDEX idx_coupon_credit_offset_user (user_id, amount_due, id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (source_order_id) REFERENCES orders(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

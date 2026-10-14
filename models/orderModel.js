@@ -8,6 +8,7 @@ const {
 const { calculateTierDiscount, calculateLoyaltyRedemption, calculateLoyaltyPointsAward } = require('../services/loyaltyPolicy');
 const { getReferralConfig } = require('./referralModel');
 const { getLoyaltyConfig, listLoyaltyTiers, getLoyaltyTierForPoints } = require('./loyaltyTierModel');
+const { issueOrderCouponCredit, updateCouponCreditReversal } = require('./couponCreditModel');
 
 const getDeliveredOrderCount = async userId => {
   const [[result]] = await pool.query(
@@ -71,6 +72,10 @@ const createOrdersTables = async () => {
     await addCol('orders', 'impact_project', 'VARCHAR(50) DEFAULT NULL');
     await addCol('orders', 'loyalty_points_awarded', 'INT NOT NULL DEFAULT 0');
     await addCol('orders', 'loyalty_points_redeemed', 'INT NOT NULL DEFAULT 0');
+    await addCol('orders', 'coupon_credit_eligible_subtotal', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+    await addCol('orders', 'coupon_credit_awarded_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+    await addCol('orders', 'coupon_credit_reversed_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+    await addCol('orders', 'coupon_credit_awarded_at', 'DATETIME DEFAULT NULL');
     await addCol('orders', 'tier_discount', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
     await addCol('orders', 'total', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'coupon_code', 'VARCHAR(100)');
@@ -288,6 +293,7 @@ const createOrder = async ({
     const pointsRedeemed = requestedPoints;
     const loyaltyDiscount = Math.min(redemption.discount, pointsRedeemed / loyaltyConfig.redemption_points_per_rupee);
     const eligibleSpend = Math.max(0, backendSubtotal - safeDiscount - safeTierDiscount - safeReferralWalletAmount - loyaltyDiscount);
+    const couponCreditEligibleSubtotal = Math.round(eligibleSpend * 100) / 100;
     const loyaltyPointsAwarded = calculateLoyaltyPointsAward({
       eligibleSpend,
       pointsPerRupee: loyaltyConfig.points_per_rupee,
@@ -304,8 +310,8 @@ const createOrder = async ({
 
     // Step 4: Insert the Order
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, tier_discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at, terms_version, terms_accepted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END, ?, NOW())`,
+      `INSERT INTO orders (user_id, subtotal, discount, tier_discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at, terms_version, terms_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END, ?, NOW())`,
       [
         userId,
         backendSubtotal,
@@ -317,6 +323,7 @@ const createOrder = async ({
         safeImpactAmount > 0 ? impactProject : null,
         safeLoyaltyPoints,
         pointsRedeemed,
+        couponCreditEligibleSubtotal,
         backendTotal,
         couponCode || null,
         typeof addressSnapshot === 'string' ? addressSnapshot : JSON.stringify(addressSnapshot),
@@ -332,6 +339,13 @@ const createOrder = async ({
     );
 
     const orderId = res.insertId;
+    if (paymentStatus === 'paid') {
+      await issueOrderCouponCredit(conn, {
+        userId,
+        orderId,
+        eligibleSubtotal: couponCreditEligibleSubtotal,
+      });
+    }
 
     if (pointsRedeemed > 0) {
       await conn.query(
@@ -568,7 +582,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
   try {
     await conn.beginTransaction();
     const [orders] = await conn.query(
-      'SELECT user_id, status, payment_mode, payment_status, loyalty_points_awarded, loyalty_points_redeemed FROM orders WHERE id = ? FOR UPDATE',
+      'SELECT user_id, status, payment_mode, payment_status, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, coupon_credit_awarded_at FROM orders WHERE id = ? FOR UPDATE',
       [orderId]
     );
     const order = orders?.[0];
@@ -598,6 +612,18 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
           [order.user_id, points, balanceAfter, `Points earned on confirmed order #${orderId}`, `loyalty-order-${orderId}-earn`, orderId]
         );
       }
+    }
+
+    if (status === 'delivered' && order.payment_mode === 'COD' && !order.coupon_credit_awarded_at) {
+      await issueOrderCouponCredit(conn, {
+        userId: order.user_id,
+        orderId,
+        eligibleSubtotal: order.coupon_credit_eligible_subtotal,
+      });
+    }
+
+    if (['cancelled', 'returned'].includes(status)) {
+      await updateCouponCreditReversal(conn, { orderId, refundRatio: 1 });
     }
 
     const alreadyRestocked = ['cancelled', 'returned'].includes(order.status);
@@ -638,10 +664,11 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
 
     await conn.query(
       `UPDATE orders SET status = ?,
+       payment_status = CASE WHEN ? = 'delivered' AND payment_mode = 'COD' THEN 'paid' ELSE payment_status END,
        delivered_at = CASE WHEN ? = 'delivered' THEN COALESCE(delivered_at, NOW()) ELSE delivered_at END,
        cancel_reason = COALESCE(?, cancel_reason),
        tracking_number = COALESCE(?, tracking_number), courier = COALESCE(?, courier) WHERE id = ?`,
-      [status, status, cancelReason || null, metadata.trackingNumber || null, metadata.courier || null, orderId]
+      [status, status, status, cancelReason || null, metadata.trackingNumber || null, metadata.courier || null, orderId]
     );
     await conn.commit();
     return true;

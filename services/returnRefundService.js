@@ -2,6 +2,7 @@ const MIN_REFUND_PAISE = 100;
 const REFUND_PAGE_SIZE = 100;
 const MAX_REFUND_HISTORY = 1000;
 const ACTIVE_REFUND_STATES = new Set(['requesting', 'pending', 'processed', 'unknown']);
+const { reconcileCouponCreditRefund } = require('../models/couponCreditModel');
 
 const toPaise = value => {
   const amount = String(value ?? '');
@@ -82,7 +83,7 @@ const reconcileReturnRefund = async ({ pool, razorpay, returnId }) => {
   try {
     await connection.beginTransaction();
     const [[locked]] = await connection.query(
-      `SELECT id, return_id, receipt, payment_id, amount_paise, status
+      `SELECT id, return_id, order_id, receipt, payment_id, amount_paise, status
        FROM return_refund_requests WHERE id = ? FOR UPDATE`,
       [request.id]
     );
@@ -110,6 +111,9 @@ const reconcileReturnRefund = async ({ pool, razorpay, returnId }) => {
        WHERE id = ? AND status IN ('received', 'refund_pending')`,
       [returnStatus, returnId]
     );
+    if (status === 'processed') {
+       await reconcileCouponCreditRefund(connection, locked.order_id);
+    }
     await connection.commit();
     return {
       receipt: request.receipt,
@@ -369,6 +373,9 @@ const createReturnRefund = async ({
          WHERE id = ? AND status = 'refund_pending'`,
         [returnStatus, returnId]
       );
+      if (requestStatus === 'processed') {
+        await reconcileCouponCreditRefund(resultConnection, initial.order_id);
+      }
     } else if (current) {
       await resultConnection.query(
         'UPDATE return_refund_requests SET provider_refund_id = COALESCE(provider_refund_id, ?) WHERE id = ?',

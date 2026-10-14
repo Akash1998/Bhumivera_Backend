@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const express = require('express');
+const { issueOrderCouponCredit, reconcileCouponCreditRefund } = require('../models/couponCreditModel');
 
 const isValidWebhookSignature = (rawBody, signature, secret) => {
   if (!Buffer.isBuffer(rawBody) || typeof signature !== 'string' ||
@@ -39,7 +40,9 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
       }
 
       const [orders] = await connection.query(
-        `SELECT id, total, payment_status, payment_mode FROM orders
+        `SELECT id, user_id, total, payment_status, payment_mode,
+                coupon_credit_eligible_subtotal, coupon_credit_awarded_at
+         FROM orders
          WHERE payment_id = ? FOR UPDATE`,
         [payment.id]
       );
@@ -59,6 +62,13 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
           [nextStatus, order.id]
         );
         updated = result.affectedRows === 1;
+        if (updated && nextStatus === 'paid' && !order.coupon_credit_awarded_at) {
+          await issueOrderCouponCredit(connection, {
+            userId: order.user_id,
+            orderId: order.id,
+            eligibleSubtotal: order.coupon_credit_eligible_subtotal,
+          });
+        }
       }
     } else if (['refund.created', 'refund.processed', 'refund.failed'].includes(event.event)) {
       const refund = event.payload?.refund?.entity;
@@ -67,7 +77,7 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
         throw Object.assign(new Error('Webhook refund details are invalid.'), { status: 400 });
       }
       const [requests] = await connection.query(
-        `SELECT id, return_id, payment_id, amount_paise, status
+        `SELECT id, return_id, order_id, payment_id, amount_paise, status
          FROM return_refund_requests
          WHERE provider_refund_id = ? OR receipt = ?
          ORDER BY id DESC LIMIT 1 FOR UPDATE`,
@@ -76,7 +86,7 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
       let request = requests[0];
       if (!request && !refund.receipt) {
         const [candidates] = await connection.query(
-          `SELECT id, return_id, payment_id, amount_paise, status
+          `SELECT id, return_id, order_id, payment_id, amount_paise, status
            FROM return_refund_requests
            WHERE payment_id = ? AND amount_paise = ? AND provider_refund_id IS NULL
              AND status IN ('requesting', 'pending', 'unknown')
@@ -126,6 +136,9 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
                WHERE id = ? AND status IN ('received', 'refund_pending')`,
               [returnStatus, request.return_id]
             );
+            if (nextStatus === 'processed') {
+              await reconcileCouponCreditRefund(connection, request.order_id);
+            }
             updated = true;
           }
         }

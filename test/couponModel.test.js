@@ -6,10 +6,23 @@ const path = require('node:path');
 const modelPath = path.resolve(__dirname, '../models/couponModel.js');
 const originalLoad = Module._load;
 const state = {};
-const pool = { query: (...args) => state.query(...args) };
+const pool = { query: (...args) => state.query(...args), end: async () => {} };
 
 Module._load = function (request, parent, isMain) {
   if (parent?.filename === modelPath && request === '../config/db') return pool;
+  if (parent?.filename === modelPath && request === './referralModel') {
+    return {
+      getReferralConfig: async () => {
+        const [[settings]] = await pool.query('SELECT * FROM referral_settings WHERE id = 1');
+        return {
+          ...settings,
+          referral_redemption_tiers: typeof settings?.referral_redemption_tiers === 'string'
+            ? JSON.parse(settings.referral_redemption_tiers)
+            : settings?.referral_redemption_tiers,
+        };
+      },
+    };
+  }
   return originalLoad.call(this, request, parent, isMain);
 };
 const couponModel = require(modelPath);
