@@ -29,6 +29,7 @@ const { initWarrantyTable } = require('../models/warrantyModel');
 const { initReturnRefundTable } = require('../models/returnRefundModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
 const { generateOrderNumber } = require('../services/orderNumber');
+const { DEFAULT_ORDER_SPIN_REWARDS, validateOrderSpinRewards } = require('../services/orderSpinPolicy');
 const pool = require('../config/db');
 
 const migrations = [
@@ -677,6 +678,25 @@ const migrations = [
       }
       await pool.query(
         "UPDATE settings SET value = '1' WHERE key_name = 'gamification_spin_after_purchase_enabled'"
+      );
+    },
+  },
+  {
+    version: 58,
+    name: 'seed default post-order spin rewards',
+    up: async () => {
+      const [settings] = await pool.query(
+        'SELECT value FROM settings WHERE key_name = ?',
+        ['gamification_order_spin_rewards']
+      );
+      if (validateOrderSpinRewards(settings[0]?.value).valid) return;
+
+      const rewards = JSON.stringify(DEFAULT_ORDER_SPIN_REWARDS);
+      await pool.query(
+        `INSERT INTO settings (key_name, value, group_name)
+         VALUES ('gamification_order_spin_rewards', ?, 'gamification')
+         ON DUPLICATE KEY UPDATE value = IF(value IS NULL OR TRIM(value) = '', VALUES(value), value)`,
+        [rewards]
       );
     },
   },

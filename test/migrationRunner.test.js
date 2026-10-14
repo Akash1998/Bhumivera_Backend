@@ -123,6 +123,62 @@ describe('runMigrations', () => {
     assert.match(statements.at(-1), /DELETE FROM user_product_views/);
   });
 
+  it('seeds default post-order spin rewards without replacing existing admin settings', async () => {
+    const migration = migrations.find(candidate => candidate.name === 'seed default post-order spin rewards');
+    const originalQuery = pool.query;
+    let statement;
+    let values;
+    pool.query = async (sql, params = []) => {
+      if (sql.startsWith('SELECT value FROM settings')) return [[], []];
+      statement = sql;
+      values = params;
+      return [{ affectedRows: 1 }, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.match(statement, /INSERT INTO settings/);
+    assert.match(statement, /ON DUPLICATE KEY UPDATE value = IF\(value IS NULL OR TRIM\(value\) = '', VALUES\(value\), value\)/);
+    const rewards = JSON.parse(values[0]);
+    assert.equal(rewards.length, 6);
+    assert.equal(rewards.reduce((total, reward) => total + reward.chance, 0), 100);
+
+    const validRewards = JSON.stringify(rewards);
+    const statements = [];
+    pool.query = async (sql, params = []) => {
+      statements.push(sql);
+      if (sql.startsWith('SELECT value FROM settings')) return [[{ value: validRewards }], []];
+      return [{ affectedRows: 1 }, []];
+    };
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+    assert.equal(statements.length, 1, 'valid admin rewards should remain unchanged');
+
+    const invalidStatements = [];
+    pool.query = async (sql, params = []) => {
+      invalidStatements.push(sql);
+      if (sql.startsWith('SELECT value FROM settings')) {
+        return [[{ value: JSON.stringify(rewards.slice(0, 5)) }], []];
+      }
+      values = params;
+      return [{ affectedRows: 1 }, []];
+    };
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+    assert.equal(invalidStatements.length, 2, 'invalid saved rewards should be repaired');
+    assert.equal(JSON.parse(values[0]).length, 6);
+  });
+
   it('records each successful migration and skips it on later runs', async () => {
     const pool = createPool();
     let executionCount = 0;
