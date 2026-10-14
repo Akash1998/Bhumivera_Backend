@@ -2,9 +2,12 @@ const express = require('express');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const pool = require('../config/db');
+const { authenticateUser } = require('../middleware/authMiddleware');
 const { getSetting } = require('../models/settingsModel');
 const { initWarrantyTable } = require('../models/warrantyModel');
 const { createCouponTable } = require('../models/couponModel');
+const { createNotification } = require('../models/notificationModel');
+const { validateOrderSpinRewards, chooseOrderSpinReward } = require('../services/orderSpinPolicy');
 
 const router = express.Router();
 const spinLimiter = rateLimit({
@@ -122,6 +125,161 @@ router.post('/spin', spinLimiter, async (req, res) => {
     if (connection) await connection.rollback().catch(() => {});
     console.error('[GAMIFICATION_SPIN]', error);
     return res.status(500).json({ message: 'Unable to issue the spin reward right now.' });
+  } finally {
+    connection?.release();
+  }
+});
+
+router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
+  const orderId = Number(req.params.orderId);
+  if (!Number.isSafeInteger(orderId) || orderId < 1) {
+    return res.status(400).json({ code: 'INVALID_ORDER_ID', message: 'A valid order is required.' });
+  }
+  try {
+    const [[order]] = await pool.query(
+      `SELECT id, status, payment_status, payment_mode
+       FROM orders WHERE id = ? AND user_id = ?`,
+      [orderId, req.user.id]
+    );
+    if (!order) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'This order could not be found.' });
+    const [claims] = await pool.query(
+      'SELECT reward_label, coupon_code, reward_index FROM order_spin_claims WHERE order_id = ? AND user_id = ?',
+      [orderId, req.user.id]
+    );
+    const eligible = !['cancelled', 'returned'].includes(order.status) &&
+      order.payment_status !== 'failed' &&
+      (order.payment_mode === 'COD' || order.payment_status === 'paid');
+    return res.json({
+      enabled: (await getSetting('gamification_spin_after_purchase_enabled')) === '1',
+      eligible,
+      claim: claims[0] ? {
+        reward: claims[0].reward_label,
+        couponCode: claims[0].coupon_code,
+        rewardIndex: Number(claims[0].reward_index),
+      } : null,
+    });
+  } catch (error) {
+    console.error('[ORDER_SPIN_STATUS]', error);
+    return res.status(500).json({ code: 'ORDER_SPIN_STATUS_FAILED', message: 'Could not check reward spin availability.' });
+  }
+});
+
+router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, res) => {
+  const orderId = Number(req.params.orderId);
+  if (!Number.isSafeInteger(orderId) || orderId < 1) {
+    return res.status(400).json({ code: 'INVALID_ORDER_ID', message: 'A valid order is required to spin.' });
+  }
+
+  let connection;
+  try {
+    await createCouponTable();
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [orders] = await connection.query(
+      `SELECT id, status, payment_status, payment_mode
+       FROM orders WHERE id = ? AND user_id = ? FOR UPDATE`,
+      [orderId, req.user.id]
+    );
+    const order = orders[0];
+    if (!order) {
+      await connection.rollback();
+      return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'This order could not be found.' });
+    }
+    if (['cancelled', 'returned'].includes(order.status) ||
+        order.payment_status === 'failed' ||
+        order.payment_mode !== 'COD' && order.payment_status !== 'paid') {
+      await connection.rollback();
+      return res.status(409).json({ code: 'ORDER_NOT_ELIGIBLE_FOR_SPIN', message: 'This order is not eligible for a reward spin.' });
+    }
+
+    const [existingClaims] = await connection.query(
+      'SELECT reward_label, coupon_code, reward_index FROM order_spin_claims WHERE order_id = ?',
+      [orderId]
+    );
+    if (existingClaims.length) {
+      await connection.commit();
+      const claim = existingClaims[0];
+      return res.json({
+        success: true,
+        reward: claim.reward_label,
+        couponCode: claim.coupon_code,
+        rewardIndex: Number(claim.reward_index),
+        alreadyClaimed: true,
+      });
+    }
+
+    if ((await getSetting('gamification_spin_after_purchase_enabled')) !== '1') {
+      await connection.rollback();
+      return res.status(403).json({ code: 'ORDER_SPIN_DISABLED', message: 'Post-order rewards are not available right now.' });
+    }
+    const spinSettings = validateOrderSpinRewards(await getSetting('gamification_order_spin_rewards'));
+    if (!spinSettings.valid) {
+      await connection.rollback();
+      console.error('[ORDER_SPIN_CONFIGURATION_INVALID]', spinSettings.message);
+      return res.status(503).json({ code: 'ORDER_SPIN_CONFIGURATION_INVALID', message: 'Reward spins are temporarily unavailable.' });
+    }
+
+    const reward = chooseOrderSpinReward(spinSettings.rewards);
+    const couponCode = `SPIN-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+    await connection.query(
+      `INSERT INTO coupons
+        (code, description, discount_type, discount_value, min_order_amount, max_discount,
+         usage_limit, used_count, restricted_user_id, is_active, valid_from, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, 1, NOW(), DATE_ADD(NOW(), INTERVAL ? DAY))`,
+      [
+        couponCode,
+        `order_spin_reward:${orderId}`,
+        reward.discountType,
+        reward.discountValue,
+        reward.minimumOrderAmount,
+        reward.maxDiscount,
+        req.user.id,
+        reward.expiryDays,
+      ]
+    );
+    await connection.query(
+      `INSERT INTO order_spin_claims (order_id, user_id, reward_label, coupon_code, reward_index)
+       VALUES (?, ?, ?, ?, ?)`,
+      [orderId, req.user.id, reward.label, couponCode, reward.index]
+    );
+    await connection.commit();
+
+    const notificationData = [
+      {
+        user_id: req.user.id,
+        title: 'Your order spin reward is ready',
+        message: `${reward.label} has been added to your coupons. Code: ${couponCode}`,
+        type: 'reward',
+        is_global: false,
+      },
+      {
+        user_id: null,
+        title: 'Customer won an order spin reward',
+        message: `Order #${orderId} won ${reward.label} (${couponCode}).`,
+        type: 'order_reward',
+        is_global: false,
+      },
+    ];
+    for (const notification of notificationData) {
+      try {
+        await createNotification(notification);
+      } catch (error) {
+        console.error('[ORDER_SPIN_NOTIFICATION_FAILED]', { orderId, userId: notification.user_id, error });
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      reward: reward.label,
+      couponCode,
+      rewardIndex: reward.index,
+      alreadyClaimed: false,
+    });
+  } catch (error) {
+    if (connection) await connection.rollback().catch(() => {});
+    console.error('[ORDER_SPIN_CLAIM]', error);
+    return res.status(500).json({ code: 'ORDER_SPIN_FAILED', message: 'Could not issue your spin reward. Please try again.' });
   } finally {
     connection?.release();
   }

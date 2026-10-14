@@ -40,7 +40,6 @@ const mocks = new Map([
       return { success: true };
     },
   }],
-  ['../services/orderWhatsAppNotifier', { notifyOrderWhatsApp: async () => {} }],
 ]);
 
 Module._load = function (request, parent, isMain) {

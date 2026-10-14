@@ -134,8 +134,8 @@ function sendMail({ to, subject, html, text, from, timeoutMs }) {
   });
 }
 
-const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null) => {
-  const formattedId = String(orderId).padStart(10, '0');
+const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null, publicOrderNumber = null) => {
+  const formattedId = String(publicOrderNumber || orderId).padStart(9, '0');
   const safeName = escapeHtml(name || 'Bhumivera customer');
   
   const statusConfig = {

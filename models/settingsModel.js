@@ -1,5 +1,6 @@
 // backend/models/settingsMode
 const pool = require('../config/db');
+const { DEFAULT_ORDER_SPIN_REWARDS } = require('../services/orderSpinPolicy');
 
 const createSettingsTable = async () => {
   await pool.query(`
@@ -64,10 +65,11 @@ const createSettingsTable = async () => {
     'vip_ribbon', 'wallet_express', 'post_purchase_bump', 'coupon_auto_apply',
   ];
   for (const hook of gamificationHooks) {
-    defaults.push([`gamification_${hook}_enabled`, '0', 'gamification']);
+    defaults.push([`gamification_${hook}_enabled`, hook === 'spin_after_purchase' ? '1' : '0', 'gamification']);
     defaults.push([`gamification_${hook}_threshold`, '0', 'gamification']);
   }
   defaults.push(
+    ['gamification_order_spin_rewards', JSON.stringify(DEFAULT_ORDER_SPIN_REWARDS), 'gamification'],
     ['lifecycle_third_order_enabled', '0', 'lifecycle'],
     ['lifecycle_third_order_gift_product_id', '', 'lifecycle'],
     ['lifecycle_winback_enabled', '0', 'lifecycle'],

@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { generateOrderNumber } = require('../services/orderNumber');
 const {
   assertCodEligibility,
   calculateTieredReferralWalletRedemption,
@@ -26,6 +27,7 @@ const createOrdersTables = async () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS orders (
         id INT AUTO_INCREMENT PRIMARY KEY,
+        order_number CHAR(9) DEFAULT NULL,
         user_id INT NOT NULL,
         address_snapshot JSON NOT NULL,
         delivery_type ENUM('standard','express') DEFAULT 'standard',
@@ -69,6 +71,7 @@ const createOrdersTables = async () => {
     };
 
     await addCol('orders', 'subtotal', 'DECIMAL(10,2) DEFAULT 0');
+    await addCol('orders', 'order_number', 'CHAR(9) DEFAULT NULL');
     await addCol('orders', 'discount', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'shipping_cost', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
     await addCol('orders', 'impact_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
@@ -138,7 +141,6 @@ const createOrder = async ({
   tierDiscount = 0,
   termsVersion = null,
   lifecycleGiftProductId = null,
-  whatsappUpdatesOptIn = false,
   loyaltyPointsToRedeem = 0,
 }) => {
   const conn = await pool.getConnection();
@@ -147,20 +149,16 @@ const createOrder = async ({
 
     if (paymentId) {
       const [existingOrders] = await conn.query(
-        'SELECT id FROM orders WHERE payment_id = ? AND user_id = ? FOR UPDATE',
+        'SELECT id, order_number FROM orders WHERE payment_id = ? AND user_id = ? FOR UPDATE',
         [paymentId, userId]
       );
       if (existingOrders.length > 0) {
         await conn.commit();
-        return { id: existingOrders[0].id, reused: true };
+        return { id: existingOrders[0].id, orderNumber: existingOrders[0].order_number, reused: true };
       }
     }
 
     if (couponId) {
-      const [[coupon]] = await conn.query(
-        'SELECT reward_type, restricted_user_id, wallet_per_order_limit, discount_value FROM coupons WHERE id = ? FOR UPDATE',
-        [couponId]
-      );
       const [usage] = await conn.query(
         `UPDATE coupons SET used_count = used_count + 1
          WHERE id = ? AND is_active = 1
@@ -171,12 +169,6 @@ const createOrder = async ({
       );
       if (usage.affectedRows !== 1) {
         throw Object.assign(new Error('This coupon has already been used or has expired.'), { status: 409 });
-      }
-      if (Number(referralWalletAmount) > 0 &&
-          (coupon?.reward_type !== 'referral_wallet' ||
-           String(coupon.restricted_user_id) !== String(userId) ||
-           Number(referralWalletAmount) > Number(coupon.wallet_per_order_limit))) {
-        throw Object.assign(new Error('This referral reward coupon is not available to this account.'), { status: 400 });
       }
     }
 
@@ -315,11 +307,13 @@ const createOrder = async ({
     }
 
     // Step 4: Insert the Order
+    const publicOrderNumber = generateOrderNumber();
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, subtotal, discount, tier_discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, whatsapp_updates_opt_in, whatsapp_consent_at, terms_version, terms_accepted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN NOW() ELSE NULL END, ?, NOW())`,
+      `INSERT INTO orders (user_id, order_number, subtotal, discount, tier_discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, terms_version, terms_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         userId,
+        publicOrderNumber,
         backendSubtotal,
         safeDiscount,
         safeTierDiscount,
@@ -338,8 +332,6 @@ const createOrder = async ({
         paymentStatus,
         paymentId,
         notes || null,
-        whatsappUpdatesOptIn ? 1 : 0,
-        whatsappUpdatesOptIn ? 1 : 0,
         termsVersion
       ]
     );
@@ -392,16 +384,6 @@ const createOrder = async ({
         [orderId, userId, impactProject, safeImpactAmount]
       );
     }
-    if (whatsappUpdatesOptIn) {
-      await conn.query(
-        `UPDATE users
-         SET whatsapp_order_updates_opt_in = 1,
-             whatsapp_order_updates_consent_at = CURRENT_TIMESTAMP
-         WHERE id = ? AND role = 'customer'`,
-        [userId]
-      );
-    }
-
     // Step 5: Insert Order Items
     for (const pItem of processedItems) {
       await conn.query(
@@ -426,15 +408,19 @@ const createOrder = async ({
     }
 
     await conn.commit();
-    return { id: orderId, reused: false };
+    return { id: orderId, orderNumber: publicOrderNumber, reused: false };
   } catch (e) {
     await conn.rollback();
     if (paymentId && ['ER_DUP_ENTRY', 'ER_LOCK_DEADLOCK'].includes(e.code)) {
       const [existingOrders] = await pool.query(
-        'SELECT id FROM orders WHERE payment_id = ? AND user_id = ? LIMIT 1',
+        'SELECT id, order_number FROM orders WHERE payment_id = ? AND user_id = ? LIMIT 1',
         [paymentId, userId]
       );
-      if (existingOrders.length > 0) return { id: existingOrders[0].id, reused: true };
+      if (existingOrders.length > 0) return {
+        id: existingOrders[0].id,
+        orderNumber: existingOrders[0].order_number,
+        reused: true,
+      };
     }
     console.error("createOrder Error:", e);
     throw e;
@@ -556,8 +542,7 @@ const getAllOrders = async (filters = {}) => {
 
 const getOrderById = async (orderId) => {
   const [orders] = await pool.query(
-    `SELECT o.*, u.name AS user_name, u.email AS user_email,
-      u.whatsapp_order_updates_opt_in AS user_whatsapp_order_updates_opt_in
+    `SELECT o.*, u.name AS user_name, u.email AS user_email
      FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
     [orderId]
   );

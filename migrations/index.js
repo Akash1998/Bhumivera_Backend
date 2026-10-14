@@ -28,6 +28,7 @@ const { initGstAccountingTables } = require('../models/gstAccountingModel');
 const { initWarrantyTable } = require('../models/warrantyModel');
 const { initReturnRefundTable } = require('../models/returnRefundModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
+const { generateOrderNumber } = require('../services/orderNumber');
 const pool = require('../config/db');
 
 const migrations = [
@@ -631,6 +632,52 @@ const migrations = [
       await addColumn('orders', 'shopping_wallet_reward_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
       await addColumn('orders', 'shopping_wallet_reward_reversed_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
       await addColumn('orders', 'shopping_wallet_reward_awarded_at', 'DATETIME DEFAULT NULL');
+    },
+  },
+  {
+    version: 56,
+    name: 'create post-order spin reward claims',
+    up: async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS order_spin_claims (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          order_id INT NOT NULL,
+          user_id INT NOT NULL,
+          reward_label VARCHAR(120) NOT NULL,
+          coupon_code VARCHAR(50) NOT NULL UNIQUE,
+          reward_index TINYINT UNSIGNED NOT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_order_spin_claim_order (order_id),
+          INDEX idx_order_spin_claim_user (user_id, created_at),
+          FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    },
+  },
+  {
+    version: 57,
+    name: 'add public nine-digit order references',
+    up: async () => {
+      const [columns] = await pool.query("SHOW COLUMNS FROM orders LIKE 'order_number'");
+      if (!columns.length) await pool.query('ALTER TABLE orders ADD COLUMN order_number CHAR(9) DEFAULT NULL');
+
+      const [orders] = await pool.query('SELECT id FROM orders WHERE order_number IS NULL ORDER BY id');
+      for (const order of orders) {
+        await pool.query('UPDATE orders SET order_number = ? WHERE id = ? AND order_number IS NULL', [
+          generateOrderNumber(),
+          order.id,
+        ]);
+      }
+
+      await pool.query('ALTER TABLE orders MODIFY COLUMN order_number CHAR(9) NOT NULL');
+      const [indexes] = await pool.query("SHOW INDEX FROM orders WHERE Key_name = 'uq_orders_order_number'");
+      if (!indexes.length) {
+        await pool.query('CREATE UNIQUE INDEX uq_orders_order_number ON orders (order_number)');
+      }
+      await pool.query(
+        "UPDATE settings SET value = '1' WHERE key_name = 'gamification_spin_after_purchase_enabled'"
+      );
     },
   },
 ];

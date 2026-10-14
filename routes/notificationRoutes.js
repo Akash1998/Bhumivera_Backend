@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { createNotification, logSystemEvent, getNotificationsForUser, markAsRead, countUnread, getAllNotifications, deleteNotification } = require('../models/notificationModel');
-const { isWhatsAppOrderNotificationsConfigured } = require('../services/whatsappOrderNotifications');
 
 // POST /api/notifications/system-log - System ingestion endpoint for F12 crashes and SQL errors
 router.post('/system-log', async (req, res) => {
@@ -14,11 +13,6 @@ router.post('/system-log', async (req, res) => {
     console.error('Failed to write telemetry log', err);
     res.status(500).json({ message: 'Log failed' });
   }
-});
-
-router.get('/whatsapp-status', (_req, res) => {
-  res.set('Cache-Control', 'no-store');
-  return res.json({ available: isWhatsAppOrderNotificationsConfigured() });
 });
 
 // GET /api/notifications - user: get own + global notifications

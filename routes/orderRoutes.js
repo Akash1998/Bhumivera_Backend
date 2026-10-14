@@ -4,7 +4,6 @@ const router = express.Router();
 const pool = require("../config/db");
 const { authenticateUser, authenticateAdmin } = require("../middleware/authMiddleware");
 const { sendOrderStatusEmail } = require("../utils/mail");
-const { notifyOrderWhatsApp } = require("../services/orderWhatsAppNotifier");
 
 const { 
   createOrder, 
@@ -29,6 +28,7 @@ const { getRazorpayClient } = require('../services/razorpayService');
 const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../services/paymentReconciliationService');
 const { reconcileReferralRewards, getReferralConfig } = require('../models/referralModel');
 const { calculateShippingCost } = require('../services/shippingPolicy');
+const { createNotification } = require('../models/notificationModel');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -103,7 +103,6 @@ router.patch("/:id/status", authenticateUser, async (req, res) => {
         allowedCurrentStatuses: cancellableStatuses,
       });
       if (updated === false) return res.status(404).json({ message: "Order not found" });
-      void notifyOrderWhatsApp(order.id, 'cancelled', { cancelReason: req.body.reason });
       return res.json({ success: true, message: "Order cancelled successfully" });
     }
 
@@ -131,7 +130,6 @@ router.post("/:id/cancel", authenticateUser, async (req, res) => {
       allowedCurrentStatuses: cancellableStatuses,
     });
     if (updated === false) return res.status(404).json({ message: "Order not found" });
-    void notifyOrderWhatsApp(order.id, 'cancelled', { cancelReason: req.body.reason });
     return res.json({ success: true, message: "Order cancelled successfully" });
   } catch (err) {
     console.error("[Order Cancel Error]:", err);
@@ -150,33 +148,18 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: "A valid order status is required." });
     }
 
-    const previousOrder = await getOrderById(id);
     const updated = await updateOrderStatus(id, status, req.body.cancelReason, { trackingNumber, courier });
     if (updated === false) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'Order not found.' });
-    const hasOrderUpdate = previousOrder && (
-      previousOrder.status !== status ||
-      (trackingNumber !== undefined && previousOrder.tracking_number !== trackingNumber) ||
-      (courier !== undefined && previousOrder.courier !== courier)
-    );
-
     const [orderData] = await pool.query(
-      `SELECT o.id, o.status, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
+      `SELECT o.id, o.order_number, o.status, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
       [id]
     );
 
     if (orderData.length > 0) {
       const { email, name } = orderData[0];
-      sendOrderStatusEmail(email, name, id, status, trackingNumber, courier)
+      sendOrderStatusEmail(email, name, id, status, trackingNumber, courier, orderData[0].order_number)
         .catch(err => console.error(`[Mailer] Failed to send email:`, err));
     }
-    if (hasOrderUpdate) {
-      void notifyOrderWhatsApp(id, status, {
-        trackingNumber,
-        courier,
-        cancelReason: req.body.cancelReason,
-      });
-    }
-
     res.json({ success: true, message: "Order status updated." });
   } catch (err) {
     console.error("[OrderUpdate Error]:", err);
@@ -186,6 +169,7 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 });
 
 router.post("/", orderLimiter, authenticateUser, async (req, res) => {
+  let verifiedPayment = null;
   try {
     if (req.body?.termsAccepted !== true) {
       return res.status(400).json({ code: 'TERMS_ACCEPTANCE_REQUIRED', message: 'Accept the Conditions of Sale before placing your order.' });
@@ -201,10 +185,6 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     const paymentMode = requestedPaymentMode || 'online';
     if (!['online', 'WALLET', 'COD'].includes(paymentMode)) {
       return res.status(400).json({ code: 'INVALID_PAYMENT_METHOD', message: 'Choose Razorpay, Bhumivera Wallet, or cash on delivery.' });
-    }
-    const whatsappUpdatesOptIn = req.body.whatsappUpdatesOptIn === true;
-    if (req.body.whatsappUpdatesOptIn !== undefined && typeof req.body.whatsappUpdatesOptIn !== 'boolean') {
-      return res.status(400).json({ message: 'WhatsApp order update consent must be true or false.' });
     }
     const rawImpactAmount = req.body.impactAmount;
     const impactAmount = rawImpactAmount === undefined ? 0 : Number(rawImpactAmount);
@@ -327,7 +307,6 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       ? Number(lifecycleSettings.lifecycle_third_order_gift_product_id) || null
       : null;
     const orderItems = [...items, ...giftItems];
-    let verifiedPayment = null;
     let pointsToRedeemForOrder = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
     if (paymentMode === 'online') {
       const {
@@ -392,13 +371,13 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       loyaltyRuleBonusPoints: rulePreview.loyaltyBonusPoints,
       termsVersion: TERMS_VERSION,
       lifecycleGiftProductId,
-      whatsappUpdatesOptIn,
       loyaltyPointsToRedeem: pointsToRedeemForOrder,
     });
     const orderId = orderResult.id;
     if (orderResult.reused) {
       return res.status(200).json({
         orderId,
+        orderNumber: orderResult.orderNumber,
         message: "This payment was already used to place an order.",
         discount,
         shippingCost,
@@ -409,19 +388,41 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     await clearCart(req.user.id);
 
     // [ENHANCEMENT]: Immediately dispatch Order Confirmation Email upon successful placement
-    if (whatsappUpdatesOptIn) void notifyOrderWhatsApp(orderId, 'pending');
+    const orderNotifications = [
+      {
+        user_id: req.user.id,
+        title: 'Order placed successfully',
+        message: `Your order #${orderResult.orderNumber || orderId} is confirmed as received.`,
+        type: 'order',
+        is_global: false,
+      },
+      {
+        user_id: null,
+        title: 'New customer order',
+        message: `Order #${orderResult.orderNumber || orderId} was placed by customer ${req.user.id}.`,
+        type: 'order',
+        is_global: false,
+      },
+    ];
+    for (const notification of orderNotifications) {
+      try {
+        await createNotification(notification);
+      } catch (notificationError) {
+        console.error('[ORDER_PLACED_NOTIFICATION_FAILED]', { orderId, userId: notification.user_id, error: notificationError });
+      }
+    }
     try {
       const [userRecords] = await pool.query(`SELECT name, email FROM users WHERE id = ?`, [req.user.id]);
       if (userRecords.length > 0) {
         const { name, email } = userRecords[0];
-        sendOrderStatusEmail(email, name, orderId, 'pending')
+        sendOrderStatusEmail(email, name, orderId, 'pending', null, null, orderResult.orderNumber)
           .catch(err => console.error(`[Mailer] Auto-email placement failed:`, err));
       }
     } catch (mailErr) {
       console.error("[Mailer] DB Query Error during placement:", mailErr);
     }
 
-    return res.status(201).json({ orderId, message: "Order placed successfully", discount, tierDiscount, referralWalletAmount, shippingCost, rulePreview });
+    return res.status(201).json({ orderId, orderNumber: orderResult.orderNumber, message: "Order placed successfully", discount, tierDiscount, referralWalletAmount, shippingCost, rulePreview });
   } catch (err) {
     console.error("Place order error:", err);
     if (verifiedPayment?.payment?.id) {
@@ -445,11 +446,16 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     if (err.status === 403 && err.code === 'COD_DELIVERY_REQUIREMENT') {
       return res.status(403).json({ code: err.code, message: err.message });
     }
-    if (err.statusCode === 400) return res.status(400).json({ message: err.message });
-    if (err.status === 409) return res.status(409).json({ message: err.message });
     if (err.status === 400 && err.code === 'INSUFFICIENT_WALLET_BALANCE') {
       return res.status(400).json({ code: err.code, message: err.message });
     }
+    if (err.statusCode === 400 || err.status === 400) {
+      return res.status(400).json({
+        ...(err.code ? { code: err.code } : {}),
+        message: err.message,
+      });
+    }
+    if (err.status === 409) return res.status(409).json({ message: err.message });
     if (err.message?.includes("Insufficient stock")) return res.status(400).json({ message: err.message });
     if (err.message?.includes("not found")) return res.status(400).json({ message: "Product no longer available." });
     return res.status(500).json({ message: "Checkout failed due to a server error. Please try again." });

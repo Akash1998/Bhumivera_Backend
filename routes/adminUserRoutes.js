@@ -13,7 +13,6 @@ const {
 const { getAllOrders, getOrdersByUser, updateOrderStatus, getOrderById } = require('../models/orderModel');
 const { getAllReviews } = require('../models/reviewModel');
 const { sendMail } = require('../utils/mail');
-const { notifyOrderWhatsApp } = require('../services/orderWhatsAppNotifier');
 
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -294,16 +293,6 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
       courier,
     });
     if (updated === false) return res.status(404).json({ message: 'Order not found' });
-    const hasOrderUpdate = previousOrder.status !== status ||
-      (tracking_number !== undefined && previousOrder.tracking_number !== tracking_number) ||
-      (courier !== undefined && previousOrder.courier !== courier);
-    if (hasOrderUpdate) {
-      void notifyOrderWhatsApp(orderId, status, {
-        trackingNumber: tracking_number,
-        courier,
-        cancelReason: req.body.cancel_reason,
-      });
-    }
     return res.json({ message: 'Order updated successfully' });
   } catch (err) {
     console.error("Update Order Error:", err);

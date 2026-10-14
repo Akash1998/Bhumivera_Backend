@@ -385,7 +385,7 @@ const getUserById = async (id) => {
     `SELECT id, name, email, phone, role, is_active, wallet_balance, loyalty_points, loyalty_lifetime_points,
       two_factor_enabled, security_question, marketing_email_opt_in, marketing_email_consent_at,
       ad_personalization_opt_in, ad_personalization_consent_at, ad_personalization_consent_version,
-      whatsapp_order_updates_opt_in, whatsapp_order_updates_consent_at, created_at
+      created_at
      FROM users WHERE id = ?`,
     [id]
   );

@@ -188,7 +188,7 @@ router.get('/profile', authenticateUser, async (req, res) => {
   try {
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, loyalty_lifetime_points, marketing_email_opt_in, whatsapp_order_updates_opt_in FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, loyalty_lifetime_points, marketing_email_opt_in FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) {
         user = rows[0];
       }
@@ -201,44 +201,6 @@ router.get('/profile', authenticateUser, async (req, res) => {
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ message: 'Failed to fetch user' });
-  }
-});
-
-router.patch('/profile/whatsapp-preference', authenticateUser, async (req, res) => {
-  const preference = req.body?.whatsapp_order_updates_opt_in;
-  if (typeof preference !== 'boolean') {
-    return res.status(400).json({
-      code: 'INVALID_WHATSAPP_PREFERENCE',
-      message: 'WhatsApp order update preference must be true or false.',
-    });
-  }
-  if (req.user.role !== 'customer') {
-    return res.status(403).json({
-      code: 'CUSTOMER_PREFERENCE_ONLY',
-      message: 'Only customer accounts can update WhatsApp order preferences.',
-    });
-  }
-  try {
-    const [result] = await pool.query(
-      `UPDATE users
-       SET whatsapp_order_updates_opt_in = ?,
-           whatsapp_order_updates_consent_at = CASE
-             WHEN ? = 1 THEN CURRENT_TIMESTAMP
-             ELSE whatsapp_order_updates_consent_at
-           END
-       WHERE id = ? AND role = 'customer'`,
-      [preference ? 1 : 0, preference ? 1 : 0, req.user.id]
-    );
-    if (result.affectedRows !== 1) {
-      return res.status(404).json({ code: 'USER_NOT_FOUND', message: 'Customer account not found.' });
-    }
-    return res.json({ whatsapp_order_updates_opt_in: preference });
-  } catch (error) {
-    console.error('[WHATSAPP_PREFERENCE_UPDATE]', error);
-    return res.status(500).json({
-      code: 'WHATSAPP_PREFERENCE_UPDATE_FAILED',
-      message: 'Could not update your WhatsApp order update preference.',
-    });
   }
 });
 
@@ -372,7 +334,7 @@ router.put('/profile', authenticateUser, async (req, res) => {
     });
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, loyalty_lifetime_points, marketing_email_opt_in, whatsapp_order_updates_opt_in FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, loyalty_lifetime_points, marketing_email_opt_in FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) user = rows[0];
     }
     const tiers = await listLoyaltyTiers({ activeOnly: true });
