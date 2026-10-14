@@ -321,7 +321,7 @@ const createOrder = async ({
         safeShippingCost,
         safeImpactAmount,
         safeImpactAmount > 0 ? impactProject : null,
-        safeLoyaltyPoints,
+        loyaltyPointsAwarded,
         pointsRedeemed,
         couponCreditEligibleSubtotal,
         backendTotal,
