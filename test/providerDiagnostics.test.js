@@ -120,6 +120,7 @@ describe('provider diagnostics', () => {
         VERCEL_PROJECT_ID: 'project-1',
         VERCEL_TEAM_ID: 'team-1',
       },
+      streamIdleTimeoutMs: 10,
       fetchImpl: async (url, options) => {
         const parsedUrl = new URL(url);
         requests.push({ url: parsedUrl, options });
@@ -151,6 +152,29 @@ describe('provider diagnostics', () => {
       source: 'serverless',
       domain: '',
     });
+    assert.equal(result.sampleWindowMs, null);
+  });
+
+  it('returns partial runtime logs when the provider stream remains open', async () => {
+    const encoder = new TextEncoder();
+    const result = await fetchVercelRuntimeLogs({
+      env: {
+        VERCEL_TOKEN: 'private-token',
+        VERCEL_PROJECT_ID: 'project-1',
+        VERCEL_DEPLOYMENT_ID: 'deployment-1',
+      },
+      streamIdleTimeoutMs: 10,
+      fetchImpl: async () => ({
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('{"timestampInMs":1800000000000,"level":"error","message":"streaming error"}'));
+          },
+        }),
+      }),
+    });
+    assert.equal(result.records[0].message, 'streaming error');
+    assert.equal(result.sampleWindowMs, 10);
   });
 });
 

@@ -16,7 +16,7 @@ const redact = value => String(value || '')
   .replace(/\b(?:sk|rk|pk|ghp|gho|xox[baprs])_[A-Za-z0-9_-]{12,}\b/gi, '[redacted]')
   .slice(0, 2000);
 
-async function readVercelLogRecords(response, limit) {
+async function readVercelLogRecords(response, limit, idleTimeoutMs = 1500) {
   const reader = response.body?.getReader?.();
   if (!reader) {
     const payload = await response.json();
@@ -29,6 +29,7 @@ async function readVercelLogRecords(response, limit) {
   let bytesRead = 0;
   let isArrayPayload = false;
   const maxBytes = 2 * 1024 * 1024;
+  let streamIdle = false;
   const appendRecord = line => {
     const trimmed = line.trim().replace(/,$/, '');
     if (!trimmed || trimmed === '[' || trimmed === ']') return;
@@ -43,7 +44,19 @@ async function readVercelLogRecords(response, limit) {
 
   try {
     while (records.length < limit && bytesRead < maxBytes) {
-      const { done, value } = await reader.read();
+      let idleTimer;
+      const result = await Promise.race([
+        reader.read(),
+        new Promise(resolve => {
+          idleTimer = setTimeout(() => resolve({ idle: true }), idleTimeoutMs);
+        }),
+      ]);
+      clearTimeout(idleTimer);
+      if (result.idle) {
+        streamIdle = true;
+        break;
+      }
+      const { done, value } = result;
       if (done) {
         buffer += decoder.decode();
         break;
@@ -68,13 +81,14 @@ async function readVercelLogRecords(response, limit) {
         appendRecord(buffer);
       }
     }
-    return records.slice(0, limit);
+    return {
+      records: records.slice(0, limit),
+      streamIdle,
+    };
   } catch {
     throw new Error('Vercel runtime logs request returned invalid streamed JSON.');
   } finally {
-    if (records.length >= limit || bytesRead >= maxBytes) {
-      await reader.cancel().catch(() => {});
-    }
+    await reader.cancel().catch(() => {});
   }
 }
 
@@ -231,6 +245,7 @@ async function fetchVercelRuntimeLogs({
   env = process.env,
   fetchImpl = globalThis.fetch,
   limit = 200,
+  streamIdleTimeoutMs = 1500,
 } = {}) {
   const token = env.VERCEL_TOKEN || env.VERCEL_API_TOKEN;
   const projectId = env.VERCEL_PROJECT_ID;
@@ -256,7 +271,7 @@ async function fetchVercelRuntimeLogs({
     if (!response.ok) throw new Error(`${label} with HTTP ${response.status}.`);
     try {
       return new URL(url).pathname.endsWith('/runtime-logs')
-        ? await readVercelLogRecords(response, 200)
+        ? await readVercelLogRecords(response, 200, streamIdleTimeoutMs)
         : await response.json();
     } catch {
       throw new Error(`${label}: provider returned invalid JSON.`);
@@ -281,12 +296,14 @@ async function fetchVercelRuntimeLogs({
   );
   if (env.VERCEL_TEAM_ID) url.searchParams.set('teamId', env.VERCEL_TEAM_ID);
   const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 200));
-  const logs = await requestJson(url, 'Vercel runtime logs request failed');
+  const runtimeSample = await requestJson(url, 'Vercel runtime logs request failed');
+  const logs = runtimeSample.records;
   return {
     configured: true,
     source: 'Vercel deployment runtime logs',
     deploymentId,
     recordLimit: safeLimit,
+    sampleWindowMs: runtimeSample.streamIdle ? streamIdleTimeoutMs : null,
     records: logs.slice(0, safeLimit).map(log => ({
       occurredAt: Number.isFinite(Number(log.timestampInMs))
         ? new Date(Number(log.timestampInMs)).toISOString()
