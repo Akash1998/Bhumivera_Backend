@@ -95,6 +95,16 @@ function createSystemDiagnostics(pool, { logger = console, now = Date.now } = {}
   }
   return {
     recordHttpError,
+    getRecentEvents: async (limit = 100) => {
+      const safeLimit = Math.max(1, Math.min(200, Number.parseInt(limit, 10) || 100));
+      const [rows] = await originalQuery(
+        `SELECT id, source, request_id, error_code, sql_state, sql_fingerprint, sql_template,
+                http_status, method, endpoint, occurred_at
+         FROM system_error_events ORDER BY occurred_at DESC LIMIT ?`,
+        [safeLimit]
+      );
+      return rows;
+    },
     close: () => clearInterval(retentionTimer),
   };
 }

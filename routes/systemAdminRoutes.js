@@ -4,6 +4,12 @@ const pool = require('../config/db');
 const { getMailMetrics } = require('../utils/mail');
 const { getRequestMetrics } = require('../middleware/requestObservability');
 const {
+  fetchRailwayHttpErrors,
+  fetchVercelDeploymentEvents,
+  fetchVercelRuntimeLogs,
+  getProviderConfiguration,
+} = require('../utils/providerDiagnostics');
+const {
   getModuleStates,
   isKnownModule,
   setModuleEnabled,
@@ -104,6 +110,43 @@ router.get('/health', authenticateAdmin, async (_req, res) => {
     return res.status(500).json({
       status: 'unavailable',
       message: 'Could not load system health data.',
+    });
+  }
+});
+
+router.get('/logs', authenticateAdmin, async (req, res) => {
+  const diagnostics = req.app.locals.systemDiagnostics;
+  if (!diagnostics) {
+    return res.status(503).json({
+      code: 'SYSTEM_LOGS_UNAVAILABLE',
+      message: 'Persistent system logs are not ready yet.',
+    });
+  }
+
+  try {
+    const configuration = getProviderConfiguration();
+    const [events, railway, vercelRuntime, vercelEvents] = await Promise.all([
+      diagnostics.getRecentEvents(req.query.limit),
+      fetchRailwayHttpErrors().catch(error => ({ configured: configuration.railway.configured, source: 'Railway deployment HTTP logs', error: error.message, records: [] })),
+      fetchVercelRuntimeLogs().catch(error => ({ configured: configuration.vercel.configured, source: 'Vercel deployment runtime logs', error: error.message, records: [] })),
+      fetchVercelDeploymentEvents().catch(error => ({ configured: configuration.vercel.configured, source: 'Vercel deployment/build events', error: error.message, records: [] })),
+    ]);
+    res.json({
+      checkedAt: new Date().toISOString(),
+      events,
+      providers: {
+        configuration,
+        railway,
+        vercelRuntime,
+        vercelEvents,
+      },
+      limitations: 'Railway HTTP logs show failing requests but may not include application stack traces. Vercel runtime logs are fetched for the configured production deployment; deployment/build events are shown separately. Correlate records by timestamp, endpoint, status, and request ID where available.',
+    });
+  } catch (error) {
+    console.error('[ADMIN_SYSTEM_LOGS_READ]', error);
+    res.status(500).json({
+      code: 'SYSTEM_LOGS_READ_FAILED',
+      message: 'Could not load persistent system logs.',
     });
   }
 });

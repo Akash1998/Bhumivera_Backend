@@ -7,10 +7,14 @@ describe('request observability', () => {
   let server;
   let baseUrl;
   const entries = [];
+  const persistedErrors = [];
   let clock = 100;
 
   before(async () => {
     const app = express();
+    app.locals.systemDiagnostics = {
+      recordHttpError: event => persistedErrors.push(event),
+    };
     app.use(createRequestObservability({
       createRequestId: () => 'request-test-id',
       now: () => {
@@ -58,5 +62,7 @@ describe('request observability', () => {
     await response.json();
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(entries.at(-1).statusCode, 503);
+    assert.equal(persistedErrors.at(-1).requestId, 'request-test-id');
+    assert.equal(persistedErrors.at(-1).errorCode, 'INTERNAL_SERVER_ERROR');
   });
 });

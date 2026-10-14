@@ -63,6 +63,7 @@ function normalizeErrorResponses(req, res, next) {
       delete normalized.error;
       delete normalized.stack;
       if (!hasApplicationCode) normalized.message = DEFAULT_MESSAGES[500];
+      res.locals.systemErrorCode = normalized.code;
     }
     return originalJson(normalized);
   };

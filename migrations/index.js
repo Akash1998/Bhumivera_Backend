@@ -485,6 +485,29 @@ const migrations = [
       await pool.query('ALTER TABLE users MODIFY COLUMN reset_otp VARCHAR(64) DEFAULT NULL');
     },
   },
+  {
+    version: 51,
+    name: 'persist system error diagnostics',
+    up: async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS system_error_events (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          source ENUM('api','database') NOT NULL,
+          request_id VARCHAR(64) DEFAULT NULL,
+          error_code VARCHAR(100) DEFAULT NULL,
+          sql_state VARCHAR(10) DEFAULT NULL,
+          sql_fingerprint CHAR(64) DEFAULT NULL,
+          sql_template VARCHAR(2000) DEFAULT NULL,
+          http_status SMALLINT UNSIGNED DEFAULT NULL,
+          method VARCHAR(12) DEFAULT NULL,
+          endpoint VARCHAR(500) DEFAULT NULL,
+          occurred_at DATETIME(3) NOT NULL,
+          INDEX idx_system_error_occurred_at (occurred_at),
+          INDEX idx_system_error_source_time (source, occurred_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

@@ -1,6 +1,8 @@
 const { randomUUID } = require('node:crypto');
+const { AsyncLocalStorage } = require('node:async_hooks');
 
 const recentRequests = [];
+const requestContext = new AsyncLocalStorage();
 const MAX_RECENT_REQUESTS = 2000;
 const METRICS_WINDOW_MS = 15 * 60 * 1000;
 
@@ -60,9 +62,21 @@ const createRequestObservability = ({
     }
     const log = res.statusCode >= 500 ? logger.error : logger.info;
     log.call(logger, JSON.stringify(entry));
+    if (res.statusCode >= 500) {
+      const diagnostics = req.app?.locals?.systemDiagnostics;
+      if (diagnostics?.recordHttpError) {
+        void diagnostics.recordHttpError({
+          ...entry,
+          errorCode: res.locals?.systemErrorCode || 'INTERNAL_SERVER_ERROR',
+          occurredAt: new Date(completedAt),
+        });
+      }
+    }
   });
 
-  next();
+  requestContext.run({ requestId, method: req.method, path: req.path }, next);
 };
 
-module.exports = { createRequestObservability, getRequestMetrics };
+const getCurrentRequestContext = () => requestContext.getStore();
+
+module.exports = { createRequestObservability, getRequestMetrics, getCurrentRequestContext };

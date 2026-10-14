@@ -15,6 +15,7 @@ const {
   closeResponseCache,
 } = require("./middleware/redisResponseCache");
 const { createRequestObservability } = require("./middleware/requestObservability");
+const { createSystemDiagnostics } = require("./utils/systemDiagnostics");
 const { clientContextMiddleware, ALLOWED_NATIVE_ORIGINS } = require("./middleware/clientContext");
 const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
 const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
@@ -75,6 +76,7 @@ const app = express();
 let databaseReady = false;
 let startupFailure = null;
 let referralApprovalTimer = null;
+let systemDiagnostics = null;
 app.use(createRequestObservability());
 app.use(clientContextMiddleware());
 
@@ -248,6 +250,10 @@ const initializeDatabase = async () => {
     }
     await pool.query('SELECT 1');
     await runMigrations(pool, migrations);
+    if (!systemDiagnostics) {
+      systemDiagnostics = createSystemDiagnostics(pool);
+      app.locals.systemDiagnostics = systemDiagnostics;
+    }
     databaseReady = true;
     startupFailure = null;
     if (!referralApprovalTimer) {
@@ -288,6 +294,7 @@ const shutdown = signal => {
     clearTimeout(forceCloseTimer);
     const shutdownTasks = [
         Promise.resolve().then(() => clearInterval(referralApprovalTimer)),
+      Promise.resolve().then(() => systemDiagnostics?.close()),
       pool.end(),
       closeRateLimitStore(),
     closeResponseCache(),

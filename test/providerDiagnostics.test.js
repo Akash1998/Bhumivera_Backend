@@ -3,6 +3,7 @@ const { describe, it } = require('node:test');
 const {
   fetchRailwayHttpErrors,
   fetchVercelDeploymentEvents,
+  fetchVercelRuntimeLogs,
   getProviderConfiguration,
 } = require('../utils/providerDiagnostics');
 const { createSystemDiagnostics, normalizeQuery } = require('../utils/systemDiagnostics');
@@ -13,11 +14,11 @@ describe('provider diagnostics', () => {
     assert.deepEqual(getProviderConfiguration(env), {
       railway: {
         configured: false,
-        missing: ['RAILWAY_PROJECT_ACCESS_TOKEN or RAILWAY_API_TOKEN', 'RAILWAY_DEPLOYMENT_ID'],
+        missing: ['RAILWAY_PROJECT_ACCESS_TOKEN, RAILWAY_API_TOKEN, or RAILWAY_TOKEN', 'RAILWAY_DEPLOYMENT_ID'],
       },
       vercel: {
         configured: false,
-        missing: ['VERCEL_TOKEN', 'VERCEL_PROJECT_ID or VERCEL_DEPLOYMENT_ID'],
+        missing: ['VERCEL_TOKEN or VERCEL_API_TOKEN', 'VERCEL_PROJECT_ID'],
       },
     });
     assert.equal((await fetchRailwayHttpErrors({ env })).configured, false);
@@ -76,7 +77,8 @@ describe('provider diagnostics', () => {
     });
     assert.equal(request.url.pathname, '/v3/deployments/dep%2Fone/events');
     assert.equal(request.url.searchParams.get('teamId'), 'team-1');
-    assert.equal(request.url.searchParams.get('since'), null);
+    assert.equal(request.url.searchParams.get('since'), String(1_800_000_000_000 - 60 * 60 * 1000));
+    assert.equal(request.url.searchParams.get('until'), '1800000000000');
     assert.equal(request.headers.Authorization, 'Bearer private-token');
     assert.equal(result.records[0].message, 'Build completed');
     assert.match(result.source, /not runtime function logs/);
@@ -100,6 +102,55 @@ describe('provider diagnostics', () => {
     assert.equal(requests[0].searchParams.get('target'), 'production');
     assert.equal(requests[1].pathname, '/v3/deployments/latest-production/events');
     assert.equal(result.deploymentId, 'latest-production');
+  });
+
+  it('accepts the Vercel API token alias', () => {
+    assert.equal(getProviderConfiguration({
+      VERCEL_API_TOKEN: 'private-token',
+      VERCEL_PROJECT_ID: 'project-1',
+    }).vercel.configured, true);
+  });
+
+  it('retrieves the latest deployment runtime logs and maps streamed records safely', async () => {
+    const requests = [];
+    const encoder = new TextEncoder();
+    const result = await fetchVercelRuntimeLogs({
+      env: {
+        VERCEL_API_TOKEN: 'private-token',
+        VERCEL_PROJECT_ID: 'project-1',
+        VERCEL_TEAM_ID: 'team-1',
+      },
+      fetchImpl: async (url, options) => {
+        const parsedUrl = new URL(url);
+        requests.push({ url: parsedUrl, options });
+        if (parsedUrl.pathname === '/v7/deployments') {
+          return {
+            ok: true,
+            json: async () => ({ deployments: [{ uid: 'latest-production' }] }),
+          };
+        }
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('{"timestampInMs":1800000000000,"level":"error","responseStatusCode":500,"requestMethod":"GET","requestPath":"/api/orders?private=yes","message":"handler failed","source":"serverless"}\n'));
+            controller.close();
+          },
+        });
+        return { ok: true, body };
+      },
+    });
+    assert.equal(requests[0].url.searchParams.get('target'), 'production');
+    assert.equal(requests[1].url.pathname, '/v1/projects/project-1/deployments/latest-production/runtime-logs');
+    assert.equal(requests[1].url.searchParams.get('teamId'), 'team-1');
+    assert.deepEqual(result.records[0], {
+      occurredAt: '2027-01-15T08:00:00.000Z',
+      severity: 'error',
+      statusCode: 500,
+      method: 'GET',
+      path: '/api/orders',
+      message: 'handler failed',
+      source: 'serverless',
+      domain: '',
+    });
   });
 });
 
@@ -142,5 +193,21 @@ describe('system diagnostic persistence', () => {
     assert.equal(inserts[0].values[5], null);
     assert.equal(inserts[1].values[5], 'SELECT * FROM users WHERE email=?');
     assert.doesNotMatch(JSON.stringify(inserts), /private@example\.com/);
+  });
+
+  it('loads only a bounded number of recent persisted events', async () => {
+    let requestedLimit;
+    const pool = {
+      query: async (sql, values) => {
+        if (sql.includes('DELETE FROM system_error_events')) return [{}];
+        requestedLimit = values[0];
+        return [[{ id: 1, source: 'api' }]];
+      },
+      execute: async () => [{}],
+    };
+    const diagnostics = createSystemDiagnostics(pool, { logger: { error: () => {} } });
+    assert.deepEqual(await diagnostics.getRecentEvents(900), [{ id: 1, source: 'api' }]);
+    assert.equal(requestedLimit, 200);
+    diagnostics.close();
   });
 });
