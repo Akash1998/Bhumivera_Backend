@@ -13,6 +13,8 @@ If the corresponding feature is enabled, configure both Razorpay API credentials
 
 For more than one backend instance, set the same `RATE_LIMIT_REDIS_URL` on every instance. A single instance can use the built-in in-memory rate-limit store.
 
+Set `CACHE_REDIS_URL` on each backend instance to enable shared response caching for anonymous JSON `GET /api/...` requests. It falls back to `RATE_LIMIT_REDIS_URL` when unset. Responses are cached for 60 seconds; authenticated/cookie requests, explicitly private or no-store responses, and search/referral-preview endpoints are not cached. Redis cache connection or request failures do not prevent API requests from continuing.
+
 ### WhatsApp order updates
 
 Order placement confirmations, customer cancellations, admin order-status changes, and shipment/tracking changes can be sent with the Meta WhatsApp Cloud API. Migrations 37 and 38 record per-order consent and the customer's account-level WhatsApp preference; existing orders and customers are not opted in. Customers can opt in or out at Profile > Security > WhatsApp Order Updates. Opting in makes the checkout WhatsApp option selected for new orders; customers can still uncheck it for an individual order. Opting out in Profile immediately suppresses further WhatsApp alerts, including for previously opted-in orders. A previously opted-in order is not sent retroactive messages if the account preference is later enabled again.

@@ -9,6 +9,11 @@ const cors = require("cors");
 const pool = require("./config/db");
 const path = require("path");
 const { connectRateLimitStore, closeRateLimitStore } = require("./middleware/rateLimiter");
+const {
+  redisResponseCache,
+  connectResponseCache,
+  closeResponseCache,
+} = require("./middleware/redisResponseCache");
 const { createRequestObservability } = require("./middleware/requestObservability");
 const { clientContextMiddleware, ALLOWED_NATIVE_ORIGINS } = require("./middleware/clientContext");
 const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
@@ -148,6 +153,7 @@ app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(normalizeErrorResponses);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use(redisResponseCache);
 
 // --- ROUTE REGISTRATION ---
 app.use("/api/admin/system", systemAdminRoutes);
@@ -235,6 +241,11 @@ const httpServer = app.listen(PORT, () => {
 const initializeDatabase = async () => {
   try {
     await connectRateLimitStore();
+    try {
+      await connectResponseCache();
+    } catch (error) {
+      console.warn('[RESPONSE_CACHE] Redis connection failed; requests will continue without response caching.', error.message);
+    }
     await pool.query('SELECT 1');
     await runMigrations(pool, migrations);
     databaseReady = true;
@@ -279,6 +290,7 @@ const shutdown = signal => {
         Promise.resolve().then(() => clearInterval(referralApprovalTimer)),
       pool.end(),
       closeRateLimitStore(),
+    closeResponseCache(),
     ];
     const results = await Promise.allSettled(shutdownTasks);
     const failure = error || results.find(result => result.status === 'rejected')?.reason;
@@ -287,7 +299,7 @@ const shutdown = signal => {
       process.exitCode = 1;
       return;
     }
-    console.info('[SHUTDOWN] HTTP, database, and rate-limit connections closed.');
+    console.info('[SHUTDOWN] HTTP, database, rate-limit, and response-cache connections closed.');
   });
 };
 
