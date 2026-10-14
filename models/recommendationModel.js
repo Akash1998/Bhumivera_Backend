@@ -26,7 +26,19 @@ const recordProductView = async (userId, productId) => {
   );
 };
 
-const getPersonalizedRecommendations = async (userId, currentProductId, limit = 8) => {
+const getPersonalizedRecommendations = async (userId, currentProductId, limit = 8, personalizationEnabled = false) => {
+  if (!personalizationEnabled) {
+    const [popularProducts] = await pool.query(
+      `SELECT p.*
+       FROM products p
+       WHERE p.status = 'active' AND p.id <> ?
+       ORDER BY p.is_trending DESC, p.rating DESC, p.review_count DESC, p.created_at DESC
+       LIMIT ?`,
+      [currentProductId, limit]
+    );
+    return { products: popularProducts, personalized: false };
+  }
+
   const [rows] = await pool.query(
     `WITH user_signals AS (
        SELECT oi.product_id, 4 + LEAST(SUM(oi.quantity), 5) AS weight

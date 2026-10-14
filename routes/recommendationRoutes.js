@@ -13,6 +13,15 @@ router.post('/view', authenticateUser, async (req, res) => {
   }
 
   try {
+    if (req.user.role !== 'customer') return res.status(204).end();
+    const [[consent]] = await pool.query(
+      "SELECT ad_personalization_opt_in, ad_personalization_consent_version FROM users WHERE id = ? AND role = 'customer'",
+      [req.user.id]
+    );
+    if (Number(consent?.ad_personalization_opt_in) !== 1 || consent.ad_personalization_consent_version !== 'product-recommendations-v2') {
+      return res.status(204).end();
+    }
+
     const [[product]] = await pool.query(
       "SELECT id FROM products WHERE id = ? AND status = 'active'",
       [productId]
@@ -33,12 +42,19 @@ router.get('/for-you', authenticateUser, async (req, res) => {
   }
 
   try {
-    const result = await getPersonalizedRecommendations(req.user.id, currentProductId);
+    const [[consent]] = await pool.query(
+      "SELECT ad_personalization_opt_in, ad_personalization_consent_version FROM users WHERE id = ? AND role = 'customer'",
+      [req.user.id]
+    );
+    const personalizationEnabled = req.user.role === 'customer' &&
+      Number(consent?.ad_personalization_opt_in) === 1 &&
+      consent.ad_personalization_consent_version === 'product-recommendations-v2';
+    const result = await getPersonalizedRecommendations(req.user.id, currentProductId, 8, personalizationEnabled);
     const products = (await attachImages(result.products)).map(cleanProductMarketingFields);
     return res.json({
       products,
       personalized: result.personalized,
-      reason: result.personalized ? 'Based on your interests and purchases' : 'Popular with customers'
+      reason: result.personalized ? 'Based on your opted-in product activity and purchases' : 'Popular with customers'
     });
   } catch (error) {
     console.error('[PRODUCT_RECOMMENDATIONS]', error);

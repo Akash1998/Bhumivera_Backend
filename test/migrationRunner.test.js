@@ -77,6 +77,52 @@ describe('runMigrations', () => {
     ]);
   });
 
+  it('adds opt-in-only personalization fields and a consent audit table', async () => {
+    const migration = migrations.find(candidate => candidate.name === 'record optional ad-personalization consent');
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      return sql.startsWith('SHOW COLUMNS') ? [[], []] : [{}, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    const alters = statements.filter(sql => sql.startsWith('ALTER TABLE'));
+    assert.equal(alters.length, 5);
+    assert.ok(alters.every(sql => /ad_personalization/.test(sql)));
+    assert.match(statements.at(-1), /CREATE TABLE IF NOT EXISTS privacy_consent_events/);
+    assert.match(statements.at(-1), /granted TINYINT\(1\) NOT NULL/);
+    assert.match(statements.at(-1), /source ENUM\('registration','profile'\)/);
+  });
+
+  it('resets legacy personalization choices and clears historical product views', async () => {
+    const migration = migrations.find(candidate => candidate.name === 'require updated consent for product recommendations');
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      return [{ affectedRows: 1 }, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.match(statements[0], /ENUM\('registration','profile','system'\)/);
+    assert.match(statements[1], /INSERT INTO privacy_consent_events/);
+    assert.match(statements[1], /'personalized_recommendations', 0/);
+    assert.ok(statements.some(sql => /UPDATE users[\s\S]*SET ad_personalization_opt_in = 0/.test(sql)));
+    assert.ok(statements.some(sql => /UPDATE pending_registrations[\s\S]*SET ad_personalization_opt_in = 0/.test(sql)));
+    assert.match(statements.at(-1), /DELETE FROM user_product_views/);
+  });
+
   it('records each successful migration and skips it on later runs', async () => {
     const pool = createPool();
     let executionCount = 0;

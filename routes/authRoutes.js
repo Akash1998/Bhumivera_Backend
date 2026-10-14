@@ -56,7 +56,8 @@ const {
 } = require("../models/userModel");
 
 const router = express.Router();
-const TERMS_VERSION = '2026-10-13';
+const TERMS_VERSION = '2026-10-14';
+const AD_PERSONALIZATION_CONSENT_VERSION = 'product-recommendations-v2';
 
 const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
 const hashAdminOtp = (adminId, otp) => hashOtp('admin-login', adminId, otp);
@@ -295,7 +296,17 @@ router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
     const role = isA ? (u.role || "admin") : (u.role || "customer");
     const token = await issueToken({ id: u.id, email: u.email, role }, req, { sessionType: 'user', deviceHash });
     
-    return res.json({ token, user: { id: u.id, name: u.name || "Administrator", email: u.email, role: role } });
+    return res.json({
+      token,
+      user: {
+        id: u.id,
+        name: u.name || "Administrator",
+        email: u.email,
+        role,
+        ad_personalization_opt_in: Number(u.ad_personalization_opt_in) === 1 ? 1 : 0,
+        ad_personalization_consent_version: u.ad_personalization_consent_version || null,
+      },
+    });
   } catch (err) {
     console.error("Universal Login Error:", err);
     res.status(500).json({ message: "Internal server error occurred." });
@@ -379,7 +390,17 @@ router.post("/2fa/verify", otpVerificationLimiter, async (req, res) => {
     }
     const deviceHash = await issueTrustedDevice(c.id, req, res);
     const token = await issueToken({ id: c.id, email: c.email, role: c.role || 'customer' }, req, { sessionType: 'user', deviceHash });
-    return res.json({ token, user: { id: c.id, name: c.name, email: c.email, role: c.role || 'customer' } });
+    return res.json({
+      token,
+      user: {
+        id: c.id,
+        name: c.name,
+        email: c.email,
+        role: c.role || 'customer',
+        ad_personalization_opt_in: Number(c.ad_personalization_opt_in) === 1 ? 1 : 0,
+        ad_personalization_consent_version: c.ad_personalization_consent_version || null,
+      },
+    });
   } catch (err) {
     console.error("MFA Error:", err);
     res.status(500).json({ message: "Server error", error: err.message });
@@ -558,11 +579,15 @@ router.post("/register", turnstileMiddleware, registerLimiter, async (req, res) 
   try {
     const { name, email, password } = req.body;
     const marketingEmailOptIn = req.body?.marketingEmailOptIn === true;
+    const adPersonalizationOptIn = req.body?.adPersonalizationOptIn === true;
     if (req.body?.termsAccepted !== true) {
       return res.status(400).json({ code: 'TERMS_ACCEPTANCE_REQUIRED', message: 'Accept the Conditions of Use and acknowledge the Privacy Notice to create an account.' });
     }
     if (req.body?.marketingEmailOptIn !== undefined && typeof req.body.marketingEmailOptIn !== 'boolean') {
       return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
+    }
+    if (req.body?.adPersonalizationOptIn !== undefined && typeof req.body.adPersonalizationOptIn !== 'boolean') {
+      return res.status(400).json({ message: 'Ad-personalization preference must be true or false.' });
     }
     if (!name || !email || !password) return res.status(400).json({ message: "Required fields missing" });
     let referrerUserId = null;
@@ -595,18 +620,20 @@ router.post("/register", turnstileMiddleware, registerLimiter, async (req, res) 
     const hashedPassword = await bcrypt.hash(password, 10);
     
     await pool.query(`
-      INSERT INTO pending_registrations (name, email, password, marketing_email_opt_in, otp, otp_expiry, referrer_user_id, terms_version, terms_accepted_at)
-      VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), ?, ?, NOW())
+      INSERT INTO pending_registrations (name, email, password, marketing_email_opt_in, ad_personalization_opt_in, ad_personalization_consent_version, otp, otp_expiry, referrer_user_id, terms_version, terms_accepted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), ?, ?, NOW())
       ON DUPLICATE KEY UPDATE 
         name=VALUES(name), 
         password=VALUES(password),
         marketing_email_opt_in=VALUES(marketing_email_opt_in),
+        ad_personalization_opt_in=VALUES(ad_personalization_opt_in),
+        ad_personalization_consent_version=VALUES(ad_personalization_consent_version),
         terms_version=VALUES(terms_version),
         terms_accepted_at=VALUES(terms_accepted_at),
         otp=VALUES(otp), 
         otp_expiry=DATE_ADD(NOW(), INTERVAL 10 MINUTE), 
         created_at=NOW()
-    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, hashedOtp, referrerUserId, TERMS_VERSION]);
+    `, [name, email, hashedPassword, marketingEmailOptIn ? 1 : 0, adPersonalizationOptIn ? 1 : 0, adPersonalizationOptIn ? AD_PERSONALIZATION_CONSENT_VERSION : null, hashedOtp, referrerUserId, TERMS_VERSION]);
     
     try {
       await sendMail({ to: email, subject: 'Verify your account', html: `<div style="font-family: sans-serif; padding: 20px;"><h2>Welcome!</h2><p>Your verification code is: <strong style="font-size: 24px;">${otp}</strong></p><p>Expires in 10 minutes.</p></div>` });
@@ -660,9 +687,16 @@ router.post("/verify-email", otpVerificationLimiter, async (req, res) => {
       password: p.password,
       securityAnswer: securityAnswer || null,
       marketingEmailOptIn: p.marketing_email_opt_in === 1 || p.marketing_email_opt_in === true,
+      adPersonalizationOptIn: p.ad_personalization_opt_in === 1 || p.ad_personalization_opt_in === true,
+      adPersonalizationConsentVersion: p.ad_personalization_consent_version || null,
       referrerUserId: p.referrer_user_id || null,
       termsVersion: p.terms_version || TERMS_VERSION,
     }, connection);
+    await connection.query(
+      `INSERT INTO privacy_consent_events (user_id, purpose, granted, notice_version, source)
+       VALUES (?, 'personalized_recommendations', ?, ?, 'registration')`,
+      [id, p.ad_personalization_opt_in === 1 || p.ad_personalization_opt_in === true ? 1 : 0, AD_PERSONALIZATION_CONSENT_VERSION]
+    );
     const referralClaimId = await createReferralClaim(connection, id, p.referrer_user_id || null);
     await connection.query('DELETE FROM pending_registrations WHERE email = ?', [email]);
     await connection.commit();
@@ -682,7 +716,18 @@ router.post("/verify-email", otpVerificationLimiter, async (req, res) => {
     }
     const deviceHash = await issueTrustedDevice(u.id, req, res);
     const token = await issueToken({ id: u.id, email: u.email, role: u.role || 'customer' }, req, { sessionType: 'user', deviceHash });
-    res.status(201).json({ success: true, token, user: { id: u.id, name: u.name, email: u.email, role: u.role || 'customer' } });
+    res.status(201).json({
+      success: true,
+      token,
+      user: {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role || 'customer',
+        ad_personalization_opt_in: Number(u.ad_personalization_opt_in) === 1 ? 1 : 0,
+        ad_personalization_consent_version: u.ad_personalization_consent_version || null,
+      },
+    });
   } catch (err) {
     if (connection) {
       await connection.rollback();

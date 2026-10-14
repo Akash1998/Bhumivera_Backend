@@ -1,14 +1,14 @@
 const assert = require('node:assert/strict');
 const { after, before, describe, it } = require('node:test');
 const express = require('express');
-const { createRequestObservability } = require('../middleware/requestObservability');
+const { createRequestObservability, getRequestMetrics } = require('../middleware/requestObservability');
 
 describe('request observability', () => {
   let server;
   let baseUrl;
   const entries = [];
   const persistedErrors = [];
-  let clock = 100;
+  let clock = Date.now();
 
   before(async () => {
     const app = express();
@@ -42,6 +42,7 @@ describe('request observability', () => {
   });
 
   it('returns a request ID and logs a bounded structured event without query secrets', async () => {
+    const before = getRequestMetrics().requestCount;
     const response = await fetch(`${baseUrl}/health/live?token=do-not-log`);
     assert.equal(response.headers.get('x-request-id'), 'request-test-id');
     await response.json();
@@ -54,9 +55,15 @@ describe('request observability', () => {
       statusCode: 200,
       durationMs: 17,
     });
+    const metrics = getRequestMetrics();
+    assert.equal(metrics.requestCount, before + 1);
+    assert.equal(metrics.recentRequests[0].path, '/health/live');
+    assert.equal(metrics.recentRequests[0].statusCode, 200);
+    assert.equal(metrics.recentRequests[0].durationMs, 17);
   });
 
   it('logs server failures at error level', async () => {
+    const before = getRequestMetrics().serverErrorCount;
     const response = await fetch(`${baseUrl}/error`);
     assert.equal(response.status, 503);
     await response.json();
@@ -64,5 +71,6 @@ describe('request observability', () => {
     assert.equal(entries.at(-1).statusCode, 503);
     assert.equal(persistedErrors.at(-1).requestId, 'request-test-id');
     assert.equal(persistedErrors.at(-1).errorCode, 'INTERNAL_SERVER_ERROR');
+    assert.equal(getRequestMetrics().serverErrorCount, before + 1);
   });
 });

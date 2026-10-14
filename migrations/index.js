@@ -508,6 +508,80 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 52,
+    name: 'record optional ad-personalization consent',
+    up: async () => {
+      for (const [table, columns] of [
+        ['users', [
+          ['ad_personalization_opt_in', 'TINYINT(1) NOT NULL DEFAULT 0'],
+          ['ad_personalization_consent_at', 'DATETIME NULL'],
+          ['ad_personalization_consent_version', 'VARCHAR(40) DEFAULT NULL'],
+        ]],
+        ['pending_registrations', [
+          ['ad_personalization_opt_in', 'TINYINT(1) NOT NULL DEFAULT 0'],
+          ['ad_personalization_consent_version', 'VARCHAR(40) DEFAULT NULL'],
+        ]],
+      ]) {
+        for (const [column, definition] of columns) {
+          const [existing] = await pool.query(`SHOW COLUMNS FROM ${table} LIKE ?`, [column]);
+          if (!existing.length) await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+        }
+      }
+      await pool.query(`
+        DELETE FROM user_product_views
+        WHERE user_id IN (SELECT id FROM users WHERE ad_personalization_opt_in = 0)
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS privacy_consent_events (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          purpose VARCHAR(40) NOT NULL,
+          granted TINYINT(1) NOT NULL,
+          notice_version VARCHAR(40) NOT NULL,
+          source ENUM('registration','profile') NOT NULL,
+          recorded_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          INDEX idx_privacy_consent_user_purpose_time (user_id, purpose, recorded_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    },
+  },
+  {
+    version: 53,
+    name: 'require updated consent for product recommendations',
+    up: async () => {
+      await pool.query(`
+        ALTER TABLE privacy_consent_events
+        MODIFY COLUMN source ENUM('registration','profile','system') NOT NULL
+      `);
+      await pool.query(`
+        INSERT INTO privacy_consent_events (user_id, purpose, granted, notice_version, source)
+        SELECT id, 'personalized_recommendations', 0, 'product-recommendations-v2', 'system'
+        FROM users
+        WHERE ad_personalization_opt_in = 1
+          AND (ad_personalization_consent_version IS NULL OR ad_personalization_consent_version <> 'product-recommendations-v2')
+      `);
+      await pool.query(`
+        UPDATE users
+        SET ad_personalization_opt_in = 0,
+            ad_personalization_consent_at = NULL,
+            ad_personalization_consent_version = NULL
+        WHERE ad_personalization_opt_in = 1
+          AND (ad_personalization_consent_version IS NULL OR ad_personalization_consent_version <> 'product-recommendations-v2')
+      `);
+      await pool.query(`
+        UPDATE pending_registrations
+        SET ad_personalization_opt_in = 0,
+            ad_personalization_consent_version = NULL
+        WHERE ad_personalization_opt_in = 1
+          AND (ad_personalization_consent_version IS NULL OR ad_personalization_consent_version <> 'product-recommendations-v2')
+      `);
+      await pool.query(`
+        DELETE FROM user_product_views
+        WHERE user_id IN (SELECT id FROM users WHERE ad_personalization_opt_in = 0)
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

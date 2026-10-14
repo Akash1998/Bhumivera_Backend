@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const { generateSecret, generateURI, verify } = require('otplib');
 const qrcode = require('qrcode');
 const router = express.Router();
+const AD_PERSONALIZATION_CONSENT_VERSION = 'product-recommendations-v2';
 const {
   createUser,
   getUserByEmail,
@@ -307,6 +308,49 @@ router.delete('/loyalty/tiers/:id', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error('[LOYALTY_TIER_DELETE]', err);
     res.status(500).json({ code: 'LOYALTY_TIER_DELETE_FAILED', message: 'Failed to delete loyalty tier.' });
+  }
+});
+
+router.patch('/profile/ad-personalization-preference', authenticateUser, async (req, res) => {
+  const enabled = req.body?.ad_personalization_opt_in;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ code: 'INVALID_AD_PERSONALIZATION_PREFERENCE', message: 'ad_personalization_opt_in must be true or false.' });
+  }
+  if (req.user.role !== 'customer') {
+    return res.status(403).json({ message: 'Only customer accounts can update this preference.' });
+  }
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    await connection.query(
+      `UPDATE users
+       SET ad_personalization_opt_in = ?,
+           ad_personalization_consent_at = IF(? = 1, CURRENT_TIMESTAMP, NULL),
+           ad_personalization_consent_version = IF(? = 1, ?, NULL)
+       WHERE id = ? AND role = 'customer'`,
+      [enabled ? 1 : 0, enabled ? 1 : 0, enabled ? 1 : 0, AD_PERSONALIZATION_CONSENT_VERSION, req.user.id]
+    );
+    await connection.query(
+      `INSERT INTO privacy_consent_events (user_id, purpose, granted, notice_version, source)
+       VALUES (?, 'personalized_recommendations', ?, ?, 'profile')`,
+      [req.user.id, enabled ? 1 : 0, AD_PERSONALIZATION_CONSENT_VERSION]
+    );
+    if (!enabled) {
+      await connection.query('DELETE FROM user_product_views WHERE user_id = ?', [req.user.id]);
+    }
+    await connection.commit();
+    return res.json({
+      success: true,
+      ad_personalization_opt_in: enabled,
+      ad_personalization_consent_version: enabled ? AD_PERSONALIZATION_CONSENT_VERSION : null,
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error('[AD_PERSONALIZATION_PREFERENCE_UPDATE]', error);
+    return res.status(500).json({ code: 'AD_PERSONALIZATION_PREFERENCE_UPDATE_FAILED', message: 'Could not update the advertising preference.' });
+  } finally {
+    connection?.release();
   }
 });
 
