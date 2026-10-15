@@ -166,4 +166,19 @@ router.patch('/admin/referrals/:claimId/decision', authenticateAdmin, async (req
   }
 });
 
+
+const unavailableAffiliateWorkflow = (_req, res) =>
+  res.status(501).json({
+    success: false,
+    code: 'AFFILIATE_WORKFLOW_UNAVAILABLE',
+    message: 'Affiliate partner and withdrawal management is not enabled; use referral rewards.',
+  });
+
+router.all('/partners', authenticateAdmin, unavailableAffiliateWorkflow);
+router.all('/partners/:id/status', authenticateAdmin, unavailableAffiliateWorkflow);
+router.all('/withdrawals', authenticateAdmin, unavailableAffiliateWorkflow);
+router.all('/withdrawals/:id/approve', authenticateAdmin, unavailableAffiliateWorkflow);
+router.all('/config', authenticateAdmin, unavailableAffiliateWorkflow);
+
 module.exports = router;
+

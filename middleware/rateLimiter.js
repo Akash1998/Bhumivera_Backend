@@ -5,6 +5,7 @@ const { ipKeyGenerator } = rateLimit;
 
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
+const FIVE_MINUTES = 5 * 60 * 1000;
 
 function getLoginIpKey(ip, normalizedIp = ipKeyGenerator(ip, 56)) {
   const address = String(ip || '');
@@ -257,7 +258,6 @@ const newsletterLimiter = createLimiter('newsletter', {
   userAction: 'Try again later.',
 });
 
-
 const contactLimiter = createLimiter('contact', {
   windowMs: FIFTEEN_MINUTES,
   max: 15,
@@ -298,6 +298,34 @@ const couponValidateLimiter = createLimiter('coupon-validate', {
   message: 'Too many coupon validation attempts. Please wait before trying another code.',
 });
 
+// --- AI CUSTOMER SUPPORT ENGINE RATE LIMITERS ---
+const supportSessionLimiter = createLimiter('ai-support-session', {
+  windowMs: FIFTEEN_MINUTES,
+  max: 30,
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
+  code: 'SUPPORT_SESSION_RATE_LIMIT',
+  message: 'Too many support session requests from this network. Please wait a moment.',
+  userAction: 'Wait a moment before starting a new chat session.',
+});
+
+const supportChatLimiter = createLimiter('ai-support-chat', {
+  windowMs: FIVE_MINUTES,
+  max: 35,
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
+  code: 'SUPPORT_CHAT_RATE_LIMIT',
+  message: 'You are sending messages too quickly. Please wait a moment before sending another message.',
+  userAction: 'Wait a few seconds before sending your next message.',
+});
+
+const supportEscalationLimiter = createLimiter('ai-support-escalation', {
+  windowMs: FIFTEEN_MINUTES,
+  max: 6,
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
+  code: 'SUPPORT_ESCALATION_RATE_LIMIT',
+  message: 'An escalation request has already been queued for our human support team.',
+  userAction: 'Our team has been notified and will reach out shortly.',
+});
+
 module.exports = {
   contactLimiter,
   reviewLimiter,
@@ -317,6 +345,9 @@ module.exports = {
   challengeLimiter,
   clientErrorLimiter,
   newsletterLimiter,
+  supportSessionLimiter,
+  supportChatLimiter,
+  supportEscalationLimiter,
   connectRateLimitStore,
   closeRateLimitStore,
   getRateLimitStoreStatus,

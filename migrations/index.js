@@ -27,6 +27,7 @@ const { initShippingLabelTables } = require('../models/shippingLabelModel');
 const { initGstAccountingTables } = require('../models/gstAccountingModel');
 const { initWarrantyTable } = require('../models/warrantyModel');
 const { initReturnRefundTable } = require('../models/returnRefundModel');
+const { initAiSupportTables } = require('../models/aiSupportModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
 const { generateOrderNumber } = require('../services/orderNumber');
 const { DEFAULT_ORDER_SPIN_REWARDS, validateOrderSpinRewards } = require('../services/orderSpinPolicy');
@@ -715,6 +716,11 @@ const migrations = [
       await addColumn('reward_type', "VARCHAR(30) NOT NULL DEFAULT 'discount'");
       await addColumn('points_awarded', 'INT UNSIGNED NOT NULL DEFAULT 0');
     },
+  },
+  {
+    version: 60,
+    name: 'initialize autonomous ai customer support engine schema',
+    up: () => initAiSupportTables(pool),
   },
 ];
 

@@ -89,6 +89,7 @@ const createFixture = ({ existingRefunds = [], paymentRefunds = [], providerResp
           if (sql.includes('UPDATE return_refund_requests SET provider_refund_id = COALESCE')) {
             return [{ affectedRows: 1 }];
           }
+          if (sql.includes('SELECT total FROM orders')) return [[]];
           throw new Error(`Unexpected connection query: ${sql}`);
         },
       };
@@ -260,7 +261,8 @@ describe('return refund service', () => {
           async rollback() {},
           release() {},
           async query(sql, params) {
-            if (sql.includes('SELECT id, return_id, receipt')) return [[request]];
+            if (sql.includes('SELECT id, return_id') && sql.includes('FROM return_refund_requests')) return [[request]];
+            if (sql.includes('SELECT total FROM orders')) return [[]];
             if (sql.includes('UPDATE return_refund_requests')) {
               request.provider_refund_id = params[0];
               request.status = params[1];

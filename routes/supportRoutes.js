@@ -8,6 +8,28 @@ const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { ContactModel } = require('../models/contactModel');
 const { getUserById, updateUserStatus } = require('../models/userModel');
 const { sendMail } = require('../utils/mail');
+const { isSessionActive } = require('../utils/sessionStore');
+const {
+  supportSessionLimiter,
+  supportChatLimiter,
+  supportEscalationLimiter,
+} = require('../middleware/rateLimiter');
+const {
+  createOrResumeSession,
+  getSessionByToken,
+  updateSessionContext,
+  getSessionMessages,
+  appendMessage,
+  listEscalations,
+} = require('../models/aiSupportModel');
+const {
+  buildContextualGreeting,
+  processSupportTurn,
+} = require('../services/aiSupportOrchestrator');
+const {
+  analyzeSentiment,
+  triggerInstantEscalation,
+} = require('../services/sentimentEscalationEngine');
 
 const router = express.Router();
 const secret = () => process.env.JWT_SECRET || 'fallback_secret';
@@ -54,6 +76,10 @@ const authenticateSupportAgent = async (req, res, next) => {
   if (!token) return res.status(401).json({ message: 'Sign in to continue.' });
   try {
     const payload = jwt.verify(token, secret());
+    if (['admin', 'superadmin'].includes(payload.role)) {
+      req.supportAgent = { id: payload.id, username: payload.email, name: payload.name || 'Admin', is_active: true };
+      return next();
+    }
     if (payload.scope !== 'support-agent' || !payload.sub) {
       return res.status(401).json({ message: 'Invalid support session.' });
     }
@@ -74,6 +100,48 @@ const authenticateSupportAgent = async (req, res, next) => {
   }
 };
 
+/**
+ * Optional customer authentication middleware for AI Support Chat endpoints.
+ * Binds `req.user` (id, name, email, phone, role) when a valid customer Bearer JWT is present,
+ * while gracefully allowing guest access (`req.user = null`) when unauthenticated.
+ */
+const optionalAuthenticateCustomer = async (req, _res, next) => {
+  req.user = null;
+  const authHeader = req.headers.authorization;
+  const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
+  const rawToken = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7).trim()
+    : queryToken;
+
+  if (!rawToken) return next();
+  try {
+    const payload = jwt.verify(rawToken, secret());
+    if (!payload?.id) return next();
+    const active = await isSessionActive(payload, req).catch(() => true);
+    if (!active) return next();
+    const userRecord = await getUserById(payload.id).catch(() => null);
+    if (userRecord && Number(userRecord.is_active) !== 0) {
+      req.user = {
+        id: userRecord.id,
+        name: userRecord.name,
+        email: userRecord.email,
+        phone: userRecord.phone,
+        role: userRecord.role || payload.role || 'customer',
+      };
+    } else {
+      req.user = {
+        id: payload.id,
+        name: payload.name || null,
+        email: payload.email || null,
+        role: payload.role || 'customer',
+      };
+    }
+  } catch {
+    req.user = null;
+  }
+  return next();
+};
+
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 })[character]);
@@ -86,6 +154,357 @@ const normalizeAgent = row => ({
   is_active: Boolean(row.is_active),
   created_at: row.created_at,
 });
+
+// ============================================================================
+// PART 1: AUTONOMOUS AI CUSTOMER SUPPORT ENGINE ENDPOINTS (`/api/support/chat/*`)
+// ============================================================================
+
+/**
+ * POST /api/support/chat/session
+ * Initializes or resumes a multi-turn AI support conversation session,
+ * injects page/cart/user context, and returns contextual greeting + history.
+ */
+router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const { sessionToken, pageContext = {}, guestInfo = {} } = req.body || {};
+    const session = await createOrResumeSession({
+      sessionToken,
+      userId: req.user?.id || null,
+      guestName: guestInfo?.name || req.user?.name || null,
+      guestEmail: guestInfo?.email || req.user?.email || null,
+      guestPhone: guestInfo?.phone || req.user?.phone || null,
+      pageContext,
+    });
+
+    let messages = await getSessionMessages(session.id, 50);
+    const { greeting, quickActions } = buildContextualGreeting({
+      user: req.user,
+      pageContext: { ...session.pageContext, ...pageContext },
+    });
+
+    if (messages.length === 0) {
+      const greetingMsg = await appendMessage({
+        sessionId: session.id,
+        sender: 'assistant',
+        content: greeting,
+        quickActions,
+      });
+      messages = [greetingMsg];
+    }
+
+    return res.json({
+      success: true,
+      sessionToken: session.sessionToken,
+      session,
+      greeting,
+      quickActions,
+      messages,
+    });
+  } catch (error) {
+    console.error('[AI_SUPPORT_SESSION_INIT]', error);
+    const fallbackGreeting = buildContextualGreeting({
+      user: req.user,
+      pageContext: req.body?.pageContext || {},
+    });
+    return res.status(200).json({
+      success: true,
+      degraded: true,
+      sessionToken: req.body?.sessionToken || `local-${crypto.randomUUID()}`,
+      greeting: fallbackGreeting.greeting,
+      quickActions: fallbackGreeting.quickActions,
+      messages: [
+        {
+          id: Date.now(),
+          sender: 'assistant',
+          content: fallbackGreeting.greeting,
+          quickActions: fallbackGreeting.quickActions,
+          orderCards: [],
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+  }
+});
+
+/**
+ * POST /api/support/chat/context
+ * Real-time context injection endpoint (route transitions, cart state, linger >45s, rage-click telemetry).
+ */
+router.post('/chat/context', supportSessionLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const { sessionToken, pageContext = {}, guestInfo = {} } = req.body || {};
+    const contextual = buildContextualGreeting({
+      user: req.user,
+      pageContext,
+    });
+
+    if (sessionToken) {
+      const session = await getSessionByToken(sessionToken);
+      if (session) {
+        await updateSessionContext(session.id, pageContext, guestInfo);
+      }
+    }
+
+    return res.json({
+      success: true,
+      proactiveMessage: contextual.greeting,
+      quickActions: contextual.quickActions,
+    });
+  } catch (error) {
+    console.error('[AI_SUPPORT_CONTEXT_INJECT]', error);
+    return res.status(200).json({
+      success: true,
+      proactiveMessage: 'Need any help with your Bhumivera order or checkout? I am right here to assist.',
+      quickActions: buildContextualGreeting({}).quickActions,
+    });
+  }
+});
+
+/**
+ * GET /api/support/chat/history/:sessionToken
+ * Retrieves persisted multi-turn conversation messages and session state.
+ */
+router.get('/chat/history/:sessionToken', optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const session = await getSessionByToken(req.params.sessionToken);
+    if (!session) {
+      return res.status(404).json({ success: false, code: 'SESSION_NOT_FOUND', message: 'Chat session not found.' });
+    }
+    if (session.userId && req.user?.id && Number(session.userId) !== Number(req.user.id)) {
+      return res.status(403).json({ success: false, code: 'FORBIDDEN_SESSION', message: 'Unauthorized session access.' });
+    }
+    const messages = await getSessionMessages(session.id, 80);
+    return res.json({
+      success: true,
+      session,
+      messages,
+    });
+  } catch (error) {
+    console.error('[AI_SUPPORT_HISTORY]', error);
+    return res.status(500).json({ success: false, message: 'Could not load conversation history.' });
+  }
+});
+
+/**
+ * POST /api/support/chat/message
+ * Processes a customer message through the AI Support Orchestrator (sentiment scoring,
+ * autonomous MySQL tool execution, LLM synthesis with fallback, and instant escalation).
+ */
+router.post('/chat/message', supportChatLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const {
+      sessionToken,
+      message,
+      attachments = [],
+      pageContext = {},
+      guestInfo = {},
+    } = req.body || {};
+
+    if (typeof message !== 'string' || message.trim().length > 4000) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_MESSAGE',
+        message: 'Please enter a message up to 4,000 characters.',
+      });
+    }
+
+    const turnResult = await processSupportTurn({
+      sessionToken,
+      message,
+      attachments,
+      pageContext,
+      guestInfo,
+      user: req.user,
+    });
+
+    return res.json({
+      success: true,
+      ...turnResult,
+    });
+  } catch (error) {
+    if (error.status === 400) {
+      return res.status(400).json({ success: false, code: error.code, message: error.message });
+    }
+    console.error('[AI_SUPPORT_MESSAGE_ERROR]', error);
+    return res.status(200).json({
+      success: true,
+      degraded: true,
+      reply:
+        'I am experiencing a momentary connection delay while reaching our live order database. You can retry your message in a few seconds, or reach our Senior Concierge team directly at **support@bhumivera.com** or WhatsApp **+91 7430985647**.',
+      orderCards: [],
+      quickActions: buildContextualGreeting({ user: req.user }).quickActions,
+      sentiment: { score: 0, frustrationScore: 0, priority: 'Low', label: 'neutral' },
+      escalation: null,
+    });
+  }
+});
+
+/**
+ * POST /api/support/chat/stream (and GET /api/support/chat/stream)
+ * Server-Sent Events (SSE) streaming endpoint for real-time token & tool-call streaming.
+ */
+const handleSseStream = async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  const sendEvent = (event, data) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const payload = req.method === 'GET' ? req.query : (req.body || {});
+    const message = String(payload.message || '').trim();
+    const sessionToken = payload.sessionToken || null;
+    const pageContext = typeof payload.pageContext === 'string'
+      ? (() => { try { return JSON.parse(payload.pageContext); } catch { return {}; } })()
+      : (payload.pageContext || {});
+    const guestInfo = typeof payload.guestInfo === 'string'
+      ? (() => { try { return JSON.parse(payload.guestInfo); } catch { return {}; } })()
+      : (payload.guestInfo || {});
+    const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+
+    if (!message && attachments.length === 0) {
+      sendEvent('error', { code: 'EMPTY_MESSAGE', message: 'Please enter a message.' });
+      return res.end();
+    }
+
+    sendEvent('status', { phase: 'analyzing', detail: 'Analyzing request & checking Bhumivera records…' });
+
+    const turnResult = await processSupportTurn({
+      sessionToken,
+      message,
+      attachments,
+      pageContext,
+      guestInfo,
+      user: req.user,
+    });
+
+    if (Array.isArray(turnResult.toolCalls) && turnResult.toolCalls.length > 0) {
+      for (const tc of turnResult.toolCalls) {
+        sendEvent('tool_call', {
+          name: tc.name,
+          code: tc.result?.code || 'EXECUTED',
+        });
+      }
+    }
+
+    // Stream reply chunks progressively for responsive typing UX
+    const fullReply = String(turnResult.reply || '');
+    const tokens = fullReply.match(/.{1,28}(\s|$)|.{1,28}/gs) || [fullReply];
+    for (const chunk of tokens) {
+      sendEvent('token', { delta: chunk });
+    }
+
+    sendEvent('metadata', {
+      sessionToken: turnResult.sessionToken,
+      messageId: turnResult.message?.id,
+      orderCards: turnResult.orderCards || [],
+      quickActions: turnResult.quickActions || [],
+      sentiment: turnResult.sentiment,
+      escalation: turnResult.escalation,
+      provider: turnResult.provider,
+    });
+
+    sendEvent('done', { ok: true, sessionToken: turnResult.sessionToken });
+    return res.end();
+  } catch (error) {
+    console.error('[AI_SUPPORT_SSE_ERROR]', error);
+    sendEvent('token', {
+      delta: 'I encountered a temporary connection hiccup while checking our database. Please try again shortly or contact support@bhumivera.com.',
+    });
+    sendEvent('done', { ok: false, degraded: true });
+    return res.end();
+  }
+};
+
+router.post('/chat/stream', supportChatLimiter, optionalAuthenticateCustomer, handleSseStream);
+router.get('/chat/stream', supportChatLimiter, optionalAuthenticateCustomer, handleSseStream);
+
+/**
+ * POST /api/support/chat/escalate
+ * Instant manual or automated escalation endpoint to create a human support ticket
+ * and dispatch Telegram / WhatsApp / Email alerts.
+ */
+router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const {
+      sessionToken,
+      reason = 'Customer requested human concierge escalation',
+      message = '',
+      orderId = null,
+      guestInfo = {},
+    } = req.body || {};
+
+    const session = await createOrResumeSession({
+      sessionToken,
+      userId: req.user?.id || null,
+      guestName: guestInfo?.name || req.user?.name || null,
+      guestEmail: guestInfo?.email || req.user?.email || null,
+      guestPhone: guestInfo?.phone || req.user?.phone || null,
+    });
+
+    const history = await getSessionMessages(session.id, 20);
+    const sentiment = analyzeSentiment(message || reason, history);
+    sentiment.priority = sentiment.priority === 'Low' ? 'High' : sentiment.priority;
+
+    const escalation = await triggerInstantEscalation({
+      session,
+      user: req.user,
+      latestMessage: message || reason,
+      sentiment,
+      reason,
+      orderId: validId(orderId) ? Number(orderId) : null,
+      transcript: history,
+    });
+
+    const confirmationText =
+      `I have escalated your conversation to our Senior Concierge team (Ticket ${escalation.ticketId ? `#${escalation.ticketId}` : 'Assigned'} · Priority: **${escalation.priority}**). ` +
+      `Our specialists have been alerted via Email, WhatsApp, and Telegram and will respond within **${escalation.slaResponseWindow}**.`;
+
+    await appendMessage({
+      sessionId: session.id,
+      sender: 'assistant',
+      content: confirmationText,
+      sentiment,
+    });
+
+    return res.status(201).json({
+      success: true,
+      escalation,
+      reply: confirmationText,
+    });
+  } catch (error) {
+    console.error('[AI_SUPPORT_ESCALATE]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Could not complete instant escalation. Please email support@bhumivera.com or message +91 7430985647 on WhatsApp.',
+    });
+  }
+});
+
+/**
+ * GET /api/support/ai-escalations
+ * Staff & Admin endpoint to inspect AI support escalations and sentiment telemetry.
+ */
+router.get('/ai-escalations', authenticateSupportAgent, async (req, res) => {
+  try {
+    const escalations = await listEscalations({
+      status: req.query.status || null,
+      limit: req.query.limit || 50,
+    });
+    return res.json({ success: true, escalations });
+  } catch (error) {
+    console.error('[AI_SUPPORT_ESCALATIONS_LIST]', error);
+    return res.status(500).json({ message: 'Could not load AI support escalations.' });
+  }
+});
+
+// ============================================================================
+// PART 2: EXISTING STAFF SUPPORT PORTAL ENDPOINTS (PRESERVED 100%)
+// ============================================================================
 
 router.post('/login', loginLimiter, async (req, res) => {
   const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';

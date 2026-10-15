@@ -49,7 +49,8 @@ const createPool = () => {
             eventIds.add(params[0]);
             return [{ affectedRows: 1 }];
           }
-          if (sql.includes('SELECT id, total, payment_status, payment_mode FROM orders')) {
+          if (sql.includes('SELECT user_id, shopping_wallet_reward_amount')) return [[]];
+          if (sql.includes('FROM orders') && sql.includes('WHERE payment_id = ?')) {
             return [hasOrder ? [{ ...order }] : []];
           }
           if (sql.includes('UPDATE orders SET payment_status')) {
@@ -109,6 +110,7 @@ const createRefundWebhookPool = () => {
             result.returnStatus = params[0];
             return [{ affectedRows: 1 }];
           }
+          if (sql.includes('SELECT total FROM orders')) return [[]];
           throw new Error(`Unexpected refund webhook SQL: ${sql}`);
         },
       };
