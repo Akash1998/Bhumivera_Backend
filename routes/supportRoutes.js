@@ -302,7 +302,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       hasPlacedOrder: orderCheck.hasPlacedOrder,
       latestOrder: orderCheck.latestOrder,
       telegramBotUsername: DEFAULT_TELEGRAM_BOT_USERNAME,
-      telegramBotUrl: `https://t.me/${DEFAULT_TELEGRAM_BOT_USERNAME}?start=${session.sessionToken}`,
+      telegramBotUrl: `https://web.telegram.org/k/#@${DEFAULT_TELEGRAM_BOT_USERNAME}?start=${session.sessionToken}`,
       featureConfig: {
         proactiveTriggersEnabled: featureConfig.ai_proactive_triggers_enabled,
         proactiveLingerSeconds: featureConfig.ai_proactive_linger_seconds,

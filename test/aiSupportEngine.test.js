@@ -970,6 +970,10 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.equal(sessionData.success, true);
     assert.ok(sessionData.sessionToken);
     assert.match(sessionData.greeting, /2:00 PM IST/);
+    assert.equal(
+      sessionData.telegramBotUrl,
+      `https://web.telegram.org/k/#@BhumiveraBot?start=${sessionData.sessionToken}`
+    );
   });
 
   it('9. Live HTTP POST /chat/message & GET /chat/history/:token execute order lookup and enforce session ownership', async () => {
