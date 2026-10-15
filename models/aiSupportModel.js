@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { maskPII, sanitizeObjectPII } = require('../utils/piiMasker');
+const { computeQuantumHash512 } = require('../utils/quantumCrypto');
 
 let defaultPool = null;
 function getPool(customPool) {
@@ -22,6 +23,49 @@ const VALID_CHAT_STATUSES = Object.freeze([
 ]);
 
 const VALID_SUPPORT_ROLES = Object.freeze(['agent', 'supervisor', 'manager']);
+
+const ROLE_BENCHMARKS = Object.freeze({
+  agent: Object.freeze({
+    tier: 'L1 Support Executive',
+    maxCouponsPerCustomer: 1,
+    maxCouponDiscountPercent: 10,
+    maxGoodwillCreditInr: 0,
+    dailyCreditCapInr: 0,
+    canDeleteResolvedChats: false,
+    canIssueUnlimitedCoupons: false,
+    summary: 'Order/Tracking/Email/Phone search, customer verification, live chat replies, RMA creation, and 1 single-use courtesy coupon (max 10% off) per customer. Cannot cancel orders, issue wallet credits, or delete chats.',
+  }),
+  supervisor: Object.freeze({
+    tier: 'L2 Support Supervisor',
+    maxCouponsPerCustomer: 1,
+    maxCouponDiscountPercent: 12,
+    maxGoodwillCreditInr: 150,
+    dailyCreditCapInr: 500,
+    canDeleteResolvedChats: false,
+    canIssueUnlimitedCoupons: false,
+    summary: 'All L1 rights + Order Cancellation, Chat Reassignment, 1 courtesy coupon per customer (max 12% off), and 1 goodwill wallet credit per customer (max ₹150, daily cap ₹500). Cannot delete chats.',
+  }),
+  manager: Object.freeze({
+    tier: 'L3 Support Manager',
+    maxCouponsPerCustomer: 1,
+    maxCouponDiscountPercent: 15,
+    maxGoodwillCreditInr: 250,
+    dailyCreditCapInr: 1200,
+    canDeleteResolvedChats: false,
+    canIssueUnlimitedCoupons: false,
+    summary: 'All L2 rights + Staff management, 1 courtesy coupon per customer (max 15% off), and 1 goodwill wallet credit per customer (max ₹250, daily cap ₹1,200). Cannot delete chats or issue multiple coupons to the same customer.',
+  }),
+  superadmin: Object.freeze({
+    tier: 'SuperAdmin / Owner',
+    maxCouponsPerCustomer: 999,
+    maxCouponDiscountPercent: 50,
+    maxGoodwillCreditInr: 2000,
+    dailyCreditCapInr: 50000,
+    canDeleteResolvedChats: true,
+    canIssueUnlimitedCoupons: true,
+    summary: 'Full executive authority: Can delete resolved/closed chats, issue multiple coupons without per-customer limits, override credit caps, and govern all security & Telegram settings.',
+  }),
+});
 
 const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
   agent: Object.freeze({
@@ -333,7 +377,28 @@ async function initAiSupportTables(customPool = null) {
       target_ref VARCHAR(120) NULL,
       details TEXT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      signature_sha512 CHAR(128) NULL,
       INDEX idx_ai_support_audit_created (created_at, action_type)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_support_benefit_ledger (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      session_id BIGINT UNSIGNED NULL,
+      user_id INT NULL,
+      customer_identifier VARCHAR(150) NULL,
+      order_id INT NULL,
+      staff_id INT NULL,
+      staff_name VARCHAR(100) NOT NULL,
+      staff_role VARCHAR(40) NOT NULL,
+      benefit_type ENUM('coupon', 'wallet_credit', 'loyalty_points') NOT NULL,
+      amount_or_percent DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+      coupon_code VARCHAR(64) NULL,
+      signature_sha512 CHAR(128) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_benefit_customer (user_id, customer_identifier, benefit_type),
+      INDEX idx_benefit_staff_date (staff_id, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 }
@@ -885,6 +950,60 @@ async function listSupportAuditLogs({ limit = 60, pool: customPool = null } = {}
   }
 }
 
+async function deleteResolvedChatSession(sessionToken, customPool = null) {
+  const pool = getPool(customPool);
+  await ensureAiSupportTables(pool);
+  const sess = await getSessionByToken(sessionToken, pool);
+  if (!sess) {
+    return { deleted: false, code: 'SESSION_NOT_FOUND', message: 'Chat session not found.' };
+  }
+  if (!['resolved', 'closed'].includes(sess.status)) {
+    return {
+      deleted: false,
+      code: 'ONLY_RESOLVED_OR_CLOSED_DELETABLE',
+      message: `Only Resolved or Closed chats can be deleted. Current status is '${sess.status}'.`,
+    };
+  }
+  await pool.query('DELETE FROM ai_support_messages WHERE session_id = ?', [sess.id]);
+  await pool.query('DELETE FROM ai_support_escalations WHERE session_id = ?', [sess.id]);
+  await pool.query('DELETE FROM ai_support_sessions WHERE id = ?', [sess.id]);
+  return { deleted: true, sessionToken: sess.sessionToken };
+}
+
+async function checkCustomerHasPlacedOrder(customPool = null, { userId = null, email = null, phone = null } = {}) {
+  const pool = getPool(customPool);
+  try {
+    if (userId) {
+      const [rows] = await pool.query(
+        `SELECT id, order_number, status, payment_mode, payment_status
+         FROM orders
+         WHERE user_id = ?
+           AND status NOT IN ('cancelled', 'failed')
+           AND (payment_status = 'paid' OR (payment_mode = 'COD' AND status IN ('pending', 'confirmed', 'packed', 'shipped', 'delivered')))
+         ORDER BY created_at DESC LIMIT 1`,
+        [userId]
+      );
+      if (rows?.length) return { hasPlacedOrder: true, latestOrder: rows[0] };
+    }
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanPhone = String(phone || '').replace(/\D/g, '').slice(-10);
+    if (cleanEmail || cleanPhone.length === 10) {
+      const [rows] = await pool.query(
+        `SELECT o.id, o.order_number, o.status, o.payment_mode, o.payment_status
+         FROM orders o
+         JOIN users u ON u.id = o.user_id
+         WHERE (LOWER(u.email) = ? OR (? <> '' AND u.phone LIKE ?))
+           AND o.status NOT IN ('cancelled', 'failed')
+           AND (o.payment_status = 'paid' OR (o.payment_mode = 'COD' AND o.status IN ('pending', 'confirmed', 'packed', 'shipped', 'delivered')))
+         ORDER BY o.created_at DESC LIMIT 1`,
+        [cleanEmail || '__none__', cleanPhone, `%${cleanPhone}`]
+      );
+      if (rows?.length) return { hasPlacedOrder: true, latestOrder: rows[0] };
+    }
+  } catch {}
+  return { hasPlacedOrder: false, latestOrder: null };
+}
+
 module.exports = {
   VALID_CHAT_STATUSES,
   VALID_SUPPORT_ROLES,
@@ -906,6 +1025,9 @@ module.exports = {
   listEscalations,
   getAiSupportFeatureConfig,
   updateAiSupportFeatureConfig,
+  ROLE_BENCHMARKS,
   appendSupportAuditLog,
   listSupportAuditLogs,
+  deleteResolvedChatSession,
+  checkCustomerHasPlacedOrder,
 };

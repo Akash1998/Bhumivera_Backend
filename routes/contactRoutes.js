@@ -5,6 +5,7 @@ const pool = require('../config/db');
 const { initContactTable, ContactModel } = require('../models/contactModel');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const { sendMail } = require('../utils/mail');
+const { createOrResumeSession, appendMessage, updateSessionTelemetry } = require('../models/aiSupportModel');
 
 const MAX_MESSAGE_LENGTH = 10000;
 const validId = value => /^\d+$/.test(String(value)) && Number(value) > 0;
@@ -82,6 +83,26 @@ router.post('/', contactLimiter, authenticateUser, async (req, res) => {
       subject: subject.trim(),
       message: message.trim()
     });
+
+    try {
+      const mirroredSession = await createOrResumeSession({
+        userId: req.user ? req.user.id : null,
+        guestName: ticketName,
+        guestEmail: ticketEmail.trim(),
+        pageContext: { channel: 'contact_form', orderId: order_id || null, productId: product_id || null, ticketId },
+      });
+      await appendMessage({
+        sessionId: mirroredSession.id,
+        sender: 'user',
+        senderName: ticketName,
+        content: `**[${subject.trim()}]**${order_id ? ` (Order #${order_id})` : ''}\n${message.trim()}`,
+      });
+      await updateSessionTelemetry(mirroredSession.id, {
+        status: 'pending',
+        priority: order_id ? 'High' : 'Medium',
+        escalatedTicketId: ticketId,
+      });
+    } catch {}
 
     return res.status(201).json({
       success: true,

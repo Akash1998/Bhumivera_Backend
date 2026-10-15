@@ -30,9 +30,19 @@ const {
   listEscalations,
   getAiSupportFeatureConfig,
   updateAiSupportFeatureConfig,
+  ROLE_BENCHMARKS,
   appendSupportAuditLog,
   listSupportAuditLogs,
+  deleteResolvedChatSession,
+  checkCustomerHasPlacedOrder,
 } = require('../models/aiSupportModel');
+const { computeQuantumHash512 } = require('../utils/quantumCrypto');
+const {
+  DEFAULT_TELEGRAM_BOT_USERNAME,
+  sendTelegramReplyToCustomer,
+  processIncomingTelegramUpdate,
+  syncTelegramBotUpdates,
+} = require('../services/telegramSupportService');
 const { getAdminByEmail, verifyPassword: verifyAdminPassword } = require('../models/adminModel');
 const {
   buildContextualGreeting,
@@ -276,6 +286,12 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       messages = [greetingMsg];
     }
 
+    const orderCheck = await checkCustomerHasPlacedOrder(pool, {
+      userId: req.user?.id || session.userId,
+      email: session.guestEmail || req.user?.email,
+      phone: session.guestPhone || req.user?.phone,
+    });
+
     return res.json({
       success: true,
       sessionToken: session.sessionToken,
@@ -283,6 +299,10 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       greeting,
       quickActions,
       messages,
+      hasPlacedOrder: orderCheck.hasPlacedOrder,
+      latestOrder: orderCheck.latestOrder,
+      telegramBotUsername: DEFAULT_TELEGRAM_BOT_USERNAME,
+      telegramBotUrl: `https://t.me/${DEFAULT_TELEGRAM_BOT_USERNAME}?start=${session.sessionToken}`,
       featureConfig: {
         proactiveTriggersEnabled: featureConfig.ai_proactive_triggers_enabled,
         proactiveLingerSeconds: featureConfig.ai_proactive_linger_seconds,
@@ -435,6 +455,145 @@ router.post('/chat/session/:sessionToken/rating', supportSessionLimiter, optiona
   } catch (error) {
     console.error('[AI_SUPPORT_CSAT_RATING]', error);
     return res.status(500).json({ success: false, message: 'Could not save your rating.' });
+  }
+});
+
+/**
+ * POST /api/support/chat/session/:sessionToken/end-satisfied
+ * Customer confirms they are satisfied with support, ending the chat as Resolved
+ * and saving their 1-5 star rating + written review for SuperAdmin.
+ */
+router.post('/chat/session/:sessionToken/end-satisfied', supportSessionLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const session = await getSessionByToken(req.params.sessionToken);
+    if (!session) return res.status(404).json({ success: false, message: 'Chat session not found.' });
+
+    const rating = req.body?.rating !== undefined ? Math.max(1, Math.min(5, Number(req.body.rating) || 5)) : 5;
+    const feedback = typeof req.body?.feedback === 'string' && req.body.feedback.trim()
+      ? req.body.feedback.trim().slice(0, 500)
+      : 'Customer confirmed satisfied with support resolution.';
+
+    await updateSessionTelemetry(session.id, {
+      status: 'resolved',
+      csatRating: rating,
+      csatFeedback: feedback,
+      resolutionNote: `Customer ended chat as satisfied (${rating}/5 ★)`,
+      closedBy: 'customer_satisfied',
+    });
+
+    const sysMsg = await appendMessage({
+      sessionId: session.id,
+      sender: 'system',
+      senderName: 'Bhumivera Support',
+      content: `✅ Chat ended by customer as **Satisfied** (${rating}/5 ★)${feedback ? ` — "${feedback}"` : ''}. Thank you for shopping with Bhumivera!`,
+    });
+
+    await appendSupportAuditLog({
+      actorId: req.user?.id || session.userId || null,
+      actorName: req.user?.name || session.guestName || 'Customer',
+      actorRole: 'customer',
+      actionType: 'CUSTOMER_SATISFIED_REVIEW',
+      targetRef: `Session ${session.sessionToken}`,
+      details: `Rated ${rating}/5 stars: ${feedback}`,
+    });
+
+    const updatedSession = await getSessionByToken(req.params.sessionToken);
+    return res.json({
+      success: true,
+      status: 'resolved',
+      rating,
+      feedback,
+      session: updatedSession,
+      systemMessage: sysMsg,
+    });
+  } catch (error) {
+    console.error('[AI_SUPPORT_END_SATISFIED]', error);
+    return res.status(500).json({ success: false, message: 'Could not complete chat closure.' });
+  }
+});
+
+/**
+ * POST /api/support/chat/async-message
+ * Unified async message channel for customers without a placed order (or who prefer email/app inbox reply).
+ */
+router.post('/chat/async-message', supportChatLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const {
+      sessionToken,
+      name = '',
+      email = '',
+      phone = '',
+      orderId = null,
+      productId = null,
+      subject = 'Customer Support Inquiry',
+      message = '',
+    } = req.body || {};
+
+    if (!message || typeof message !== 'string' || !message.trim()) {
+      return res.status(400).json({ success: false, message: 'Please write your message before sending.' });
+    }
+
+    const resolvedName = (req.user?.name || name || 'Bhumivera Guest').trim().slice(0, 100);
+    const resolvedEmail = (req.user?.email || email || '').trim().toLowerCase().slice(0, 150);
+    const resolvedPhone = (req.user?.phone || phone || '').trim().slice(0, 25);
+
+    const session = await createOrResumeSession({
+      sessionToken,
+      userId: req.user?.id || null,
+      guestName: resolvedName,
+      guestEmail: resolvedEmail || null,
+      guestPhone: resolvedPhone || null,
+      pageContext: {
+        channel: 'async_message',
+        orderId: orderId || null,
+        productId: productId || null,
+        subject: String(subject || 'Support Inquiry').slice(0, 200),
+      },
+    });
+
+    await appendMessage({
+      sessionId: session.id,
+      sender: 'user',
+      senderName: resolvedName,
+      content: `**[${String(subject || 'Support Message').trim()}]**${orderId ? ` (Order #${orderId})` : ''}\n${message.trim()}`,
+    });
+
+    let ticketId = session.escalatedTicketId || null;
+    try {
+      ticketId = await ContactModel.createTicket({
+        user_id: req.user?.id || session.userId || null,
+        order_id: validId(orderId) ? Number(orderId) : null,
+        product_id: validId(productId) ? Number(productId) : null,
+        name: resolvedName,
+        email: resolvedEmail || 'guest@bhumivera.com',
+        subject: String(subject || 'Support Message').trim().slice(0, 200),
+        message: message.trim(),
+      });
+    } catch {}
+
+    await updateSessionTelemetry(session.id, {
+      status: 'pending',
+      priority: orderId ? 'High' : 'Medium',
+      escalatedTicketId: ticketId || undefined,
+    });
+
+    const ackMsg = await appendMessage({
+      sessionId: session.id,
+      sender: 'assistant',
+      senderName: 'Bhumivera Support',
+      content: `We have received your message${ticketId ? ` (Reference #${ticketId})` : ''}. Our support team will reply directly to your **Email (${resolvedEmail || 'registered email'})** and **Mobile App / Profile Support Inbox** shortly.`,
+    });
+
+    return res.status(201).json({
+      success: true,
+      ticketId,
+      sessionToken: session.sessionToken,
+      reply: ackMsg.content,
+      message: 'Your message has been sent. We will reply to your email and mobile app inbox.',
+    });
+  } catch (error) {
+    console.error('[AI_SUPPORT_ASYNC_MESSAGE]', error);
+    return res.status(500).json({ success: false, message: 'Could not send your message. Please try again.' });
   }
 });
 
@@ -651,6 +810,30 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
       guestEmail: guestInfo?.email || req.user?.email || null,
       guestPhone: guestInfo?.phone || req.user?.phone || null,
     });
+
+    const orderCheck = await checkCustomerHasPlacedOrder(pool, {
+      userId: req.user?.id || session.userId,
+      email: guestInfo?.email || req.user?.email || session.guestEmail,
+      phone: guestInfo?.phone || req.user?.phone || session.guestPhone,
+    });
+    if (!orderCheck.hasPlacedOrder && !validId(orderId)) {
+      const botOnlyNotice =
+        'Live human support agents are available once an order is placed after payment. You can continue chatting with our AI Assistant for instant product & shipping answers, or leave a message below and our team will reply to your Email and Mobile App inbox.';
+      await appendMessage({
+        sessionId: session.id,
+        sender: 'assistant',
+        senderName: 'Bhumivera AI Assistant',
+        content: botOnlyNotice,
+      });
+      return res.status(403).json({
+        success: false,
+        code: 'ORDER_REQUIRED_FOR_LIVE_AGENT',
+        requiresOrderForLiveAgent: true,
+        showAsyncMessageForm: true,
+        reply: botOnlyNotice,
+        message: botOnlyNotice,
+      });
+    }
 
     const history = await getSessionMessages(session.id, 20);
     const sentiment = analyzeSentiment(message || reason, history);
@@ -954,6 +1137,40 @@ router.post('/sessions/:sessionToken/reply', authenticateSupportAgent, async (re
       ...(resolvedStatus === 'resolved' || resolvedStatus === 'closed' ? { closedBy: staff.role || 'agent' } : {}),
     });
 
+    // If public reply (not whisper), deliver to Telegram (if linked), Customer Email, and Mobile App Notifications
+    if (!isInternalNote) {
+      const tgChatId = session.pageContext?.telegramChatId;
+      if (tgChatId) {
+        sendTelegramReplyToCustomer({
+          chatId: tgChatId,
+          text: message.trim(),
+          senderName: senderLabel,
+        }).catch(() => null);
+      }
+      if (session.userId) {
+        try {
+          await pool.query(
+            `INSERT INTO notifications (user_id, title, message, type, is_global)
+             VALUES (?, ?, ?, 'support_reply', 0)`,
+            [
+              session.userId,
+              `New reply from Bhumivera Support`,
+              message.trim().slice(0, 240),
+            ]
+          );
+        } catch {}
+      }
+      const targetEmail = session.guestEmail || null;
+      if (targetEmail && (session.pageContext?.channel === 'async_message' || req.body?.sendEmailCopy)) {
+        sendMail({
+          to: targetEmail,
+          subject: `Update on your Bhumivera Support Inquiry`,
+          text: `Hello ${session.guestName || 'Customer'},\n\n${message.trim()}\n\n— ${senderLabel}, Bhumivera Support`,
+          html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><p>Hello ${escapeHtml(session.guestName || 'Customer')},</p><p>${escapeHtml(message.trim()).replace(/\n/g, '<br>')}</p><p>— <strong>${escapeHtml(senderLabel)}</strong>, Bhumivera Customer Care</p></div>`,
+        }).catch(() => null);
+      }
+    }
+
     const updatedSession = await getSessionByToken(req.params.sessionToken);
     return res.status(201).json({
       success: true,
@@ -1091,21 +1308,66 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
     }
 
     if (action === 'goodwill_wallet_credit') {
-      if (!staff.permissions?.can_adjust_wallet_goodwill) {
+      const roleBench = ROLE_BENCHMARKS[staff.role] || ROLE_BENCHMARKS.agent;
+      if (!staff.permissions?.can_adjust_wallet_goodwill || roleBench.maxGoodwillCreditInr <= 0) {
         return res.status(403).json({
           code: 'SUPERVISOR_REQUIRED_FOR_GOODWILL',
-          message: 'Only Supervisors, Managers, or SuperAdmins can issue goodwill wallet credits.',
+          message: 'Only Supervisors (max ₹150), Managers (max ₹250), or SuperAdmins can issue goodwill wallet credits.',
         });
       }
       const amount = Number(goodwillAmount);
-      if (!session.userId || !Number.isFinite(amount) || amount <= 0 || amount > 2000) {
-        return res.status(400).json({ message: 'Provide a valid customer account and goodwill amount between ₹1 and ₹2,000.' });
+      if (!session.userId || !Number.isFinite(amount) || amount <= 0 || amount > roleBench.maxGoodwillCreditInr) {
+        await appendSupportAuditLog({
+          actorId: staff.id,
+          actorName: staff.name,
+          actorRole: staff.role,
+          actionType: 'SECURITY_ANOMALY_BLOCKED',
+          targetRef: `Session ${session.sessionToken}`,
+          details: `Blocked goodwill credit of ₹${amount} exceeding role cap (₹${roleBench.maxGoodwillCreditInr})`,
+        });
+        return res.status(400).json({
+          code: 'CREDIT_CAP_EXCEEDED',
+          message: `Your role (${staff.role.toUpperCase()}) can credit up to ₹${roleBench.maxGoodwillCreditInr} max per customer. Only SuperAdmin can issue higher credits.`,
+        });
+      }
+      if (staff.role !== 'superadmin') {
+        try {
+          const [existingCredits] = await pool.query(
+            `SELECT id FROM ai_support_benefit_ledger
+             WHERE benefit_type = 'wallet_credit'
+               AND (session_id = ? OR (user_id IS NOT NULL AND user_id = ?))
+             LIMIT 1`,
+            [session.id, session.userId]
+          );
+          if (existingCredits?.length) {
+            return res.status(403).json({
+              code: 'GOODWILL_ONCE_ONLY_FOR_STAFF',
+              message: 'Support staff can issue a goodwill wallet credit only once per customer. Only SuperAdmin can issue additional credits.',
+            });
+          }
+        } catch {}
       }
       await pool.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE id = ?', [amount, session.userId]);
       try {
         await pool.query(
           'INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance)',
           [session.userId, amount]
+        );
+      } catch {}
+      const sig512 = computeQuantumHash512({
+        sessionId: session.id,
+        userId: session.userId,
+        staffId: staff.id,
+        staffRole: staff.role,
+        benefitType: 'wallet_credit',
+        amount,
+      });
+      try {
+        await pool.query(
+          `INSERT INTO ai_support_benefit_ledger
+            (session_id, user_id, customer_identifier, order_id, staff_id, staff_name, staff_role, benefit_type, amount_or_percent, signature_sha512)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'wallet_credit', ?, ?)`,
+          [session.id, session.userId, session.guestEmail || null, validId(orderId) ? Number(orderId) : null, staff.id || 0, staff.name, staff.role, amount, sig512]
         );
       } catch {}
       const creditNote = `🎁 Goodwill Wallet Credit of **₹${amount.toLocaleString('en-IN')}** has been credited to your Bhumivera Wallet by ${staff.name} (${staff.role}).`;
@@ -1121,9 +1383,9 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
         actorRole: staff.role,
         actionType: 'GOODWILL_WALLET_CREDIT',
         targetRef: `Session ${session.sessionToken}`,
-        details: `Credited ₹${amount} to user #${session.userId}`,
+        details: `Credited ₹${amount} to user #${session.userId} [SHA512:${sig512.slice(0, 16)}]`,
       });
-      return res.json({ success: true, amount, message: `Credited ₹${amount} to customer wallet.` });
+      return res.json({ success: true, amount, signature512: sig512, message: `Credited ₹${amount} to customer wallet.` });
     }
 
     if (action === 'award_loyalty_points') {
@@ -1133,9 +1395,10 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
           message: 'Only Supervisors, Managers, or SuperAdmins can award bonus loyalty points.',
         });
       }
+      const maxPts = staff.role === 'superadmin' ? 5000 : staff.role === 'manager' ? 500 : 250;
       const points = Math.round(Number(req.body?.points || req.body?.loyaltyPoints || 100));
-      if (!session.userId || !Number.isFinite(points) || points <= 0 || points > 5000) {
-        return res.status(400).json({ message: 'Provide a valid customer account and loyalty points between 10 and 5,000.' });
+      if (!session.userId || !Number.isFinite(points) || points <= 0 || points > maxPts) {
+        return res.status(400).json({ message: `Your role (${staff.role.toUpperCase()}) can award between 10 and ${maxPts} loyalty points.` });
       }
       await pool.query(
         'UPDATE users SET loyalty_points = COALESCE(loyalty_points, 0) + ?, loyalty_lifetime_points = COALESCE(loyalty_lifetime_points, 0) + ? WHERE id = ?',
@@ -1160,16 +1423,85 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
     }
 
     if (action === 'issue_apology_coupon') {
-      const discountPercent = Math.max(5, Math.min(50, Number(req.body?.discountPercent) || 15));
+      const roleBench = ROLE_BENCHMARKS[staff.role] || ROLE_BENCHMARKS.agent;
+      const requestedPct = Number(req.body?.discountPercent) || 10;
+
+      // Enforce strict role discount cap so no staff can issue 30% coupons and harm the company
+      if (requestedPct > roleBench.maxCouponDiscountPercent) {
+        await appendSupportAuditLog({
+          actorId: staff.id,
+          actorName: staff.name,
+          actorRole: staff.role,
+          actionType: 'SECURITY_ANOMALY_BLOCKED',
+          targetRef: `Session ${session.sessionToken}`,
+          details: `Blocked ${requestedPct}% coupon attempt exceeding ${staff.role} limit (${roleBench.maxCouponDiscountPercent}%)`,
+        });
+        return res.status(403).json({
+          code: 'COUPON_DISCOUNT_EXCEEDS_ROLE_BENCHMARK',
+          message: `Your role (${staff.role.toUpperCase()}) is capped at ${roleBench.maxCouponDiscountPercent}% max coupon discount to protect company margins. Only SuperAdmin can issue higher discounts.`,
+        });
+      }
+
+      // Enforce ONE-TIME-ONLY coupon issuance for all non-SuperAdmin staff
+      if (staff.role !== 'superadmin') {
+        try {
+          const customerIdent = session.guestEmail || session.guestPhone || `sess_${session.id}`;
+          const [existingCoupons] = await pool.query(
+            `SELECT id, coupon_code, staff_name, created_at FROM ai_support_benefit_ledger
+             WHERE benefit_type = 'coupon'
+               AND (session_id = ? OR (user_id IS NOT NULL AND user_id = ?) OR (customer_identifier IS NOT NULL AND customer_identifier = ?))
+             LIMIT 1`,
+            [session.id, session.userId || 0, customerIdent]
+          );
+          if (existingCoupons?.length) {
+            await appendSupportAuditLog({
+              actorId: staff.id,
+              actorName: staff.name,
+              actorRole: staff.role,
+              actionType: 'DUPLICATE_COUPON_BLOCKED',
+              targetRef: `Session ${session.sessionToken}`,
+              details: `Blocked repeat coupon attempt; coupon ${existingCoupons[0].coupon_code} was already issued`,
+            });
+            return res.status(403).json({
+              code: 'COUPON_ONCE_ONLY_FOR_STAFF',
+              message: `Support staff can issue a courtesy coupon ONLY ONCE per customer (${existingCoupons[0].coupon_code} was already issued). Only SuperAdmin can issue multiple coupons.`,
+            });
+          }
+        } catch {}
+      }
+
+      const discountPercent = Math.max(5, Math.min(roleBench.maxCouponDiscountPercent, requestedPct));
+      const maxDiscountCap = staff.role === 'superadmin' ? 1000 : 250;
       const code = `CARE${discountPercent}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+      const sig512 = computeQuantumHash512({
+        sessionId: session.id,
+        userId: session.userId,
+        staffId: staff.id,
+        staffRole: staff.role,
+        benefitType: 'coupon',
+        discountPercent,
+        code,
+      });
+
       try {
         await pool.query(
           `INSERT INTO coupons (code, discount_type, discount_value, min_order_amount, max_discount, usage_limit, restricted_user_id, is_active, expires_at)
-           VALUES (?, 'percentage', ?, 299, 500, 1, ?, 1, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
-          [code, discountPercent, session.userId || null]
+           VALUES (?, 'percentage', ?, 299, ?, 1, ?, 1, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
+          [code, discountPercent, maxDiscountCap, session.userId || null]
         );
       } catch {}
-      const couponNote = `🎟️ Special Courtesy Coupon **\`${code}\`** (**${discountPercent}% OFF** up to ₹500 on your next order, valid for 30 days) has been generated for you by ${staff.name} (${staff.role}).`;
+
+      try {
+        const customerIdent = session.guestEmail || session.guestPhone || `sess_${session.id}`;
+        await pool.query(
+          `INSERT INTO ai_support_benefit_ledger
+            (session_id, user_id, customer_identifier, order_id, staff_id, staff_name, staff_role, benefit_type, amount_or_percent, coupon_code, signature_sha512)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'coupon', ?, ?, ?)`,
+          [session.id, session.userId || null, customerIdent, validId(orderId) ? Number(orderId) : null, staff.id || 0, staff.name, staff.role, discountPercent, code, sig512]
+        );
+      } catch {}
+
+      const couponNote = `🎟️ Single-Use Courtesy Coupon **\`${code}\`** (**${discountPercent}% OFF** up to ₹${maxDiscountCap}, valid for 30 days) has been generated for you by ${staff.name} (${staff.role}).`;
       await appendMessage({
         sessionId: session.id,
         sender: 'system',
@@ -1182,9 +1514,15 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
         actorRole: staff.role,
         actionType: 'ISSUE_APOLOGY_COUPON',
         targetRef: code,
-        details: `Generated ${discountPercent}% apology coupon for session ${session.sessionToken}`,
+        details: `Generated ${discountPercent}% coupon (${code}) for session ${session.sessionToken} [SHA512:${sig512.slice(0, 16)}]`,
       });
-      return res.json({ success: true, code, discountPercent, message: `Generated courtesy coupon ${code} (${discountPercent}% OFF).` });
+      return res.json({
+        success: true,
+        code,
+        discountPercent,
+        signature512: sig512,
+        message: `Generated single-use courtesy coupon ${code} (${discountPercent}% OFF).`,
+      });
     }
 
     return res.status(400).json({ message: 'Unsupported support action.' });
@@ -1360,6 +1698,197 @@ router.get('/superadmin/export-csv', authenticateSupportAgent, async (_req, res)
   }
 });
 
+/**
+ * GET /api/support/universal-search
+ * 30X Deep Search & Customer Authentication for `/support` and `/superadminsupport`.
+ * Searches by Order ID, 9-digit Order Number, Tracking ID / AWB, Customer Email, or Phone Number,
+ * returning full order details (items, SKU, pricing, shipping address, payment, returns) and customer identity verification data.
+ */
+router.get('/universal-search', authenticateSupportAgent, async (req, res) => {
+  const rawQuery = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (!rawQuery) {
+    return res.status(400).json({ message: 'Enter an Order ID, Tracking Number, Customer Email, or Phone Number.' });
+  }
+  const cleanRef = rawQuery.replace(/^#/, '').trim();
+  const cleanDigits = cleanRef.replace(/\D/g, '');
+  const likeTerm = `%${cleanRef}%`;
+  const phoneTail = cleanDigits.length >= 10 ? `%${cleanDigits.slice(-10)}` : null;
+
+  try {
+    await ensureTables();
+    // 1. Search Orders by id, order_number, tracking_number, shipping_labels.tracking_number, user email, user phone, or address_snapshot
+    const [orderRows] = await pool.query(
+      `SELECT o.*, u.name AS customer_name, u.email AS customer_email, u.phone AS customer_phone,
+              u.wallet_balance AS customer_wallet, u.loyalty_points AS customer_loyalty,
+              sl.tracking_number AS label_tracking_number, sl.provider AS label_provider, sl.service_name AS label_service_name
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.user_id
+       LEFT JOIN shipping_labels sl ON sl.order_id = o.id AND sl.direction = 'forward'
+       WHERE o.order_number = ?
+          OR (o.id = ?)
+          OR o.tracking_number LIKE ?
+          OR sl.tracking_number LIKE ?
+          OR LOWER(u.email) LIKE LOWER(?)
+          OR u.name LIKE ?
+          OR (? IS NOT NULL AND (u.phone LIKE ? OR o.address_snapshot LIKE ?))
+       ORDER BY o.created_at DESC
+       LIMIT 25`,
+      [
+        cleanRef,
+        /^\d+$/.test(cleanRef) ? Number(cleanRef) : 0,
+        likeTerm,
+        likeTerm,
+        likeTerm,
+        likeTerm,
+        phoneTail,
+        phoneTail || '__none__',
+        phoneTail || '__none__',
+      ]
+    );
+
+    const enrichedOrders = [];
+    for (const ord of orderRows || []) {
+      const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ? ORDER BY id ASC', [ord.id]);
+      const [returns] = await pool.query('SELECT * FROM returns WHERE order_id = ? ORDER BY created_at DESC', [ord.id]);
+      const addressObj = parseJsonSafe(ord.address_snapshot, {});
+      enrichedOrders.push({
+        id: ord.id,
+        orderNumber: ord.order_number || String(ord.id).padStart(9, '0'),
+        userId: ord.user_id,
+        customerName: ord.customer_name || addressObj?.name || 'Customer',
+        customerEmail: ord.customer_email || addressObj?.email || null,
+        customerPhone: ord.customer_phone || addressObj?.phone || addressObj?.mobile || null,
+        customerWallet: Number(ord.customer_wallet || 0),
+        customerLoyalty: Number(ord.customer_loyalty || 0),
+        status: ord.status,
+        paymentMode: ord.payment_mode,
+        paymentStatus: ord.payment_status,
+        paymentId: ord.payment_id || null,
+        subtotal: Number(ord.subtotal || ord.total || 0),
+        discount: Number(ord.discount || 0),
+        shippingCost: Number(ord.shipping_cost || 0),
+        tax: Number(ord.tax || 0),
+        total: Number(ord.total || 0),
+        trackingNumber: ord.tracking_number || ord.label_tracking_number || null,
+        courier: ord.courier || ord.label_provider || null,
+        deliveryType: ord.delivery_type || ord.label_service_name || 'standard',
+        createdAt: ord.created_at,
+        deliveredAt: ord.delivered_at || null,
+        shippingAddress: addressObj,
+        items: (items || []).map(it => ({
+          id: it.id,
+          productId: it.product_id,
+          name: it.name || it.product_name || 'Product',
+          sku: it.sku || null,
+          price: Number(it.price || 0),
+          quantity: Number(it.quantity || 1),
+          image: it.image || null,
+        })),
+        returns: returns || [],
+        verificationChecklist: {
+          registeredName: ord.customer_name || addressObj?.name || 'N/A',
+          registeredEmail: ord.customer_email || 'N/A',
+          registeredPhone: ord.customer_phone || addressObj?.phone || 'N/A',
+          shippingCityAndPin: [addressObj?.city, addressObj?.state, addressObj?.pincode || addressObj?.postal_code].filter(Boolean).join(' · ') || 'N/A',
+          paymentMethodAndTotal: `${ord.payment_mode || 'COD'} (${ord.payment_status || 'pending'}) · ₹${Number(ord.total || 0).toLocaleString('en-IN')}`,
+        },
+      });
+    }
+
+    // 2. Also search customer profiles directly
+    const [customerRows] = await pool.query(
+      `SELECT id, name, email, phone, is_active, created_at, wallet_balance, loyalty_points
+       FROM users
+       WHERE role = 'customer'
+         AND (LOWER(email) LIKE LOWER(?) OR name LIKE ? OR (? IS NOT NULL AND phone LIKE ?) OR id = ?)
+       ORDER BY created_at DESC LIMIT 15`,
+      [likeTerm, likeTerm, phoneTail, phoneTail || '__none__', /^\d+$/.test(cleanRef) ? Number(cleanRef) : 0]
+    );
+
+    return res.json({
+      success: true,
+      query: rawQuery,
+      orders: enrichedOrders,
+      customers: customerRows || [],
+    });
+  } catch (error) {
+    console.error('[SUPPORT_UNIVERSAL_SEARCH]', error);
+    return res.status(500).json({ message: 'Could not complete universal search.' });
+  }
+});
+
+/**
+ * DELETE /api/support/sessions/:sessionToken
+ * Exclusively allows SuperAdmin to permanently delete a Resolved or Closed chat session.
+ */
+router.delete('/sessions/:sessionToken', authenticateSupportAgent, async (req, res) => {
+  const staff = req.supportAgent;
+  if (staff?.role !== 'superadmin') {
+    await appendSupportAuditLog({
+      actorId: staff?.id,
+      actorName: staff?.name || 'Staff',
+      actorRole: staff?.role || 'agent',
+      actionType: 'UNAUTHORIZED_DELETE_ATTEMPT',
+      targetRef: `Session ${req.params.sessionToken}`,
+      details: `Blocked non-SuperAdmin (${staff?.role}) from deleting chat session`,
+    });
+    return res.status(403).json({
+      code: 'SUPERADMIN_ONLY_DELETE',
+      message: 'Only SuperAdmin can permanently delete resolved or closed chat sessions.',
+    });
+  }
+  try {
+    const result = await deleteResolvedChatSession(req.params.sessionToken, pool);
+    if (!result.deleted) {
+      return res.status(result.code === 'SESSION_NOT_FOUND' ? 404 : 400).json(result);
+    }
+    await appendSupportAuditLog({
+      actorId: staff.id,
+      actorName: staff.name,
+      actorRole: 'superadmin',
+      actionType: 'DELETE_RESOLVED_CHAT',
+      targetRef: `Session ${req.params.sessionToken}`,
+      details: `Permanently deleted resolved/closed chat session ${req.params.sessionToken}`,
+    });
+    return res.json({
+      success: true,
+      deleted: true,
+      sessionToken: req.params.sessionToken,
+      message: `Deleted resolved chat session ${req.params.sessionToken}.`,
+    });
+  } catch (error) {
+    console.error('[SUPPORT_DELETE_SESSION]', error);
+    return res.status(500).json({ message: 'Could not delete chat session.' });
+  }
+});
+
+/**
+ * POST /api/support/telegram/webhook
+ * Live webhook receiver for @BhumiveraBot Telegram messages from customers.
+ */
+router.post('/telegram/webhook', async (req, res) => {
+  try {
+    const result = await processIncomingTelegramUpdate(req.body || {}, { pool });
+    return res.status(200).json({ ok: true, ...result });
+  } catch (error) {
+    console.error('[TELEGRAM_WEBHOOK_ERR]', error);
+    return res.status(200).json({ ok: false });
+  }
+});
+
+/**
+ * POST /api/support/telegram/sync
+ * Polls @BhumiveraBot for new customer Telegram messages and syncs them into the live support queue.
+ */
+router.post('/telegram/sync', authenticateSupportAgent, async (_req, res) => {
+  try {
+    const syncRes = await syncTelegramBotUpdates({ pool });
+    return res.json({ success: true, ...syncRes });
+  } catch (error) {
+    return res.status(500).json({ message: 'Could not sync Telegram bot updates.' });
+  }
+});
+
 router.get('/superadmin/overview', authenticateSupportAgent, async (req, res) => {
   try {
     await ensureTables();
@@ -1408,7 +1937,25 @@ router.get('/superadmin/overview', authenticateSupportAgent, async (req, res) =>
       escalations: escalations.slice(0, 30),
       featureConfig,
       roleMatrix: ROLE_DEFAULT_PERMISSIONS,
+      roleBenchmarks: ROLE_BENCHMARKS,
       viewer: req.supportAgent,
+      telegramBot: {
+        username: DEFAULT_TELEGRAM_BOT_USERNAME,
+        url: `https://t.me/${DEFAULT_TELEGRAM_BOT_USERNAME}`,
+        active: true,
+      },
+      customerReviews: sessions
+        .filter(s => s.csatRating)
+        .map(s => ({
+          sessionToken: s.sessionToken,
+          customerName: s.customerName || s.guestName || 'Customer',
+          customerEmail: s.customerEmail || s.guestEmail || null,
+          rating: s.csatRating,
+          feedback: s.csatFeedback || 'Satisfied with resolution',
+          assignedAgentName: s.assignedAgentName || 'AI Assistant',
+          assignedRole: s.assignedRole || 'ai',
+          updatedAt: s.updatedAt,
+        })),
       auditLogs: await listSupportAuditLogs({ limit: 40 }),
     });
   } catch (error) {

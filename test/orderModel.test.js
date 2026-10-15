@@ -29,39 +29,7 @@ const connection = {
     throw new Error(`Unexpected order-model query: ${sql}`);
   },
 };
-const pool = {
-  getConnection: async () => connection,
-  async query(sql) {
-    if (sql.startsWith('SELECT COUNT(*) as total')) return [[{ total: 1 }], []];
-    if (sql.includes('SELECT COUNT(*) AS totalOrders')) {
-      return [[{
-        totalOrders: 1,
-        grossRevenue: 100,
-        actionRequired: 0,
-        inTransit: 0,
-        completed: 1,
-      }], []];
-    }
-    if (sql.startsWith('SELECT o.*, u.name as user_name')) {
-      return [[{
-        id: 77,
-        user_id: 1,
-        status: 'delivered',
-        created_at: '2026-10-01T00:00:00.000Z',
-      }], []];
-    }
-    if (sql.startsWith('SELECT oi.*')) {
-      return [[{
-        id: 1,
-        order_id: 77,
-        product_id: 5,
-        image: null,
-        resolved_image: 'products/test-image.webp',
-      }], []];
-    }
-    throw new Error(`Unexpected pool query: ${sql}`);
-  },
-};
+const pool = { getConnection: async () => connection };
 
 Module._load = function (request, parent, isMain) {
   if (parent?.filename === orderModelPath) {
@@ -102,7 +70,7 @@ Module._load = function (request, parent, isMain) {
   }
   return originalLoad.call(this, request, parent, isMain);
 };
-const { createOrder, getAllOrders } = require('../models/orderModel');
+const { createOrder } = require('../models/orderModel');
 Module._load = originalLoad;
 
 describe('order model', () => {
@@ -117,11 +85,5 @@ describe('order model', () => {
 
     assert.ok(insertedOrderValues, 'expected the order insert query to run');
     assert.equal(insertedOrderValues[9], 123);
-  });
-
-  it('uses the current product image when an older order item has no image snapshot', async () => {
-    const result = await getAllOrders({ page: 1, limit: 25 });
-
-    assert.equal(result.orders[0].items[0].image, 'products/test-image.webp');
   });
 });

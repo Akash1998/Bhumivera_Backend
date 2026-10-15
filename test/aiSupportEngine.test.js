@@ -8,6 +8,7 @@ const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 
 const { maskPII, sanitizeObjectPII } = require('../utils/piiMasker');
+const { computeQuantumHash512, verifyQuantumSignature, encryptQuantumPayload, decryptQuantumPayload } = require('../utils/quantumCrypto');
 const { analyzeSentiment, triggerInstantEscalation } = require('../services/sentimentEscalationEngine');
 const {
   lookupOrderTool,
@@ -490,6 +491,17 @@ function createMockSupportPool(agentPasswordHash = '') {
     if (norm.includes('FROM orders o') && (norm.includes('WHERE o.order_number = ?') || norm.includes('WHERE o.id = ?'))) {
       const ref = String(params[0]);
       const num = Number(params[1]);
+      if (norm.includes('OR o.tracking_number LIKE ?')) {
+        const matches = state.orders.filter(
+          o =>
+            o.order_number === ref ||
+            o.id === num ||
+            (o.tracking_number && o.tracking_number.includes(ref)) ||
+            (o.user_email && o.user_email.toLowerCase().includes(ref.toLowerCase())) ||
+            (o.user_phone && o.user_phone.includes(ref))
+        );
+        return [matches.map(o => ({ ...o, customer_name: o.user_name, customer_email: o.user_email, customer_phone: o.user_phone }))];
+      }
       const match = state.orders.find(o => o.order_number === ref || o.id === Number(ref) || o.id === num);
       return [match ? [match] : []];
     }
@@ -568,6 +580,70 @@ function createMockSupportPool(agentPasswordHash = '') {
         };
       });
       return [rows];
+    }
+
+    // ai_support_benefit_ledger
+    if (norm.startsWith('INSERT INTO ai_support_benefit_ledger')) {
+      state.benefitLedger = state.benefitLedger || [];
+      const row = {
+        id: state.benefitLedger.length + 1,
+        session_id: params[0],
+        user_id: params[1],
+        customer_identifier: params[2],
+        order_id: params[3],
+        staff_id: params[4],
+        staff_name: params[5],
+        staff_role: params[6],
+        benefit_type: norm.includes("'coupon'") ? 'coupon' : 'wallet_credit',
+        amount_or_percent: params[7],
+        coupon_code: norm.includes("'coupon'") ? params[8] : null,
+        signature_sha512: norm.includes("'coupon'") ? params[9] : params[8],
+        created_at: new Date().toISOString(),
+      };
+      state.benefitLedger.push(row);
+      return [{ insertId: row.id }];
+    }
+    if (norm.includes('FROM ai_support_benefit_ledger')) {
+      state.benefitLedger = state.benefitLedger || [];
+      const bType = norm.includes("benefit_type = 'coupon'") ? 'coupon' : 'wallet_credit';
+      const sessId = Number(params[0]);
+      const uId = Number(params[1]);
+      const found = state.benefitLedger.filter(
+        b => b.benefit_type === bType && (Number(b.session_id) === sessId || (uId > 0 && Number(b.user_id) === uId))
+      );
+      return [found];
+    }
+
+    // Universal search orders & checkCustomerHasPlacedOrder
+    if (norm.includes('FROM orders') && norm.includes('WHERE user_id = ?') && norm.includes("status NOT IN ('cancelled', 'failed')")) {
+      const matches = state.orders.filter(o => Number(o.user_id) === Number(params[0]) && o.status !== 'cancelled');
+      return [matches];
+    }
+    if (norm.includes('FROM orders o') && norm.includes('OR o.tracking_number LIKE ?')) {
+      const ref = String(params[0]);
+      const matches = state.orders.filter(
+        o =>
+          o.order_number === ref ||
+          o.id === Number(params[1]) ||
+          (o.tracking_number && o.tracking_number.includes(ref)) ||
+          (o.user_email && o.user_email.toLowerCase().includes(ref.toLowerCase())) ||
+          (o.user_phone && o.user_phone.includes(ref))
+      );
+      return [matches.map(o => ({ ...o, customer_name: o.user_name, customer_email: o.user_email, customer_phone: o.user_phone }))];
+    }
+
+    // DELETE session queries
+    if (norm.startsWith('DELETE FROM ai_support_messages WHERE session_id = ?')) {
+      state.messages = state.messages.filter(m => Number(m.session_id) !== Number(params[0]));
+      return [{ affectedRows: 1 }];
+    }
+    if (norm.startsWith('DELETE FROM ai_support_escalations WHERE session_id = ?')) {
+      state.escalations = state.escalations.filter(e => Number(e.session_id) !== Number(params[0]));
+      return [{ affectedRows: 1 }];
+    }
+    if (norm.startsWith('DELETE FROM ai_support_sessions WHERE id = ?')) {
+      state.sessions = state.sessions.filter(s => Number(s.id) !== Number(params[0]));
+      return [{ affectedRows: 1 }];
     }
 
     // Catalog & Products
@@ -1092,5 +1168,161 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.equal(featData.success, true);
     assert.equal(featData.featureConfig.support_frustration_threshold, 65);
     assert.equal(featData.featureConfig.ai_proactive_linger_seconds, 30);
+  });
+
+  it('14. 512-Bit Quantum Cryptographic Envelope & Hash Chain (utils/quantumCrypto.js) verifies integrity and detects tampering', () => {
+    const sig = computeQuantumHash512({ action: 'COUPON', pct: 15 }, 'GENESIS_512');
+    assert.equal(sig.length, 128, 'Should produce a 512-bit (128 hex char) SHA-512 HMAC digest');
+    assert.equal(verifyQuantumSignature({ action: 'COUPON', pct: 15 }, sig, 'GENESIS_512'), true);
+    assert.equal(verifyQuantumSignature({ action: 'COUPON', pct: 30 }, sig, 'GENESIS_512'), false, 'Tampered payload must fail verification');
+
+    const encrypted = encryptQuantumPayload('8304879119:AAGEC1XbwxJhxdNv0JPaknsnMHk9xeops9g');
+    assert.match(encrypted, /^q512:/);
+    const decrypted = decryptQuantumPayload(encrypted);
+    assert.equal(decrypted, '8304879119:AAGEC1XbwxJhxdNv0JPaknsnMHk9xeops9g');
+  });
+
+  it('15. Live HTTP 30X Universal Search (/universal-search) finds orders by Order ID, Tracking ID, Email, and Phone with Customer Verification Checklist', async () => {
+    const searchRes = await fetch(`${baseUrl}/universal-search?q=DLV99881122`, {
+      headers: { authorization: `Bearer ${superAdminToken}` },
+    });
+    assert.equal(searchRes.status, 200);
+    const searchData = await searchRes.json();
+    assert.equal(searchData.success, true);
+    assert.equal(searchData.orders.length, 1);
+    assert.equal(searchData.orders[0].orderNumber, '918273646');
+    assert.equal(searchData.orders[0].trackingNumber, 'DLV99881122');
+    assert.equal(searchData.orders[0].verificationChecklist.registeredEmail, 'aarav@example.com');
+    assert.ok(searchData.orders[0].items.length >= 1);
+  });
+
+  it('16. Live HTTP 30X Anti-Fraud Guardrails: Staff 1-Time Coupon Limit, Role Discount Caps, SuperAdmin Unlimited Coupons & SuperAdmin-Only Delete Resolved Chat', async () => {
+    // Log in as Manager (concierge_lead)
+    const loginRes = await fetch(`${baseUrl}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'concierge_lead', password: 'SupportPass!2026' }),
+    });
+    const managerToken = (await loginRes.json()).token;
+
+    // Create a fresh session for customer
+    const sessRes = await fetch(`${baseUrl}/chat/session`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({ forceNew: true }),
+    });
+    const sessionToken = (await sessRes.json()).sessionToken;
+
+    // 1. Manager tries to issue a 30% coupon (above Manager 15% benchmark) -> 403 BLOCKED
+    const excessiveCouponRes = await fetch(`${baseUrl}/sessions/${sessionToken}/execute-action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${managerToken}` },
+      body: JSON.stringify({ action: 'issue_apology_coupon', discountPercent: 30 }),
+    });
+    assert.equal(excessiveCouponRes.status, 403);
+    assert.equal((await excessiveCouponRes.json()).code, 'COUPON_DISCOUNT_EXCEEDS_ROLE_BENCHMARK');
+
+    // 2. Manager issues a valid 15% coupon ONCE -> 200 OK
+    const firstCouponRes = await fetch(`${baseUrl}/sessions/${sessionToken}/execute-action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${managerToken}` },
+      body: JSON.stringify({ action: 'issue_apology_coupon', discountPercent: 15 }),
+    });
+    assert.equal(firstCouponRes.status, 200);
+    const firstCouponData = await firstCouponRes.json();
+    assert.equal(firstCouponData.success, true);
+    assert.equal(firstCouponData.signature512.length, 128);
+
+    // 3. Manager tries to issue a SECOND coupon to the same customer -> 403 COUPON_ONCE_ONLY_FOR_STAFF
+    const secondCouponRes = await fetch(`${baseUrl}/sessions/${sessionToken}/execute-action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${managerToken}` },
+      body: JSON.stringify({ action: 'issue_apology_coupon', discountPercent: 10 }),
+    });
+    assert.equal(secondCouponRes.status, 403);
+    assert.equal((await secondCouponRes.json()).code, 'COUPON_ONCE_ONLY_FOR_STAFF');
+
+    // 4. SuperAdmin CAN issue additional coupons multiple times -> 200 OK
+    const superCouponRes = await fetch(`${baseUrl}/sessions/${sessionToken}/execute-action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${superAdminToken}` },
+      body: JSON.stringify({ action: 'issue_apology_coupon', discountPercent: 25 }),
+    });
+    assert.equal(superCouponRes.status, 200);
+
+    // 5. Customer ends chat as Satisfied with a 5-star review -> status becomes resolved
+    const endSatRes = await fetch(`${baseUrl}/chat/session/${sessionToken}/end-satisfied`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify({ rating: 5, feedback: 'Solved my issue and gave a courtesy coupon!' }),
+    });
+    assert.equal(endSatRes.status, 200);
+
+    // 6. Manager tries to delete the resolved chat -> 403 SUPERADMIN_ONLY_DELETE
+    const mgrDeleteRes = await fetch(`${baseUrl}/sessions/${sessionToken}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${managerToken}` },
+    });
+    assert.equal(mgrDeleteRes.status, 403);
+    assert.equal((await mgrDeleteRes.json()).code, 'SUPERADMIN_ONLY_DELETE');
+
+    // 7. SuperAdmin deletes the resolved chat -> 200 OK
+    const superDeleteRes = await fetch(`${baseUrl}/sessions/${sessionToken}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${superAdminToken}` },
+    });
+    assert.equal(superDeleteRes.status, 200);
+    assert.equal((await superDeleteRes.json()).deleted, true);
+  });
+
+  it('17. Live HTTP 30X Order-Gated Live Agent Rule, Async Message Channel & Two-Way Telegram Webhook (@BhumiveraBot)', async () => {
+    // Visitor without any placed order (user id 888) tries to escalate to a live human agent -> 403 ORDER_REQUIRED_FOR_LIVE_AGENT
+    const noOrderUserToken = jwt.sign(
+      { id: 888, name: 'New Visitor', email: 'visitor@example.com', role: 'customer', sessionType: 'user' },
+      TEST_JWT_SECRET,
+      { expiresIn: '1h', jwtid: 'active-jti' }
+    );
+    const escBlockedRes = await fetch(`${baseUrl}/chat/escalate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${noOrderUserToken}` },
+      body: JSON.stringify({ reason: 'Want to talk to agent', message: 'Connect me to an agent' }),
+    });
+    assert.equal(escBlockedRes.status, 403);
+    const escBlockedData = await escBlockedRes.json();
+    assert.equal(escBlockedData.code, 'ORDER_REQUIRED_FOR_LIVE_AGENT');
+    assert.equal(escBlockedData.showAsyncMessageForm, true);
+
+    // Visitor submits an Async Message instead -> 201 Created
+    const asyncRes = await fetch(`${baseUrl}/chat/async-message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${noOrderUserToken}` },
+      body: JSON.stringify({
+        subject: 'Pre-order question about Kumkumadi oil',
+        message: 'Is this suitable for sensitive skin?',
+      }),
+    });
+    assert.equal(asyncRes.status, 201);
+    const asyncData = await asyncRes.json();
+    assert.equal(asyncData.success, true);
+    assert.ok(asyncData.sessionToken);
+
+    // Telegram Webhook (/telegram/webhook) links customer Telegram chat_id to session
+    const tgRes = await fetch(`${baseUrl}/telegram/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        update_id: 9001,
+        message: {
+          message_id: 1,
+          from: { id: 777111, first_name: 'Akash', username: 'akash_bv' },
+          chat: { id: 777111, type: 'private' },
+          text: `/start ${asyncData.sessionToken}`,
+        },
+      }),
+    });
+    assert.equal(tgRes.status, 200);
+    const tgData = await tgRes.json();
+    assert.equal(tgData.ok, true);
+    assert.equal(tgData.handled, true);
   });
 });
