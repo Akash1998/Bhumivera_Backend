@@ -70,6 +70,7 @@ describe('central admin route authorization', () => {
     assert.equal((await warehouseUsers.json()).permission, 'users.read');
     assert.equal((await request('admin', 'GET', '/admin/users')).status, 200);
     assert.equal((await request('admin', 'PATCH', '/admin/users/9/status', { status: 'disabled' })).status, 403);
+    assert.equal((await request('admin', 'POST', '/admin/users/9/reset-password')).status, 200);
     assert.equal((await request('superadmin', 'PATCH', '/admin/users/9/status', { status: 'disabled' })).status, 200);
   });
 

@@ -69,6 +69,7 @@ const newsletterRoutes = require("./routes/newsletterRoutes");
 const gamificationRoutes = require("./routes/gamificationRoutes");
 const impactRoutes = require("./routes/impactRoutes");
 const systemAdminRoutes = require("./routes/systemAdminRoutes");
+const supportRoutes = require("./routes/supportRoutes");
 
 const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
 
@@ -159,6 +160,7 @@ app.use(redisResponseCache);
 
 // --- ROUTE REGISTRATION ---
 app.use("/api/admin/system", systemAdminRoutes);
+app.use("/api/support", supportRoutes);
 app.use("/api/flash-sales", createModuleAvailabilityMiddleware('flash_sales'), flashSalesRoutes);
 app.use("/api/client-log", clientLogRoutes);
 app.use("/api/logs", logsRoutes);

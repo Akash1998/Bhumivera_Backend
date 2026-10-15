@@ -1,5 +1,4 @@
 const express = require('express');
-const crypto = require('crypto');
 const router = express.Router();
 const db = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
@@ -7,12 +6,12 @@ const {
   getAdminCustomers,
   getUserById, 
   updateUserStatus, 
-  deleteUser,
-  saveResetOtp
+  deleteUser
 } = require('../models/userModel');
 const { getAllOrders, getOrdersByUser, updateOrderStatus, getOrderById } = require('../models/orderModel');
 const { getAllReviews } = require('../models/reviewModel');
 const { sendMail } = require('../utils/mail');
+const { sendCustomerPasswordResetLink } = require('../services/customerPasswordResetLink');
 
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -226,18 +225,7 @@ router.post('/users/:id/reset-password', authenticateAdmin, async (req, res) => 
   try {
     const user = await getUserById(req.params.id);
     if (!user || user.role !== 'customer') return res.status(404).json({ message: 'Customer not found' });
-
-    const otp = crypto.randomInt(100000, 1000000).toString();
-    await saveResetOtp(user.id, otp);
-
-    await sendMail({
-      to: user.email,
-      subject: 'Your Bhumivera Password Reset OTP',
-      html: `<p>An administrator has triggered a password reset for your account.</p><p>Your OTP is: <strong>${otp}</strong></p><p>It expires in 10 minutes.</p>`,
-      text: `An administrator has triggered a password reset for your account. Your OTP is ${otp}. It expires in 10 minutes.`,
-    });
-
-    return res.json({ message: `Password reset OTP sent to ${user.email}. It expires in 10 minutes.` });
+    return res.json({ message: await sendCustomerPasswordResetLink(user) });
   } catch (err) {
     console.error('Admin reset-password error:', err);
     return res.status(500).json({ message: 'Failed to reset password' });

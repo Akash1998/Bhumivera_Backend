@@ -231,6 +231,7 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     let resolvedCoupon = null;
     let couponId = null;
     let recoveryCoupon = false;
+    let couponFreeShipping = false;
 
     if (couponCode) {
       await reconcileReferralRewards(req.user.id);
@@ -248,7 +249,8 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
         return res.status(400).json({ code: 'COUPON_MINIMUM_NOT_MET', message: `Add ₹${(Number(coupon.min_order_amount) - cartTotal).toFixed(2)} more to use this coupon.` });
       }
       if (coupon.reward_type !== 'referral_wallet') {
-        couponDiscount = coupon.discount_type === "percentage"
+        couponFreeShipping = coupon.reward_type === 'free_shipping';
+        couponDiscount = couponFreeShipping ? 0 : coupon.discount_type === "percentage"
           ? Math.min((cartTotal * Number(coupon.discount_value)) / 100, Number(coupon.max_discount) || Infinity)
           : Number(coupon.discount_value) || 0;
         couponDiscount = Math.max(0, Math.min(couponDiscount, cartTotal));
@@ -292,7 +294,8 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       premiumCharge: shippingSettings.express_charge ?? 150,
       freeShippingThreshold: shippingSettings.free_shipping_threshold,
       freeShipping: Boolean(rulePreview.freeShipping) ||
-        (Boolean(loyaltyConfig.enabled) && Number(loyaltyTier?.free_shipping) === 1),
+        (Boolean(loyaltyConfig.enabled) && Number(loyaltyTier?.free_shipping) === 1) ||
+        couponFreeShipping,
     });
 
     const giftItems = [];

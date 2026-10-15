@@ -700,6 +700,22 @@ const migrations = [
       );
     },
   },
+  {
+    version: 59,
+    name: 'support spin rewards for free shipping and loyalty points',
+    up: async () => {
+      await pool.query(
+        "ALTER TABLE coupons MODIFY COLUMN reward_type ENUM('standard','referral_wallet','coupon_credit','free_shipping') NOT NULL DEFAULT 'standard'"
+      );
+      const addColumn = async (column, definition) => {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM order_spin_claims LIKE ?`, [column]);
+        if (!columns.length) await pool.query(`ALTER TABLE order_spin_claims ADD COLUMN \`${column}\` ${definition}`);
+      };
+      await pool.query('ALTER TABLE order_spin_claims MODIFY COLUMN coupon_code VARCHAR(50) NULL');
+      await addColumn('reward_type', "VARCHAR(30) NOT NULL DEFAULT 'discount'");
+      await addColumn('points_awarded', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    },
+  },
 ];
 
 module.exports = migrations;

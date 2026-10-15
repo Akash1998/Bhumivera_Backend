@@ -93,4 +93,31 @@ describe('referral wallet coupon validation', () => {
     assert.match(result.message, /assigned to a different customer/);
     assert.equal(walletBalanceRead, false);
   });
+
+  it('accepts a free-shipping reward without turning it into a price discount', async () => {
+    state.query = async sql => {
+      if (sql.includes('SELECT * FROM coupons')) {
+        return [[{
+          code: 'SHIPTEST',
+          restricted_user_id: 7,
+          is_active: 1,
+          valid_from: null,
+          expires_at: null,
+          usage_limit: 1,
+          used_count: 0,
+          min_order_amount: 500,
+          discount_type: 'fixed',
+          discount_value: 0,
+          reward_type: 'free_shipping',
+        }], []];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    };
+
+    const result = await couponModel.validateCoupon('SHIPTEST', 999, 7);
+
+    assert.equal(result.valid, true);
+    assert.equal(result.discount, 0);
+    assert.equal(result.coupon.reward_type, 'free_shipping');
+  });
 });

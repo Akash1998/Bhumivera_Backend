@@ -30,7 +30,7 @@ const createCouponTable = async () => {
       ['description', 'VARCHAR(255) DEFAULT NULL'],
       ['valid_from', 'DATETIME DEFAULT NULL'],
       ['restricted_user_id', 'INT DEFAULT NULL'],
-      ['reward_type', "ENUM('standard','referral_wallet') NOT NULL DEFAULT 'standard'"],
+      ['reward_type', "ENUM('standard','referral_wallet','coupon_credit','free_shipping') NOT NULL DEFAULT 'standard'"],
       ['wallet_per_order_limit', 'DECIMAL(10,2) DEFAULT NULL'],
     ]) {
       const [rows] = await pool.query(
@@ -39,6 +39,9 @@ const createCouponTable = async () => {
       );
       if (!rows[0]?.column_exists) await pool.query(`ALTER TABLE coupons ADD COLUMN ${column} ${definition}`);
     }
+    await pool.query(
+      "ALTER TABLE coupons MODIFY COLUMN reward_type ENUM('standard','referral_wallet','coupon_credit','free_shipping') NOT NULL DEFAULT 'standard'"
+    );
   })().catch(error => {
     couponTablePromise = null;
     throw error;
@@ -157,6 +160,9 @@ const validateCoupon = async (code, orderTotal, userId = null) => {
       referralWalletAmount: Number(discount.toFixed(2)),
       coupon,
     };
+  }
+  if (coupon.reward_type === 'free_shipping') {
+    return { valid: true, discount: 0, coupon };
   }
   let discount = coupon.discount_type === 'percentage'
     ? (orderTotal * coupon.discount_value) / 100

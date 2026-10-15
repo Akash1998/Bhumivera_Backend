@@ -143,7 +143,7 @@ router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
     );
     if (!order) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'This order could not be found.' });
     const [claims] = await pool.query(
-      'SELECT reward_label, coupon_code, reward_index FROM order_spin_claims WHERE order_id = ? AND user_id = ?',
+      'SELECT reward_label, coupon_code, reward_index, reward_type, points_awarded FROM order_spin_claims WHERE order_id = ? AND user_id = ?',
       [orderId, req.user.id]
     );
     const eligible = !['cancelled', 'returned'].includes(order.status) &&
@@ -156,6 +156,8 @@ router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
         reward: claims[0].reward_label,
         couponCode: claims[0].coupon_code,
         rewardIndex: Number(claims[0].reward_index),
+        rewardType: claims[0].reward_type,
+        pointsAwarded: Number(claims[0].points_awarded) || 0,
       } : null,
     });
   } catch (error) {
@@ -194,7 +196,7 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
     }
 
     const [existingClaims] = await connection.query(
-      'SELECT reward_label, coupon_code, reward_index FROM order_spin_claims WHERE order_id = ?',
+      'SELECT reward_label, coupon_code, reward_index, reward_type, points_awarded FROM order_spin_claims WHERE order_id = ?',
       [orderId]
     );
     if (existingClaims.length) {
@@ -205,6 +207,8 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
         reward: claim.reward_label,
         couponCode: claim.coupon_code,
         rewardIndex: Number(claim.reward_index),
+        rewardType: claim.reward_type,
+        pointsAwarded: Number(claim.points_awarded) || 0,
         alreadyClaimed: true,
       });
     }
@@ -221,27 +225,55 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
     }
 
     const reward = chooseOrderSpinReward(spinSettings.rewards);
-    const couponCode = `SPIN-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+    let couponCode = null;
+    let pointsAwarded = 0;
+    if (reward.rewardType === 'points') {
+      pointsAwarded = reward.points;
+      const [[user]] = await connection.query(
+        'SELECT loyalty_points, loyalty_lifetime_points FROM users WHERE id = ? FOR UPDATE',
+        [req.user.id]
+      );
+      if (!user) {
+        await connection.rollback();
+        return res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Customer account not found.' });
+      }
+      const balance = Number(user.loyalty_points) + pointsAwarded;
+      await connection.query(
+        'UPDATE users SET loyalty_points = ?, loyalty_lifetime_points = loyalty_lifetime_points + ? WHERE id = ?',
+        [balance, pointsAwarded, req.user.id]
+      );
+      await connection.query(
+        `INSERT INTO loyalty_point_transactions
+          (user_id, points_delta, balance_after, type, description, reference_id, order_id)
+         VALUES (?, ?, ?, 'earn', ?, ?, ?)`,
+        [req.user.id, pointsAwarded, balance, `Post-order spin reward: ${reward.label}`, `order-spin-${orderId}`, orderId]
+      );
+    } else {
+      couponCode = `SPIN-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+      const isFreeShipping = reward.rewardType === 'free_shipping';
+      await connection.query(
+        `INSERT INTO coupons
+          (code, description, discount_type, discount_value, min_order_amount, max_discount,
+           usage_limit, used_count, restricted_user_id, is_active, valid_from, expires_at, reward_type)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, 1, NOW(), DATE_ADD(NOW(), INTERVAL ? DAY), ?)`,
+        [
+          couponCode,
+          `order_spin_reward:${orderId}`,
+          isFreeShipping ? 'fixed' : reward.discountType,
+          isFreeShipping ? 0 : reward.discountValue,
+          reward.minimumOrderAmount,
+          isFreeShipping ? null : reward.maxDiscount,
+          req.user.id,
+          reward.expiryDays,
+          isFreeShipping ? 'free_shipping' : 'standard',
+        ]
+      );
+    }
     await connection.query(
-      `INSERT INTO coupons
-        (code, description, discount_type, discount_value, min_order_amount, max_discount,
-         usage_limit, used_count, restricted_user_id, is_active, valid_from, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, 1, NOW(), DATE_ADD(NOW(), INTERVAL ? DAY))`,
-      [
-        couponCode,
-        `order_spin_reward:${orderId}`,
-        reward.discountType,
-        reward.discountValue,
-        reward.minimumOrderAmount,
-        reward.maxDiscount,
-        req.user.id,
-        reward.expiryDays,
-      ]
-    );
-    await connection.query(
-      `INSERT INTO order_spin_claims (order_id, user_id, reward_label, coupon_code, reward_index)
-       VALUES (?, ?, ?, ?, ?)`,
-      [orderId, req.user.id, reward.label, couponCode, reward.index]
+      `INSERT INTO order_spin_claims
+        (order_id, user_id, reward_label, coupon_code, reward_index, reward_type, points_awarded)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [orderId, req.user.id, reward.label, couponCode, reward.index, reward.rewardType, pointsAwarded]
     );
     await connection.commit();
 
@@ -249,14 +281,16 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
       {
         user_id: req.user.id,
         title: 'Your order spin reward is ready',
-        message: `${reward.label} has been added to your coupons. Code: ${couponCode}`,
+        message: reward.rewardType === 'points'
+          ? `${reward.label} has been added to your loyalty points balance.`
+          : `${reward.label} has been added to your coupons. Code: ${couponCode}`,
         type: 'reward',
         is_global: false,
       },
       {
         user_id: null,
         title: 'Customer won an order spin reward',
-        message: `Order #${orderId} won ${reward.label} (${couponCode}).`,
+        message: `Order #${orderId} won ${reward.label}${couponCode ? ` (${couponCode})` : ''}.`,
         type: 'order_reward',
         is_global: false,
       },
@@ -274,6 +308,8 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
       reward: reward.label,
       couponCode,
       rewardIndex: reward.index,
+      rewardType: reward.rewardType,
+      pointsAwarded,
       alreadyClaimed: false,
     });
   } catch (error) {

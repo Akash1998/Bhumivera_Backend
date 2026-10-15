@@ -26,6 +26,7 @@ const ADMIN_PERMISSION_ROUTES = [
   { pattern: /^\/api\/auth\/profile$/, permission: 'profile.read' },
   { pattern: /^\/api\/auth\/admin\/change-password$/, permission: 'profile.security.update' },
   { pattern: /^\/api\/admin\/users\/(?:notifications|email-campaigns)$/, permission: 'marketing.manage' },
+  { pattern: /^\/api\/admin\/users\/[^/]+\/reset-password$/, permission: 'support.manage', methods: ['POST'] },
   { pattern: /^\/api\/admin\/users(?:\/[^/]+)?(?:\/orders)?$/, permission: 'users.read', methods: ['GET'] },
   { pattern: /^\/api\/admin\/users(?:\/|$)/, permission: 'users.manage' },
   { pattern: /^\/api\/admin\/orders(?:\/export\/csv)?$/, permission: 'orders.read', methods: ['GET'] },
