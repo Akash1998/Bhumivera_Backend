@@ -20,14 +20,14 @@ const DEFAULT_QUICK_ACTIONS = [
   { id: 'wallet_loyalty', label: 'My Wallet & Loyalty', prompt: 'What is my current wallet balance and loyalty points?' },
   { id: 'active_coupons', label: 'Available Coupons', prompt: 'Show me active coupons and offers for my account.' },
   { id: 'shipping_policy', label: 'Shipping & Policy', prompt: 'What are your shipping charges and delivery timelines?' },
-  { id: 'talk_to_human', label: 'Talk to Human Concierge', prompt: 'Please connect me with a human support agent.' },
+  { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
 ];
 
 /**
  * Generates contextual proactive greeting or assistance nudge based on current page / behavior.
  */
 function buildContextualGreeting({ user = null, pageContext = {} } = {}) {
-  const firstName = user?.name ? user.name.split(' ')[0] : null;
+  const firstName = String(user?.name || '').trim().split(/\s+/)[0] || null;
   const path = String(pageContext?.pathname || pageContext?.path || '/');
   const triggerType = pageContext?.proactiveTrigger || null;
 
@@ -37,48 +37,48 @@ function buildContextualGreeting({ user = null, pageContext = {} } = {}) {
       quickActions: [
         { id: 'checkout_help', label: 'Help with Checkout', prompt: 'I am having trouble completing my action on this page.' },
         { id: 'track_order', label: 'Where is my order?', prompt: 'Where is my order?' },
-        { id: 'talk_to_human', label: 'Talk to Human Concierge', prompt: 'Please connect me with a human support agent.' },
+        { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
       ],
     };
   }
 
   if (path.startsWith('/checkout') || triggerType === 'checkout_linger') {
     return {
-      greeting: `${firstName ? `Hi ${firstName}! ` : 'Welcome to Bhumivera Concierge! '}Need a hand with checkout? Standard shipping is free on orders ₹500+, and orders placed before 2:00 PM IST dispatch the same day.`,
+      greeting: `${firstName ? `Hi ${firstName}, ` : 'Hi, '}need a hand with checkout? Standard shipping is free on orders ₹500+, and orders placed before 2:00 PM IST dispatch the same day.`,
       quickActions: [
         { id: 'active_coupons', label: 'Available Coupons', prompt: 'Show me active coupons and offers for my account.' },
         { id: 'wallet_loyalty', label: 'Check Wallet & Points', prompt: 'What is my current wallet balance and loyalty points?' },
         { id: 'shipping_policy', label: 'Delivery Timelines & Cutoff', prompt: 'When will my order arrive if I place it today?' },
-        { id: 'talk_to_human', label: 'Talk to Human', prompt: 'Please connect me with a human support agent.' },
+        { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
       ],
     };
   }
 
   if (path.startsWith('/order-tracking') || triggerType === 'tracking_linger') {
     return {
-      greeting: `${firstName ? `Welcome back, ${firstName}! ` : 'Hello! '}Looking for live tracking updates on a Bhumivera order? Share your 9-digit order number or tap below to inspect your latest shipment.`,
+      greeting: `${firstName ? `Hi ${firstName}, ` : 'Hi, '}looking for an order update? Share your 9-digit order number or tap below to check your latest shipment.`,
       quickActions: [
         { id: 'track_order', label: 'Check My Latest Order', prompt: 'Where is my order?' },
         { id: 'initiate_return', label: 'Initiate Return / Exchange', prompt: 'I want to return or replace a delivered order.' },
         { id: 'refund_status', label: 'Check Refund Status', prompt: 'What is my current refund status?' },
-        { id: 'talk_to_human', label: 'Talk to Human', prompt: 'Please connect me with a human support agent.' },
+        { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
       ],
     };
   }
 
   if (path.startsWith('/returns') || triggerType === 'returns_linger') {
     return {
-      greeting: `${firstName ? `Hi ${firstName}, ` : 'Hello! '}I can check your return eligibility, generate an instant RMA for delivered orders, or look up your Razorpay refund receipt right here.`,
+      greeting: `${firstName ? `Hi ${firstName}, ` : 'Hi, '}I can help with a return or check your refund. What do you need?`,
       quickActions: [
         { id: 'initiate_return', label: 'Initiate Return', prompt: 'I want to initiate a return for my delivered order.' },
         { id: 'refund_status', label: 'Check Refund Status', prompt: 'What is my current refund status?' },
-        { id: 'talk_to_human', label: 'Talk to Human', prompt: 'Please connect me with a human support agent.' },
+        { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
       ],
     };
   }
 
   return {
-    greeting: `${firstName ? `Namaste ${firstName}! ` : 'Namaste! '}I'm your Bhumivera 20X AI Support Concierge. I can track orders in real time, process self-service cancellations or returns, check Razorpay refund receipts, inspect your Wallet & Loyalty points, or manage this chat's status (Active, Pending, Waiting for Review, Escalated, Resolved, Closed).`,
+    greeting: `${firstName ? `Hi ${firstName}, ` : 'Hi, '}how can I help you today?`,
     quickActions: DEFAULT_QUICK_ACTIONS,
   };
 }
@@ -245,11 +245,9 @@ function synthesizeDeterministicResponse({
   sentiment = {},
   escalation = null,
   statusUpdatedTo = null,
-  user = null,
 }) {
-  const firstName = user?.name ? user.name.split(' ')[0] : null;
   const empathyPrefix = sentiment?.frustrationScore >= 40
-    ? `I completely understand how frustrating this is${firstName ? `, ${firstName}` : ''}, and I'm on it right away. `
+    ? 'I understand how frustrating this is. I’ll look into it for you. '
     : '';
 
   const orderCards = [];
@@ -276,7 +274,7 @@ function synthesizeDeterministicResponse({
           ? `\n- **Items (${o.items.length}):** ${o.items.map(i => `${i.quantity}× ${i.name} (₹${i.price})`).join(', ')}`
           : '';
         sections.push(
-          `${empathyPrefix}Here are the 100% verified live details for **Order #${o.orderNumber}**:\n` +
+          `${empathyPrefix}Here are the details for **Order #${o.orderNumber}**:\n` +
           `- **Status:** \`${o.status.toUpperCase()}\` (${o.paymentMode} · Payment: ${o.paymentStatus})\n` +
           `- **Total Paid/Payable:** ₹${o.total.toLocaleString('en-IN')} (Subtotal: ₹${o.subtotal.toLocaleString('en-IN')}${o.discount > 0 ? ` · Discount: -₹${o.discount}` : ''})\n` +
           `- **Estimated Delivery:** ${o.deliveryEstimate}${trackingLine}${itemsLine}`
@@ -288,7 +286,7 @@ function synthesizeDeterministicResponse({
             { id: `replace_${o.id}`, label: `Replace Order #${o.orderNumber}`, prompt: `Request replacement for order #${o.orderNumber}` },
           ] : []),
           { id: 'mark_resolved', label: 'Mark Chat Resolved', prompt: 'Mark this chat as resolved' },
-          { id: 'talk_to_human', label: 'Talk to Human Concierge', prompt: 'Please connect me with a human support agent.' },
+          { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
         ];
       } else if (res.code === 'ORDERS_LISTED' && res.orderCards?.length) {
         const latest = res.orderCards[0];
@@ -299,13 +297,13 @@ function synthesizeDeterministicResponse({
           ...(latest.cancellable ? [{ id: `cancel_${latest.id}`, label: `Cancel #${latest.orderNumber}`, prompt: `Cancel order #${latest.orderNumber}` }] : []),
           ...(latest.canReturn ? [{ id: `return_${latest.id}`, label: `Return #${latest.orderNumber}`, prompt: `Initiate return for order #${latest.orderNumber}` }] : []),
           { id: 'refund_status', label: 'Check Refund Status', prompt: 'What is my current refund status?' },
-          { id: 'talk_to_human', label: 'Talk to Human', prompt: 'Please connect me with a human support agent.' },
+          { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
         ];
       } else {
         sections.push(`${empathyPrefix}${res.message}`);
         quickActions = [
           { id: 'provide_order', label: 'How to find my Order ID?', prompt: 'Where can I find my 9-digit Bhumivera order number?' },
-          { id: 'talk_to_human', label: 'Talk to Human', prompt: 'Please connect me with a human support agent.' },
+          { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
         ];
       }
     } else if (tr.name === 'cancel_order') {
@@ -328,7 +326,7 @@ function synthesizeDeterministicResponse({
       quickActions = [
         ...(res.rmaNumber ? [{ id: `check_${res.rmaNumber}`, label: `Track ${res.rmaNumber}`, prompt: `Check refund status for ${res.rmaNumber}` }] : []),
         { id: 'mark_waiting_review', label: 'Request Supervisor Review', prompt: 'Mark this chat as waiting for review' },
-        { id: 'talk_to_human', label: 'Talk to Human Concierge', prompt: 'Please connect me with a human support agent.' },
+        { id: 'talk_to_human', label: 'Talk to Support', prompt: 'Please connect me with a human support agent.' },
       ];
     } else if (tr.name === 'check_refund_status') {
       if (res.refunds?.length) {
@@ -398,23 +396,22 @@ function synthesizeDeterministicResponse({
 
   if (statusUpdatedTo) {
     sections.push(
-      `✅ **Chat Status Updated to \`${statusUpdatedTo.replace(/_/g, ' ').toUpperCase()}\`**\n` +
       (statusUpdatedTo === 'resolved'
-        ? 'Thank you for letting us help today! You can rate your experience below or reopen this chat anytime.'
+        ? 'I’m glad I could help. You can leave a quick rating below or start a new chat whenever you need us.'
         : statusUpdatedTo === 'closed'
-        ? 'This chat session is now closed and saved to your transcript history. Click **Start New Chat** or **Reopen Chat** anytime you need us.'
+        ? 'This chat is now closed. Start a new chat whenever you need us.'
         : statusUpdatedTo === 'waiting_for_review'
-        ? 'Your conversation has been placed in the **Waiting for Supervisor Review** queue.'
-        : `Your session is now marked as **${statusUpdatedTo.replace(/_/g, ' ')}**.`)
+        ? 'I’ve sent your conversation to a support specialist for review.'
+        : `I’ve updated your chat status to ${statusUpdatedTo.replace(/_/g, ' ')}.`)
     );
   }
 
   if (escalation?.escalated) {
     sections.push(
-      `🚨 **Priority Human Concierge Escalation Activated**\n` +
-      `- **Ticket Reference:** ${escalation.ticketId ? `#${escalation.ticketId}` : 'Assigned'}\n` +
-      `- **Priority Tier:** \`${escalation.priority}\` (Target response: **${escalation.slaResponseWindow}**)\n` +
-      `- **Channels Alerted:** Instant notification dispatched to our Senior Concierge Desk via Email, Telegram & WhatsApp.`
+      `I’ve asked a support specialist to follow up${escalation.ticketId ? ` (ticket #${escalation.ticketId})` : ''}. ` +
+      `They should be in touch ${escalation.slaResponseWindow
+        ? `within ${escalation.slaResponseWindow.toLowerCase().replace(/^under /, '')}`
+        : 'as soon as possible'}.`
     );
   }
 
@@ -432,11 +429,7 @@ function synthesizeDeterministicResponse({
       );
     } else {
       sections.push(
-        `${empathyPrefix}I can help you right away with:\n` +
-        `- **Real-Time Order Tracking:** Share your 9-digit order number or ask *"Where is my order?"*\n` +
-        `- **Instant Self-Service Resolutions:** Cancel eligible orders, initiate returns/replacements (` + '`RMA`' + `), or check Razorpay refund receipts\n` +
-        `- **Wallet, Loyalty & Coupons:** Check your live spendable wallet, referral rewards, loyalty tier, and active promo codes\n` +
-        `- **Chat Lifecycle Controls:** Use the status bar to mark this chat **Pending**, **Waiting for Review**, **Escalated**, **Resolved**, or **Closed**`
+        `${empathyPrefix}I can help with orders, returns, refunds, or product questions. What would you like to sort out?`
       );
     }
   }
@@ -449,7 +442,7 @@ function synthesizeDeterministicResponse({
 }
 
 /**
- * Primary 20X LLM Orchestration Engine (`processSupportTurn`)
+ * Primary support orchestration engine (`processSupportTurn`)
  */
 async function processSupportTurn({
   sessionToken,
@@ -579,12 +572,10 @@ async function processSupportTurn({
   // 7. Build deterministic baseline synthesis (guarantees structured orderCards & quickActions)
   const baseline = synthesizeDeterministicResponse({
     userMessage: cleanMessage,
-    intent: plan.intent,
     toolResults,
     sentiment,
     escalation,
     statusUpdatedTo,
-    user,
   });
 
   let finalReply = baseline.reply;
@@ -608,10 +599,10 @@ async function processSupportTurn({
         .map(m => `${m.sender.toUpperCase()}: ${m.content}`)
         .join('\n');
 
-      const llmPrompt = `You are the Bhumivera Autonomous Enterprise AI Customer Concierge.
+      const llmPrompt = `You are a friendly Bhumivera customer-support representative.
 Customer: ${user?.name || session.guestName || 'Valued Guest'}
 Chat Status: ${currentStatus}
-Sentiment: ${sentiment.label} (Frustration: ${sentiment.frustrationScore}/100, Priority: ${sentiment.priority})
+Sentiment: ${sentiment.label}
 Recent Memory:
 ${memoryTranscript || 'None'}
 
@@ -621,7 +612,7 @@ ${JSON.stringify(toolResults.map(t => ({ tool: t.name, output: t.result })))}
 ${escalation ? `Escalation Dispatched: ${JSON.stringify(escalation)}` : ''}
 
 Return a JSON object with keys:
-"reply": Warm, concise, empathetic markdown response grounded 100% in the Verified Tool Execution Data above.
+"reply": A natural, concise response grounded in the verified tool data above. Sound like a helpful person, not a bot. Do not mention AI, bots, models, tools, internal processes, or technical chat statuses. The customer has already been greeted; do not greet them or repeat their name. If a specialist is following up, explain that simply and include a ticket number or response time only when available. Avoid headings and bullet lists unless they make the answer clearer.
 "quick_actions": Optional array of up to 4 objects with {"id", "label", "prompt"}.`;
 
       const llmResponse = await Promise.race([
@@ -647,7 +638,7 @@ Return a JSON object with keys:
   const savedAssistantMessage = await appendMessage({
     sessionId: session.id,
     sender: 'assistant',
-    senderName: 'Bhumivera AI Concierge',
+    senderName: 'Bhumivera Support',
     content: finalReply,
     toolCalls: toolResults.map(t => ({ name: t.name, args: t.args, code: t.result?.code })),
     orderCards: baseline.orderCards,

@@ -248,7 +248,7 @@ const optionalAuthenticateCustomer = async (req, _res, next) => {
 };
 
 // ============================================================================
-// PART 1: CUSTOMER 20X AI SUPPORT CHAT & LIFECYCLE ENDPOINTS (`/api/support/chat/*`)
+// PART 1: CUSTOMER SUPPORT CHAT & LIFECYCLE ENDPOINTS (`/api/support/chat/*`)
 // ============================================================================
 
 /**
@@ -271,7 +271,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
 
     let messages = await getSessionMessages(session.id, 80, pool, { includeInternal: false });
     const { greeting, quickActions } = buildContextualGreeting({
-      user: req.user,
+      user: { name: req.user?.name || session.guestName },
       pageContext: { ...session.pageContext, ...pageContext },
     });
 
@@ -279,7 +279,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       const greetingMsg = await appendMessage({
         sessionId: session.id,
         sender: 'assistant',
-        senderName: 'Bhumivera AI Concierge',
+        senderName: 'Bhumivera Support',
         content: greeting,
         quickActions,
       });
@@ -313,7 +313,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
   } catch (error) {
     console.error('[AI_SUPPORT_SESSION_INIT]', error);
     const fallbackGreeting = buildContextualGreeting({
-      user: req.user,
+      user: { name: req.user?.name || req.body?.guestInfo?.name },
       pageContext: req.body?.pageContext || {},
     });
     return res.status(200).json({
@@ -327,7 +327,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
         {
           id: Date.now(),
           sender: 'assistant',
-          senderName: 'Bhumivera AI Concierge',
+          senderName: 'Bhumivera Support',
           content: fallbackGreeting.greeting,
           quickActions: fallbackGreeting.quickActions,
           orderCards: [],
@@ -402,10 +402,10 @@ router.patch('/chat/session/:sessionToken/status', supportSessionLimiter, option
     const statusDescriptions = {
       active: 'Chat reopened and marked **Active**. How else can I help you today?',
       pending: 'Chat marked as **Pending** (awaiting additional order or account details). You can reply whenever you are ready.',
-      waiting_for_review: 'Chat placed in **Waiting for Supervisor Review**. A Senior Concierge Supervisor will review your case history.',
-      escalated: 'Chat marked as **Escalated** and prioritized for our Senior Specialist Desk.',
-      resolved: 'Chat marked as **Resolved**. Thank you for shopping with Bhumivera! Feel free to rate your experience below or reopen this chat anytime.',
-      closed: 'Chat session **Closed**. Your full conversation transcript is saved. Click **Start New Chat** or **Reopen** whenever you need assistance.',
+      waiting_for_review: 'I’ve sent your conversation to a support specialist for review.',
+      escalated: 'I’ve sent your request to a support specialist.',
+      resolved: 'This chat is now closed. You can leave a quick rating below or start a new chat whenever you need us.',
+      closed: 'This chat is now closed. Start a new chat whenever you need us.',
     };
 
     const statusMsg = await appendMessage({
@@ -450,7 +450,7 @@ router.post('/chat/session/:sessionToken/rating', supportSessionLimiter, optiona
     return res.json({
       success: true,
       rating,
-      message: 'Thank you for rating your Bhumivera Concierge experience!',
+      message: 'Thank you for your feedback.',
     });
   } catch (error) {
     console.error('[AI_SUPPORT_CSAT_RATING]', error);
@@ -460,41 +460,46 @@ router.post('/chat/session/:sessionToken/rating', supportSessionLimiter, optiona
 
 /**
  * POST /api/support/chat/session/:sessionToken/end-satisfied
- * Customer confirms they are satisfied with support, ending the chat as Resolved
- * and saving their 1-5 star rating + written review for SuperAdmin.
+ * Customer ends the chat as Resolved. A rating may optionally be included.
  */
 router.post('/chat/session/:sessionToken/end-satisfied', supportSessionLimiter, optionalAuthenticateCustomer, async (req, res) => {
   try {
     const session = await getSessionByToken(req.params.sessionToken);
     if (!session) return res.status(404).json({ success: false, message: 'Chat session not found.' });
 
-    const rating = req.body?.rating !== undefined ? Math.max(1, Math.min(5, Number(req.body.rating) || 5)) : 5;
+    const rating = req.body?.rating !== undefined ? Number(req.body.rating) : null;
+    if (rating !== null && (!Number.isInteger(rating) || rating < 1 || rating > 5)) {
+      return res.status(400).json({ success: false, message: 'Choose a rating between 1 and 5 stars.' });
+    }
     const feedback = typeof req.body?.feedback === 'string' && req.body.feedback.trim()
       ? req.body.feedback.trim().slice(0, 500)
-      : 'Customer confirmed satisfied with support resolution.';
+      : '';
 
-    await updateSessionTelemetry(session.id, {
+    const telemetry = {
       status: 'resolved',
-      csatRating: rating,
-      csatFeedback: feedback,
-      resolutionNote: `Customer ended chat as satisfied (${rating}/5 ★)`,
-      closedBy: 'customer_satisfied',
-    });
+      resolutionNote: 'Customer ended the chat.',
+      closedBy: 'customer',
+    };
+    if (rating !== null) {
+      telemetry.csatRating = rating;
+      telemetry.csatFeedback = feedback || null;
+    }
+    await updateSessionTelemetry(session.id, telemetry);
 
     const sysMsg = await appendMessage({
       sessionId: session.id,
       sender: 'system',
       senderName: 'Bhumivera Support',
-      content: `✅ Chat ended by customer as **Satisfied** (${rating}/5 ★)${feedback ? ` — "${feedback}"` : ''}. Thank you for shopping with Bhumivera!`,
+      content: 'This chat has ended. Thank you for contacting Bhumivera Support.',
     });
 
     await appendSupportAuditLog({
       actorId: req.user?.id || session.userId || null,
       actorName: req.user?.name || session.guestName || 'Customer',
       actorRole: 'customer',
-      actionType: 'CUSTOMER_SATISFIED_REVIEW',
+      actionType: rating === null ? 'CUSTOMER_ENDED_CHAT' : 'CUSTOMER_SATISFIED_REVIEW',
       targetRef: `Session ${session.sessionToken}`,
-      details: `Rated ${rating}/5 stars: ${feedback}`,
+      details: rating === null ? 'Customer ended the chat.' : `Rated ${rating}/5 stars: ${feedback}`,
     });
 
     const updatedSession = await getSessionByToken(req.params.sessionToken);
@@ -698,7 +703,7 @@ router.post('/chat/message', supportChatLimiter, optionalAuthenticateCustomer, a
       success: true,
       degraded: true,
       reply:
-        'I am experiencing a momentary connection delay while reaching our live order database. You can retry your message in a few seconds, or reach our Senior Concierge team directly at **support@bhumivera.com** or WhatsApp **+91 7430985647**.',
+        'Sorry, I couldn’t connect just now. Please try again or contact support@bhumivera.com or WhatsApp +91 7430985647.',
       orderCards: [],
       quickActions: buildContextualGreeting({ user: req.user }).quickActions,
       sentiment: { score: 0, frustrationScore: 0, priority: 'Low', label: 'neutral' },
@@ -818,11 +823,11 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
     });
     if (!orderCheck.hasPlacedOrder && !validId(orderId)) {
       const botOnlyNotice =
-        'Live human support agents are available once an order is placed after payment. You can continue chatting with our AI Assistant for instant product & shipping answers, or leave a message below and our team will reply to your Email and Mobile App inbox.';
+        'A support specialist can help once you have a paid order. You can still ask us about products or shipping here, or leave a message and our team will reply by email or in the app.';
       await appendMessage({
         sessionId: session.id,
         sender: 'assistant',
-        senderName: 'Bhumivera AI Assistant',
+        senderName: 'Bhumivera Support',
         content: botOnlyNotice,
       });
       return res.status(403).json({
@@ -850,13 +855,13 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
     });
 
     const confirmationText =
-      `I have escalated your conversation to our Senior Concierge team (Ticket ${escalation.ticketId ? `#${escalation.ticketId}` : 'Assigned'} · Priority: **${escalation.priority}**). ` +
-      `Our specialists have been alerted via Email, WhatsApp, and Telegram and will respond within **${escalation.slaResponseWindow}**.`;
+      `I’ve sent your request to a support specialist${escalation.ticketId ? ` (ticket #${escalation.ticketId})` : ''}. ` +
+      `They should be in touch within ${escalation.slaResponseWindow.toLowerCase().replace(/^under /, '')}.`;
 
     await appendMessage({
       sessionId: session.id,
       sender: 'assistant',
-      senderName: 'Bhumivera AI Concierge',
+      senderName: 'Bhumivera Support',
       content: confirmationText,
       sentiment,
     });
@@ -1952,7 +1957,7 @@ router.get('/superadmin/overview', authenticateSupportAgent, async (req, res) =>
           customerEmail: s.customerEmail || s.guestEmail || null,
           rating: s.csatRating,
           feedback: s.csatFeedback || 'Satisfied with resolution',
-          assignedAgentName: s.assignedAgentName || 'AI Assistant',
+          assignedAgentName: s.assignedAgentName || 'Bhumivera Support',
           assignedRole: s.assignedRole || 'ai',
           updatedAt: s.updatedAt,
         })),

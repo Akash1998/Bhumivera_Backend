@@ -24,6 +24,7 @@ const {
   buildContextualGreeting,
   detectIntentAndToolPlan,
   processSupportTurn,
+  synthesizeDeterministicResponse,
 } = require('../services/aiSupportOrchestrator');
 const supportRoutes = require('../routes/supportRoutes');
 
@@ -678,6 +679,32 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     mockPool = createMockSupportPool(hash);
   });
 
+  it('greets customers by name once with a short, natural opening', () => {
+    const { greeting } = buildContextualGreeting({
+      user: { name: 'Aarav Sharma' },
+      pageContext: { pathname: '/' },
+    });
+
+    assert.equal(greeting, 'Hi Aarav, how can I help you today?');
+    assert.doesNotMatch(greeting, /Namaste|20X|AI|bot/i);
+  });
+
+  it('confirms support escalation in plain language without internal workflow terms', () => {
+    const { reply } = synthesizeDeterministicResponse({
+      userMessage: 'Please connect me with a human support agent.',
+      escalation: {
+        escalated: true,
+        ticketId: 8,
+        slaResponseWindow: 'Under 30 minutes',
+      },
+    });
+
+    assert.match(reply, /support specialist/i);
+    assert.match(reply, /ticket #8/i);
+    assert.match(reply, /within 30 minutes/i);
+    assert.doesNotMatch(reply, /AI|priority tier|channels alerted|Senior Concierge/i);
+  });
+
   it('1. PII Masker redacts payment cards, CVVs, passwords, OTPs, and JWTs while preserving 9-digit Order IDs', () => {
     const raw =
       'My order is #918273645 and phone is 9876543210. My card 4532 0151 1283 0366 CVV: 842 password is SuperSecret99! OTP is 482910 and Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjo3fQ.sig12345678';
@@ -1053,6 +1080,19 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     const ratingData = await ratingRes.json();
     assert.equal(ratingData.success, true);
     assert.equal(ratingData.rating, 5);
+
+    const endChatRes = await fetch(`${baseUrl}/chat/session/${token}/end-satisfied`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${TEST_JWT_SECRET}`,
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(endChatRes.status, 200);
+    const endChatData = await endChatRes.json();
+    assert.equal(endChatData.status, 'resolved');
+    assert.equal(endChatData.rating, null);
   });
 
   it('12. Live HTTP 20X Multi-Role Agent RBAC (Agent / Supervisor / Manager), Barge-In, Whisper Notes & Goodwill Credits', async () => {
