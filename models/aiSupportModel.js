@@ -117,7 +117,7 @@ const DEFAULT_AI_SUPPORT_FEATURES = Object.freeze({
   telegram_alerts_enabled: true,
   whatsapp_alerts_enabled: true,
   email_alerts_enabled: true,
-  allow_customer_status_change: true,
+  allow_customer_status_change: false,
   require_supervisor_for_paid_cancel: true,
 });
 
@@ -320,6 +320,20 @@ async function initAiSupportTables(customPool = null) {
       INDEX idx_ai_support_esc_priority_created (priority, status, created_at),
       INDEX idx_ai_support_esc_session (session_id),
       CONSTRAINT fk_ai_support_esc_session FOREIGN KEY (session_id) REFERENCES ai_support_sessions(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_support_audit_logs (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      actor_id INT NULL,
+      actor_name VARCHAR(100) NOT NULL,
+      actor_role VARCHAR(40) NOT NULL,
+      action_type VARCHAR(80) NOT NULL,
+      target_ref VARCHAR(120) NULL,
+      details TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_ai_support_audit_created (created_at, action_type)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 }
@@ -827,6 +841,50 @@ async function updateAiSupportFeatureConfig(updates = {}, customPool = null) {
   return getAiSupportFeatureConfig(pool);
 }
 
+async function appendSupportAuditLog({
+  actorId = null,
+  actorName = 'Support Staff',
+  actorRole = 'agent',
+  actionType,
+  targetRef = null,
+  details = null,
+  pool: customPool = null,
+} = {}) {
+  const pool = getPool(customPool);
+  await ensureAiSupportTables(pool);
+  try {
+    const [res] = await pool.query(
+      `INSERT INTO ai_support_audit_logs (actor_id, actor_name, actor_role, action_type, target_ref, details)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        actorId || null,
+        String(actorName || 'Support Staff').slice(0, 100),
+        String(actorRole || 'agent').slice(0, 40),
+        String(actionType || 'ACTION').slice(0, 80),
+        targetRef ? String(targetRef).slice(0, 120) : null,
+        details ? maskPII(typeof details === 'string' ? details : JSON.stringify(details)).slice(0, 4000) : null,
+      ]
+    );
+    return res?.insertId || null;
+  } catch {
+    return null;
+  }
+}
+
+async function listSupportAuditLogs({ limit = 60, pool: customPool = null } = {}) {
+  const pool = getPool(customPool);
+  await ensureAiSupportTables(pool);
+  try {
+    const [rows] = await pool.query(
+      `SELECT * FROM ai_support_audit_logs ORDER BY created_at DESC, id DESC LIMIT ?`,
+      [Math.max(1, Math.min(200, Number(limit) || 60))]
+    );
+    return rows || [];
+  } catch {
+    return [];
+  }
+}
+
 module.exports = {
   VALID_CHAT_STATUSES,
   VALID_SUPPORT_ROLES,
@@ -848,4 +906,6 @@ module.exports = {
   listEscalations,
   getAiSupportFeatureConfig,
   updateAiSupportFeatureConfig,
+  appendSupportAuditLog,
+  listSupportAuditLogs,
 };

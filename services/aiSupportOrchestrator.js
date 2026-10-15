@@ -104,17 +104,8 @@ function detectIntentAndToolPlan(message, pageContext = {}) {
   const extractedPhone = phoneMatch?.[1] || null;
   const extractedSerial = serialMatch?.[1]?.toUpperCase() || null;
 
-  // Check if customer is explicitly asking to change chat status via natural language
-  let requestedChatStatus = null;
-  if (/\b(close\s*(?:this\s*|the\s*)?chat|end\s*(?:this\s*|the\s*)?chat)\b/i.test(lower)) {
-    requestedChatStatus = 'closed';
-  } else if (/\b(mark\s*(?:as\s*)?resolved|issue\s*is\s*resolved|problem\s*solved)\b/i.test(lower)) {
-    requestedChatStatus = 'resolved';
-  } else if (/\b(waiting\s*for\s*review|mark\s*(?:as\s*)?(?:waiting\s*for\s*)?review|supervisor\s*review)\b/i.test(lower)) {
-    requestedChatStatus = 'waiting_for_review';
-  } else if (/\b(mark\s*(?:as\s*)?pending|put\s*on\s*pending)\b/i.test(lower)) {
-    requestedChatStatus = 'pending';
-  }
+  // Chat status transitions (pending, waiting_for_review, resolved, closed) are controlled strictly by Customer Support Staff
+  const requestedChatStatus = null;
 
   const toolCalls = [];
   let primaryIntent = 'general_concierge';

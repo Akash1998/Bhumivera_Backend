@@ -923,7 +923,7 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.match(rawSse, /event: done/);
   });
 
-  it('11. Live HTTP 20X Chat Lifecycle Controls: Start New Chat, Pending, Waiting for Review, Resolved, CSAT Rating, and Close Chat', async () => {
+  it('11. Live HTTP 20X Chat Lifecycle Controls: Blocks Customer Status Manipulation (403) & Enforces Support-Only Status Control', async () => {
     const newChatRes = await fetch(`${baseUrl}/chat/session`, {
       method: 'POST',
       headers: {
@@ -936,19 +936,33 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     const newChat = await newChatRes.json();
     const token = newChat.sessionToken;
 
+    // Customer attempting to mark resolved/pending is blocked with 403 STATUS_CONTROLLED_BY_SUPPORT
+    const customerStatusAttempt = await fetch(`${baseUrl}/chat/session/${token}/status`, {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${customerToken}`,
+      },
+      body: JSON.stringify({ status: 'resolved' }),
+    });
+    assert.equal(customerStatusAttempt.status, 403);
+    const forbiddenData = await customerStatusAttempt.json();
+    assert.equal(forbiddenData.code, 'STATUS_CONTROLLED_BY_SUPPORT');
+
+    // Support Executive / SuperAdmin transitions chat through all statuses
     for (const status of ['pending', 'waiting_for_review', 'resolved', 'closed', 'active']) {
-      const statusRes = await fetch(`${baseUrl}/chat/session/${token}/status`, {
+      const statusRes = await fetch(`${baseUrl}/sessions/${token}/status`, {
         method: 'PATCH',
         headers: {
           'content-type': 'application/json',
-          authorization: `Bearer ${customerToken}`,
+          authorization: `Bearer ${superAdminToken}`,
         },
         body: JSON.stringify({ status }),
       });
       assert.equal(statusRes.status, 200);
       const statusData = await statusRes.json();
       assert.equal(statusData.success, true);
-      assert.equal(statusData.status, status);
+      assert.equal(statusData.session.status, status);
     }
 
     const ratingRes = await fetch(`${baseUrl}/chat/session/${token}/rating`, {

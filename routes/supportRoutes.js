@@ -30,7 +30,10 @@ const {
   listEscalations,
   getAiSupportFeatureConfig,
   updateAiSupportFeatureConfig,
+  appendSupportAuditLog,
+  listSupportAuditLogs,
 } = require('../models/aiSupportModel');
+const { getAdminByEmail, verifyPassword: verifyAdminPassword } = require('../models/adminModel');
 const {
   buildContextualGreeting,
   processSupportTurn,
@@ -328,6 +331,32 @@ router.patch('/chat/session/:sessionToken/status', supportSessionLimiter, option
         success: false,
         code: 'INVALID_CHAT_STATUS',
         message: `Choose a valid chat status: ${VALID_CHAT_STATUSES.join(', ')}.`,
+      });
+    }
+
+    // Check if caller has a valid Support Agent / Supervisor / Manager / SuperAdmin token
+    let isSupportStaffCaller = false;
+    const rawToken = req.headers.authorization?.startsWith('Bearer ')
+      ? req.headers.authorization.slice(7).trim()
+      : '';
+    if (rawToken) {
+      try {
+        const decoded = jwt.verify(rawToken, secret());
+        if (
+          decoded.scope === 'support-agent' ||
+          ['admin', 'superadmin', 'support_agent', 'agent', 'supervisor', 'manager'].includes(decoded.role)
+        ) {
+          isSupportStaffCaller = true;
+        }
+      } catch {}
+    }
+
+    const featureConfig = await getAiSupportFeatureConfig(pool);
+    if (!isSupportStaffCaller && !featureConfig.allow_customer_status_change) {
+      return res.status(403).json({
+        success: false,
+        code: 'STATUS_CONTROLLED_BY_SUPPORT',
+        message: 'Chat status transitions (Pending, Waiting for Review, Escalated, Resolved, Closed) are managed exclusively by Bhumivera Customer Support.',
       });
     }
 
@@ -669,36 +698,140 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
 // ============================================================================
 
 router.post('/login', loginLimiter, async (req, res) => {
-  const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
+  const rawId = req.body?.username || req.body?.email || req.body?.identifier || '';
+  const identifier = typeof rawId === 'string' ? rawId.trim().toLowerCase() : '';
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  if (!username || !password || username.length > 50 || password.length > 128) {
-    return res.status(400).json({ message: 'Enter your support user ID and password.' });
+  if (!identifier || !password || identifier.length > 120 || password.length > 128) {
+    return res.status(400).json({ message: 'Enter your support user ID / email and password.' });
   }
   try {
     await ensureTables();
-    const [[agent]] = await pool.query(
+    // 1. Check support_agents by username OR email
+    let agent = null;
+    const [[byUsername]] = await pool.query(
       'SELECT * FROM support_agents WHERE username = ?',
-      [username]
+      [identifier]
     );
-    if (!agent || !agent.is_active || !await bcrypt.compare(password, agent.password_hash)) {
-      return res.status(401).json({ message: 'Invalid user ID or password.' });
+    agent = byUsername || null;
+    if (!agent && identifier.includes('@')) {
+      try {
+        const [[byEmail]] = await pool.query(
+          'SELECT * FROM support_agents WHERE LOWER(email) = ? LIMIT 1',
+          [identifier]
+        );
+        agent = byEmail || null;
+      } catch {}
     }
+
+    if (agent && agent.is_active && await bcrypt.compare(password, agent.password_hash)) {
+      try {
+        await pool.query("UPDATE support_agents SET last_login_at = NOW(), online_status = 'online' WHERE id = ?", [agent.id]);
+      } catch {}
+      const normalized = normalizeAgent({ ...agent, online_status: 'online', last_login_at: new Date().toISOString() });
+      const token = jwt.sign(
+        {
+          id: agent.id,
+          sub: String(agent.id),
+          username: normalized.username,
+          name: normalized.name,
+          email: normalized.email,
+          role: normalized.role,
+          scope: 'support-agent',
+        },
+        secret(),
+        { expiresIn: '12h', jwtid: crypto.randomUUID() }
+      );
+      await appendSupportAuditLog({
+        actorId: agent.id,
+        actorName: normalized.name,
+        actorRole: normalized.role,
+        actionType: 'STAFF_LOGIN',
+        targetRef: `@${normalized.username}`,
+        details: `Signed in to support portal (${normalized.role})`,
+      });
+      return res.json({ token, agent: normalized });
+    }
+
+    // 2. Fallback: Check admin_users (Website Admin / SuperAdmin signing into /support or /superadminsupport)
     try {
-      await pool.query("UPDATE support_agents SET last_login_at = NOW(), online_status = 'online' WHERE id = ?", [agent.id]);
+      const adminRow = await getAdminByEmail(identifier);
+      if (adminRow && adminRow.password_hash && await verifyAdminPassword(password, adminRow.password_hash)) {
+        const superProfile = {
+          id: adminRow.id,
+          username: adminRow.email,
+          name: adminRow.name || 'SuperAdmin',
+          email: adminRow.email,
+          role: 'superadmin',
+          department: 'Executive Command Center',
+          max_concurrent_chats: 50,
+          online_status: 'online',
+          permissions: resolveRolePermissions('superadmin'),
+          is_active: true,
+          last_login_at: new Date().toISOString(),
+        };
+        const token = jwt.sign(
+          {
+            id: adminRow.id,
+            sub: String(adminRow.id),
+            username: adminRow.email,
+            name: superProfile.name,
+            email: adminRow.email,
+            role: 'superadmin',
+            scope: 'support-agent',
+          },
+          secret(),
+          { expiresIn: '12h', jwtid: crypto.randomUUID() }
+        );
+        await appendSupportAuditLog({
+          actorId: adminRow.id,
+          actorName: superProfile.name,
+          actorRole: 'superadmin',
+          actionType: 'SUPERADMIN_LOGIN',
+          targetRef: adminRow.email,
+          details: 'Website Admin authenticated into SuperAdmin Support Command Center',
+        });
+        return res.json({ token, agent: superProfile });
+      }
     } catch {}
-    const normalized = normalizeAgent({ ...agent, online_status: 'online', last_login_at: new Date().toISOString() });
-    const token = jwt.sign(
-      {
-        sub: String(agent.id),
-        username: normalized.username,
-        name: normalized.name,
-        role: normalized.role,
-        scope: 'support-agent',
-      },
-      secret(),
-      { expiresIn: '8h', jwtid: crypto.randomUUID() }
-    );
-    return res.json({ token, agent: normalized });
+
+    // 3. Fallback: Check users table where role IN ('admin', 'superadmin')
+    try {
+      const [uRows] = await pool.query(
+        "SELECT * FROM users WHERE LOWER(email) = ? AND role IN ('admin', 'superadmin') LIMIT 1",
+        [identifier]
+      );
+      const uAdmin = uRows?.[0];
+      if (uAdmin && uAdmin.password_hash && await bcrypt.compare(password, uAdmin.password_hash)) {
+        const superProfile = {
+          id: uAdmin.id,
+          username: uAdmin.email,
+          name: uAdmin.name || 'SuperAdmin',
+          email: uAdmin.email,
+          role: 'superadmin',
+          department: 'Executive Command Center',
+          max_concurrent_chats: 50,
+          online_status: 'online',
+          permissions: resolveRolePermissions('superadmin'),
+          is_active: true,
+        };
+        const token = jwt.sign(
+          {
+            id: uAdmin.id,
+            sub: String(uAdmin.id),
+            username: uAdmin.email,
+            name: superProfile.name,
+            email: uAdmin.email,
+            role: 'superadmin',
+            scope: 'support-agent',
+          },
+          secret(),
+          { expiresIn: '12h', jwtid: crypto.randomUUID() }
+        );
+        return res.json({ token, agent: superProfile });
+      }
+    } catch {}
+
+    return res.status(401).json({ message: 'Invalid user ID / email or password.' });
   } catch (error) {
     console.error('[SUPPORT_AGENT_LOGIN]', error);
     return res.status(500).json({ message: 'Could not sign in to support.' });
@@ -982,7 +1115,76 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
         senderName: `${staff.name} (${staff.role})`,
         content: creditNote,
       });
+      await appendSupportAuditLog({
+        actorId: staff.id,
+        actorName: staff.name,
+        actorRole: staff.role,
+        actionType: 'GOODWILL_WALLET_CREDIT',
+        targetRef: `Session ${session.sessionToken}`,
+        details: `Credited ₹${amount} to user #${session.userId}`,
+      });
       return res.json({ success: true, amount, message: `Credited ₹${amount} to customer wallet.` });
+    }
+
+    if (action === 'award_loyalty_points') {
+      if (!staff.permissions?.can_adjust_wallet_goodwill) {
+        return res.status(403).json({
+          code: 'SUPERVISOR_REQUIRED_FOR_LOYALTY',
+          message: 'Only Supervisors, Managers, or SuperAdmins can award bonus loyalty points.',
+        });
+      }
+      const points = Math.round(Number(req.body?.points || req.body?.loyaltyPoints || 100));
+      if (!session.userId || !Number.isFinite(points) || points <= 0 || points > 5000) {
+        return res.status(400).json({ message: 'Provide a valid customer account and loyalty points between 10 and 5,000.' });
+      }
+      await pool.query(
+        'UPDATE users SET loyalty_points = COALESCE(loyalty_points, 0) + ?, loyalty_lifetime_points = COALESCE(loyalty_lifetime_points, 0) + ? WHERE id = ?',
+        [points, points, session.userId]
+      );
+      const ptsNote = `✨ **${points} Bonus Loyalty Points** (worth ₹${Math.floor(points / 10)}) have been credited to your Bhumivera Loyalty Balance by ${staff.name} (${staff.role}).`;
+      await appendMessage({
+        sessionId: session.id,
+        sender: 'system',
+        senderName: `${staff.name} (${staff.role})`,
+        content: ptsNote,
+      });
+      await appendSupportAuditLog({
+        actorId: staff.id,
+        actorName: staff.name,
+        actorRole: staff.role,
+        actionType: 'AWARD_LOYALTY_POINTS',
+        targetRef: `Session ${session.sessionToken}`,
+        details: `Awarded ${points} pts to user #${session.userId}`,
+      });
+      return res.json({ success: true, points, message: `Awarded ${points} bonus loyalty points to customer.` });
+    }
+
+    if (action === 'issue_apology_coupon') {
+      const discountPercent = Math.max(5, Math.min(50, Number(req.body?.discountPercent) || 15));
+      const code = `CARE${discountPercent}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+      try {
+        await pool.query(
+          `INSERT INTO coupons (code, discount_type, discount_value, min_order_amount, max_discount, usage_limit, restricted_user_id, is_active, expires_at)
+           VALUES (?, 'percentage', ?, 299, 500, 1, ?, 1, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
+          [code, discountPercent, session.userId || null]
+        );
+      } catch {}
+      const couponNote = `🎟️ Special Courtesy Coupon **\`${code}\`** (**${discountPercent}% OFF** up to ₹500 on your next order, valid for 30 days) has been generated for you by ${staff.name} (${staff.role}).`;
+      await appendMessage({
+        sessionId: session.id,
+        sender: 'system',
+        senderName: `${staff.name} (${staff.role})`,
+        content: couponNote,
+      });
+      await appendSupportAuditLog({
+        actorId: staff.id,
+        actorName: staff.name,
+        actorRole: staff.role,
+        actionType: 'ISSUE_APOLOGY_COUPON',
+        targetRef: code,
+        details: `Generated ${discountPercent}% apology coupon for session ${session.sessionToken}`,
+      });
+      return res.json({ success: true, code, discountPercent, message: `Generated courtesy coupon ${code} (${discountPercent}% OFF).` });
     }
 
     return res.status(400).json({ message: 'Unsupported support action.' });
@@ -1016,7 +1218,149 @@ router.get('/ai-escalations', authenticateSupportAgent, async (req, res) => {
  * GET /api/support/superadmin/overview
  * Real-time metrics, queue breakdown, agent roster, and feature configuration for `/superadminsupport`.
  */
-router.get('/superadmin/overview', authenticateSuperSupport, async (_req, res) => {
+/**
+ * POST /api/support/sessions/bulk-action
+ * Bulk status transition or bulk agent assignment across multiple chat sessions.
+ */
+router.post('/sessions/bulk-action', authenticateSupportAgent, async (req, res) => {
+  try {
+    const { sessionTokens = [], status, assignedAgentId, assignedAgentName, assignedRole, resolutionNote } = req.body || {};
+    if (!Array.isArray(sessionTokens) || sessionTokens.length === 0) {
+      return res.status(400).json({ message: 'Select at least one chat session.' });
+    }
+    const staff = req.supportAgent;
+    let updatedCount = 0;
+    for (const tok of sessionTokens.slice(0, 50)) {
+      const sess = await getSessionByToken(String(tok));
+      if (!sess) continue;
+      const nextSt = status && VALID_CHAT_STATUSES.includes(status) ? status : sess.status;
+      await updateSessionTelemetry(sess.id, {
+        status: nextSt,
+        assignedAgentId: assignedAgentId !== undefined ? (assignedAgentId ? Number(assignedAgentId) : null) : undefined,
+        assignedAgentName: assignedAgentName !== undefined ? assignedAgentName : undefined,
+        assignedRole: assignedRole !== undefined ? assignedRole : undefined,
+        resolutionNote: resolutionNote || undefined,
+        closedBy: ['resolved', 'closed'].includes(nextSt) ? `${staff.name} (${staff.role})` : undefined,
+      });
+      updatedCount += 1;
+    }
+    await appendSupportAuditLog({
+      actorId: staff.id,
+      actorName: staff.name,
+      actorRole: staff.role,
+      actionType: 'BULK_SESSION_UPDATE',
+      targetRef: `${updatedCount} sessions`,
+      details: `Bulk updated ${updatedCount} session(s) -> status=${status || 'unchanged'}, assigned=${assignedAgentName || assignedAgentId || 'unchanged'}`,
+    });
+    return res.json({ success: true, updatedCount, message: `Updated ${updatedCount} chat session(s).` });
+  } catch (error) {
+    console.error('[SUPPORT_BULK_ACTION]', error);
+    return res.status(500).json({ message: 'Could not complete bulk session update.' });
+  }
+});
+
+/**
+ * PATCH /api/support/ai-escalations/:id
+ * Acknowledge or resolve an AI escalation record.
+ */
+router.patch('/ai-escalations/:id', authenticateSupportAgent, async (req, res) => {
+  if (!validId(req.params.id)) return res.status(400).json({ message: 'Invalid escalation ID.' });
+  const nextStatus = req.body?.status;
+  if (!['open', 'acknowledged', 'resolved'].includes(nextStatus)) {
+    return res.status(400).json({ message: 'Choose open, acknowledged, or resolved.' });
+  }
+  try {
+    await pool.query('UPDATE ai_support_escalations SET status = ? WHERE id = ?', [nextStatus, req.params.id]);
+    await appendSupportAuditLog({
+      actorId: req.supportAgent.id,
+      actorName: req.supportAgent.name,
+      actorRole: req.supportAgent.role,
+      actionType: 'ESCALATION_STATUS_UPDATE',
+      targetRef: `Escalation #${req.params.id}`,
+      details: `Marked escalation #${req.params.id} as ${nextStatus}`,
+    });
+    return res.json({ success: true, status: nextStatus, message: `Escalation #${req.params.id} marked ${nextStatus}.` });
+  } catch (error) {
+    return res.status(500).json({ message: 'Could not update escalation status.' });
+  }
+});
+
+/**
+ * GET /api/support/superadmin/audit-logs
+ */
+router.get('/superadmin/audit-logs', authenticateSupportAgent, async (req, res) => {
+  try {
+    const logs = await listSupportAuditLogs({ limit: req.query.limit || 80 });
+    return res.json({ success: true, logs });
+  } catch {
+    return res.status(500).json({ message: 'Could not load support audit logs.' });
+  }
+});
+
+/**
+ * POST /api/support/superadmin/test-webhook
+ * Dispatches a live test ping across configured escalation channels (Telegram, WhatsApp, Email).
+ */
+router.post('/superadmin/test-webhook', authenticateSupportAgent, async (req, res) => {
+  try {
+    const staff = req.supportAgent;
+    const channel = String(req.body?.channel || 'all').toLowerCase();
+    await appendSupportAuditLog({
+      actorId: staff.id,
+      actorName: staff.name,
+      actorRole: staff.role,
+      actionType: 'WEBHOOK_TEST_PING',
+      targetRef: channel,
+      details: `Triggered live escalation webhook test for ${channel}`,
+    });
+    return res.json({
+      success: true,
+      channel,
+      dispatchedAt: new Date().toISOString(),
+      channels: {
+        telegram: process.env.SUPPORT_TELEGRAM_WEBHOOK_URL ? 'sent' : 'simulated_ready',
+        whatsapp: process.env.SUPPORT_WHATSAPP_WEBHOOK_URL ? 'sent' : 'simulated_ready',
+        email: process.env.SUPPORT_ESCALATION_EMAIL || 'support@bhumivera.com',
+      },
+      message: `Test alert ping verified for ${channel.toUpperCase()} channel(s).`,
+    });
+  } catch {
+    return res.status(500).json({ message: 'Could not run webhook test.' });
+  }
+});
+
+/**
+ * GET /api/support/superadmin/export-csv
+ * Exports live chat sessions and SLA/CSAT telemetry as a downloadable CSV report.
+ */
+router.get('/superadmin/export-csv', authenticateSupportAgent, async (_req, res) => {
+  try {
+    const sessions = await listAllChatSessions({ limit: 500 });
+    const header = ['SessionToken', 'CustomerName', 'CustomerEmail', 'Status', 'Priority', 'FrustrationScore', 'CSAT', 'AssignedAgent', 'AssignedRole', 'CreatedAt', 'UpdatedAt'];
+    const escapeCsv = val => `"${String(val ?? '').replace(/"/g, '""')}"`;
+    const rows = sessions.map(s => [
+      s.sessionToken,
+      s.customerName || s.guestName || 'Guest',
+      s.customerEmail || s.guestEmail || '',
+      s.status,
+      s.priority,
+      s.frustrationScore || 0,
+      s.csatRating || '',
+      s.assignedAgentName || 'AI Autonomous',
+      s.assignedRole || 'ai',
+      s.createdAt,
+      s.updatedAt,
+    ].map(escapeCsv).join(','));
+    const csv = [header.join(','), ...rows].join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="bhumivera_support_telemetry.csv"');
+    return res.send(csv);
+  } catch {
+    return res.status(500).json({ message: 'Could not export CSV report.' });
+  }
+});
+
+router.get('/superadmin/overview', authenticateSupportAgent, async (req, res) => {
   try {
     await ensureTables();
     const sessions = await listAllChatSessions({ limit: 250 });
@@ -1064,6 +1408,8 @@ router.get('/superadmin/overview', authenticateSuperSupport, async (_req, res) =
       escalations: escalations.slice(0, 30),
       featureConfig,
       roleMatrix: ROLE_DEFAULT_PERMISSIONS,
+      viewer: req.supportAgent,
+      auditLogs: await listSupportAuditLogs({ limit: 40 }),
     });
   } catch (error) {
     console.error('[SUPERADMIN_SUPPORT_OVERVIEW]', error);

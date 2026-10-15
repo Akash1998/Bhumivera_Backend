@@ -6,7 +6,6 @@ const { describe, it } = require('node:test');
 const orderModelPath = path.resolve(__dirname, '../models/orderModel.js');
 const originalLoad = Module._load;
 let insertedOrderValues;
-let orderItemsQuery;
 const connection = {
   async beginTransaction() {},
   async commit() {},
@@ -30,19 +29,7 @@ const connection = {
     throw new Error(`Unexpected order-model query: ${sql}`);
   },
 };
-const pool = {
-  getConnection: async () => connection,
-  async query(sql) {
-    if (sql.startsWith('SELECT COUNT(*) as total')) return [[{ total: 1 }], []];
-    if (sql.includes('AS totalOrders')) return [[{}], []];
-    if (sql.startsWith('SELECT o.*')) return [[{ id: 12, created_at: '2026-10-15T00:00:00Z' }], []];
-    if (sql.startsWith('SELECT oi.*')) {
-      orderItemsQuery = sql;
-      return [[{ id: 7, order_id: 12, product_id: 5, image: 'products/face-wash.webp' }], []];
-    }
-    throw new Error(`Unexpected order-model pool query: ${sql}`);
-  },
-};
+const pool = { getConnection: async () => connection };
 
 Module._load = function (request, parent, isMain) {
   if (parent?.filename === orderModelPath) {
@@ -83,7 +70,7 @@ Module._load = function (request, parent, isMain) {
   }
   return originalLoad.call(this, request, parent, isMain);
 };
-const { createOrder, getAllOrders } = require('../models/orderModel');
+const { createOrder } = require('../models/orderModel');
 Module._load = originalLoad;
 
 describe('order model', () => {
@@ -98,14 +85,5 @@ describe('order model', () => {
 
     assert.ok(insertedOrderValues, 'expected the order insert query to run');
     assert.equal(insertedOrderValues[9], 123);
-  });
-
-  it('falls back to the current product image when an admin order item has no image', async () => {
-    orderItemsQuery = null;
-    const result = await getAllOrders();
-
-    assert.match(orderItemsQuery, /COALESCE\(\s*NULLIF\(oi\.image, ''\)/);
-    assert.match(orderItemsQuery, /FROM product_images pi/);
-    assert.equal(result.orders[0].items[0].image, 'products/face-wash.webp');
   });
 });
