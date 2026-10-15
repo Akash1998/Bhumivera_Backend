@@ -1,6 +1,7 @@
 'use strict';
 
 const https = require('https');
+const crypto = require('crypto');
 const { maskPII } = require('../utils/piiMasker');
 const {
   createOrResumeSession,
@@ -23,6 +24,43 @@ function resolveTelegramBotToken(featureConfig = {}) {
     featureConfig?.telegram_bot_token ||
     DEFAULT_TELEGRAM_BOT_TOKEN
   );
+}
+
+function getTelegramWebhookUrl() {
+  const configuredUrl = process.env.SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL;
+  const baseUrl = process.env.API_BASE_URL || 'https://service.bhumivera.com';
+  const url = new URL(configuredUrl || '/api/support/telegram/webhook', baseUrl);
+  if (url.protocol !== 'https:') throw new Error('Telegram webhook URL must use HTTPS.');
+  return url.toString();
+}
+
+function getTelegramWebhookSecret(botToken = resolveTelegramBotToken()) {
+  return process.env.SUPPORT_TELEGRAM_WEBHOOK_SECRET ||
+    crypto.createHmac('sha256', botToken).update('bhumivera-telegram-webhook').digest('hex');
+}
+
+async function registerTelegramWebhook({
+  botToken = resolveTelegramBotToken(),
+  webhookUrl = getTelegramWebhookUrl(),
+  httpCallFn = callTelegramApi,
+} = {}) {
+  const secretToken = getTelegramWebhookSecret(botToken);
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(secretToken)) {
+    throw new Error('SUPPORT_TELEGRAM_WEBHOOK_SECRET must contain 1–256 letters, numbers, underscores, or hyphens.');
+  }
+  const result = await httpCallFn('setWebhook', {
+    url: webhookUrl,
+    secret_token: secretToken,
+    allowed_updates: ['message', 'edited_message'],
+  }, botToken);
+  if (!result?.ok) throw new Error(result?.description || result?.error || 'Telegram rejected webhook registration.');
+  return { ok: true, webhookUrl };
+}
+
+function isValidTelegramWebhookSecret(secretToken, botToken = resolveTelegramBotToken()) {
+  const expected = Buffer.from(getTelegramWebhookSecret(botToken));
+  const actual = Buffer.from(String(secretToken || ''));
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
 /**
@@ -278,6 +316,10 @@ module.exports = {
   DEFAULT_TELEGRAM_BOT_USERNAME,
   DEFAULT_TELEGRAM_BOT_TOKEN,
   resolveTelegramBotToken,
+  getTelegramWebhookUrl,
+  getTelegramWebhookSecret,
+  registerTelegramWebhook,
+  isValidTelegramWebhookSecret,
   callTelegramApi,
   sendTelegramReplyToCustomer,
   processIncomingTelegramUpdate,

@@ -11,6 +11,8 @@ Set `NODE_ENV=production` and provide:
 
 If the corresponding feature is enabled, configure both Razorpay API credentials. To receive Razorpay events, configure `RAZORPAY_WEBHOOK_SECRET` and point the provider to `POST /api/webhooks/razorpay`, subscribing to `payment.captured`, `payment.failed`, `refund.created`, `refund.processed`, and `refund.failed`. Use the webhook secret from the provider dashboard, which is separate from the API key secret.
 
+Telegram customer support registers its incoming webhook automatically at startup. Set `API_BASE_URL` to the public HTTPS backend origin (or override with `SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL`); Telegram webhook requests are authenticated using `SUPPORT_TELEGRAM_WEBHOOK_SECRET` or a key derived from the bot token. `SUPPORT_TELEGRAM_WEBHOOK_URL` remains the separate outgoing escalation notification URL.
+
 For more than one backend instance, set the same `REDIS_URL` or `RATE_LIMIT_REDIS_URL` on every instance to share rate-limit counters. A single instance can use the built-in in-memory rate-limit store.
 
 Set `REDIS_URL` or `CACHE_REDIS_URL` on each backend instance to enable Redis response caching. The cache is restricted to public product, category, subcategory and active flash-sale GET endpoints; authenticated/cookie requests, explicitly private or no-store responses, and search/referral-preview endpoints are not cached. Entries expire after 60 seconds, and responses larger than 128 KiB are skipped. Redis cache connection or request failures do not prevent API requests from continuing. The cache reduces repeated eligible MySQL reads but does not replace persistent MySQL data or configure Railway's MySQL RAM limit.

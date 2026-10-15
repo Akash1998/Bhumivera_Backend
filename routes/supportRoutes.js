@@ -39,6 +39,8 @@ const {
 const { computeQuantumHash512 } = require('../utils/quantumCrypto');
 const {
   DEFAULT_TELEGRAM_BOT_USERNAME,
+  resolveTelegramBotToken,
+  isValidTelegramWebhookSecret,
   sendTelegramReplyToCustomer,
   processIncomingTelegramUpdate,
   syncTelegramBotUpdates,
@@ -1873,6 +1875,13 @@ router.delete('/sessions/:sessionToken', authenticateSupportAgent, async (req, r
  */
 router.post('/telegram/webhook', async (req, res) => {
   try {
+    const featureConfig = await getAiSupportFeatureConfig(pool);
+    if (!isValidTelegramWebhookSecret(
+      req.get('x-telegram-bot-api-secret-token'),
+      resolveTelegramBotToken(featureConfig)
+    )) {
+      return res.status(401).json({ ok: false, message: 'Invalid Telegram webhook secret.' });
+    }
     const result = await processIncomingTelegramUpdate(req.body || {}, { pool });
     return res.status(200).json({ ok: true, ...result });
   } catch (error) {

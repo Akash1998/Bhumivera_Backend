@@ -26,6 +26,12 @@ const {
   processSupportTurn,
   synthesizeDeterministicResponse,
 } = require('../services/aiSupportOrchestrator');
+const {
+  getTelegramWebhookSecret,
+  getTelegramWebhookUrl,
+  isValidTelegramWebhookSecret,
+  registerTelegramWebhook,
+} = require('../services/telegramSupportService');
 const supportRoutes = require('../routes/supportRoutes');
 
 const TEST_JWT_SECRET = 'ai-support-live-test-secret-with-more-than-32-chars';
@@ -705,6 +711,25 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.doesNotMatch(reply, /AI|priority tier|channels alerted|Senior Concierge/i);
   });
 
+  it('registers an authenticated HTTPS Telegram webhook', async () => {
+    let request;
+    const result = await registerTelegramWebhook({
+      botToken: 'test-bot-token',
+      httpCallFn: async (method, payload, token) => {
+        request = { method, payload, token };
+        return { ok: true };
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(request.method, 'setWebhook');
+    assert.equal(request.payload.url, getTelegramWebhookUrl());
+    assert.equal(request.payload.secret_token, getTelegramWebhookSecret('test-bot-token'));
+    assert.equal(request.token, 'test-bot-token');
+    assert.equal(isValidTelegramWebhookSecret(request.payload.secret_token, 'test-bot-token'), true);
+    assert.equal(isValidTelegramWebhookSecret('invalid', 'test-bot-token'), false);
+  });
+
   it('1. PII Masker redacts payment cards, CVVs, passwords, OTPs, and JWTs while preserving 9-digit Order IDs', () => {
     const raw =
       'My order is #918273645 and phone is 9876543210. My card 4532 0151 1283 0366 CVV: 842 password is SuperSecret99! OTP is 482910 and Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjo3fQ.sig12345678';
@@ -1138,7 +1163,9 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     // Log in as Manager (concierge_lead)
     const loginRes = await fetch(`${baseUrl}/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+      },
       body: JSON.stringify({ username: 'concierge_lead', password: 'SupportPass!2026' }),
     });
     assert.equal(loginRes.status, 200);
@@ -1353,7 +1380,10 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     // Telegram Webhook (/telegram/webhook) links customer Telegram chat_id to session
     const tgRes = await fetch(`${baseUrl}/telegram/webhook`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-telegram-bot-api-secret-token': getTelegramWebhookSecret(),
+      },
       body: JSON.stringify({
         update_id: 9001,
         message: {

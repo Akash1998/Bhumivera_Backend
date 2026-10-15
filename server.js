@@ -23,6 +23,11 @@ const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
 const migrations = require("./migrations");
 const { approveDueReferralClaims } = require("./models/referralModel");
+const {
+  registerTelegramWebhook,
+  resolveTelegramBotToken,
+} = require("./services/telegramSupportService");
+const { getAiSupportFeatureConfig } = require("./models/aiSupportModel");
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 if (JWT_SECRET === 'fallback_secret') {
@@ -77,6 +82,8 @@ const app = express();
 let databaseReady = false;
 let startupFailure = null;
 let referralApprovalTimer = null;
+let telegramWebhookTimer = null;
+let telegramWebhookSetupRunning = false;
 let systemDiagnostics = null;
 app.use(createRequestObservability());
 app.use(clientContextMiddleware());
@@ -268,6 +275,28 @@ const initializeDatabase = async () => {
       referralApprovalTimer = setInterval(runReferralApprovals, 15000);
       referralApprovalTimer.unref();
     }
+    if (!telegramWebhookTimer) {
+      const configureTelegramWebhook = async () => {
+        if (telegramWebhookSetupRunning) return;
+        telegramWebhookSetupRunning = true;
+        try {
+          const featureConfig = await getAiSupportFeatureConfig(pool);
+          await registerTelegramWebhook({
+            botToken: resolveTelegramBotToken(featureConfig),
+          });
+          clearInterval(telegramWebhookTimer);
+          telegramWebhookTimer = null;
+          console.log("[TELEGRAM] Incoming bot webhook registered.");
+        } catch (error) {
+          console.error("[TELEGRAM_WEBHOOK_SETUP]", error.message);
+        } finally {
+          telegramWebhookSetupRunning = false;
+        }
+      };
+      void configureTelegramWebhook();
+      telegramWebhookTimer = setInterval(configureTelegramWebhook, 60000);
+      telegramWebhookTimer.unref();
+    }
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {
     databaseReady = false;
@@ -298,6 +327,7 @@ const shutdown = signal => {
     clearTimeout(forceCloseTimer);
     const shutdownTasks = [
         Promise.resolve().then(() => clearInterval(referralApprovalTimer)),
+        Promise.resolve().then(() => clearInterval(telegramWebhookTimer)),
       Promise.resolve().then(() => systemDiagnostics?.close()),
       pool.end(),
       closeRateLimitStore(),
