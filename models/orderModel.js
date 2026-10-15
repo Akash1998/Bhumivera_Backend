@@ -457,7 +457,7 @@ const getOrdersByUser = async (userId) => {
     const [items] = await pool.query(
       `SELECT oi.*,
         COALESCE(
-          oi.image,
+          NULLIF(oi.image, ''),
           (SELECT pi.file_path FROM product_images pi
            WHERE pi.product_id = oi.product_id AND pi.media_type = 'image'
            ORDER BY pi.sort_order ASC, pi.id ASC LIMIT 1)
@@ -516,7 +516,18 @@ const getAllOrders = async (filters = {}) => {
   let itemsMap = {};
   if (orderIds.length > 0) {
     const placeholders = orderIds.map(() => '?').join(',');
-    const [allItems] = await pool.query(`SELECT * FROM order_items WHERE order_id IN (${placeholders})`, orderIds);
+    const [allItems] = await pool.query(
+      `SELECT oi.*,
+        COALESCE(
+          NULLIF(oi.image, ''),
+          (SELECT pi.file_path FROM product_images pi
+           WHERE pi.product_id = oi.product_id AND pi.media_type = 'image'
+           ORDER BY pi.sort_order ASC, pi.id ASC LIMIT 1)
+        ) AS image
+       FROM order_items oi
+       WHERE oi.order_id IN (${placeholders})`,
+      orderIds
+    );
     for (const it of allItems) {
       if (!itemsMap[it.order_id]) itemsMap[it.order_id] = [];
       itemsMap[it.order_id].push(it);
