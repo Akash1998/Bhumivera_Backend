@@ -213,7 +213,8 @@ const createOrder = async ({
       await conn.query('UPDATE products SET quantity = quantity - ? WHERE id = ?', [requestedQty, productId]);
 
       // Handle image
-      let itemImage = item.image || (Array.isArray(item.images) ? item.images[0] : null);
+      let itemImage = item.image || item.image_url ||
+        (Array.isArray(item.images) ? item.images[0] : null);
 
       processedItems.push({
         product_id: productId,
@@ -457,7 +458,7 @@ const getOrdersByUser = async (userId) => {
     const [items] = await pool.query(
       `SELECT oi.*,
         COALESCE(
-          oi.image,
+          NULLIF(oi.image, ''),
           (SELECT pi.file_path FROM product_images pi
            WHERE pi.product_id = oi.product_id AND pi.media_type = 'image'
            ORDER BY pi.sort_order ASC, pi.id ASC LIMIT 1)
@@ -516,10 +517,22 @@ const getAllOrders = async (filters = {}) => {
   let itemsMap = {};
   if (orderIds.length > 0) {
     const placeholders = orderIds.map(() => '?').join(',');
-    const [allItems] = await pool.query(`SELECT * FROM order_items WHERE order_id IN (${placeholders})`, orderIds);
+    const [allItems] = await pool.query(
+      `SELECT oi.*,
+        COALESCE(
+          NULLIF(oi.image, ''),
+          (SELECT pi.file_path FROM product_images pi
+           WHERE pi.product_id = oi.product_id AND pi.media_type = 'image'
+           ORDER BY pi.sort_order ASC, pi.id ASC LIMIT 1)
+        ) AS resolved_image
+       FROM order_items oi
+       WHERE oi.order_id IN (${placeholders})`,
+      orderIds
+    );
     for (const it of allItems) {
       if (!itemsMap[it.order_id]) itemsMap[it.order_id] = [];
-      itemsMap[it.order_id].push(it);
+      const { resolved_image: image, ...item } = it;
+      itemsMap[it.order_id].push({ ...item, image });
     }
   }
 
@@ -548,8 +561,19 @@ const getOrderById = async (orderId) => {
   );
   if (orders.length === 0) return null;
   const o = orders[0];
-  const [items] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [o.id]);
-  o.items = items;
+  const [items] = await pool.query(
+    `SELECT oi.*,
+      COALESCE(
+        NULLIF(oi.image, ''),
+        (SELECT pi.file_path FROM product_images pi
+         WHERE pi.product_id = oi.product_id AND pi.media_type = 'image'
+         ORDER BY pi.sort_order ASC, pi.id ASC LIMIT 1)
+      ) AS resolved_image
+     FROM order_items oi
+     WHERE oi.order_id = ?`,
+    [o.id]
+  );
+  o.items = items.map(({ resolved_image: image, ...item }) => ({ ...item, image }));
   if (Number(o.impact_amount) > 0) {
     const [[impact]] = await pool.query(
       'SELECT project_key, amount, status FROM impact_contributions WHERE order_id = ?',
