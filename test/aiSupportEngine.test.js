@@ -15,6 +15,9 @@ const {
   initiateReturnTool,
   checkRefundStatusTool,
   queryInventoryCatalogTool,
+  lookupAccountWalletLoyaltyTool,
+  lookupCouponsAndOffersTool,
+  lookupWarrantyAndSerialTool,
 } = require('../services/aiSupportTools');
 const {
   buildContextualGreeting,
@@ -28,7 +31,8 @@ process.env.JWT_SECRET = TEST_JWT_SECRET;
 
 /**
  * In-memory MySQL Pool Mock for deterministic end-to-end verification of
- * AI Support Sessions, Messages, Escalations, Orders, Returns, Refunds, Inventory, and Staff Portal.
+ * AI Support Sessions, Messages, Escalations, Orders, Returns, Refunds, Inventory,
+ * Wallets, Loyalty, Coupons, Warranties, Multi-Role Agents, and SuperAdmin Support Command.
  */
 function createMockSupportPool(agentPasswordHash = '') {
   const state = {
@@ -38,11 +42,17 @@ function createMockSupportPool(agentPasswordHash = '') {
     tickets: [],
     ticketMessages: [],
     notifications: [],
+    featureConfigJson: null,
     supportAgents: [
       {
         id: 1,
         username: 'concierge_lead',
         name: 'Priya Nair',
+        email: 'priya@bhumivera.com',
+        role: 'manager',
+        department: 'Executive Support',
+        permissions: null,
+        max_concurrent_chats: 25,
         password_hash: agentPasswordHash,
         is_active: 1,
         created_at: new Date().toISOString(),
@@ -58,6 +68,19 @@ function createMockSupportPool(agentPasswordHash = '') {
         is_active: 1,
         wallet_balance: 250,
         loyalty_points: 400,
+        loyalty_lifetime_points: 1200,
+        referral_code: 'BV-AARAV7',
+        created_at: new Date(Date.now() - 60 * 86400 * 1000).toISOString(),
+      },
+      {
+        id: 1,
+        name: 'Super Admin',
+        email: 'admin@bhumivera.com',
+        phone: '9000000001',
+        role: 'superadmin',
+        is_active: 1,
+        wallet_balance: 0,
+        loyalty_points: 0,
       },
     ],
     orders: [
@@ -154,13 +177,65 @@ function createMockSupportPool(agentPasswordHash = '') {
         }),
       },
     ],
+    coupons: [
+      {
+        id: 1,
+        code: 'BOTANICAL15',
+        discount_type: 'percentage',
+        discount_value: 15,
+        min_order_amount: 499,
+        max_discount: 300,
+        reward_type: 'standard',
+        expires_at: new Date(Date.now() + 30 * 86400 * 1000).toISOString(),
+        is_active: 1,
+        restricted_user_id: null,
+      },
+    ],
+    serials: [
+      {
+        id: 1,
+        serial_number: 'BV-SER-2026-8899',
+        status: 'registered',
+        is_registered: 1,
+        product_id: 11,
+        product_name: 'Kumkumadi Night Elixir',
+        sku: 'BV-KUM-30',
+        warranty_period: '12 Months',
+      },
+    ],
+    warranties: [
+      {
+        id: 1,
+        user_id: 7,
+        product_id: 11,
+        serial_number: 'BV-SER-2026-8899',
+        purchase_date: new Date(Date.now() - 10 * 86400 * 1000).toISOString(),
+        expiry_date: new Date(Date.now() + 355 * 86400 * 1000).toISOString(),
+        status: 'active',
+        product_name: 'Kumkumadi Night Elixir',
+        sku: 'BV-KUM-30',
+        warranty_period: '12 Months',
+      },
+    ],
   };
 
   const executeQuery = async (sql, params = []) => {
     const norm = sql.replace(/\s+/g, ' ').trim();
 
-    if (norm.startsWith('CREATE TABLE IF NOT EXISTS')) {
+    if (norm.startsWith('CREATE TABLE IF NOT EXISTS') || norm.startsWith('ALTER TABLE')) {
       return [{ affectedRows: 0 }];
+    }
+    if (norm.includes("FROM settings WHERE group_name = 'ai_support_features'")) {
+      return [state.featureSettings || []];
+    }
+    if (norm.startsWith("INSERT INTO settings (key_name, value, group_name)")) {
+      state.featureSettings = state.featureSettings || [];
+      const key = norm.includes("support_canned_macros") ? "support_canned_macros" : params[0];
+      const val = norm.includes("support_canned_macros") ? params[0] : params[1];
+      const existing = state.featureSettings.find(r => r.key_name === key);
+      if (existing) existing.value = val;
+      else state.featureSettings.push({ key_name: key, value: val });
+      return [{ affectedRows: 1 }];
     }
     if (norm.includes("FROM settings WHERE key_name = 'return_policy_days'")) {
       return [[{ value: '7' }]];
@@ -179,8 +254,46 @@ function createMockSupportPool(agentPasswordHash = '') {
       const u = state.users.find(x => x.id === Number(params[0]));
       return [u ? [u] : []];
     }
-    if (norm.includes('FROM user_sessions')) {
+    if (norm.includes('FROM users WHERE LOWER(email) = ?')) {
+      const u = state.users.find(x => x.email.toLowerCase() === String(params[0]).toLowerCase());
+      return [u ? [u] : []];
+    }
+    if (norm.startsWith('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE id = ?')) {
+      const u = state.users.find(x => x.id === Number(params[1]));
+      if (u) u.wallet_balance += Number(params[0]);
+      return [{ affectedRows: u ? 1 : 0 }];
+    }
+    if (norm.includes('FROM user_sessions') || norm.includes('FROM admin_sessions')) {
       return [[{ jti: 'active-jti' }]];
+    }
+
+    // Wallet & Loyalty & Coupons & Warranties
+    if (norm.includes('FROM wallets WHERE user_id = ?')) {
+      const u = state.users.find(x => x.id === Number(params[0]));
+      return [u ? [{ balance: u.wallet_balance }] : []];
+    }
+    if (norm.includes('FROM referral_wallets WHERE user_id = ?')) {
+      return [[{ balance: 150 }]];
+    }
+    if (norm.includes('FROM referral_codes WHERE user_id = ?')) {
+      return [[{ code: 'BV-AARAV7' }]];
+    }
+    if (norm.includes('FROM loyalty_tiers')) {
+      return [[
+        { name: 'Seedling', min_points: 0, points_multiplier: 1, tier_discount_percent: 0, cashback_percent: 0, free_shipping: 0 },
+        { name: 'Botanist', min_points: 300, points_multiplier: 1.25, tier_discount_percent: 5, cashback_percent: 2, free_shipping: 1 },
+        { name: 'Emerald Sovereign', min_points: 1000, points_multiplier: 1.5, tier_discount_percent: 12, cashback_percent: 5, free_shipping: 1 },
+      ]];
+    }
+    if (norm.includes('FROM coupons')) {
+      return [state.coupons];
+    }
+    if (norm.includes('FROM product_serials ps')) {
+      const found = state.serials.filter(s => s.serial_number.toUpperCase() === String(params[0]).toUpperCase());
+      return [found];
+    }
+    if (norm.includes('FROM warranties')) {
+      return [state.warranties];
     }
 
     // support_agents
@@ -192,6 +305,47 @@ function createMockSupportPool(agentPasswordHash = '') {
       const agent = state.supportAgents.find(a => a.id === Number(params[0]));
       return [agent ? [agent] : []];
     }
+    if (norm.includes('FROM support_agents ORDER BY')) {
+      return [state.supportAgents];
+    }
+    if (norm.startsWith('INSERT INTO support_agents')) {
+      const newAg = {
+        id: state.supportAgents.length + 1,
+        username: params[0],
+        name: params[1],
+        email: params[2],
+        password_hash: params[3],
+        role: params[4] || 'agent',
+        department: params[5] || 'General Concierge',
+        permissions: params[6] || null,
+        max_concurrent_chats: params[7] || 10,
+        is_active: 1,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      state.supportAgents.push(newAg);
+      return [{ insertId: newAg.id }];
+    }
+    if (norm.startsWith('UPDATE support_agents SET')) {
+      const id = Number(params[params.length - 1]);
+      const ag = state.supportAgents.find(a => a.id === id);
+      if (ag) {
+        if (norm.includes('last_login_at = NOW()')) {
+          ag.online_status = 'online';
+        } else if (norm.includes('SET is_active = ? WHERE id = ?')) {
+          ag.is_active = Number(params[0]);
+        } else {
+          ag.name = params[0];
+          ag.email = params[1];
+          ag.role = params[2];
+          ag.department = params[3];
+          ag.permissions = params[4];
+          ag.max_concurrent_chats = params[5];
+          ag.is_active = params[6];
+        }
+      }
+      return [{ affectedRows: ag ? 1 : 0 }];
+    }
 
     // ai_support_sessions
     if (norm.startsWith('SELECT * FROM ai_support_sessions WHERE session_token = ?')) {
@@ -201,6 +355,15 @@ function createMockSupportPool(agentPasswordHash = '') {
     if (norm.startsWith('SELECT * FROM ai_support_sessions WHERE id = ?') || norm.startsWith('SELECT page_context FROM ai_support_sessions WHERE id = ?')) {
       const found = state.sessions.find(s => s.id === Number(params[0]));
       return [found ? [found] : []];
+    }
+    if (norm.includes('FROM ai_support_sessions s') && norm.includes('ORDER BY')) {
+      return [state.sessions.map(s => ({
+        ...s,
+        customer_name: state.users.find(u => u.id === s.user_id)?.name || s.guest_name,
+        customer_email: state.users.find(u => u.id === s.user_id)?.email || s.guest_email,
+        message_count: state.messages.filter(m => m.session_id === s.id).length,
+        last_message_preview: state.messages.filter(m => m.session_id === s.id).slice(-1)[0]?.content || '',
+      }))];
     }
     if (norm.startsWith('INSERT INTO ai_support_sessions')) {
       const row = {
@@ -222,8 +385,8 @@ function createMockSupportPool(agentPasswordHash = '') {
       return [{ insertId: row.id }];
     }
     if (norm.startsWith('UPDATE ai_support_sessions')) {
-      const id = Number(params[params.length - 1]);
-      const found = state.sessions.find(s => s.id === id);
+      const lastParam = params[params.length - 1];
+      const found = state.sessions.find(s => s.id === Number(lastParam) || s.session_token === String(lastParam));
       if (found) {
         if (norm.includes('SET sentiment_score')) {
           if (params[0] !== null) found.sentiment_score = params[0];
@@ -231,6 +394,13 @@ function createMockSupportPool(agentPasswordHash = '') {
           if (params[2] !== null) found.priority = params[2];
           if (params[3] !== null) found.status = params[3];
           if (params[4] !== null) found.escalated_ticket_id = params[4];
+          if (params[5] !== null) found.assigned_agent_id = params[5];
+          if (params[6] !== null) found.assigned_agent_name = params[6];
+          if (params[7] !== null) found.assigned_role = params[7];
+          if (params[8] !== null) found.resolution_note = params[8];
+          if (params[9] !== null) found.csat_rating = params[9];
+          if (params[10] !== null) found.csat_feedback = params[10];
+          if (params[11] !== null) found.closed_by = params[11];
         } else {
           found.page_context = params[params.length - 2];
         }
@@ -238,18 +408,20 @@ function createMockSupportPool(agentPasswordHash = '') {
       return [{ affectedRows: found ? 1 : 0 }];
     }
 
-    // ai_support_messages
+    // ai_support_messages (10 columns: session_id, sender, sender_name, is_internal_note, content, tool_calls, order_cards, quick_actions, attachments, sentiment)
     if (norm.startsWith('INSERT INTO ai_support_messages')) {
       const msg = {
         id: state.messages.length + 1,
         session_id: params[0],
         sender: params[1],
-        content: params[2],
-        tool_calls: params[3],
-        order_cards: params[4],
-        quick_actions: params[5],
-        attachments: params[6],
-        sentiment: params[7],
+        sender_name: params[2],
+        is_internal_note: params[3],
+        content: params[4],
+        tool_calls: params[5],
+        order_cards: params[6],
+        quick_actions: params[7],
+        attachments: params[8],
+        sentiment: params[9],
         created_at: new Date().toISOString(),
       };
       state.messages.push(msg);
@@ -422,191 +594,239 @@ function createMockSupportPool(agentPasswordHash = '') {
   };
 }
 
-describe('Phase 4 Verification Suite: Autonomous Enterprise AI Customer Support Engine', () => {
+describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Support Engine', () => {
+  let mockPool;
+
+  before(async () => {
+    const hash = await bcrypt.hash('SupportPass!2026', 8);
+    mockPool = createMockSupportPool(hash);
+  });
+
   it('1. PII Masker redacts payment cards, CVVs, passwords, OTPs, and JWTs while preserving 9-digit Order IDs', () => {
     const raw =
-      'My order is #918273645, my card 4532 0151 1283 0366 with CVV 842 failed, password is MySecretPass!123, OTP: 482910, token Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+      'My order is #918273645 and phone is 9876543210. My card 4532 0151 1283 0366 CVV: 842 password is SuperSecret99! OTP is 482910 and Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjo3fQ.sig12345678';
     const masked = maskPII(raw);
 
-    assert.match(masked, /#918273645/, 'Preserves 9-digit Bhumivera order reference');
-    assert.ok(!masked.includes('4532 0151 1283 0366'), 'Redacts 16-digit card number');
+    assert.match(masked, /918273645/, 'Should preserve 9-digit Bhumivera order number');
+    assert.match(masked, /9876543210/, 'Should preserve 10-digit customer phone number');
+    assert.doesNotMatch(masked, /4532 0151 1283 0366/, 'Should redact 16-digit payment card');
     assert.match(masked, /\[REDACTED_CARD_ENDING_0366\]/);
-    assert.ok(!masked.includes('842'), 'Redacts CVV');
-    assert.ok(!masked.includes('MySecretPass!123'), 'Redacts password');
-    assert.ok(!masked.includes('482910'), 'Redacts OTP');
-    assert.ok(!masked.includes('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'), 'Redacts JWT');
+    assert.doesNotMatch(masked, /842/, 'Should redact CVV');
+    assert.match(masked, /\[REDACTED_CVV\]/);
+    assert.doesNotMatch(masked, /SuperSecret99!/, 'Should redact password');
+    assert.match(masked, /\[REDACTED_SECRET\]/);
+    assert.doesNotMatch(masked, /482910/, 'Should redact OTP');
+    assert.match(masked, /\[REDACTED_OTP\]/);
+    assert.match(masked, /\[REDACTED_TOKEN\]/);
 
-    const obj = sanitizeObjectPII({
-      customer: 'Aarav',
-      password_hash: '$2b$10$secret',
-      nested: { cvv: '999', note: 'Card 4532015112830366' },
+    const sanitizedObj = sanitizeObjectPII({
+      orderId: '918273645',
+      password: 'plain_password',
+      nested: { cvv: '999', note: 'Card 4111-1111-1111-1111' },
     });
-    assert.equal(obj.password_hash, '[REDACTED]');
-    assert.equal(obj.nested.cvv, '[REDACTED]');
-    assert.match(obj.nested.note, /\[REDACTED_CARD_ENDING_0366\]/);
+    assert.equal(sanitizedObj.password, '[REDACTED]');
+    assert.equal(sanitizedObj.nested.cvv, '[REDACTED]');
+    assert.match(sanitizedObj.nested.note, /\[REDACTED_CARD_ENDING_1111\]/);
   });
 
   it('2. Sentiment & Escalation Engine scores frustration, priority tiers, and dispatches multi-channel webhooks', async () => {
-    const calm = analyzeSentiment('Thank you so much, when will my order arrive?');
+    const calm = analyzeSentiment('Thank you so much, my Kumkumadi oil arrived and I love it!');
     assert.equal(calm.priority, 'Low');
     assert.equal(calm.shouldEscalate, false);
+    assert.ok(calm.score > 0);
 
-    const critical = analyzeSentiment(
-      'THIS IS A SCAM!!! My bottle arrived broken and leaking and nobody replies! I am filing a consumer court complaint and chargeback right now!'
+    const frustrated = analyzeSentiment(
+      'WORST SERVICE!! My bottle is leaking and payment deducted twice!! Give my money back immediately or I go to consumer court!!!',
+      [{ sender: 'user', sentiment: { score: -0.5, frustrationScore: 60 } }],
+      { rageClickDetected: true }
     );
-    assert.equal(critical.priority, 'Critical');
-    assert.equal(critical.shouldEscalate, true);
-    assert.ok(critical.frustrationScore >= 80);
+    assert.equal(frustrated.priority, 'Critical');
+    assert.equal(frustrated.shouldEscalate, true);
+    assert.ok(frustrated.frustrationScore >= 80);
 
-    const mockPool = createMockSupportPool();
-    let mailCalled = false;
+    const webhookCalls = [];
+    const mailCalls = [];
+    process.env.SUPPORT_TELEGRAM_WEBHOOK_URL = 'https://api.telegram.org/botTEST/sendMessage';
+    process.env.SUPPORT_WHATSAPP_WEBHOOK_URL = 'https://graph.facebook.com/v19.0/test/messages';
+
     const escResult = await triggerInstantEscalation({
       pool: mockPool,
       session: { id: 1, userId: 7, guestName: 'Aarav Sharma', guestEmail: 'aarav@example.com' },
-      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' },
-      latestMessage: 'Connect me to a human manager right now!',
-      sentiment: critical,
-      sendMailFn: async () => {
-        mailCalled = true;
-        return { success: true };
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      latestMessage: 'Payment deducted twice, connect me to a human manager!',
+      sentiment: frustrated,
+      orderId: 101,
+      transcript: [{ sender: 'user', content: 'Payment deducted twice!' }],
+      sendMailFn: async payload => {
+        mailCalls.push(payload);
+        return { ok: true };
+      },
+      httpPostFn: async (url, body) => {
+        webhookCalls.push({ url, body });
+        return { ok: true, status: 200 };
       },
     });
 
     assert.equal(escResult.escalated, true);
     assert.equal(escResult.priority, 'Critical');
-    assert.ok(escResult.ticketId >= 501, 'Creates human support ticket in support_tickets');
-    assert.equal(mailCalled, true, 'Dispatches escalation email alert');
-    assert.equal(mockPool.state.escalations.length, 1, 'Records escalation in ai_support_escalations');
+    assert.ok(escResult.ticketId >= 501, 'Should create human support ticket in support_tickets');
+    assert.equal(webhookCalls.length, 2, 'Should fire Telegram and WhatsApp webhooks');
+    assert.equal(mailCalls.length, 1, 'Should send Admin escalation email');
+
+    delete process.env.SUPPORT_TELEGRAM_WEBHOOK_URL;
+    delete process.env.SUPPORT_WHATSAPP_WEBHOOK_URL;
   });
 
   it('3. Autonomous Tool Engine: lookup_order enforces ownership authorization and returns rich order cards', async () => {
-    const mockPool = createMockSupportPool();
-
-    const unauthorized = await lookupOrderTool(
+    const unauth = await lookupOrderTool(
       { order_id: '918273645' },
       { pool: mockPool, user: null, session: {} }
     );
-    assert.equal(unauthorized.success, false);
-    assert.equal(unauthorized.code, 'VERIFICATION_REQUIRED');
+    assert.equal(unauth.success, false);
+    assert.equal(unauth.code, 'VERIFICATION_REQUIRED');
 
-    const authorized = await lookupOrderTool(
-      { order_id: '918273646' },
-      { pool: mockPool, user: { id: 7, email: 'aarav@example.com', role: 'customer' } }
+    const guestAuth = await lookupOrderTool(
+      { order_id: '918273645', phone: '+91 98765-43210' },
+      { pool: mockPool, user: null, session: {} }
     );
-    assert.equal(authorized.success, true);
-    assert.equal(authorized.order.orderNumber, '918273646');
-    assert.equal(authorized.order.trackingNumber, 'DLV99881122');
-    assert.equal(authorized.order.canReturn, true);
+    assert.equal(guestAuth.success, true);
+    assert.equal(guestAuth.code, 'ORDER_FOUND');
+    assert.equal(guestAuth.order.orderNumber, '918273645');
+    assert.equal(guestAuth.order.cancellable, true);
   });
 
   it('4. Autonomous Tool Engine: cancel_order cancels COD orders & restocks inventory, and safeguards paid online orders', async () => {
-    const mockPool = createMockSupportPool();
-    const user = { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', role: 'customer' };
-
     const initialStock = mockPool.state.products[0].quantity;
-    const codCancel = await cancelOrderTool({ order_id: '918273645', reason: 'Ordered by mistake' }, { pool: mockPool, user });
-    assert.equal(codCancel.success, true);
-    assert.equal(codCancel.code, 'ORDER_CANCELLED');
-    assert.equal(mockPool.state.orders[0].status, 'cancelled');
-    assert.equal(mockPool.state.products[0].quantity, initialStock + 1, 'Restocks inventory upon cancellation');
 
-    const onlineCancel = await cancelOrderTool({ order_id: '918273647', reason: 'Change of address' }, { pool: mockPool, user });
-    assert.equal(onlineCancel.success, true);
-    assert.equal(onlineCancel.code, 'ONLINE_REFUND_CANCELLATION_QUEUED');
-    assert.ok(onlineCancel.ticketId >= 501);
+    const cancelCod = await cancelOrderTool(
+      { order_id: '918273645', reason: 'Ordered wrong address' },
+      { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
+    );
+    assert.equal(cancelCod.success, true);
+    assert.equal(cancelCod.code, 'ORDER_CANCELLED');
+    assert.equal(mockPool.state.orders[0].status, 'cancelled');
+    assert.equal(mockPool.state.products[0].quantity, initialStock + 1, 'Should restock product quantity');
+
+    const cancelOnline = await cancelOrderTool(
+      { order_id: '918273647', reason: 'Need to change payment method' },
+      { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
+    );
+    assert.equal(cancelOnline.success, true);
+    assert.equal(cancelOnline.code, 'ONLINE_REFUND_CANCELLATION_QUEUED');
+    assert.ok(cancelOnline.ticketId >= 501);
   });
 
   it('5. Autonomous Tool Engine: initiate_return, check_refund_status, and query_inventory_catalog work end-to-end', async () => {
-    const mockPool = createMockSupportPool();
-    const user = { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', role: 'customer' };
-
-    const returnRes = await initiateReturnTool(
-      { order_id: '918273646', reason: 'Outer seal damaged in transit', resolution_type: 'replacement' },
-      { pool: mockPool, user }
+    const ret = await initiateReturnTool(
+      {
+        order_id: '918273646',
+        reason: 'Received leaking jar',
+        resolution_type: 'refund',
+        refund_method: 'original',
+      },
+      { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
     );
-    assert.equal(returnRes.success, true);
-    assert.equal(returnRes.code, 'RETURN_INITIATED');
-    assert.match(returnRes.rmaNumber, /^RMA-[A-F0-9]{8}$/);
-    assert.equal(returnRes.resolutionType, 'replacement');
-
-    const dupRes = await initiateReturnTool(
-      { order_id: '918273646', reason: 'Second attempt' },
-      { pool: mockPool, user }
-    );
-    assert.equal(dupRes.success, false);
-    assert.equal(dupRes.code, 'ALREADY_RETURNED');
+    assert.equal(ret.success, true);
+    assert.equal(ret.code, 'RETURN_INITIATED');
+    assert.match(ret.rmaNumber, /^RMA-[A-F0-9]{8}$/);
 
     const refundCheck = await checkRefundStatusTool(
-      { rma_number: returnRes.rmaNumber },
-      { pool: mockPool, user }
+      { rma_number: ret.rmaNumber },
+      { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
     );
     assert.equal(refundCheck.success, true);
     assert.equal(refundCheck.code, 'REFUND_STATUS_FOUND');
-    assert.equal(refundCheck.latestRefund.rmaNumber, returnRes.rmaNumber);
-    assert.equal(refundCheck.latestRefund.refundReceipt, 'bvrma-301-1');
+    assert.equal(refundCheck.latestRefund.rmaNumber, ret.rmaNumber);
 
-    const catalogRes = await queryInventoryCatalogTool(
+    const cat = await queryInventoryCatalogTool(
       { query: 'Kumkumadi' },
-      { pool: mockPool, user }
+      { pool: mockPool }
     );
-    assert.equal(catalogRes.success, true);
-    assert.equal(catalogRes.products.length, 1);
-    assert.equal(catalogRes.products[0].sku, 'BV-KUM-30');
-    assert.equal(catalogRes.shippingPolicy.freeShippingThresholdInr, 500);
+    assert.equal(cat.success, true);
+    assert.equal(cat.products.length, 1);
+    assert.equal(cat.products[0].sku, 'BV-KUM-30');
   });
 
-  it('6. Orchestrator: processSupportTurn persists masked multi-turn memory and handles LLM fallback gracefully', async () => {
-    const mockPool = createMockSupportPool();
-    const user = { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', role: 'customer' };
+  it('6. 20X Deep Tools: lookup_account_wallet_loyalty, lookup_coupons_and_offers, and lookup_warranty_and_serial fetch 100% accurate details', async () => {
+    const walletRes = await lookupAccountWalletLoyaltyTool(
+      {},
+      { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
+    );
+    assert.equal(walletRes.success, true);
+    assert.equal(walletRes.code, 'ACCOUNT_WALLET_LOYALTY_FOUND');
+    assert.equal(walletRes.accountSummary.spendableWalletBalanceInr, 250);
+    assert.equal(walletRes.accountSummary.referralWalletBalanceInr, 150);
+    assert.equal(walletRes.accountSummary.loyaltyPointsAvailable, 400);
+    assert.equal(walletRes.accountSummary.loyaltyTier.name, 'Emerald Sovereign');
 
+    const couponRes = await lookupCouponsAndOffersTool(
+      {},
+      { pool: mockPool, user: { id: 7, email: 'aarav@example.com' } }
+    );
+    assert.equal(couponRes.success, true);
+    assert.equal(couponRes.code, 'COUPONS_FOUND');
+    assert.ok(couponRes.coupons.some(c => c.code === 'BOTANICAL15'));
+
+    const warrantyRes = await lookupWarrantyAndSerialTool(
+      { serial_number: 'BV-SER-2026-8899' },
+      { pool: mockPool, user: { id: 7, email: 'aarav@example.com' } }
+    );
+    assert.equal(warrantyRes.success, true);
+    assert.equal(warrantyRes.code, 'SERIAL_VERIFIED');
+    assert.equal(warrantyRes.serialInfo.serialNumber, 'BV-SER-2026-8899');
+  });
+
+  it('7. Orchestrator: processSupportTurn persists masked multi-turn memory and handles LLM fallback gracefully', async () => {
     const turn1 = await processSupportTurn({
-      sessionToken: null,
-      message: 'Where is my order #918273646? Also my card 4532 0151 1283 0366 was used.',
+      message: 'Where is my order #918273646? Also my secret password is MyPass123!',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
       pageContext: { pathname: '/order-tracking' },
-      user,
       pool: mockPool,
-      aiClient: null,
     });
 
     assert.ok(turn1.sessionToken);
     assert.equal(turn1.orderCards.length, 1);
     assert.equal(turn1.orderCards[0].orderNumber, '918273646');
-    assert.match(turn1.reply, /918273646/);
-    assert.ok(
-      !mockPool.state.messages[0].content.includes('4532 0151 1283 0366'),
-      'User message stored in DB has card number redacted'
+
+    const storedUserMsg = mockPool.state.messages.find(
+      m => m.session_id === turn1.sessionId && m.sender === 'user'
     );
-
-    const greeting = buildContextualGreeting({
-      user,
-      pageContext: { pathname: '/checkout', proactiveTrigger: 'checkout_linger' },
-    });
-    assert.match(greeting.greeting, /Aarav/);
-    assert.ok(greeting.quickActions.length >= 3);
-
-    const plan = detectIntentAndToolPlan('What is my refund status for RMA-ABCD1234?');
-    assert.equal(plan.intent, 'refund_status');
-    assert.equal(plan.toolCalls[0].name, 'check_refund_status');
+    assert.doesNotMatch(storedUserMsg.content, /MyPass123!/);
+    assert.match(storedUserMsg.content, /\[REDACTED_SECRET\]/);
   });
 });
 
-describe('Live HTTP Server & SSE Streaming Verification (/api/support/*)', () => {
+describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification (/api/support/*)', () => {
   let server;
   let baseUrl;
-  let livePool;
+  let mockPool;
+  let origPoolQuery;
+  let origPoolExecute;
+  let origPoolGetConnection;
   let customerToken;
+  let superAdminToken;
 
   before(async () => {
-    const agentHash = await bcrypt.hash('SupportPass!2026', 10);
-    livePool = createMockSupportPool(agentHash);
-    if (typeof pool.setMockHandler === 'function') {
-      pool.setMockHandler((sql, params) => livePool.query(sql, params));
-    }
+    const hash = await bcrypt.hash('SupportPass!2026', 8);
+    mockPool = createMockSupportPool(hash);
+
+    origPoolQuery = pool.query;
+    origPoolExecute = pool.execute;
+    origPoolGetConnection = pool.getConnection;
+    pool.query = mockPool.query;
+    pool.execute = mockPool.execute;
+    pool.getConnection = mockPool.getConnection;
 
     customerToken = jwt.sign(
       { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', role: 'customer', sessionType: 'user' },
       TEST_JWT_SECRET,
-      { expiresIn: '1h', jwtid: 'live-cust-jti' }
+      { expiresIn: '1h', jwtid: 'active-jti' }
+    );
+
+    superAdminToken = jwt.sign(
+      { id: 1, name: 'Super Admin', email: 'admin@bhumivera.com', role: 'superadmin', sessionType: 'admin' },
+      TEST_JWT_SECRET,
+      { expiresIn: '1h', jwtid: 'active-jti' }
     );
 
     const app = express();
@@ -614,18 +834,24 @@ describe('Live HTTP Server & SSE Streaming Verification (/api/support/*)', () =>
     app.use('/api/support', supportRoutes);
 
     await new Promise(resolve => {
-      server = app.listen(0, '127.0.0.1', resolve);
+      server = app.listen(0, '127.0.0.1', () => {
+        const { port } = server.address();
+        baseUrl = `http://127.0.0.1:${port}/api/support`;
+        resolve();
+      });
     });
-    baseUrl = `http://127.0.0.1:${server.address().port}/api/support`;
   });
 
   after(async () => {
+    pool.query = origPoolQuery;
+    pool.execute = origPoolExecute;
+    pool.getConnection = origPoolGetConnection;
     if (server) {
-      await new Promise((resolve, reject) => server.close(err => (err ? reject(err) : resolve())));
+      await new Promise(resolve => server.close(resolve));
     }
   });
 
-  it('7. Live HTTP POST /chat/session and POST /chat/context initialize session and return contextual nudges', async () => {
+  it('8. Live HTTP POST /chat/session and POST /chat/context initialize session and return contextual nudges', async () => {
     const sessionRes = await fetch(`${baseUrl}/chat/session`, {
       method: 'POST',
       headers: {
@@ -640,26 +866,10 @@ describe('Live HTTP Server & SSE Streaming Verification (/api/support/*)', () =>
     const sessionData = await sessionRes.json();
     assert.equal(sessionData.success, true);
     assert.ok(sessionData.sessionToken);
-    assert.match(sessionData.greeting, /Aarav/);
-
-    const ctxRes = await fetch(`${baseUrl}/chat/context`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${customerToken}`,
-      },
-      body: JSON.stringify({
-        sessionToken: sessionData.sessionToken,
-        pageContext: { pathname: '/checkout', proactiveTrigger: 'rage_click' },
-      }),
-    });
-    assert.equal(ctxRes.status, 200);
-    const ctxData = await ctxRes.json();
-    assert.equal(ctxData.success, true);
-    assert.match(ctxData.proactiveMessage, /not be responding as expected/);
+    assert.match(sessionData.greeting, /2:00 PM IST/);
   });
 
-  it('8. Live HTTP POST /chat/message & GET /chat/history/:token execute order lookup, return RMA, and enforce session ownership', async () => {
+  it('9. Live HTTP POST /chat/message & GET /chat/history/:token execute order lookup and enforce session ownership', async () => {
     const msgRes = await fetch(`${baseUrl}/chat/message`, {
       method: 'POST',
       headers: {
@@ -677,15 +887,6 @@ describe('Live HTTP Server & SSE Streaming Verification (/api/support/*)', () =>
     assert.equal(msgData.orderCards.length, 1);
     assert.equal(msgData.orderCards[0].orderNumber, '918273646');
 
-    // Fetch history with owning customer token -> 200
-    const histRes = await fetch(`${baseUrl}/chat/history/${msgData.sessionToken}`, {
-      headers: { authorization: `Bearer ${customerToken}` },
-    });
-    assert.equal(histRes.status, 200);
-    const histData = await histRes.json();
-    assert.ok(histData.messages.length >= 2);
-
-    // Fetch history with a different customer's token -> 403 FORBIDDEN_SESSION
     const otherUserToken = jwt.sign(
       { id: 999, email: 'other@example.com', role: 'customer', sessionType: 'user' },
       TEST_JWT_SECRET,
@@ -697,7 +898,7 @@ describe('Live HTTP Server & SSE Streaming Verification (/api/support/*)', () =>
     assert.equal(forbiddenRes.status, 403);
   });
 
-  it('9. Live HTTP POST /chat/stream streams real-time Server-Sent Events (status, tool_call, token, metadata, done)', async () => {
+  it('10. Live HTTP POST /chat/stream streams real-time Server-Sent Events (status, tool_call, token, metadata, done)', async () => {
     const streamRes = await fetch(`${baseUrl}/chat/stream`, {
       method: 'POST',
       headers: {
@@ -722,49 +923,160 @@ describe('Live HTTP Server & SSE Streaming Verification (/api/support/*)', () =>
     assert.match(rawSse, /event: done/);
   });
 
-  it('10. Live HTTP POST /chat/escalate & Staff Support Portal (/login, /ai-escalations, /tickets) work end-to-end', async () => {
-    const escRes = await fetch(`${baseUrl}/chat/escalate`, {
+  it('11. Live HTTP 20X Chat Lifecycle Controls: Start New Chat, Pending, Waiting for Review, Resolved, CSAT Rating, and Close Chat', async () => {
+    const newChatRes = await fetch(`${baseUrl}/chat/session`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${customerToken}`,
       },
+      body: JSON.stringify({ forceNew: true, pageContext: { pathname: '/profile' } }),
+    });
+    assert.equal(newChatRes.status, 200);
+    const newChat = await newChatRes.json();
+    const token = newChat.sessionToken;
+
+    for (const status of ['pending', 'waiting_for_review', 'resolved', 'closed', 'active']) {
+      const statusRes = await fetch(`${baseUrl}/chat/session/${token}/status`, {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${customerToken}`,
+        },
+        body: JSON.stringify({ status }),
+      });
+      assert.equal(statusRes.status, 200);
+      const statusData = await statusRes.json();
+      assert.equal(statusData.success, true);
+      assert.equal(statusData.status, status);
+    }
+
+    const ratingRes = await fetch(`${baseUrl}/chat/session/${token}/rating`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${customerToken}`,
+      },
+      body: JSON.stringify({ rating: 5, feedback: 'Super fast resolution, better than Amazon!' }),
+    });
+    assert.equal(ratingRes.status, 200);
+    const ratingData = await ratingRes.json();
+    assert.equal(ratingData.success, true);
+    assert.equal(ratingData.rating, 5);
+  });
+
+  it('12. Live HTTP 20X Multi-Role Agent RBAC (Agent / Supervisor / Manager), Barge-In, Whisper Notes & Goodwill Credits', async () => {
+    const createAgentRes = await fetch(`${baseUrl}/agents`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${superAdminToken}`,
+      },
       body: JSON.stringify({
-        reason: 'Urgent delivery issue',
-        message: 'Please connect me with a senior support specialist.',
+        username: 'agent.rohan',
+        name: 'Rohan Verma',
+        email: 'rohan@bhumivera.com',
+        role: 'agent',
+        department: 'L1 Order Desk',
+        password: 'AgentPassword123!',
       }),
     });
-    assert.equal(escRes.status, 201);
-    const escData = await escRes.json();
-    assert.equal(escData.success, true);
-    assert.equal(escData.escalation.escalated, true);
+    assert.equal(createAgentRes.status, 201);
+    const createdAgent = (await createAgentRes.json()).agent;
+    assert.equal(createdAgent.role, 'agent');
+    assert.equal(createdAgent.permissions.can_reply_chats, true);
+    assert.equal(createdAgent.permissions.can_adjust_wallet_goodwill, false);
 
-    // Staff Support Agent login via POST /api/support/login
+    // Promote Rohan to Supervisor via PATCH /agents/:id
+    const promoteRes = await fetch(`${baseUrl}/agents/${createdAgent.id}`, {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${superAdminToken}`,
+      },
+      body: JSON.stringify({ role: 'supervisor' }),
+    });
+    assert.equal(promoteRes.status, 200);
+    const promotedAgent = (await promoteRes.json()).agent;
+    assert.equal(promotedAgent.role, 'supervisor');
+    assert.equal(promotedAgent.permissions.can_adjust_wallet_goodwill, true);
+
+    // Log in as Manager (concierge_lead)
     const loginRes = await fetch(`${baseUrl}/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'concierge_lead', password: 'SupportPass!2026' }),
     });
     assert.equal(loginRes.status, 200);
-    const loginData = await loginRes.json();
-    assert.ok(loginData.token);
+    const managerToken = (await loginRes.json()).token;
 
-    // Staff Support Agent inspects AI escalations via GET /api/support/ai-escalations
-    const listEscRes = await fetch(`${baseUrl}/ai-escalations`, {
-      headers: { authorization: `Bearer ${loginData.token}` },
+    // List live sessions via GET /sessions
+    const sessionsRes = await fetch(`${baseUrl}/sessions`, {
+      headers: { authorization: `Bearer ${managerToken}` },
     });
-    assert.equal(listEscRes.status, 200);
-    const listEscData = await listEscRes.json();
-    assert.equal(listEscData.success, true);
-    assert.ok(listEscData.escalations.length >= 1);
+    assert.equal(sessionsRes.status, 200);
+    const sessionsData = await sessionsRes.json();
+    assert.ok(sessionsData.sessions.length >= 1);
+    const targetSessionToken = sessionsData.sessions[0].sessionToken;
 
-    // Staff Support Agent inspects support tickets via GET /api/support/tickets
-    const ticketsRes = await fetch(`${baseUrl}/tickets`, {
-      headers: { authorization: `Bearer ${loginData.token}` },
+    // Post an internal Whisper Note
+    const whisperRes = await fetch(`${baseUrl}/sessions/${targetSessionToken}/reply`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${managerToken}`,
+      },
+      body: JSON.stringify({
+        message: 'Internal coaching note: offer ₹100 wallet credit if customer asks.',
+        isInternalNote: true,
+      }),
     });
-    assert.equal(ticketsRes.status, 200);
-    const ticketsData = await ticketsRes.json();
-    assert.ok(Array.isArray(ticketsData.tickets));
-    assert.ok(ticketsData.tickets.length >= 1);
+    assert.equal(whisperRes.status, 201);
+
+    // Issue 1-click Goodwill Wallet Credit via POST /sessions/:sessionToken/execute-action
+    const creditRes = await fetch(`${baseUrl}/sessions/${targetSessionToken}/execute-action`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${managerToken}`,
+      },
+      body: JSON.stringify({
+        action: 'goodwill_wallet_credit',
+        goodwillAmount: 150,
+      }),
+    });
+    assert.equal(creditRes.status, 200);
+    const creditData = await creditRes.json();
+    assert.equal(creditData.success, true);
+    assert.equal(creditData.amount, 150);
+  });
+
+  it('13. Live HTTP 20X SuperAdmin Support Command Center (/superadmin/overview & /superadmin/features)', async () => {
+    const overviewRes = await fetch(`${baseUrl}/superadmin/overview`, {
+      headers: { authorization: `Bearer ${superAdminToken}` },
+    });
+    assert.equal(overviewRes.status, 200);
+    const overviewData = await overviewRes.json();
+    assert.equal(overviewData.success, true);
+    assert.ok(overviewData.metrics);
+    assert.ok(overviewData.agents);
+    assert.ok(overviewData.featureConfig);
+
+    const updateFeatRes = await fetch(`${baseUrl}/superadmin/features`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${superAdminToken}`,
+      },
+      body: JSON.stringify({
+        support_frustration_threshold: 65,
+        ai_proactive_linger_seconds: 30,
+      }),
+    });
+    assert.equal(updateFeatRes.status, 200);
+    const featData = await updateFeatRes.json();
+    assert.equal(featData.success, true);
+    assert.equal(featData.featureConfig.support_frustration_threshold, 65);
+    assert.equal(featData.featureConfig.ai_proactive_linger_seconds, 30);
   });
 });

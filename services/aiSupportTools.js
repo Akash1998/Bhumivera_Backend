@@ -55,15 +55,14 @@ const parseJsonSafe = (val, fallback = null) => {
 const normalizePhoneDigits = phone => String(phone || '').replace(/\D/g, '').slice(-10);
 
 /**
- * Verifies whether the caller (authenticated user or guest with matching email/phone)
+ * Verifies whether the caller (authenticated user, staff member, or guest with matching email/phone)
  * is authorized to access or mutate a given order row.
  */
 function isCallerAuthorizedForOrder(order, { user = null, email = null, phone = null, session = null } = {}) {
   if (!order) return false;
-  if (user && ['admin', 'superadmin', 'support_agent'].includes(user.role)) return true;
+  if (user && ['admin', 'superadmin', 'support_agent', 'agent', 'supervisor', 'manager'].includes(user.role)) return true;
   if (user?.id && Number(order.user_id) === Number(user.id)) return true;
 
-  // Guest verification: requires matching email OR 10-digit phone number
   const candidateEmail = String(email || session?.guestEmail || '').trim().toLowerCase();
   const candidatePhone = normalizePhoneDigits(phone || session?.guestPhone || '');
 
@@ -104,6 +103,8 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
     }
   }
 
+  const addr = parseJsonSafe(order.address_snapshot, {});
+
   return {
     id: Number(order.id),
     orderNumber: order.order_number || String(order.id).padStart(9, '0'),
@@ -111,13 +112,21 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
     currentStep,
     paymentMode: order.payment_mode || 'COD',
     paymentStatus: order.payment_status || 'pending',
+    paymentId: order.payment_id || null,
     subtotal: Number(order.subtotal || order.total || 0),
     discount: Number(order.discount || 0),
+    tierDiscount: Number(order.tier_discount || 0),
+    referralWalletAmount: Number(order.referral_wallet_amount || 0),
     shippingCost: Number(order.shipping_cost || 0),
     total: Number(order.total || 0),
+    couponCode: order.coupon_code || null,
+    loyaltyPointsAwarded: Number(order.loyalty_points_awarded || 0),
+    loyaltyPointsRedeemed: Number(order.loyalty_points_redeemed || 0),
     trackingNumber: order.tracking_number || order.label_tracking_number || null,
     courier: order.courier || order.label_provider || null,
     serviceName: order.label_service_name || order.delivery_type || 'standard',
+    deliveryCity: addr?.city || addr?.state || null,
+    deliveryPincode: addr?.pincode || addr?.postal_code || null,
     deliveryEstimate: computeDeliveryEstimate(order.created_at, status, order.delivered_at),
     createdAt: order.created_at,
     deliveredAt: order.delivered_at || null,
@@ -146,9 +155,6 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
   };
 }
 
-/**
- * Helper to fetch configured return_policy_days from settings table (default 7).
- */
 async function getReturnPolicyDays(pool) {
   try {
     const [rows] = await pool.query("SELECT value FROM settings WHERE key_name = 'return_policy_days' LIMIT 1");
@@ -161,7 +167,6 @@ async function getReturnPolicyDays(pool) {
 
 /**
  * TOOL 1: Real-time Order Lookup (`lookup_order`)
- * Queries MySQL for order status, tracking numbers, carrier details, delivery estimates, and items.
  */
 async function lookupOrderTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
@@ -171,7 +176,6 @@ async function lookupOrderTool(args = {}, context = {}) {
   const phone = String(args.phone || user?.phone || session?.guestPhone || '').trim();
   const returnDays = await getReturnPolicyDays(pool);
 
-  // Case A: Specific order ID or 9-digit order_number requested
   if (rawOrderRef) {
     const isNineDigitRef = /^\d{9}$/.test(rawOrderRef);
     const numericId = /^\d+$/.test(rawOrderRef) ? Number(rawOrderRef) : null;
@@ -222,7 +226,6 @@ async function lookupOrderTool(args = {}, context = {}) {
     };
   }
 
-  // Case B: Lookup recent orders for authenticated user or verified email/phone
   let orders = [];
   if (user?.id) {
     const [rows] = await pool.query(
@@ -288,14 +291,20 @@ async function lookupOrderTool(args = {}, context = {}) {
 
 /**
  * TOOL 2: Automated Order Cancellation (`cancel_order`)
- * Processes order cancellations if status permits ('pending' or 'confirmed'),
- * restocking inventory and handling online payment refund safeguards.
  */
 async function cancelOrderTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
-  const { user, session } = context;
+  const { user, session, featureConfig = {} } = context;
   const rawOrderRef = String(args.order_id || args.order_number || '').trim().replace(/^#/, '');
   const reason = String(args.reason || 'Cancelled via Bhumivera AI Support Assistant').trim().slice(0, 500);
+
+  if (featureConfig.ai_auto_cancel_enabled === false) {
+    return {
+      success: false,
+      code: 'AUTO_CANCEL_PAUSED_BY_ADMIN',
+      message: 'Automated order cancellation is currently routed through our Supervisor Desk. I have flagged your request for immediate review.',
+    };
+  }
 
   if (!rawOrderRef) {
     return {
@@ -328,7 +337,6 @@ async function cancelOrderTool(args = {}, context = {}) {
     };
   }
 
-  // Safeguard from models/orderModel.js: online paid orders require provider refund handling
   if (targetOrder.paymentMode === 'online' && targetOrder.paymentStatus === 'paid') {
     let ticketId = null;
     try {
@@ -358,7 +366,6 @@ async function cancelOrderTool(args = {}, context = {}) {
     };
   }
 
-  // Execute transactional cancellation & stock restoration via orderModel or direct transaction
   try {
     let updated = false;
     if (typeof context.updateOrderStatusFn === 'function') {
@@ -429,10 +436,10 @@ async function cancelOrderTool(args = {}, context = {}) {
 
 /**
  * TOOL 3: Automated Return & Replacement Initiation (`initiate_return`)
- * Validates delivery window and creates an RMA record in `returns`.
  */
 async function initiateReturnTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
+  const { featureConfig = {} } = context;
   const rawOrderRef = String(args.order_id || args.order_number || '').trim().replace(/^#/, '');
   const reason = String(args.reason || 'Product issue reported via AI Concierge').trim().slice(0, 255);
   const description = String(args.description || args.notes || reason).trim().slice(0, 2000);
@@ -442,6 +449,14 @@ async function initiateReturnTool(args = {}, context = {}) {
     ? 'replacement'
     : (['wallet', 'original'].includes(args.refund_method) ? args.refund_method : 'original');
   const imageUrls = Array.isArray(args.image_urls) ? args.image_urls.slice(0, 5) : [];
+
+  if (featureConfig.ai_auto_return_rma_enabled === false) {
+    return {
+      success: false,
+      code: 'AUTO_RMA_PAUSED_BY_ADMIN',
+      message: 'Automated RMA creation is currently routed through our Supervisor Review queue. I have marked your session as Waiting for Review.',
+    };
+  }
 
   if (!rawOrderRef) {
     return {
@@ -493,7 +508,6 @@ async function initiateReturnTool(args = {}, context = {}) {
     }
   }
 
-  // Check for existing active return
   const [existingReturns] = await pool.query(
     "SELECT id, rma_number, status, refund_type FROM returns WHERE order_id = ? AND status NOT IN ('rejected', 'cancelled') LIMIT 1",
     [order.id]
@@ -521,7 +535,7 @@ async function initiateReturnTool(args = {}, context = {}) {
   }));
 
   const rmaNumber = `RMA-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-  const [ orderUserRow ] = await pool.query('SELECT user_id FROM orders WHERE id = ? LIMIT 1', [order.id]);
+  const [orderUserRow] = await pool.query('SELECT user_id FROM orders WHERE id = ? LIMIT 1', [order.id]);
   const ownerUserId = orderUserRow?.[0]?.user_id || context.user?.id || 0;
 
   const [insertRes] = await pool.query(
@@ -568,7 +582,6 @@ async function initiateReturnTool(args = {}, context = {}) {
 
 /**
  * TOOL 4: Automated Refund & RMA Status Check (`check_refund_status`)
- * Queries `returns` and `return_refund_requests` for live provider refund status.
  */
 async function checkRefundStatusTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
@@ -621,7 +634,6 @@ async function checkRefundStatusTool(args = {}, context = {}) {
     };
   }
 
-  // Authorize caller against the first matching order
   if (!isCallerAuthorizedForOrder(rows[0], { user, email: args.email, phone: args.phone, session })) {
     return {
       success: false,
@@ -672,7 +684,6 @@ async function checkRefundStatusTool(args = {}, context = {}) {
 
 /**
  * TOOL 5: Inventory, Botanical Catalog & Shipping Policy Querying (`query_inventory_catalog`)
- * Queries real-time stock levels, SKU variants, product specifications/usage guides, and shipping rules.
  */
 async function queryInventoryCatalogTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
@@ -680,7 +691,6 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
   const sku = String(args.sku || '').trim();
   const productId = args.product_id ? Number(args.product_id) : null;
 
-  // Fetch shipping policy & store settings
   let shippingPolicy = {
     freeShippingThresholdInr: 500,
     standardShippingChargeInr: 50,
@@ -725,7 +735,7 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
       }),
     };
   } catch {
-    // Fallback to defaults if settings table query fails
+    // Fallback to defaults
   }
 
   let products = [];
@@ -758,7 +768,6 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
     );
     products = rows || [];
   } else {
-    // Return top featured / in-stock products if no filter specified
     const [rows] = await pool.query(
       `SELECT p.id, p.name, p.slug, p.sku, p.brand, p.description, p.price, p.discount_price,
               p.quantity, p.status, p.rating, p.review_count, p.warranty_period, p.tags, p.specifications,
@@ -792,6 +801,7 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
       stockStatus: qty <= 0 ? 'out_of_stock' : qty <= 5 ? 'low_stock' : 'in_stock',
       rating: Number(p.rating || 0),
       reviewCount: Number(p.review_count || 0),
+      warrantyPeriod: p.warranty_period || null,
       description: p.description || '',
       ingredients: specs?.ingredients || specs?.key_ingredients || null,
       usageGuide: specs?.how_to_use || specs?.usage || specs?.directions || null,
@@ -812,77 +822,247 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
 }
 
 /**
- * Registry of all agentic tools exposed to the LLM Orchestrator.
+ * TOOL 6: Customer Account, Spendable Wallet, Referral Wallet & Loyalty Tier Lookup (`lookup_account_wallet_loyalty`)
+ * Fetches 100% accurate live wallet balances, loyalty points, tier benefits, and referral code.
+ */
+async function lookupAccountWalletLoyaltyTool(args = {}, context = {}) {
+  const pool = getPool(context.pool);
+  const { user, session } = context;
+
+  let targetUserId = user?.id || session?.userId || null;
+  if (!targetUserId && (args.email || session?.guestEmail)) {
+    const email = String(args.email || session?.guestEmail).trim().toLowerCase();
+    const [uRows] = await pool.query('SELECT id FROM users WHERE LOWER(email) = ? LIMIT 1', [email]);
+    targetUserId = uRows?.[0]?.id || null;
+  }
+
+  if (!targetUserId) {
+    return {
+      success: false,
+      code: 'AUTH_REQUIRED_FOR_ACCOUNT',
+      message: 'Please sign in to your Bhumivera account so I can fetch your live Wallet balance, Referral rewards, and Loyalty Tier points.',
+    };
+  }
+
+  const [userRows] = await pool.query(
+    `SELECT id, name, email, phone, wallet_balance, loyalty_points, loyalty_lifetime_points
+     FROM users WHERE id = ? LIMIT 1`,
+    [targetUserId]
+  );
+  const account = userRows?.[0];
+  if (!account) {
+    return {
+      success: false,
+      code: 'ACCOUNT_NOT_FOUND',
+      message: 'Could not locate your customer profile.',
+    };
+  }
+
+  let spendableWallet = Number(account.wallet_balance || 0);
+  try {
+    const [wRows] = await pool.query('SELECT balance FROM wallets WHERE user_id = ? LIMIT 1', [targetUserId]);
+    if (wRows?.[0]?.balance !== undefined) spendableWallet = Number(wRows[0].balance);
+  } catch {}
+
+  let referralWallet = 0;
+  try {
+    const [rwRows] = await pool.query('SELECT balance FROM referral_wallets WHERE user_id = ? LIMIT 1', [targetUserId]);
+    if (rwRows?.[0]?.balance !== undefined) referralWallet = Number(rwRows[0].balance);
+  } catch {}
+
+  let referralCode = null;
+  try {
+    const [rcRows] = await pool.query('SELECT code FROM referral_codes WHERE user_id = ? LIMIT 1', [targetUserId]);
+    referralCode = rcRows?.[0]?.code || null;
+  } catch {}
+
+  const lifetimePts = Number(account.loyalty_lifetime_points || account.loyalty_points || 0);
+  let currentTier = { name: 'Bronze', pointsMultiplier: 1, tierDiscountPercent: 0, cashbackPercent: 0, freeShipping: false };
+  try {
+    const [tiers] = await pool.query(
+      'SELECT name, min_points, points_multiplier, tier_discount_percent, cashback_percent, free_shipping FROM loyalty_tiers WHERE is_active = 1 ORDER BY min_points ASC'
+    );
+    for (const t of tiers || []) {
+      if (lifetimePts >= Number(t.min_points || 0)) {
+        currentTier = {
+          name: t.name,
+          pointsMultiplier: Number(t.points_multiplier || 1),
+          tierDiscountPercent: Number(t.tier_discount_percent || 0),
+          cashbackPercent: Number(t.cashback_percent || 0),
+          freeShipping: Boolean(t.free_shipping),
+        };
+      }
+    }
+  } catch {}
+
+  const accountSummary = {
+    userId: account.id,
+    name: account.name,
+    email: account.email,
+    spendableWalletBalanceInr: spendableWallet,
+    referralWalletBalanceInr: referralWallet,
+    totalCombinedWalletInr: Math.round((spendableWallet + referralWallet) * 100) / 100,
+    loyaltyPointsAvailable: Number(account.loyalty_points || 0),
+    loyaltyPointsRupeeValue: Math.floor(Number(account.loyalty_points || 0) / 10),
+    loyaltyLifetimePoints: lifetimePts,
+    loyaltyTier: currentTier,
+    referralCode,
+  };
+
+  return {
+    success: true,
+    code: 'ACCOUNT_WALLET_LOYALTY_FOUND',
+    accountSummary,
+    message: `Account balances for ${account.name}: Spendable Wallet ₹${spendableWallet.toLocaleString('en-IN')}, Shopping/Referral Wallet ₹${referralWallet.toLocaleString('en-IN')}, Loyalty Points ${accountSummary.loyaltyPointsAvailable} pts (${currentTier.name} Tier).`,
+  };
+}
+
+/**
+ * TOOL 7: Active Coupons, Spin Rewards & Flash Offers Lookup (`lookup_coupons_and_offers`)
+ */
+async function lookupCouponsAndOffersTool(_args = {}, context = {}) {
+  const pool = getPool(context.pool);
+  const userId = context.user?.id || context.session?.userId || null;
+
+  let coupons = [];
+  try {
+    const [rows] = await pool.query(
+      `SELECT code, discount_type, discount_value, min_order_amount, max_discount, reward_type, expires_at, restricted_user_id
+       FROM coupons
+       WHERE is_active = 1
+         AND (valid_from IS NULL OR valid_from <= NOW())
+         AND (expires_at IS NULL OR expires_at >= NOW())
+         AND (usage_limit IS NULL OR used_count < usage_limit)
+         AND (restricted_user_id IS NULL OR restricted_user_id = ?)
+       ORDER BY restricted_user_id DESC, discount_value DESC
+       LIMIT 8`,
+      [userId || 0]
+    );
+    coupons = (rows || []).map(c => ({
+      code: c.code,
+      discountType: c.discount_type,
+      discountValue: Number(c.discount_value || 0),
+      minOrderAmount: Number(c.min_order_amount || 0),
+      maxDiscount: c.max_discount ? Number(c.max_discount) : null,
+      rewardType: c.reward_type || 'standard',
+      isPersonalReward: Boolean(c.restricted_user_id),
+      expiresAt: c.expires_at || null,
+    }));
+  } catch {}
+
+  return {
+    success: true,
+    code: 'COUPONS_FOUND',
+    coupons,
+    message: coupons.length
+      ? `Found ${coupons.length} active coupon(s) available for your checkout.`
+      : 'No active coupon codes found right now, but cart-tier discounts and free standard shipping above ₹500 apply automatically.',
+  };
+}
+
+/**
+ * TOOL 8: Product Serial Authenticity & E-Warranty Lookup (`lookup_warranty_and_serial`)
+ */
+async function lookupWarrantyAndSerialTool(args = {}, context = {}) {
+  const pool = getPool(context.pool);
+  const serial = String(args.serial || args.serial_number || '').trim().toUpperCase();
+  const userId = context.user?.id || context.session?.userId || null;
+
+  if (serial) {
+    const [serialRows] = await pool.query(
+      `SELECT ps.*, p.name AS product_name, p.warranty_period
+       FROM product_serials ps
+       LEFT JOIN products p ON p.id = ps.product_id
+       WHERE UPPER(ps.serial_number) = ? LIMIT 1`,
+      [serial]
+    );
+    const s = serialRows?.[0];
+    if (!s) {
+      return {
+        success: false,
+        code: 'SERIAL_NOT_FOUND',
+        message: `Serial number '${serial}' was not found in Bhumivera's authenticity registry. Please verify the code printed on your bottle/box seal.`,
+      };
+    }
+    return {
+      success: true,
+      code: 'SERIAL_VERIFIED',
+      serialInfo: {
+        serialNumber: s.serial_number,
+        productName: s.product_name || 'Bhumivera Formulation',
+        status: s.status || 'valid',
+        isRegistered: Boolean(s.is_registered),
+        warrantyPeriod: s.warranty_period || 'Standard Botanical Quality Guarantee',
+      },
+      message: `Serial ${s.serial_number} is a 100% genuine Bhumivera product (${s.product_name || 'Verified Batch'}).`,
+    };
+  }
+
+  if (userId) {
+    const [wRows] = await pool.query(
+      'SELECT * FROM warranties WHERE user_id = ? ORDER BY created_at DESC LIMIT 5',
+      [userId]
+    );
+    return {
+      success: true,
+      code: 'WARRANTIES_LISTED',
+      warranties: wRows || [],
+      message: (wRows || []).length
+        ? `Found ${wRows.length} registered E-Warranty record(s) on your account.`
+        : 'No E-Warranty registrations found on your account yet.',
+    };
+  }
+
+  return {
+    success: false,
+    code: 'SERIAL_REQUIRED',
+    message: 'Please share the product serial/batch number printed on your package or sign in to check your registered warranties.',
+  };
+}
+
+/**
+ * Registry of all 8 autonomous agentic tools exposed to the 20X LLM Orchestrator.
  */
 const SUPPORT_TOOLS_REGISTRY = Object.freeze({
   lookup_order: {
     name: 'lookup_order',
-    description: 'Look up real-time order status, 9-digit order number, tracking number, courier, delivery estimate, and items using order_id/order_number, email, phone, or authenticated session.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        order_id: { type: 'STRING', description: 'Order number (9 digits) or numeric order ID' },
-        email: { type: 'STRING', description: 'Customer email address for verification' },
-        phone: { type: 'STRING', description: 'Customer 10-digit phone number for verification' },
-      },
-    },
+    description: 'Look up 100% accurate real-time order status, 9-digit order number, tracking number, courier, delivery estimate, and items.',
     execute: lookupOrderTool,
   },
   cancel_order: {
     name: 'cancel_order',
-    description: 'Cancel a customer order if its status is pending or confirmed, restocking inventory and handling online payment refund safeguards.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        order_id: { type: 'STRING', description: 'Order number or ID to cancel' },
-        reason: { type: 'STRING', description: 'Customer reason for cancellation' },
-        email: { type: 'STRING', description: 'Verification email if guest' },
-        phone: { type: 'STRING', description: 'Verification phone if guest' },
-      },
-      required: ['order_id'],
-    },
+    description: 'Cancel a customer order if status is pending or confirmed, restocking inventory and safeguarding online payments.',
     execute: cancelOrderTool,
   },
   initiate_return: {
     name: 'initiate_return',
-    description: 'Initiate an automated item return or replacement request for a delivered order within the return window and generate an RMA number.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        order_id: { type: 'STRING', description: 'Delivered order number or ID' },
-        reason: { type: 'STRING', description: 'Reason for return or replacement (e.g., damaged item, wrong item)' },
-        resolution_type: { type: 'STRING', description: 'Either "refund" or "replacement"' },
-        refund_method: { type: 'STRING', description: 'Either "original", "wallet", or "replacement"' },
-        description: { type: 'STRING', description: 'Detailed customer notes' },
-      },
-      required: ['order_id', 'reason'],
-    },
+    description: 'Initiate an automated item return or replacement request for a delivered order and generate an RMA number.',
     execute: initiateReturnTool,
   },
   check_refund_status: {
     name: 'check_refund_status',
     description: 'Check real-time status of an RMA return, replacement, or Razorpay refund receipt.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        order_id: { type: 'STRING', description: 'Order number or ID' },
-        rma_number: { type: 'STRING', description: 'RMA reference (e.g., RMA-1A2B3C4D)' },
-      },
-    },
     execute: checkRefundStatusTool,
   },
   query_inventory_catalog: {
     name: 'query_inventory_catalog',
     description: 'Query real-time product stock levels, SKU variants, prices, botanical ingredients/usage guides, and shipping/return policy rules.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        query: { type: 'STRING', description: 'Product name, keyword, or ingredient to search' },
-        sku: { type: 'STRING', description: 'Exact SKU code' },
-        product_id: { type: 'NUMBER', description: 'Numeric product ID' },
-      },
-    },
     execute: queryInventoryCatalogTool,
+  },
+  lookup_account_wallet_loyalty: {
+    name: 'lookup_account_wallet_loyalty',
+    description: 'Fetch 100% accurate customer Spendable Wallet balance, Referral/Shopping Wallet balance, Loyalty Points, Loyalty Tier benefits, and Referral Code.',
+    execute: lookupAccountWalletLoyaltyTool,
+  },
+  lookup_coupons_and_offers: {
+    name: 'lookup_coupons_and_offers',
+    description: 'Fetch active public discount coupons and personal spin/reward coupons available for the customer.',
+    execute: lookupCouponsAndOffersTool,
+  },
+  lookup_warranty_and_serial: {
+    name: 'lookup_warranty_and_serial',
+    description: 'Verify a product authenticity serial number or list registered customer E-Warranties.',
+    execute: lookupWarrantyAndSerialTool,
   },
 });
 
@@ -915,6 +1095,9 @@ module.exports = {
   initiateReturnTool,
   checkRefundStatusTool,
   queryInventoryCatalogTool,
+  lookupAccountWalletLoyaltyTool,
+  lookupCouponsAndOffersTool,
+  lookupWarrantyAndSerialTool,
   computeDeliveryEstimate,
   buildOrderCard,
 };

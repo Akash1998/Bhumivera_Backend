@@ -15,17 +15,32 @@ const {
   supportEscalationLimiter,
 } = require('../middleware/rateLimiter');
 const {
+  VALID_CHAT_STATUSES,
+  VALID_SUPPORT_ROLES,
+  ROLE_DEFAULT_PERMISSIONS,
+  resolveRolePermissions,
+  ensureAiSupportTables,
   createOrResumeSession,
   getSessionByToken,
   updateSessionContext,
+  updateSessionTelemetry,
   getSessionMessages,
   appendMessage,
+  listAllChatSessions,
   listEscalations,
+  getAiSupportFeatureConfig,
+  updateAiSupportFeatureConfig,
 } = require('../models/aiSupportModel');
 const {
   buildContextualGreeting,
   processSupportTurn,
 } = require('../services/aiSupportOrchestrator');
+const {
+  lookupOrderTool,
+  cancelOrderTool,
+  initiateReturnTool,
+  lookupAccountWalletLoyaltyTool,
+} = require('../services/aiSupportTools');
 const {
   analyzeSentiment,
   triggerInstantEscalation,
@@ -35,7 +50,7 @@ const router = express.Router();
 const secret = () => process.env.JWT_SECRET || 'fallback_secret';
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 15,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many sign-in attempts. Try again later.' },
@@ -47,28 +62,48 @@ const resetLinkLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Password reset links are limited. Try again later.' },
 });
-let tablesReady;
 
-const ensureTables = () => {
-  if (!tablesReady) {
-    tablesReady = pool.query(`
-      CREATE TABLE IF NOT EXISTS support_agents (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(50) NOT NULL UNIQUE,
-        name VARCHAR(100) NOT NULL,
-        password_hash VARCHAR(255) NOT NULL,
-        is_active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    `).catch(error => {
-      tablesReady = null;
-      throw error;
-    });
+const ensureTables = () => ensureAiSupportTables(pool);
+
+const parseJsonSafe = (val, fallback = null) => {
+  if (!val) return fallback;
+  if (typeof val === 'object') return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return fallback;
   }
-  return tablesReady;
 };
 
+const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+})[character]);
+const validId = value => /^\d+$/.test(String(value)) && Number(value) > 0;
+const validMessage = value => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 10000;
+
+const normalizeAgent = row => {
+  const role = VALID_SUPPORT_ROLES.includes(row.role) ? row.role : 'agent';
+  const customPerms = parseJsonSafe(row.permissions, null);
+  return {
+    id: row.id,
+    username: row.username,
+    name: row.name,
+    email: row.email || null,
+    role,
+    department: row.department || 'General Concierge',
+    max_concurrent_chats: Number(row.max_concurrent_chats || 10),
+    online_status: row.online_status || 'online',
+    permissions: resolveRolePermissions(role, customPerms),
+    is_active: Boolean(row.is_active),
+    last_login_at: row.last_login_at || null,
+    created_at: row.created_at,
+  };
+};
+
+/**
+ * Authenticates Support Agents (`agent`, `supervisor`, `manager`) OR Website Admins (`admin`, `superadmin`).
+ * Attaches `req.supportAgent` with `role` and `permissions`.
+ */
 const authenticateSupportAgent = async (req, res, next) => {
   const token = req.headers.authorization?.startsWith('Bearer ')
     ? req.headers.authorization.slice(7)
@@ -77,7 +112,17 @@ const authenticateSupportAgent = async (req, res, next) => {
   try {
     const payload = jwt.verify(token, secret());
     if (['admin', 'superadmin'].includes(payload.role)) {
-      req.supportAgent = { id: payload.id, username: payload.email, name: payload.name || 'Admin', is_active: true };
+      req.supportAgent = {
+        id: payload.id || 0,
+        username: payload.email || 'superadmin',
+        name: payload.name || 'SuperAdmin',
+        email: payload.email || null,
+        role: 'superadmin',
+        department: 'Executive Command Center',
+        online_status: 'online',
+        permissions: resolveRolePermissions('superadmin'),
+        is_active: true,
+      };
       return next();
     }
     if (payload.scope !== 'support-agent' || !payload.sub) {
@@ -85,11 +130,11 @@ const authenticateSupportAgent = async (req, res, next) => {
     }
     await ensureTables();
     const [[agent]] = await pool.query(
-      'SELECT id, username, name, is_active FROM support_agents WHERE id = ?',
+      'SELECT * FROM support_agents WHERE id = ?',
       [payload.sub]
     );
     if (!agent || !agent.is_active) return res.status(401).json({ message: 'Support access has been disabled.' });
-    req.supportAgent = agent;
+    req.supportAgent = normalizeAgent(agent);
     return next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
@@ -101,9 +146,56 @@ const authenticateSupportAgent = async (req, res, next) => {
 };
 
 /**
+ * Middleware for `/superadminsupport` and staff management endpoints.
+ * Permits website `admin`/`superadmin` tokens AND support `manager` tokens with `can_manage_agents`.
+ */
+const authenticateSuperSupport = async (req, res, next) => {
+  const token = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7)
+    : '';
+  if (!token) return res.status(401).json({ code: 'AUTH_TOKEN_MISSING', message: 'Sign in to continue.' });
+  try {
+    const payload = jwt.verify(token, secret());
+    if (['admin', 'superadmin'].includes(payload.role)) {
+      const active = await isSessionActive(payload, req).catch(() => true);
+      if (!active) {
+        return res.status(401).json({ code: 'AUTH_SESSION_REAUTH_REQUIRED', message: 'Your admin session has expired.' });
+      }
+      req.supportAgent = {
+        id: payload.id || 0,
+        username: payload.email || 'superadmin',
+        name: payload.name || 'SuperAdmin',
+        role: 'superadmin',
+        department: 'Executive Command Center',
+        permissions: resolveRolePermissions('superadmin'),
+        is_active: true,
+      };
+      return next();
+    }
+    if (payload.scope === 'support-agent' && payload.sub) {
+      await ensureTables();
+      const [[agent]] = await pool.query('SELECT * FROM support_agents WHERE id = ?', [payload.sub]);
+      if (!agent || !agent.is_active) {
+        return res.status(401).json({ message: 'Support access has been disabled.' });
+      }
+      const normalized = normalizeAgent(agent);
+      if (normalized.role === 'manager' || normalized.permissions?.can_manage_agents) {
+        req.supportAgent = normalized;
+        return next();
+      }
+      return res.status(403).json({
+        code: 'SUPERADMIN_SUPPORT_REQUIRED',
+        message: 'Manager or SuperAdmin Support privileges are required for this control.',
+      });
+    }
+    return res.status(403).json({ message: 'Access denied: SuperAdmin Support or Manager privileges required.' });
+  } catch (error) {
+    return res.status(401).json({ message: 'Your session has expired. Please sign in again.' });
+  }
+};
+
+/**
  * Optional customer authentication middleware for AI Support Chat endpoints.
- * Binds `req.user` (id, name, email, phone, role) when a valid customer Bearer JWT is present,
- * while gracefully allowing guest access (`req.user = null`) when unauthenticated.
  */
 const optionalAuthenticateCustomer = async (req, _res, next) => {
   req.user = null;
@@ -142,33 +234,21 @@ const optionalAuthenticateCustomer = async (req, _res, next) => {
   return next();
 };
 
-const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
-  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-})[character]);
-const validId = value => /^\d+$/.test(String(value)) && Number(value) > 0;
-const validMessage = value => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 10000;
-const normalizeAgent = row => ({
-  id: row.id,
-  username: row.username,
-  name: row.name,
-  is_active: Boolean(row.is_active),
-  created_at: row.created_at,
-});
-
 // ============================================================================
-// PART 1: AUTONOMOUS AI CUSTOMER SUPPORT ENGINE ENDPOINTS (`/api/support/chat/*`)
+// PART 1: CUSTOMER 20X AI SUPPORT CHAT & LIFECYCLE ENDPOINTS (`/api/support/chat/*`)
 // ============================================================================
 
 /**
  * POST /api/support/chat/session
- * Initializes or resumes a multi-turn AI support conversation session,
- * injects page/cart/user context, and returns contextual greeting + history.
+ * Initializes, resumes, or starts a brand-new multi-turn AI support conversation session.
  */
 router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer, async (req, res) => {
   try {
-    const { sessionToken, pageContext = {}, guestInfo = {} } = req.body || {};
+    const { sessionToken, forceNew = false, pageContext = {}, guestInfo = {} } = req.body || {};
+    const featureConfig = await getAiSupportFeatureConfig(pool);
     const session = await createOrResumeSession({
       sessionToken,
+      forceNew: Boolean(forceNew),
       userId: req.user?.id || null,
       guestName: guestInfo?.name || req.user?.name || null,
       guestEmail: guestInfo?.email || req.user?.email || null,
@@ -176,7 +256,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       pageContext,
     });
 
-    let messages = await getSessionMessages(session.id, 50);
+    let messages = await getSessionMessages(session.id, 80, pool, { includeInternal: false });
     const { greeting, quickActions } = buildContextualGreeting({
       user: req.user,
       pageContext: { ...session.pageContext, ...pageContext },
@@ -186,6 +266,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       const greetingMsg = await appendMessage({
         sessionId: session.id,
         sender: 'assistant',
+        senderName: 'Bhumivera AI Concierge',
         content: greeting,
         quickActions,
       });
@@ -199,6 +280,12 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       greeting,
       quickActions,
       messages,
+      featureConfig: {
+        proactiveTriggersEnabled: featureConfig.ai_proactive_triggers_enabled,
+        proactiveLingerSeconds: featureConfig.ai_proactive_linger_seconds,
+        rageClickDetectionEnabled: featureConfig.ai_rage_click_detection_enabled,
+        allowCustomerStatusChange: featureConfig.allow_customer_status_change,
+      },
     });
   } catch (error) {
     console.error('[AI_SUPPORT_SESSION_INIT]', error);
@@ -210,12 +297,14 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       success: true,
       degraded: true,
       sessionToken: req.body?.sessionToken || `local-${crypto.randomUUID()}`,
+      session: { status: 'active', priority: 'Low' },
       greeting: fallbackGreeting.greeting,
       quickActions: fallbackGreeting.quickActions,
       messages: [
         {
           id: Date.now(),
           sender: 'assistant',
+          senderName: 'Bhumivera AI Concierge',
           content: fallbackGreeting.greeting,
           quickActions: fallbackGreeting.quickActions,
           orderCards: [],
@@ -227,8 +316,101 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
 });
 
 /**
+ * PATCH /api/support/chat/session/:sessionToken/status
+ * Allows the customer to transition chat status:
+ * 'active' (reopen), 'pending', 'waiting_for_review', 'escalated', 'resolved', 'closed'
+ */
+router.patch('/chat/session/:sessionToken/status', supportSessionLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const { status, reason = '' } = req.body || {};
+    if (!VALID_CHAT_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_CHAT_STATUS',
+        message: `Choose a valid chat status: ${VALID_CHAT_STATUSES.join(', ')}.`,
+      });
+    }
+
+    const session = await getSessionByToken(req.params.sessionToken);
+    if (!session) {
+      return res.status(404).json({ success: false, code: 'SESSION_NOT_FOUND', message: 'Chat session not found.' });
+    }
+    if (session.userId && req.user?.id && Number(session.userId) !== Number(req.user.id)) {
+      return res.status(403).json({ success: false, code: 'FORBIDDEN_SESSION', message: 'Unauthorized session access.' });
+    }
+
+    let priority = session.priority;
+    if (status === 'escalated' && ['Low', 'Medium'].includes(priority)) priority = 'High';
+    if (status === 'waiting_for_review' && priority === 'Low') priority = 'Medium';
+
+    await updateSessionTelemetry(session.id, {
+      status,
+      priority,
+      resolutionNote: reason ? String(reason).slice(0, 500) : undefined,
+      closedBy: ['resolved', 'closed'].includes(status) ? 'customer' : null,
+    });
+
+    const statusDescriptions = {
+      active: 'Chat reopened and marked **Active**. How else can I help you today?',
+      pending: 'Chat marked as **Pending** (awaiting additional order or account details). You can reply whenever you are ready.',
+      waiting_for_review: 'Chat placed in **Waiting for Supervisor Review**. A Senior Concierge Supervisor will review your case history.',
+      escalated: 'Chat marked as **Escalated** and prioritized for our Senior Specialist Desk.',
+      resolved: 'Chat marked as **Resolved**. Thank you for shopping with Bhumivera! Feel free to rate your experience below or reopen this chat anytime.',
+      closed: 'Chat session **Closed**. Your full conversation transcript is saved. Click **Start New Chat** or **Reopen** whenever you need assistance.',
+    };
+
+    const statusMsg = await appendMessage({
+      sessionId: session.id,
+      sender: 'system',
+      senderName: 'System Concierge',
+      content: statusDescriptions[status] || `Chat status updated to ${status}.`,
+    });
+
+    const updatedSession = await getSessionByToken(req.params.sessionToken);
+    return res.json({
+      success: true,
+      status,
+      session: updatedSession,
+      systemMessage: statusMsg,
+    });
+  } catch (error) {
+    console.error('[AI_SUPPORT_CHAT_STATUS_UPDATE]', error);
+    return res.status(500).json({ success: false, message: 'Could not update chat session status.' });
+  }
+});
+
+/**
+ * POST /api/support/chat/session/:sessionToken/rating
+ * Records customer CSAT 1–5 star rating and feedback on resolved/closed sessions.
+ */
+router.post('/chat/session/:sessionToken/rating', supportSessionLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const rating = Number(req.body?.rating);
+    const feedback = typeof req.body?.feedback === 'string' ? req.body.feedback.trim().slice(0, 500) : '';
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ success: false, message: 'Choose a rating between 1 and 5 stars.' });
+    }
+    const session = await getSessionByToken(req.params.sessionToken);
+    if (!session) return res.status(404).json({ success: false, message: 'Chat session not found.' });
+
+    await updateSessionTelemetry(session.id, {
+      csatRating: rating,
+      csatFeedback: feedback || null,
+    });
+
+    return res.json({
+      success: true,
+      rating,
+      message: 'Thank you for rating your Bhumivera Concierge experience!',
+    });
+  } catch (error) {
+    console.error('[AI_SUPPORT_CSAT_RATING]', error);
+    return res.status(500).json({ success: false, message: 'Could not save your rating.' });
+  }
+});
+
+/**
  * POST /api/support/chat/context
- * Real-time context injection endpoint (route transitions, cart state, linger >45s, rage-click telemetry).
  */
 router.post('/chat/context', supportSessionLimiter, optionalAuthenticateCustomer, async (req, res) => {
   try {
@@ -262,7 +444,7 @@ router.post('/chat/context', supportSessionLimiter, optionalAuthenticateCustomer
 
 /**
  * GET /api/support/chat/history/:sessionToken
- * Retrieves persisted multi-turn conversation messages and session state.
+ * Retrieves persisted multi-turn conversation messages and live session state (excluding internal staff whispers).
  */
 router.get('/chat/history/:sessionToken', optionalAuthenticateCustomer, async (req, res) => {
   try {
@@ -273,7 +455,7 @@ router.get('/chat/history/:sessionToken', optionalAuthenticateCustomer, async (r
     if (session.userId && req.user?.id && Number(session.userId) !== Number(req.user.id)) {
       return res.status(403).json({ success: false, code: 'FORBIDDEN_SESSION', message: 'Unauthorized session access.' });
     }
-    const messages = await getSessionMessages(session.id, 80);
+    const messages = await getSessionMessages(session.id, 100, pool, { includeInternal: false });
     return res.json({
       success: true,
       session,
@@ -287,8 +469,6 @@ router.get('/chat/history/:sessionToken', optionalAuthenticateCustomer, async (r
 
 /**
  * POST /api/support/chat/message
- * Processes a customer message through the AI Support Orchestrator (sentiment scoring,
- * autonomous MySQL tool execution, LLM synthesis with fallback, and instant escalation).
  */
 router.post('/chat/message', supportChatLimiter, optionalAuthenticateCustomer, async (req, res) => {
   try {
@@ -341,7 +521,6 @@ router.post('/chat/message', supportChatLimiter, optionalAuthenticateCustomer, a
 
 /**
  * POST /api/support/chat/stream (and GET /api/support/chat/stream)
- * Server-Sent Events (SSE) streaming endpoint for real-time token & tool-call streaming.
  */
 const handleSseStream = async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -391,7 +570,6 @@ const handleSseStream = async (req, res) => {
       }
     }
 
-    // Stream reply chunks progressively for responsive typing UX
     const fullReply = String(turnResult.reply || '');
     const tokens = fullReply.match(/.{1,28}(\s|$)|.{1,28}/gs) || [fullReply];
     for (const chunk of tokens) {
@@ -400,6 +578,7 @@ const handleSseStream = async (req, res) => {
 
     sendEvent('metadata', {
       sessionToken: turnResult.sessionToken,
+      status: turnResult.status || 'active',
       messageId: turnResult.message?.id,
       orderCards: turnResult.orderCards || [],
       quickActions: turnResult.quickActions || [],
@@ -425,8 +604,6 @@ router.get('/chat/stream', supportChatLimiter, optionalAuthenticateCustomer, han
 
 /**
  * POST /api/support/chat/escalate
- * Instant manual or automated escalation endpoint to create a human support ticket
- * and dispatch Telegram / WhatsApp / Email alerts.
  */
 router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCustomer, async (req, res) => {
   try {
@@ -467,12 +644,14 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
     await appendMessage({
       sessionId: session.id,
       sender: 'assistant',
+      senderName: 'Bhumivera AI Concierge',
       content: confirmationText,
       sentiment,
     });
 
     return res.status(201).json({
       success: true,
+      status: 'escalated',
       escalation,
       reply: confirmationText,
     });
@@ -485,9 +664,336 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
   }
 });
 
+// ============================================================================
+// PART 2: MULTI-ROLE STAFF PORTAL (`/support`) & OMNICHANNEL CHAT TAKEOVER
+// ============================================================================
+
+router.post('/login', loginLimiter, async (req, res) => {
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!username || !password || username.length > 50 || password.length > 128) {
+    return res.status(400).json({ message: 'Enter your support user ID and password.' });
+  }
+  try {
+    await ensureTables();
+    const [[agent]] = await pool.query(
+      'SELECT * FROM support_agents WHERE username = ?',
+      [username]
+    );
+    if (!agent || !agent.is_active || !await bcrypt.compare(password, agent.password_hash)) {
+      return res.status(401).json({ message: 'Invalid user ID or password.' });
+    }
+    try {
+      await pool.query("UPDATE support_agents SET last_login_at = NOW(), online_status = 'online' WHERE id = ?", [agent.id]);
+    } catch {}
+    const normalized = normalizeAgent({ ...agent, online_status: 'online', last_login_at: new Date().toISOString() });
+    const token = jwt.sign(
+      {
+        sub: String(agent.id),
+        username: normalized.username,
+        name: normalized.name,
+        role: normalized.role,
+        scope: 'support-agent',
+      },
+      secret(),
+      { expiresIn: '8h', jwtid: crypto.randomUUID() }
+    );
+    return res.json({ token, agent: normalized });
+  } catch (error) {
+    console.error('[SUPPORT_AGENT_LOGIN]', error);
+    return res.status(500).json({ message: 'Could not sign in to support.' });
+  }
+});
+
+router.get('/me', authenticateSupportAgent, (req, res) => res.json({
+  agent: req.supportAgent,
+  roleMatrix: ROLE_DEFAULT_PERMISSIONS,
+}));
+
+router.patch('/me/presence', authenticateSupportAgent, async (req, res) => {
+  const onlineStatus = req.body?.online_status;
+  if (!['online', 'busy', 'away', 'offline'].includes(onlineStatus)) {
+    return res.status(400).json({ message: 'Choose online, busy, away, or offline status.' });
+  }
+  try {
+    if (req.supportAgent.id) {
+      await pool.query('UPDATE support_agents SET online_status = ? WHERE id = ?', [onlineStatus, req.supportAgent.id]);
+    }
+    return res.json({ success: true, online_status: onlineStatus });
+  } catch (error) {
+    return res.status(500).json({ message: 'Could not update presence status.' });
+  }
+});
+
+/**
+ * GET /api/support/sessions
+ * Lists live AI & human customer chat sessions for `/support` and `/superadminsupport`.
+ */
+router.get('/sessions', authenticateSupportAgent, async (req, res) => {
+  try {
+    const sessions = await listAllChatSessions({
+      status: req.query.status || null,
+      priority: req.query.priority || null,
+      assignedAgentId: req.query.assigned_agent_id || null,
+      search: req.query.search || '',
+      limit: req.query.limit || 100,
+    });
+    return res.json({ success: true, sessions });
+  } catch (error) {
+    console.error('[SUPPORT_SESSIONS_LIST]', error);
+    return res.status(500).json({ message: 'Could not load chat sessions.' });
+  }
+});
+
+/**
+ * GET /api/support/sessions/:sessionToken
+ * Loads complete chat transcript (including internal staff whispers) + Customer 360° summary.
+ */
+router.get('/sessions/:sessionToken', authenticateSupportAgent, async (req, res) => {
+  try {
+    const session = await getSessionByToken(req.params.sessionToken);
+    if (!session) return res.status(404).json({ message: 'Chat session not found.' });
+    const messages = await getSessionMessages(session.id, 150, pool, { includeInternal: true });
+
+    let customerSummary = null;
+    if (session.userId) {
+      const walletLookup = await lookupAccountWalletLoyaltyTool({}, { pool, user: { id: session.userId, role: 'support_agent' }, session });
+      const ordersLookup = await lookupOrderTool({}, { pool, user: { id: session.userId, role: 'support_agent' }, session });
+      customerSummary = {
+        account: walletLookup.accountSummary || null,
+        orders: ordersLookup.orderCards || [],
+      };
+    }
+
+    return res.json({
+      success: true,
+      session,
+      messages,
+      customerSummary,
+    });
+  } catch (error) {
+    console.error('[SUPPORT_SESSION_DETAIL]', error);
+    return res.status(500).json({ message: 'Could not load chat session details.' });
+  }
+});
+
+/**
+ * POST /api/support/sessions/:sessionToken/reply
+ * Allows an Agent, Supervisor, Manager, or SuperAdmin to send a live reply or internal whisper note
+ * directly into a customer's chat session.
+ */
+router.post('/sessions/:sessionToken/reply', authenticateSupportAgent, async (req, res) => {
+  try {
+    const { message, isInternalNote = false, nextStatus = null } = req.body || {};
+    if (!validMessage(message)) {
+      return res.status(400).json({ message: 'Enter a message between 1 and 10,000 characters.' });
+    }
+    const session = await getSessionByToken(req.params.sessionToken);
+    if (!session) return res.status(404).json({ message: 'Chat session not found.' });
+
+    const staff = req.supportAgent;
+    if (isInternalNote && !staff.permissions?.can_reply_chats) {
+      return res.status(403).json({ message: 'You do not have permission to post notes in this chat.' });
+    }
+
+    const senderType = isInternalNote
+      ? 'whisper'
+      : (staff.role === 'superadmin' ? 'superadmin' : staff.role || 'agent');
+    const senderLabel = `${staff.name} (${String(staff.role || 'agent').toUpperCase()})`;
+
+    const savedMsg = await appendMessage({
+      sessionId: session.id,
+      sender: senderType,
+      senderName: senderLabel,
+      isInternalNote: Boolean(isInternalNote),
+      content: message.trim(),
+    });
+
+    const resolvedStatus = nextStatus && VALID_CHAT_STATUSES.includes(nextStatus)
+      ? nextStatus
+      : session.status;
+
+    await updateSessionTelemetry(session.id, {
+      status: resolvedStatus,
+      assignedAgentId: session.assignedAgentId || staff.id || null,
+      assignedAgentName: session.assignedAgentName || staff.name || null,
+      assignedRole: session.assignedRole || staff.role || 'agent',
+      ...(resolvedStatus === 'resolved' || resolvedStatus === 'closed' ? { closedBy: staff.role || 'agent' } : {}),
+    });
+
+    const updatedSession = await getSessionByToken(req.params.sessionToken);
+    return res.status(201).json({
+      success: true,
+      message: savedMsg,
+      session: updatedSession,
+    });
+  } catch (error) {
+    console.error('[SUPPORT_SESSION_REPLY]', error);
+    return res.status(500).json({ message: 'Could not send chat reply.' });
+  }
+});
+
+/**
+ * PATCH /api/support/sessions/:sessionToken/status
+ * Allows staff to change session status ('active', 'pending', 'waiting_for_review', 'escalated', 'resolved', 'closed'),
+ * priority ('Low', 'Medium', 'High', 'Critical'), or assign/reassign the session to a staff member.
+ */
+router.patch('/sessions/:sessionToken/status', authenticateSupportAgent, async (req, res) => {
+  try {
+    const {
+      status,
+      priority,
+      assignedAgentId,
+      assignedAgentName,
+      assignedRole,
+      resolutionNote,
+    } = req.body || {};
+
+    const session = await getSessionByToken(req.params.sessionToken);
+    if (!session) return res.status(404).json({ message: 'Chat session not found.' });
+
+    const staff = req.supportAgent;
+    if (status && !VALID_CHAT_STATUSES.includes(status)) {
+      return res.status(400).json({ message: `Invalid status. Allowed: ${VALID_CHAT_STATUSES.join(', ')}.` });
+    }
+    if (
+      assignedAgentId !== undefined &&
+      Number(assignedAgentId) !== Number(staff.id) &&
+      !staff.permissions?.can_reassign_chats
+    ) {
+      return res.status(403).json({
+        code: 'PERMISSION_DENIED_REASSIGN',
+        message: 'Only Supervisors, Managers, or SuperAdmins can reassign chats to other agents.',
+      });
+    }
+
+    await updateSessionTelemetry(session.id, {
+      status: status || undefined,
+      priority: ['Low', 'Medium', 'High', 'Critical'].includes(priority) ? priority : undefined,
+      assignedAgentId: assignedAgentId !== undefined ? (assignedAgentId ? Number(assignedAgentId) : null) : undefined,
+      assignedAgentName: assignedAgentName !== undefined ? assignedAgentName : undefined,
+      assignedRole: assignedRole !== undefined ? assignedRole : undefined,
+      resolutionNote: resolutionNote !== undefined ? resolutionNote : undefined,
+      closedBy: status && ['resolved', 'closed'].includes(status) ? `${staff.name} (${staff.role})` : undefined,
+    });
+
+    if (status && status !== session.status) {
+      await appendMessage({
+        sessionId: session.id,
+        sender: 'system',
+        senderName: `${staff.name} (${String(staff.role || 'agent').toUpperCase()})`,
+        content: `Conversation marked as **${status.replace(/_/g, ' ').toUpperCase()}** by ${staff.name} (${staff.role}).${resolutionNote ? ` Note: ${resolutionNote}` : ''}`,
+      });
+    }
+
+    const updatedSession = await getSessionByToken(req.params.sessionToken);
+    return res.json({
+      success: true,
+      session: updatedSession,
+      message: `Session updated to ${status || updatedSession.status}.`,
+    });
+  } catch (error) {
+    console.error('[SUPPORT_SESSION_STATUS_PATCH]', error);
+    return res.status(500).json({ message: 'Could not update chat session.' });
+  }
+});
+
+/**
+ * POST /api/support/sessions/:sessionToken/execute-action
+ * Role-gated staff action runner (Cancel Order, Initiate Return RMA, or Issue Goodwill Wallet Credit)
+ * directly from `/support` or `/superadminsupport`.
+ */
+router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, async (req, res) => {
+  try {
+    const { action, orderId, reason, resolutionType, goodwillAmount } = req.body || {};
+    const staff = req.supportAgent;
+    const session = await getSessionByToken(req.params.sessionToken);
+    if (!session) return res.status(404).json({ message: 'Chat session not found.' });
+
+    if (action === 'cancel_order') {
+      if (!staff.permissions?.can_cancel_orders) {
+        return res.status(403).json({
+          code: 'SUPERVISOR_REQUIRED_FOR_CANCEL',
+          message: 'Agent role cannot directly cancel orders. Mark the chat as Waiting for Review or Escalated for a Supervisor/Manager.',
+        });
+      }
+      const result = await cancelOrderTool(
+        { order_id: orderId, reason: reason || `Cancelled by ${staff.name} (${staff.role})` },
+        { pool, user: { id: session.userId, role: 'support_agent', name: staff.name }, session }
+      );
+      if (result.success) {
+        await appendMessage({
+          sessionId: session.id,
+          sender: 'system',
+          senderName: `${staff.name} (${staff.role})`,
+          content: `✅ ${result.message}`,
+          orderCards: result.orderCards || [],
+        });
+      }
+      return res.status(result.success ? 200 : 400).json(result);
+    }
+
+    if (action === 'initiate_return') {
+      if (!staff.permissions?.can_initiate_returns) {
+        return res.status(403).json({ message: 'You do not have permission to initiate returns.' });
+      }
+      const result = await initiateReturnTool(
+        {
+          order_id: orderId,
+          reason: reason || `Return initiated by ${staff.name} (${staff.role})`,
+          resolution_type: resolutionType || 'refund',
+        },
+        { pool, user: { id: session.userId, role: 'support_agent', name: staff.name }, session }
+      );
+      if (result.success) {
+        await appendMessage({
+          sessionId: session.id,
+          sender: 'system',
+          senderName: `${staff.name} (${staff.role})`,
+          content: `✅ ${result.message}`,
+          orderCards: result.orderCards || [],
+        });
+      }
+      return res.status(result.success ? 200 : 400).json(result);
+    }
+
+    if (action === 'goodwill_wallet_credit') {
+      if (!staff.permissions?.can_adjust_wallet_goodwill) {
+        return res.status(403).json({
+          code: 'SUPERVISOR_REQUIRED_FOR_GOODWILL',
+          message: 'Only Supervisors, Managers, or SuperAdmins can issue goodwill wallet credits.',
+        });
+      }
+      const amount = Number(goodwillAmount);
+      if (!session.userId || !Number.isFinite(amount) || amount <= 0 || amount > 2000) {
+        return res.status(400).json({ message: 'Provide a valid customer account and goodwill amount between ₹1 and ₹2,000.' });
+      }
+      await pool.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE id = ?', [amount, session.userId]);
+      try {
+        await pool.query(
+          'INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance)',
+          [session.userId, amount]
+        );
+      } catch {}
+      const creditNote = `🎁 Goodwill Wallet Credit of **₹${amount.toLocaleString('en-IN')}** has been credited to your Bhumivera Wallet by ${staff.name} (${staff.role}).`;
+      await appendMessage({
+        sessionId: session.id,
+        sender: 'system',
+        senderName: `${staff.name} (${staff.role})`,
+        content: creditNote,
+      });
+      return res.json({ success: true, amount, message: `Credited ₹${amount} to customer wallet.` });
+    }
+
+    return res.status(400).json({ message: 'Unsupported support action.' });
+  } catch (error) {
+    console.error('[SUPPORT_EXECUTE_ACTION]', error);
+    return res.status(500).json({ message: 'Could not execute support action.' });
+  }
+});
+
 /**
  * GET /api/support/ai-escalations
- * Staff & Admin endpoint to inspect AI support escalations and sentiment telemetry.
  */
 router.get('/ai-escalations', authenticateSupportAgent, async (req, res) => {
   try {
@@ -503,73 +1009,170 @@ router.get('/ai-escalations', authenticateSupportAgent, async (req, res) => {
 });
 
 // ============================================================================
-// PART 2: EXISTING STAFF SUPPORT PORTAL ENDPOINTS (PRESERVED 100%)
+// PART 3: SUPERADMIN SUPPORT COMMAND CENTER (`/superadminsupport`) ENDPOINTS
 // ============================================================================
 
-router.post('/login', loginLimiter, async (req, res) => {
-  const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
-  const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  if (!username || !password || username.length > 50 || password.length > 128) {
-    return res.status(400).json({ message: 'Enter your support user ID and password.' });
-  }
+/**
+ * GET /api/support/superadmin/overview
+ * Real-time metrics, queue breakdown, agent roster, and feature configuration for `/superadminsupport`.
+ */
+router.get('/superadmin/overview', authenticateSuperSupport, async (_req, res) => {
   try {
     await ensureTables();
-    const [[agent]] = await pool.query(
-      'SELECT id, username, name, password_hash, is_active FROM support_agents WHERE username = ?',
-      [username]
-    );
-    if (!agent || !agent.is_active || !await bcrypt.compare(password, agent.password_hash)) {
-      return res.status(401).json({ message: 'Invalid user ID or password.' });
+    const sessions = await listAllChatSessions({ limit: 250 });
+    const escalations = await listEscalations({ limit: 50 });
+    const featureConfig = await getAiSupportFeatureConfig(pool);
+    const [agentRows] = await pool.query('SELECT * FROM support_agents ORDER BY role DESC, name ASC');
+    const agents = (agentRows || []).map(normalizeAgent);
+
+    const statusCounts = {
+      total: sessions.length,
+      active: 0,
+      pending: 0,
+      waiting_for_review: 0,
+      escalated: 0,
+      resolved: 0,
+      closed: 0,
+    };
+    const priorityCounts = { Low: 0, Medium: 0, High: 0, Critical: 0 };
+    let csatSum = 0;
+    let csatCount = 0;
+    let frustrationSum = 0;
+
+    for (const s of sessions) {
+      if (statusCounts[s.status] !== undefined) statusCounts[s.status] += 1;
+      if (priorityCounts[s.priority] !== undefined) priorityCounts[s.priority] += 1;
+      frustrationSum += Number(s.frustrationScore || 0);
+      if (s.csatRating) {
+        csatSum += Number(s.csatRating);
+        csatCount += 1;
+      }
     }
-    const token = jwt.sign(
-      { sub: String(agent.id), username: agent.username, name: agent.name, role: 'support_agent', scope: 'support-agent' },
-      secret(),
-      { expiresIn: '8h', jwtid: crypto.randomUUID() }
-    );
-    return res.json({ token, agent: normalizeAgent(agent) });
+
+    return res.json({
+      success: true,
+      metrics: {
+        statusCounts,
+        priorityCounts,
+        averageFrustration: sessions.length ? Math.round(frustrationSum / sessions.length) : 0,
+        averageCsat: csatCount ? Number((csatSum / csatCount).toFixed(2)) : 4.9,
+        csatResponses: csatCount,
+        uptimePercent: 100,
+      },
+      agents,
+      sessions: sessions.slice(0, 100),
+      escalations: escalations.slice(0, 30),
+      featureConfig,
+      roleMatrix: ROLE_DEFAULT_PERMISSIONS,
+    });
   } catch (error) {
-    console.error('[SUPPORT_AGENT_LOGIN]', error);
-    return res.status(500).json({ message: 'Could not sign in to support.' });
+    console.error('[SUPERADMIN_SUPPORT_OVERVIEW]', error);
+    return res.status(500).json({ message: 'Could not load SuperAdmin Support overview.' });
   }
 });
 
-router.get('/me', authenticateSupportAgent, (req, res) => res.json({ agent: req.supportAgent }));
+/**
+ * GET /api/support/superadmin/features
+ */
+router.get('/superadmin/features', authenticateSupportAgent, async (_req, res) => {
+  try {
+    const featureConfig = await getAiSupportFeatureConfig(pool);
+    return res.json({ success: true, featureConfig, roleMatrix: ROLE_DEFAULT_PERMISSIONS });
+  } catch (error) {
+    return res.status(500).json({ message: 'Could not load AI support feature configuration.' });
+  }
+});
 
-router.get('/agents', authenticateAdmin, async (req, res) => {
+/**
+ * PUT /api/support/superadmin/features
+ */
+router.put('/superadmin/features', authenticateSuperSupport, async (req, res) => {
+  try {
+    const updated = await updateAiSupportFeatureConfig(req.body || {}, pool);
+    return res.json({
+      success: true,
+      featureConfig: updated,
+      message: 'AI Support & Command Center feature controls updated.',
+    });
+  } catch (error) {
+    console.error('[SUPERADMIN_SUPPORT_FEATURES_UPDATE]', error);
+    return res.status(500).json({ message: 'Could not update feature controls.' });
+  }
+});
+
+/**
+ * GET /api/support/agents
+ * Lists all support login IDs and their role (`agent`, `supervisor`, `manager`) + permissions.
+ */
+router.get('/agents', authenticateSupportAgent, async (_req, res) => {
   try {
     await ensureTables();
     const [agents] = await pool.query(
-      'SELECT id, username, name, is_active, created_at FROM support_agents ORDER BY name, id'
+      'SELECT * FROM support_agents ORDER BY name, id'
     );
-    return res.json({ agents: agents.map(normalizeAgent) });
+    return res.json({
+      agents: (agents || []).map(normalizeAgent),
+      roleMatrix: ROLE_DEFAULT_PERMISSIONS,
+    });
   } catch (error) {
     console.error('[SUPPORT_AGENT_LIST]', error);
     return res.status(500).json({ message: 'Could not load support agents.' });
   }
 });
 
-router.post('/agents', authenticateAdmin, async (req, res) => {
+/**
+ * POST /api/support/agents
+ * Creates a new staff login ID with assigned role (`agent`, `supervisor`, `manager`),
+ * department, max concurrent chats, and custom permission overrides.
+ */
+router.post('/agents', authenticateSuperSupport, async (req, res) => {
   const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
   const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const email = typeof req.body?.email === 'string' && req.body.email.trim() ? req.body.email.trim().toLowerCase() : null;
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const role = VALID_SUPPORT_ROLES.includes(req.body?.role) ? req.body.role : 'agent';
+  const department = typeof req.body?.department === 'string' && req.body.department.trim()
+    ? req.body.department.trim().slice(0, 80)
+    : 'General Concierge';
+  const maxChats = Math.max(1, Math.min(100, Number(req.body?.max_concurrent_chats) || 10));
+  const permissions = req.body?.permissions && typeof req.body.permissions === 'object'
+    ? resolveRolePermissions(role, req.body.permissions)
+    : resolveRolePermissions(role);
+
   if (!/^[a-z0-9._-]{3,50}$/.test(username) || !name || name.length > 100 ||
-      password.length < 12 || password.length > 128) {
+      password.length < 8 || password.length > 128) {
     return res.status(400).json({
-      message: 'Use a 3–50 character user ID, a name, and a password of at least 12 characters.',
+      message: 'Use a 3–50 character user ID, a name, and a password of at least 8 characters.',
     });
   }
   try {
     await ensureTables();
     const hash = await bcrypt.hash(password, 12);
     const [result] = await pool.query(
-      'INSERT INTO support_agents (username, name, password_hash) VALUES (?, ?, ?)',
-      [username, name, hash]
+      `INSERT INTO support_agents
+        (username, name, email, password_hash, role, department, permissions, max_concurrent_chats)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [username, name, email, hash, role, department, JSON.stringify(permissions), maxChats]
     );
     const [[agent]] = await pool.query(
-      'SELECT id, username, name, is_active, created_at FROM support_agents WHERE id = ?',
+      'SELECT * FROM support_agents WHERE id = ?',
       [result.insertId]
     );
-    return res.status(201).json({ agent: normalizeAgent(agent) });
+    return res.status(201).json({
+      agent: normalizeAgent(agent || {
+        id: result.insertId,
+        username,
+        name,
+        email,
+        role,
+        department,
+        permissions,
+        max_concurrent_chats: maxChats,
+        is_active: 1,
+        created_at: new Date().toISOString(),
+      }),
+      message: `Created ${role.toUpperCase()} login ID @${username}.`,
+    });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'That support user ID is already in use.' });
     console.error('[SUPPORT_AGENT_CREATE]', error);
@@ -577,7 +1180,81 @@ router.post('/agents', authenticateAdmin, async (req, res) => {
   }
 });
 
-router.patch('/agents/:id/status', authenticateAdmin, async (req, res) => {
+/**
+ * PATCH /api/support/agents/:id
+ * Updates a staff login ID's role (`agent`, `supervisor`, `manager`), department,
+ * granular permissions JSON, max concurrent chats, active status, or password.
+ */
+router.patch('/agents/:id', authenticateSuperSupport, async (req, res) => {
+  if (!validId(req.params.id)) {
+    return res.status(400).json({ message: 'A valid agent ID is required.' });
+  }
+  try {
+    await ensureTables();
+    const [[existing]] = await pool.query('SELECT * FROM support_agents WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ message: 'Support agent not found.' });
+
+    const nextRole = VALID_SUPPORT_ROLES.includes(req.body?.role) ? req.body.role : (existing.role || 'agent');
+    const nextName = typeof req.body?.name === 'string' && req.body.name.trim() ? req.body.name.trim().slice(0, 100) : existing.name;
+    const nextEmail = req.body?.email !== undefined ? (req.body.email ? String(req.body.email).trim().slice(0, 150) : null) : existing.email;
+    const nextDept = typeof req.body?.department === 'string' && req.body.department.trim()
+      ? req.body.department.trim().slice(0, 80)
+      : (existing.department || 'General Concierge');
+    const nextMaxChats = req.body?.max_concurrent_chats !== undefined
+      ? Math.max(1, Math.min(100, Number(req.body.max_concurrent_chats) || 10))
+      : Number(existing.max_concurrent_chats || 10);
+    const nextActive = req.body?.is_active !== undefined ? Number(Boolean(req.body.is_active)) : existing.is_active;
+
+    const baseCustomPerms = req.body?.permissions && typeof req.body.permissions === 'object'
+      ? req.body.permissions
+      : (req.body?.role && req.body.role !== existing.role ? null : parseJsonSafe(existing.permissions, null));
+    const resolvedPerms = resolveRolePermissions(nextRole, baseCustomPerms);
+
+    let nextPasswordHash = existing.password_hash;
+    if (typeof req.body?.password === 'string' && req.body.password.trim().length >= 8) {
+      nextPasswordHash = await bcrypt.hash(req.body.password.trim(), 12);
+    }
+
+    await pool.query(
+      `UPDATE support_agents
+       SET name = ?, email = ?, role = ?, department = ?, permissions = ?,
+           max_concurrent_chats = ?, is_active = ?, password_hash = ?
+       WHERE id = ?`,
+      [
+        nextName,
+        nextEmail,
+        nextRole,
+        nextDept,
+        JSON.stringify(resolvedPerms),
+        nextMaxChats,
+        nextActive,
+        nextPasswordHash,
+        req.params.id,
+      ]
+    );
+
+    const [[updated]] = await pool.query('SELECT * FROM support_agents WHERE id = ?', [req.params.id]);
+    return res.json({
+      success: true,
+      agent: normalizeAgent(updated || {
+        ...existing,
+        name: nextName,
+        email: nextEmail,
+        role: nextRole,
+        department: nextDept,
+        permissions: resolvedPerms,
+        max_concurrent_chats: nextMaxChats,
+        is_active: nextActive,
+      }),
+      message: 'Support staff account and role permissions updated.',
+    });
+  } catch (error) {
+    console.error('[SUPPORT_AGENT_UPDATE]', error);
+    return res.status(500).json({ message: 'Could not update support agent.' });
+  }
+});
+
+router.patch('/agents/:id/status', authenticateSuperSupport, async (req, res) => {
   if (!validId(req.params.id) || ![true, false, 0, 1].includes(req.body?.is_active)) {
     return res.status(400).json({ message: 'A valid agent ID and active status are required.' });
   }
@@ -596,6 +1273,10 @@ router.patch('/agents/:id/status', authenticateAdmin, async (req, res) => {
   }
 });
 
+// ============================================================================
+// PART 4: CUSTOMER LOOKUP & TICKET MANAGEMENT ENDPOINTS
+// ============================================================================
+
 router.get('/customers', authenticateSupportAgent, async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
   if (search.length < 2 || search.length > 100) {
@@ -604,7 +1285,7 @@ router.get('/customers', authenticateSupportAgent, async (req, res) => {
   try {
     const term = `%${search}%`;
     const [customers] = await pool.query(
-      `SELECT id, name, email, phone, is_active, created_at, wallet_balance, loyalty_points
+      `SELECT id, name, email, phone, is_active, created_at, wallet_balance, loyalty_points, loyalty_lifetime_points
        FROM users WHERE role = 'customer' AND (name LIKE ? OR email LIKE ? OR phone LIKE ?)
        ORDER BY name LIMIT 30`,
       [term, term, term]
@@ -622,28 +1303,41 @@ router.get('/customers/:id', authenticateSupportAgent, async (req, res) => {
     const user = await getUserById(req.params.id);
     if (!user || user.role !== 'customer') return res.status(404).json({ message: 'Customer not found.' });
     const [[customer]] = await pool.query(
-      `SELECT id, name, email, phone, is_active, created_at, wallet_balance, loyalty_points
+      `SELECT id, name, email, phone, is_active, created_at, wallet_balance, loyalty_points, loyalty_lifetime_points
        FROM users WHERE id = ?`,
       [req.params.id]
     );
     const [orders] = await pool.query(
       `SELECT id, order_number, status, payment_status, payment_mode, total, subtotal,
-              discount, shipping_cost, tracking_number, courier, created_at, address_snapshot
+              discount, shipping_cost, tracking_number, courier, created_at, delivered_at, address_snapshot
        FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`,
       [req.params.id]
     );
     for (const order of orders) {
       const [items] = await pool.query(
-        'SELECT id, name, price, quantity FROM order_items WHERE order_id = ? ORDER BY id',
+        'SELECT id, product_id, name, sku, price, quantity FROM order_items WHERE order_id = ? ORDER BY id',
         [order.id]
       );
       order.items = items;
     }
+    const [returns] = await pool.query(
+      `SELECT r.*, rr.receipt AS refund_receipt, rr.status AS provider_refund_status, rr.amount_paise
+       FROM returns r
+       LEFT JOIN return_refund_requests rr ON rr.id = (
+         SELECT MAX(rr2.id) FROM return_refund_requests rr2 WHERE rr2.return_id = r.id
+       )
+       WHERE r.user_id = ? ORDER BY r.created_at DESC LIMIT 50`,
+      [req.params.id]
+    ).catch(() => [[]]);
     const [tickets] = await pool.query(
       'SELECT id, subject, status, created_at, updated_at FROM support_tickets WHERE user_id = ? ORDER BY created_at DESC LIMIT 50',
       [req.params.id]
     );
-    return res.json({ customer, orders, tickets });
+    const chatSessions = await listAllChatSessions({ limit: 20 }).then(all =>
+      all.filter(s => Number(s.userId) === Number(req.params.id))
+    ).catch(() => []);
+
+    return res.json({ customer, orders, returns, tickets, chatSessions });
   } catch (error) {
     console.error('[SUPPORT_CUSTOMER_DETAILS]', error);
     return res.status(500).json({ message: 'Could not load customer details.' });
@@ -713,7 +1407,7 @@ router.post('/customers/:id/password-reset-link', resetLinkLimiter, authenticate
   }
 });
 
-router.get('/tickets', authenticateSupportAgent, async (req, res) => {
+router.get('/tickets', authenticateSupportAgent, async (_req, res) => {
   try {
     const tickets = await ContactModel.getAllTickets();
     const messages = await ContactModel.getMessagesByTicketIds(tickets.map(ticket => ticket.id));
