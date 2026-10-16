@@ -193,6 +193,43 @@ const authenticateUser=async(req,res,next)=>{
   next();
 };
 
+const optionalAuth=async(req,res,next)=>{
+  req.user=null;
+  const auth=req.headers.authorization;
+  if(!auth||!auth.startsWith('Bearer ')) return next();
+
+  let payload;
+  try {
+    payload=jwt.verify(auth.split(' ')[1],process.env.JWT_SECRET||'fallback_secret');
+  } catch {
+    return next();
+  }
+  if(!payload?.id) return next();
+
+  try {
+    if(!await isSessionActive(payload,req)) return next();
+  } catch(err) {
+    console.error('[AUTH_SESSION_CHECK_ERROR]:',err);
+    return res.status(503).json({message:'Could not validate session. Please try again.'});
+  }
+
+  if(payload.role!=='admin'&&payload.role!=='superadmin'){
+    const pool=require('../config/db');
+    try {
+      const[userData]=await pool.query('SELECT is_active FROM users WHERE id=?',[payload.id]);
+      if(!userData||userData.length===0||parseInt(userData[0].is_active)===0) return next();
+    } catch(dbErr) {
+      if(dbErr.code!=='ER_BAD_FIELD_ERROR') {
+        console.error('[AUTH_DB_ERROR]:',dbErr);
+        return res.status(500).json({message:'Internal server error during session validation.'});
+      }
+    }
+  }
+
+  req.user=payload;
+  return next();
+};
+
 const isAdmin=(req,res,next)=>{
   if(req.user&&(req.user.role==='superadmin'||req.user.role==='admin')) next();
   else res.status(403).json({success:false,message:'Access Denied: Admin Only.'})
@@ -211,4 +248,4 @@ const isWarehouseAdmin=async(req,res,next)=>{
   }
 };
 
-module.exports={authenticateAdmin,authenticateUser,isAdmin,isWarehouseAdmin,ROLE_PERMISSIONS,getAdminPermission,hasPermission};
+module.exports={authenticateAdmin,authenticateUser,optionalAuth,isAdmin,isWarehouseAdmin,ROLE_PERMISSIONS,getAdminPermission,hasPermission};
