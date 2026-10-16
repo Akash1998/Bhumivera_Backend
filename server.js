@@ -75,7 +75,6 @@ const gamificationRoutes = require("./routes/gamificationRoutes");
 const impactRoutes = require("./routes/impactRoutes");
 const systemAdminRoutes = require("./routes/systemAdminRoutes");
 const supportRoutes = require("./routes/supportRoutes");
-const superAdminControlCentreRoutes = require("./routes/superAdminControlCentreRoutes");
 
 const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
 
@@ -177,7 +176,6 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use(redisResponseCache);
 
 // --- ROUTE REGISTRATION ---
-app.use("/api/superadmin/controlcentre", superAdminControlCentreRoutes);
 app.use("/api/admin/system", systemAdminRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/flash-sales", createModuleAvailabilityMiddleware('flash_sales'), flashSalesRoutes);
