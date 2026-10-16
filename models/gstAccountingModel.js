@@ -466,7 +466,7 @@ const updateBusinessProfile = async (profile, adminId) => {
 const getGstProducts = async ({ search = '' } = {}) => {
   const term = String(search).trim();
   const [products] = await pool.query(
-    `SELECT p.id, p.name, p.sku, p.price, p.discount_price, p.stock,
+    `SELECT p.id, p.name, p.sku, p.price, p.discount_price, p.quantity AS stock,
             p.gst_hsn_code, p.gst_rate, c.name AS category_name
      FROM products p
      LEFT JOIN categories c ON c.id = p.category_id
