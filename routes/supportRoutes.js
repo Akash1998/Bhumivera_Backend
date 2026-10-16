@@ -2387,12 +2387,12 @@ router.patch('/tickets/:id', authenticateSupportAgent, async (req, res) => {
 
 
 const {
-  COMPLETE_SITE_NAVIGATION_MAP,
   evaluatePasswordRequirements,
   diagnoseCartFriction,
   diagnosePasswordAndAuthFriction,
   diagnoseCheckoutAndCouponFriction,
   findRelevantNavigationLinks,
+  sanitizeCustomerReply,
   diagnoseCustomerFriction,
 } = require('../services/aiCopilotRescueService');
 
@@ -2403,11 +2403,14 @@ const {
 router.get('/ai-copilot/navigation-map', optionalCustomerAuth, async (req, res) => {
   try {
     const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-    const links = query ? findRelevantNavigationLinks(query) : COMPLETE_SITE_NAVIGATION_MAP;
+    const guidance = findRelevantNavigationLinks(query).map(({ title, description }) => ({
+      title: sanitizeCustomerReply(title),
+      description: sanitizeCustomerReply(description),
+    }));
     return res.json({
       success: true,
-      links,
-      total: COMPLETE_SITE_NAVIGATION_MAP.length,
+      guidance,
+      total: guidance.length,
     });
   } catch (error) {
     console.error('[AI_COPILOT_NAV_MAP]', error);

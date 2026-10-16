@@ -133,12 +133,19 @@ const COMPLETE_SITE_NAVIGATION_MAP = [
     ],
   },
   {
-    id: 'ewarranty',
+    id: 'verify-product',
     category: 'authenticity',
-    title: 'Product Authenticity & E-Warranty Registration (/ewarranty)',
-    path: '/verify-product', url: `${PUBLIC_SITE_URL}/verify-product`, label: 'Verify Product Authenticity (/verify-product)', category: 'Authenticity & Warranty', description: 'Verify product batch authenticity and QR seal.', keywords: ['verify product', 'authentic', 'qr check'] },
+    title: 'Product Authenticity Check (/verify-product)',
+    path: '/verify-product',
+    url: `${PUBLIC_SITE_URL}/verify-product`,
+    keywords: ['verify product', 'authentic', 'qr check'],
+    description: 'Verify product batch authenticity and QR seal.',
+    steps: ['Enter the product serial or scan its QR seal to check authenticity.'],
+  },
   {
     id: 'ewarranty',
+    category: 'authenticity',
+    title: 'E-Warranty Registration (/ewarranty)',
     path: '/ewarranty',
     url: `${PUBLIC_SITE_URL}/ewarranty`,
     keywords: ['warranty', 'ewarranty', 'serial', 'authentic', 'genuine', 'verify product', 'anri'],
@@ -233,12 +240,19 @@ const COMPLETE_SITE_NAVIGATION_MAP = [
     ],
   },
   {
-    id: 'forgot-password',
+    id: 'reset-password',
     category: 'account',
-    title: 'Password Recovery & OTP Reset (/forgot-password)',
-    path: '/reset-password', url: `${PUBLIC_SITE_URL}/reset-password`, label: 'Set New Password (/reset-password)', category: 'Customer Account', description: 'Set a new password using a 6-digit OTP or 30-minute AI recovery token.', keywords: ['reset password', 'set password'] },
+    title: 'Set a New Account Password (/reset-password)',
+    path: '/reset-password',
+    url: `${PUBLIC_SITE_URL}/reset-password`,
+    keywords: ['set password', 'new password', 'password reset otp'],
+    description: 'Set a new password using a 6-digit OTP or a recovery token.',
+    steps: ['Enter the verification code or recovery token and choose a new password.'],
+  },
   {
     id: 'forgot_password',
+    category: 'account',
+    title: 'Forgot Password & Account Recovery (/forgot-password)',
     path: '/forgot-password',
     url: `${PUBLIC_SITE_URL}/forgot-password`,
     keywords: ['forgot password', 'reset password', 'password help', 'cant login', 'otp', 'recover account'],
@@ -310,12 +324,21 @@ const COMPLETE_SITE_NAVIGATION_MAP = [
     ],
   },
   {
-    id: 'superadmin-support-portal',
+    id: 'admin-gst-portal',
     category: 'staff',
-    title: 'SuperAdmin Omnichannel Support Command Center (/superadminsupport)',
-    path: '/admin/dashboard/gst', url: `${PUBLIC_SITE_URL}/admin/dashboard/gst`, label: '10X GST & Books Portal (/admin/dashboard/gst)', category: 'Admin & Finance', description: 'Full GST portal, 48-col CSV export, 6-sheet Excel export, and 10X Luxury Tax Invoices.', keywords: ['gst', 'invoice', 'tax', 'gstr1', 'gstr3b'] },
+    title: 'Enterprise GST & Books Portal',
+    path: '/admin/dashboard/gst',
+    url: `${PUBLIC_SITE_URL}/admin/dashboard/gst`,
+    keywords: ['gst portal', 'gst books', 'gstr1', 'gstr3b', 'tax invoice'],
+    description: 'Administrative GST books, tax reports, and invoice management.',
+    steps: [
+      'Staff with the appropriate role can access GST reporting from the Admin Workspace.',
+    ],
+  },
   {
     id: 'superadmin_support',
+    category: 'staff',
+    title: 'SuperAdmin Support Command Center (/superadminsupport)',
     path: '/superadminsupport',
     url: `${PUBLIC_SITE_URL}/superadminsupport`,
     keywords: ['superadmin support', 'command center', 'delete ticket', 'delete chat', 'rbac'],
@@ -861,9 +884,12 @@ async function diagnoseCheckoutAndCouponFriction({
  */
 function findRelevantNavigationLinks(query = '') {
   const q = String(query || '').trim().toLowerCase();
-  if (!q) return COMPLETE_SITE_NAVIGATION_MAP.slice(0, 8);
+  const customerNavigation = COMPLETE_SITE_NAVIGATION_MAP.filter(item =>
+    !/^\/(?:admin|superadminsupport|support)(?:\/|$)/i.test(String(item.path || ''))
+  );
+  if (!q) return customerNavigation.slice(0, 8);
 
-  const scored = COMPLETE_SITE_NAVIGATION_MAP.map(item => {
+  const scored = customerNavigation.map(item => {
     let score = 0;
     if (item.title.toLowerCase().includes(q)) score += 5;
     if (item.path.toLowerCase().includes(q)) score += 4;
@@ -879,7 +905,19 @@ function findRelevantNavigationLinks(query = '') {
     .sort((a, b) => b.score - a.score)
     .map(s => s.item);
 
-  return matched.length > 0 ? matched.slice(0, 6) : COMPLETE_SITE_NAVIGATION_MAP.slice(0, 6);
+  return matched.length > 0 ? matched.slice(0, 6) : customerNavigation.slice(0, 6);
+}
+
+function sanitizeCustomerReply(reply = '') {
+  return String(reply || '')
+    .replace(/\[([^\]]+)\]\((?:https?:\/\/|\/)[^)]+\)/gi, '$1')
+    .replace(/\b(?:https?:\/\/|www\.|t\.me\/)[^\s<>()]+/gi, '')
+    .replace(/\/(?:admin(?:\/[^\s]*)?|superadminsupport(?:\/[^\s]*)?|support(?:\/[^\s]*)?)/gi, '')
+    .replace(/\/(?:shop|checkout|profile|order-tracking|returns-centre|returns|legal|contact|about|science|wishlist|cart|login|register|forgot-password|ewarranty|e-warranty)(?:\/[^\s]*)?/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+([,.;])/g, '$1')
+    .replace(/\n[ \t]+/g, '\n')
+    .trim();
 }
 
 /**
@@ -940,18 +978,13 @@ async function diagnoseCustomerFriction(payload = {}, context = {}) {
     success: true,
     frictionType: 'navigation_guide',
     headline: 'Bhumivera 100X AI Site Co-Pilot & Guide',
-    explanation: 'I can guide you through adding items to cart, setting or resetting your password, applying coupons, tracking orders, downloading GST invoices, or navigating to any page on Bhumivera.',
+    explanation: 'Ask me about Bhumivera products, policies, or orders, and I will provide the information here in chat.',
     steps: [
-      'Use the quick links below to jump directly to the page you need.',
-      'If an item cannot be added to cart or a password fails validation, I will automatically diagnose the exact reason and offer a 1-click fix.',
+      'Tell me what you need to know about Bhumivera, a product, or an order, and I will answer here in chat.',
+      'For order questions, include your order number so I can check the latest status and delivery details.',
     ],
-    navigationLinks: links,
-    quickFixes: links.slice(0, 4).map(l => ({
-      type: 'navigate',
-      label: l.title,
-      url: l.url,
-      path: l.path,
-    })),
+    guidance: links.map(({ title, description }) => ({ title, description })),
+    quickFixes: [],
   };
 }
 
@@ -962,5 +995,6 @@ module.exports = {
   diagnosePasswordAndAuthFriction,
   diagnoseCheckoutAndCouponFriction,
   findRelevantNavigationLinks,
+  sanitizeCustomerReply,
   diagnoseCustomerFriction,
 };

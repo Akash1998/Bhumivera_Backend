@@ -4,9 +4,7 @@ const { maskPII, sanitizeObjectPII } = require('../utils/piiMasker');
 const { analyzeSentiment, triggerInstantEscalation } = require('./sentimentEscalationEngine');
 const { executeSupportTool, SUPPORT_TOOLS_REGISTRY } = require('./aiSupportTools');
 const {
-  COMPLETE_SITE_NAVIGATION_MAP,
-  evaluatePasswordRequirements,
-  findRelevantNavigationLinks,
+  sanitizeCustomerReply,
 } = require('./aiCopilotRescueService');
 const {
   ensureAiSupportTables,
@@ -416,7 +414,8 @@ function synthesizeDeterministicResponse({
     let accountLine = '';
     if (lookupRes?.orderCards?.length) {
       const latest = lookupRes.orderCards[0];
-      accountLine += `\n\n📦 **Your Latest Order (#${latest.orderNumber} / BHVM${latest.orderNumber}):** Status is **${latest.status.toUpperCase()}** (${latest.deliveryEstimate}). Track live: ${latest.trackingUrl}`;
+      const tracking = latest.trackingNumber ? ` Tracking number: \`${latest.trackingNumber}\`.` : '';
+      accountLine += `\n\n📦 **Your Latest Order (#${latest.orderNumber} / BHVM${latest.orderNumber}):** Status is **${latest.status.toUpperCase()}** (${latest.deliveryEstimate}).${tracking}`;
     }
     if (couponRes?.coupons?.length) {
       const topCoupon = couponRes.coupons[0];
@@ -433,13 +432,13 @@ function synthesizeDeterministicResponse({
         `• **Cancel Unshipped Order:** Type \`cancel #<OrderNumber>\`\n` +
         `• **Refund Status:** Type \`refund status\` or your \`RMA-...\` number\n` +
         `• **Coupons & Wallet:** Type \`my coupons\` or \`my wallet\` to check live balances & promo codes\n` +
-        `• **Products & Share Links:** Ask about any product or type \`share link\` for direct website links` +
+        `• **Products:** Ask about product prices, availability, ingredients, or usage` +
         accountLine,
       quickActions: [
         { label: 'My Orders & Tracking', prompt: 'Show my recent orders' },
         { label: 'Return or Replace', prompt: 'I want to return or replace an order' },
         { label: 'Active Coupons', prompt: 'Show my available discount coupons' },
-        { label: 'Share Website Links', prompt: 'Share Bhumivera website and product links' },
+        { label: 'Product Information', prompt: 'Show product prices and availability' },
       ],
     };
   }
@@ -450,7 +449,7 @@ function synthesizeDeterministicResponse({
     const products = (catRes?.products || []).filter(p => p.stockQuantity > 0);
     const inStockList = products
       .slice(0, 3)
-      .map(p => `• **${p.name}** (₹${p.effectivePrice} · ${p.stockQuantity} in stock) — ${p.shareUrl}`)
+      .map(p => `• **${p.name}** (₹${p.effectivePrice} · ${p.stockQuantity} in stock)`)
       .join('\n');
 
     return {
@@ -458,11 +457,11 @@ function synthesizeDeterministicResponse({
         `${nameGreeting}I can help you fix the **Add to Cart** issue right away! Here are the 4 most common reasons and instant fixes:\n` +
         `1. **Option / Pack Size Required:** If a product has pack size or variant pills above the button, click one option first to unlock **Add to Cart**.\n` +
         `2. **Stock Limit Reached:** If your requested quantity exceeds live warehouse stock, reduce the quantity selector to \`1\` or pick an in-stock formulation below.\n` +
-        `3. **Quick-Add from Shop:** Open https://www.bhumivera.com/shop and click the green **Shopping Bag** icon on any product card.\n` +
-        `4. **Checkout & Coupons:** Once added, open https://www.bhumivera.com/checkout to apply eligible promo codes and complete your order.` +
+        `3. **Quick-Add:** Choose a product and use its **Add to Bag** button.\n` +
+        `4. **Checkout & Coupons:** Once added, apply eligible promo codes from your cart before placing the order.` +
         (inStockList ? `\n\n**Ready-to-Ship In-Stock Formulations:**\n${inStockList}` : ''),
       quickActions: [
-        { label: 'Open Shop Catalog (/shop)', prompt: 'Share Bhumivera website and product links' },
+        { label: 'Product availability', prompt: 'Show product prices and availability' },
         { label: 'Show Active Coupons', prompt: 'Show my available discount coupons' },
         { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
       ],
@@ -480,13 +479,13 @@ function synthesizeDeterministicResponse({
         `  3. At least **1 Number** (\`0–9\`) and **1 Special Symbol** (\`! @ # $ % ^ & *\`)\n` +
         `  4. Must not be a common password or contain your email username (Example valid format: \`Botanical#2026!\`)\n` +
         `• **Forgot or Unable to Set Password?**\n` +
-        `  1. Open **Password Recovery**: https://www.bhumivera.com/forgot-password\n` +
+        `  1. Open **Password Recovery** from the Sign In screen.\n` +
         `  2. Enter your registered email to receive a **6-digit verification code (OTP)** (valid for 10 minutes).\n` +
         `  3. Or ask a Support Specialist in this chat to send you a **1-Click 30-Minute Password Reset Link** directly to your email!`,
       quickActions: [
         { label: 'Send Me a Password Reset Link', prompt: 'Connect me with a human support agent to send a password reset link' },
         { label: 'Check My Orders', prompt: 'Show my recent orders' },
-        { label: 'Share All Account Links', prompt: 'Share Bhumivera website and product links' },
+        { label: 'Check My Orders', prompt: 'Show my recent orders' },
       ],
     };
   }
@@ -503,7 +502,7 @@ function synthesizeDeterministicResponse({
       reply:
         `${nameGreeting}here is how to access your **GST-Compliant Tax Invoice (with HSN, CGST/SGST/IGST Breakup & Bhumivera Crest)**:` +
         orderLine +
-        `\n• **Download from Profile:** Sign in at https://www.bhumivera.com/profile → **My Orders** → click **View / Print Tax Invoice** on any shipped or delivered order.\n` +
+        `\n• **Download from your account:** Sign in, open **My Orders**, then choose **View / Print Tax Invoice** on a shipped or delivered order.\n` +
         `• **Need B2B GSTIN on Your Invoice?** Add your 15-character GSTIN in your shipping address before checkout or share your Order Number (\`BHVM...\`) and GSTIN here so our team can assist you.`,
       quickActions: [
         { label: 'Show My Recent Orders', prompt: 'Show my recent orders' },
@@ -518,27 +517,22 @@ function synthesizeDeterministicResponse({
     const catRes = toolResults.find(t => t.name === 'query_inventory_catalog')?.result;
     const walletRes = toolResults.find(t => t.name === 'lookup_account_wallet_loyalty')?.result;
     const products = catRes?.products || [];
-    const productLinks = products
+    const productSummary = products
       .slice(0, 4)
-      .map(p => `• **${p.name}** (₹${p.effectivePrice}): ${p.shareUrl}`)
+      .map(p => `• **${p.name}** — ₹${p.effectivePrice}${p.stockQuantity > 0 ? ` · ${p.stockQuantity} in stock` : ''}`)
       .join('\n');
     const referralLine = walletRes?.accountSummary?.referralCode
-      ? `\n• **Your Personal Referral Link:** ${walletRes.accountSummary.referralShareUrl} (Code: \`${walletRes.accountSummary.referralCode}\`)`
+      ? `\n• **Your Referral Code:** \`${walletRes.accountSummary.referralCode}\``
       : '';
 
     return {
       reply:
-        `Here are your direct **Bhumivera Share & Quick-Access Links**:\n` +
-        `• **Official Storefront:** https://www.bhumivera.com/shop\n` +
-        `• **Live Order Tracking:** https://www.bhumivera.com/order-tracking\n` +
-        `• **Customer Profile & Orders:** https://www.bhumivera.com/profile\n` +
-        `• **E-Warranty & Serial Check:** https://www.bhumivera.com/e-warranty\n` +
-        `• **Telegram Support Bot:** https://t.me/BhumiveraBot` +
+        `I can provide Bhumivera information right here in chat. I can check your orders, delivery status, returns, refunds, wallet, coupons, product prices, availability, and ingredients.` +
         referralLine +
-        (productLinks ? `\n\n**Featured Product Share Links:**\n${productLinks}` : ''),
+        (productSummary ? `\n\n**Product information:**\n${productSummary}` : '\nTell me the product name or your order number and I’ll look it up.'),
       quickActions: [
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
-        { label: 'Show Active Coupons', prompt: 'Show my available discount coupons' },
+        { label: 'Product Information', prompt: 'Show product prices and availability' },
       ],
     };
   }
@@ -605,7 +599,7 @@ function synthesizeDeterministicResponse({
         `• **Referral / Shopping Wallet:** ₹${s.referralWalletBalanceInr.toLocaleString('en-IN')}\n` +
         `• **Loyalty Points:** ${s.loyaltyPointsAvailable} pts (worth ~₹${s.loyaltyPointsRupeeValue} at checkout)\n` +
         `• **Current Tier:** ${s.loyaltyTier.name}${tierPerks.length ? ` (${tierPerks.join(', ')})` : ''}` +
-        (s.referralCode ? `\n• **Your Referral Code:** \`${s.referralCode}\` — Share link: ${s.referralShareUrl}` : ''),
+        (s.referralCode ? `\n• **Your Referral Code:** \`${s.referralCode}\`` : ''),
       quickActions: [
         { label: 'Show My Coupons', prompt: 'Show my available discount coupons' },
         { label: 'Track My Orders', prompt: 'Show my recent orders' },
@@ -639,7 +633,7 @@ function synthesizeDeterministicResponse({
       .join('\n');
 
     return {
-      reply: `Here are the active coupons currently available for your account (each single-use coupon is protected against duplicate reuse):\n${listText}\n\nYou can apply any eligible code inside your Cart or at Checkout (https://www.bhumivera.com/checkout).`,
+      reply: `Here are the active coupons currently available for your account (each single-use coupon is protected against duplicate reuse):\n${listText}\n\nYou can apply any eligible code in your cart before placing the order.`,
       quickActions: [
         { label: 'Check Wallet & Points', prompt: 'Check my wallet balance and loyalty points' },
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
@@ -650,7 +644,7 @@ function synthesizeDeterministicResponse({
   const warrantyResult = toolResults.find(t => t.name === 'lookup_warranty_and_serial')?.result;
   if (warrantyResult) {
     return {
-      reply: `${warrantyResult.message}\n\nYou can also register or download your E-Warranty certificate anytime at https://www.bhumivera.com/e-warranty.`,
+      reply: `${warrantyResult.message}\n\nYou can also register or download your E-Warranty certificate from your account.`,
       quickActions: [
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
         { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
@@ -696,7 +690,6 @@ function synthesizeDeterministicResponse({
       return {
         reply:
           `${lookupResult.message}\n\n` +
-          `• **Track on Website:** https://www.bhumivera.com/order-tracking\n` +
           `• **Tip:** You can also reply here with your registered **email address** or **10-digit phone number** and I will find all orders linked to your profile.`,
         quickActions: [
           { label: 'Show My Recent Orders', prompt: 'Show my recent orders' },
@@ -731,8 +724,7 @@ function synthesizeDeterministicResponse({
           `• **Estimated Delivery:** ${o.deliveryEstimate}\n` +
           `• **Shipment:** ${trackingLine}\n` +
           `• **Payment:** ${o.paymentMode} (${o.paymentStatus}) — Total: **₹${o.total}**\n` +
-          (itemsLine ? `• **Items:** ${itemsLine}\n` : '') +
-          `• **Live Tracking Link:** ${o.trackingUrl}`,
+          (itemsLine ? `• **Items:** ${itemsLine}\n` : ''),
         quickActions: actions,
       };
     }
@@ -744,7 +736,7 @@ function synthesizeDeterministicResponse({
           ord =>
             `• **Order #${ord.orderNumber}** (\`BHVM${ord.orderNumber}\`) — **${ord.status.toUpperCase()}** · ₹${ord.total} · ${
               ord.trackingNumber ? `Tracking: \`${ord.trackingNumber}\`` : ord.deliveryEstimate
-            } (${ord.trackingUrl})`
+            }`
         )
         .join('\n');
 
@@ -825,7 +817,7 @@ function synthesizeDeterministicResponse({
           `• **Express Delivery:** ₹${policy.expressShippingChargeInr} for orders ₹${policy.expressThresholdInr}+ (or +₹${policy.expressSurchargeBelow799Inr} surcharge below ₹${policy.expressThresholdInr}).\n` +
           `• **Dispatch Cutoff:** Orders placed before ${policy.dispatchCutoffIst} arrive in ${policy.estimatedDeliveryBeforeCutoff}; after cutoff in ${policy.estimatedDeliveryAfterCutoff}.\n` +
           `• **Returns:** Self-service returns and replacements are open for ${policy.returnWindowDays} days after delivery.\n` +
-          `• **Track Orders:** https://www.bhumivera.com/order-tracking`,
+          `• **Order updates:** Send your order number here and I can check its latest status.`,
         quickActions: [
           { label: 'Track My Order', prompt: 'Where is my latest order?' },
           { label: 'Browse Products', prompt: 'What are your best-selling products?' },
@@ -845,10 +837,10 @@ function synthesizeDeterministicResponse({
       const useText = top.usageGuide ? `\n• **How to Use:** ${top.usageGuide}` : '';
       const moreList =
         catalogResult.products.length > 1
-          ? `\n\n**More Featured Products & Share Links:**\n` +
+          ? `\n\n**More Products:**\n` +
             catalogResult.products
               .slice(1, 4)
-              .map(p => `• **${p.name}** (₹${p.effectivePrice}) — ${p.shareUrl}`)
+              .map(p => `• **${p.name}** (₹${p.effectivePrice})`)
               .join('\n')
           : '';
 
@@ -859,7 +851,6 @@ function synthesizeDeterministicResponse({
           `• **Availability:** ${stockText}` +
           ingText +
           useText +
-          `\n• **Product Link:** ${top.shareUrl}` +
           moreList +
           `\n\nFree standard shipping applies on orders of ₹${policy.freeShippingThresholdInr} or more.`,
         quickActions: [
@@ -906,7 +897,7 @@ async function tryGeminiSynthesis({ userMessage, history = [], toolResults = [],
       'You are the Bhumivera Customer Support Assistant (Web & @BhumiveraBot on Telegram).',
       'Rules:',
       '1. Ground every order number, status, price, stock count, RMA, wallet balance, coupon code, and tracking link strictly in the provided TOOL_RESULTS JSON.',
-      '2. Always include direct clickable links (e.g. https://www.bhumivera.com/order-tracking or product shareUrl) when available in TOOL_RESULTS.',
+      '2. Answer customer questions directly in the chat. Never provide links, URLs, route paths, or staff/admin portal details.',
       '3. Keep your response concise (2 to 5 sentences or clean bullet points), warm, and directly helpful.',
       '4. Never expose raw passwords, full payment card numbers, CVVs, OTPs, or JWTs.',
       `Customer Name: ${user?.name || 'Guest'}`,
@@ -1080,13 +1071,14 @@ async function processSupportTurn({
     user: resolvedUser,
   });
 
-  const finalReply = await tryGeminiSynthesis({
+  const synthesizedReply = await tryGeminiSynthesis({
     userMessage: message,
     history,
     toolResults: executedTools,
     deterministicFallback: deterministic,
     user: resolvedUser,
   });
+  const finalReply = sanitizeCustomerReply(synthesizedReply);
 
   if (typeof onStreamEvent === 'function') {
     const chunks = finalReply.match(/.{1,18}(\s|$)|\S+/g) || [finalReply];
