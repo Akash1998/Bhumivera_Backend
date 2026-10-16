@@ -148,7 +148,7 @@ app.use((req, res, next) => {
   
   res.setHeader(
     "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=(), browsing-topics=()"
+    "camera=(self), microphone=(), geolocation=(self), browsing-topics=()"
   );
 
   if (req.method === "OPTIONS") return res.status(204).end();
