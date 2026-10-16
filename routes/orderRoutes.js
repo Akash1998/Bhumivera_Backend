@@ -82,61 +82,23 @@ router.get('/admin/reconciliation/payments', authenticateAdmin, async (req, res)
   }
 });
 
-// User-accessible PATCH status endpoint: supports "cancelled" only (used by Profile orders tab)
+const { executeAtomicOrderCancellationAndRefund } = require("../services/walletRefundLedgerService");
+
+// Strict Order Cancellation Policy: Customer self-cancellation is disabled.
 router.patch("/:id/status", authenticateUser, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    if (!status) return res.status(400).json({ message: "Status is required" });
-
-    if (status === "cancelled") {
-      const order = await getOrderById(id);
-      if (!order) return res.status(404).json({ message: "Order not found" });
-      if (Number(order.user_id) !== Number(req.user.id)) return res.status(403).json({ message: "Forbidden" });
-
-      const cancellableStatuses = ["pending", "confirmed"];
-      if (!cancellableStatuses.includes(order.status)) {
-        return res.status(400).json({ message: `Cannot cancel order with status '${order.status}'` });
-      }
-
-      const updated = await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer", {
-        allowedCurrentStatuses: cancellableStatuses,
-      });
-      if (updated === false) return res.status(404).json({ message: "Order not found" });
-      return res.json({ success: true, message: "Order cancelled successfully" });
-    }
-
-    // Only admin can set other statuses via PUT (below); reject non-cancel for users
-    return res.status(403).json({ message: `Cannot change order status to '${status}'` });
-  } catch (err) {
-    console.error("[Order User PATCH Error]:", err);
-    if (err.status === 409) return res.status(409).json({ code: err.code, message: err.message });
-    res.status(500).json({ message: err.message });
-  }
+  return res.status(403).json({
+    success: false,
+    code: "CUSTOMER_SELF_CANCEL_DISABLED",
+    message: "Direct self-service order cancellation is disabled to protect your payment and fulfillment state. Please open the Bhumivera Client Concierge to verify your Order ID and request specialist callback or email assistance.",
+  });
 });
 
-// User-friendly POST alias to cancel an order (matches frontend orders.cancel helper)
 router.post("/:id/cancel", authenticateUser, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const order = await getOrderById(id);
-    if (!order) return res.status(404).json({ message: "Order not found" });
-    if (Number(order.user_id) !== Number(req.user.id)) return res.status(403).json({ message: "Forbidden" });
-    const cancellableStatuses = ["pending", "confirmed"];
-    if (!cancellableStatuses.includes(order.status)) {
-      return res.status(400).json({ message: `Cannot cancel order with status '${order.status}'` });
-    }
-    const updated = await updateOrderStatus(order.id, "cancelled", req.body.reason || "Cancelled by customer", {
-      allowedCurrentStatuses: cancellableStatuses,
-    });
-    if (updated === false) return res.status(404).json({ message: "Order not found" });
-    return res.json({ success: true, message: "Order cancelled successfully" });
-  } catch (err) {
-    console.error("[Order Cancel Error]:", err);
-    if (err.status === 409) return res.status(409).json({ code: err.code, message: err.message });
-    res.status(500).json({ message: err.message });
-  }
+  return res.status(403).json({
+    success: false,
+    code: "CUSTOMER_SELF_CANCEL_DISABLED",
+    message: "Direct self-service order cancellation is disabled. Please use the Bhumivera Client Concierge to verify your Order ID and schedule a specialist callback or email update within 12 hours.",
+  });
 });
 
 router.put("/:id/status", authenticateAdmin, async (req, res) => {
@@ -147,6 +109,38 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, message: "A valid order status is required." });
+    }
+
+    if (status === "cancelled") {
+      if (req.user?.role !== "superadmin") {
+        return res.status(403).json({
+          success: false,
+          code: "SUPERADMIN_REQUIRED_FOR_CANCELLATION",
+          message: "Order cancellation can only be executed by the SuperAdmin.",
+        });
+      }
+      const cancelResult = await executeAtomicOrderCancellationAndRefund(pool, {
+        orderId: id,
+        reason: req.body.cancelReason || req.body.reason || "Cancelled by SuperAdmin",
+        refundDestinationPreference: req.body.refundDestinationPreference || "auto",
+        executedByEmail: req.user?.email || "adminbhumivera27@gmail.com",
+        razorpay: getRazorpayClient(),
+      });
+      const [orderData] = await pool.query(
+        `SELECT o.id, o.order_number, o.status, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
+        [cancelResult.orderId]
+      );
+      if (orderData.length > 0) {
+        const { email, name } = orderData[0];
+        sendOrderStatusEmail(email, name, cancelResult.orderId, "cancelled", trackingNumber, courier, orderData[0].order_number)
+          .catch(err => console.error(`[Mailer] Failed to send email:`, err));
+      }
+      return res.json({
+        success: true,
+        message: "Order cancelled and atomic refund/wallet ledger updated.",
+        refundSummary: cancelResult.refundSummary,
+        ledgerReference: cancelResult.ledgerReference,
+      });
     }
 
     const updated = await updateOrderStatus(id, status, req.body.cancelReason, { trackingNumber, courier });

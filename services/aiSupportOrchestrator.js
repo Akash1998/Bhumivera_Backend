@@ -4,11 +4,14 @@ const { maskPII, sanitizeObjectPII } = require('../utils/piiMasker');
 const { analyzeSentiment, triggerInstantEscalation } = require('./sentimentEscalationEngine');
 const { executeSupportTool, SUPPORT_TOOLS_REGISTRY } = require('./aiSupportTools');
 const {
-  sanitizeCustomerReply,
+  COMPLETE_SITE_NAVIGATION_MAP,
+  evaluatePasswordRequirements,
+  findRelevantNavigationLinks,
 } = require('./aiCopilotRescueService');
 const {
   ensureAiSupportTables,
   createOrResumeSession,
+  updateSessionContext,
   updateSessionTelemetry,
   appendMessage,
   getSessionMessages,
@@ -57,7 +60,7 @@ function buildContextualGreeting({ user = null, pageContext = {} } = {}) {
       { label: 'Check Latest Order', prompt: 'Show the status of my latest order' },
       { label: 'Start Return / Replace', prompt: 'I need to return or replace a delivered item' },
       { label: 'Check Refund Status', prompt: 'Check the status of my refund or RMA' },
-      { label: 'Cancel Pending Order', prompt: 'Cancel my pending order' },
+      { label: 'Request Order Assistance', prompt: 'Cancel my pending order' },
     ];
   } else if (pathname.includes('/product/')) {
     const prodName = pageContext?.productName || 'this product';
@@ -211,7 +214,7 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     return { intent, toolPlan, extracted: { orderRef: orderRef || historyOrderRef, rmaNumber: rmaMatch?.[1], email, phone } };
   }
 
-  // 4b. 100X AI Co-Pilot: Unable to Add to Cart / Cart Friction Rescue
+  // 4b. Bhumivera Client Concierge: Unable to Add to Cart / Cart Friction Rescue
   if (
     /\b(unable\s*to\s*add\s*to\s*cart|can'?t\s*add\s*to\s*cart|cannot\s*add\s*to\s*cart|add\s*to\s*cart\s*(?:not\s*working|failed|error|issue|problem|disabled)|cart\s*(?:not\s*working|error|problem|issue|empty)|item\s*not\s*adding|button\s*disabled)\b/i.test(rawText)
   ) {
@@ -226,7 +229,7 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     return { intent, toolPlan, extracted: { productId: pageContext?.productId || null } };
   }
 
-  // 4c. 100X AI Co-Pilot: Unable to Set Password / Reset Password / OTP / Login Rescue
+  // 4c. Bhumivera Client Concierge: Unable to Set Password / Reset Password / OTP / Login Rescue
   if (
     /^(password|forgot\s*password|reset\s*password|login\s*help|otp)$/i.test(text) ||
     /\b(unable\s*to\s*(?:set|reset|change|create)\s*password|can'?t\s*(?:set|reset|change|login|sign\s*in)|cannot\s*(?:set|reset|change|login|sign\s*in)|password\s*(?:not\s*working|error|issue|problem|invalid|weak|rules?|requirements?|policy|reset|forgot)|forgot\s*(?:my\s*)?password|reset\s*(?:my\s*)?password|otp\s*(?:not\s*received|expired|invalid|error)|login\s*(?:failed|error|issue|problem)|passkey\s*(?:issue|help))\b/i.test(rawText)
@@ -235,7 +238,7 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     return { intent, toolPlan, extracted: { email, phone } };
   }
 
-  // 4d. 100X AI Co-Pilot: GST Invoice / Tax Bill / B2B GSTIN Assistance
+  // 4d. Bhumivera Client Concierge: GST Invoice / Tax Bill / B2B GSTIN Assistance
   if (
     /^(invoice|gst|gst\s*invoice|tax\s*invoice|bill|receipt)$/i.test(text) ||
     /\b(gst\s*(?:invoice|bill|number|gstin|certificate|credit)|tax\s*invoice|download\s*(?:invoice|bill|receipt)|order\s*(?:invoice|bill|receipt)|b2b\s*invoice)\b/i.test(rawText)
@@ -394,11 +397,61 @@ function synthesizeDeterministicResponse({
   const nameGreeting = firstName ? `${firstName}, ` : '';
   const esc = escalation || escalationInfo;
 
-  if (esc?.escalated) {
+  if (esc?.verificationStep === 'STEP_1_VERIFY_ORDER') {
     return {
-      reply: `I've connected you with a human support specialist${
-        esc.ticketId ? ` (ticket #${esc.ticketId})` : ''
-      }. A team member will reply within 30 minutes right here in chat.`,
+      reply:
+        `${nameGreeting}as part of our **Bhumivera Client Concierge** security protocol, orders that are confirmed or in fulfillment cannot be cancelled automatically via chat, and specialist escalations require order verification first.
+
+` +
+        `Please share your **9-digit Order ID (e.g., BHVM815899599)** along with your **Registered Email Address or 10-Digit Phone Number** so I can verify your purchase against our records.`,
+      quickActions: [
+        { label: 'Track My Order', prompt: 'Where is my latest order?' },
+        { label: 'Shipping & Return Policy', prompt: 'What are your shipping charges and delivery timelines?' },
+      ],
+    };
+  }
+
+  if (esc?.verificationStep === 'STEP_2_CONTACT_PREFERENCE') {
+    const ordNum = esc.verifiedOrder?.orderNumber || '';
+    return {
+      reply:
+        `Thank you for verifying **Order #${ordNum}**. Our specialist team will reach out to you within 12 hours.
+
+` +
+        `Would you prefer to receive our update via **Email** or a **Direct Phone Call**?`,
+      quickActions: [
+        { label: 'Prefer Email Update', prompt: 'Prefer Email update' },
+        { label: 'Prefer Direct Phone Call', prompt: 'Prefer Direct Phone Call' },
+      ],
+    };
+  }
+
+  if (esc?.verificationStep === 'STEP_2B_PHONE_AND_SLOT') {
+    return {
+      reply:
+        `Certainly. To schedule your **Direct Phone Call**, please reply with your **10-digit Phone Number** and select your **Preferred Callback Time Slot**:
+` +
+        `• **Morning:** 10:00 AM – 1:00 PM IST
+` +
+        `• **Afternoon:** 1:00 PM – 5:00 PM IST
+` +
+        `• **Evening:** 5:00 PM – 8:00 PM IST`,
+      quickActions: [
+        { label: 'Morning (10 AM–1 PM)', prompt: 'Morning 10 AM–1 PM' },
+        { label: 'Afternoon (1 PM–5 PM)', prompt: 'Afternoon 1 PM–5 PM' },
+        { label: 'Evening (5 PM–8 PM)', prompt: 'Evening 5 PM–8 PM' },
+      ],
+    };
+  }
+
+  if (esc?.escalated) {
+    const prefDetail = esc.contactPreference === 'phone_call'
+      ? `via **Direct Phone Call** (${esc.callbackPhone || 'registered phone'} · **${esc.callbackTimeSlot || 'Scheduled Slot'}**)`
+      : `via **Email**`;
+    return {
+      reply:
+        `Your verified specialist request${esc.ticketId ? ` (**#${esc.ticketId}**)` : ''} has been logged with the **Bhumivera Client Concierge** desk. ` +
+        `Our specialist team will reach out to you within **12 hours** ${prefDetail}.`,
       quickActions: [
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
         { label: 'Check Refund Status', prompt: 'Check the status of my refund' },
@@ -414,8 +467,7 @@ function synthesizeDeterministicResponse({
     let accountLine = '';
     if (lookupRes?.orderCards?.length) {
       const latest = lookupRes.orderCards[0];
-      const tracking = latest.trackingNumber ? ` Tracking number: \`${latest.trackingNumber}\`.` : '';
-      accountLine += `\n\n📦 **Your Latest Order (#${latest.orderNumber} / BHVM${latest.orderNumber}):** Status is **${latest.status.toUpperCase()}** (${latest.deliveryEstimate}).${tracking}`;
+      accountLine += `\n\n📦 **Your Latest Order (#${latest.orderNumber} / BHVM${latest.orderNumber}):** Status is **${latest.status.toUpperCase()}** (${latest.deliveryEstimate}). Track live: ${latest.trackingUrl}`;
     }
     if (couponRes?.coupons?.length) {
       const topCoupon = couponRes.coupons[0];
@@ -424,32 +476,32 @@ function synthesizeDeterministicResponse({
 
     return {
       reply:
-        `Hello${firstName ? ` ${firstName}` : ''}! Welcome to **Bhumivera Support**.\n\n` +
+        `Hello${firstName ? ` ${firstName}` : ''}! Welcome to **Bhumivera Client Concierge**.\n\n` +
         `Here is everything I can help you with right here in chat or on Telegram (@BhumiveraBot):\n` +
         `• **Track Any Order:** Send your 9-digit Order Number or BHVM ID (e.g., \`BHVM815899599\` or \`#918273646\`)\n` +
         `• **Order History:** Type \`my orders\` or \`order history\` to see your recent purchases\n` +
         `• **Returns & Replacements:** Type \`return #<OrderNumber>\` or \`replace #<OrderNumber>\` for instant RMA pickup\n` +
-        `• **Cancel Unshipped Order:** Type \`cancel #<OrderNumber>\`\n` +
+        `• **Order Intervention & Assistance:** Type \`cancel #<OrderNumber>\`\n` +
         `• **Refund Status:** Type \`refund status\` or your \`RMA-...\` number\n` +
         `• **Coupons & Wallet:** Type \`my coupons\` or \`my wallet\` to check live balances & promo codes\n` +
-        `• **Products:** Ask about product prices, availability, ingredients, or usage` +
+        `• **Products & Share Links:** Ask about any product or type \`share link\` for direct website links` +
         accountLine,
       quickActions: [
         { label: 'My Orders & Tracking', prompt: 'Show my recent orders' },
         { label: 'Return or Replace', prompt: 'I want to return or replace an order' },
         { label: 'Active Coupons', prompt: 'Show my available discount coupons' },
-        { label: 'Product Information', prompt: 'Show product prices and availability' },
+        { label: 'Share Website Links', prompt: 'Share Bhumivera website and product links' },
       ],
     };
   }
 
-  // 100X AI Co-Pilot: Cart Friction Rescue
+  // Bhumivera Client Concierge: Cart Friction Rescue
   if (intent === 'cart_friction_rescue') {
     const catRes = toolResults.find(t => t.name === 'query_inventory_catalog')?.result;
     const products = (catRes?.products || []).filter(p => p.stockQuantity > 0);
     const inStockList = products
       .slice(0, 3)
-      .map(p => `• **${p.name}** (₹${p.effectivePrice} · ${p.stockQuantity} in stock)`)
+      .map(p => `• **${p.name}** (₹${p.effectivePrice} · ${p.stockQuantity} in stock) — ${p.shareUrl}`)
       .join('\n');
 
     return {
@@ -457,18 +509,18 @@ function synthesizeDeterministicResponse({
         `${nameGreeting}I can help you fix the **Add to Cart** issue right away! Here are the 4 most common reasons and instant fixes:\n` +
         `1. **Option / Pack Size Required:** If a product has pack size or variant pills above the button, click one option first to unlock **Add to Cart**.\n` +
         `2. **Stock Limit Reached:** If your requested quantity exceeds live warehouse stock, reduce the quantity selector to \`1\` or pick an in-stock formulation below.\n` +
-        `3. **Quick-Add:** Choose a product and use its **Add to Bag** button.\n` +
-        `4. **Checkout & Coupons:** Once added, apply eligible promo codes from your cart before placing the order.` +
+        `3. **Quick-Add from Shop:** Open https://www.bhumivera.com/shop and click the green **Shopping Bag** icon on any product card.\n` +
+        `4. **Checkout & Coupons:** Once added, open https://www.bhumivera.com/checkout to apply eligible promo codes and complete your order.` +
         (inStockList ? `\n\n**Ready-to-Ship In-Stock Formulations:**\n${inStockList}` : ''),
       quickActions: [
-        { label: 'Product availability', prompt: 'Show product prices and availability' },
+        { label: 'Open Shop Catalog (/shop)', prompt: 'Share Bhumivera website and product links' },
         { label: 'Show Active Coupons', prompt: 'Show my available discount coupons' },
         { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
       ],
     };
   }
 
-  // 100X AI Co-Pilot: Password Setup, Reset & Login Rescue
+  // Bhumivera Client Concierge: Password Setup, Reset & Login Rescue
   if (intent === 'password_auth_rescue') {
     return {
       reply:
@@ -479,18 +531,18 @@ function synthesizeDeterministicResponse({
         `  3. At least **1 Number** (\`0–9\`) and **1 Special Symbol** (\`! @ # $ % ^ & *\`)\n` +
         `  4. Must not be a common password or contain your email username (Example valid format: \`Botanical#2026!\`)\n` +
         `• **Forgot or Unable to Set Password?**\n` +
-        `  1. Open **Password Recovery** from the Sign In screen.\n` +
+        `  1. Open **Password Recovery**: https://www.bhumivera.com/forgot-password\n` +
         `  2. Enter your registered email to receive a **6-digit verification code (OTP)** (valid for 10 minutes).\n` +
         `  3. Or ask a Support Specialist in this chat to send you a **1-Click 30-Minute Password Reset Link** directly to your email!`,
       quickActions: [
         { label: 'Send Me a Password Reset Link', prompt: 'Connect me with a human support agent to send a password reset link' },
         { label: 'Check My Orders', prompt: 'Show my recent orders' },
-        { label: 'Check My Orders', prompt: 'Show my recent orders' },
+        { label: 'Share All Account Links', prompt: 'Share Bhumivera website and product links' },
       ],
     };
   }
 
-  // 100X AI Co-Pilot: GST Tax Invoice Assistance
+  // Bhumivera Client Concierge: GST Tax Invoice Assistance
   if (intent === 'gst_invoice_assistance') {
     const lookupRes = toolResults.find(t => t.name === 'lookup_order')?.result;
     const latestOrder = lookupRes?.order || lookupRes?.orderCards?.[0] || null;
@@ -502,7 +554,7 @@ function synthesizeDeterministicResponse({
       reply:
         `${nameGreeting}here is how to access your **GST-Compliant Tax Invoice (with HSN, CGST/SGST/IGST Breakup & Bhumivera Crest)**:` +
         orderLine +
-        `\n• **Download from your account:** Sign in, open **My Orders**, then choose **View / Print Tax Invoice** on a shipped or delivered order.\n` +
+        `\n• **Download from Profile:** Sign in at https://www.bhumivera.com/profile → **My Orders** → click **View / Print Tax Invoice** on any shipped or delivered order.\n` +
         `• **Need B2B GSTIN on Your Invoice?** Add your 15-character GSTIN in your shipping address before checkout or share your Order Number (\`BHVM...\`) and GSTIN here so our team can assist you.`,
       quickActions: [
         { label: 'Show My Recent Orders', prompt: 'Show my recent orders' },
@@ -517,22 +569,27 @@ function synthesizeDeterministicResponse({
     const catRes = toolResults.find(t => t.name === 'query_inventory_catalog')?.result;
     const walletRes = toolResults.find(t => t.name === 'lookup_account_wallet_loyalty')?.result;
     const products = catRes?.products || [];
-    const productSummary = products
+    const productLinks = products
       .slice(0, 4)
-      .map(p => `• **${p.name}** — ₹${p.effectivePrice}${p.stockQuantity > 0 ? ` · ${p.stockQuantity} in stock` : ''}`)
+      .map(p => `• **${p.name}** (₹${p.effectivePrice}): ${p.shareUrl}`)
       .join('\n');
     const referralLine = walletRes?.accountSummary?.referralCode
-      ? `\n• **Your Referral Code:** \`${walletRes.accountSummary.referralCode}\``
+      ? `\n• **Your Personal Referral Link:** ${walletRes.accountSummary.referralShareUrl} (Code: \`${walletRes.accountSummary.referralCode}\`)`
       : '';
 
     return {
       reply:
-        `I can provide Bhumivera information right here in chat. I can check your orders, delivery status, returns, refunds, wallet, coupons, product prices, availability, and ingredients.` +
+        `Here are your direct **Bhumivera Share & Quick-Access Links**:\n` +
+        `• **Official Storefront:** https://www.bhumivera.com/shop\n` +
+        `• **Live Order Tracking:** https://www.bhumivera.com/order-tracking\n` +
+        `• **Customer Profile & Orders:** https://www.bhumivera.com/profile\n` +
+        `• **E-Warranty & Serial Check:** https://www.bhumivera.com/e-warranty\n` +
+        `• **Telegram Support Bot:** https://t.me/BhumiveraBot` +
         referralLine +
-        (productSummary ? `\n\n**Product information:**\n${productSummary}` : '\nTell me the product name or your order number and I’ll look it up.'),
+        (productLinks ? `\n\n**Featured Product Share Links:**\n${productLinks}` : ''),
       quickActions: [
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
-        { label: 'Product Information', prompt: 'Show product prices and availability' },
+        { label: 'Show Active Coupons', prompt: 'Show my available discount coupons' },
       ],
     };
   }
@@ -599,7 +656,7 @@ function synthesizeDeterministicResponse({
         `• **Referral / Shopping Wallet:** ₹${s.referralWalletBalanceInr.toLocaleString('en-IN')}\n` +
         `• **Loyalty Points:** ${s.loyaltyPointsAvailable} pts (worth ~₹${s.loyaltyPointsRupeeValue} at checkout)\n` +
         `• **Current Tier:** ${s.loyaltyTier.name}${tierPerks.length ? ` (${tierPerks.join(', ')})` : ''}` +
-        (s.referralCode ? `\n• **Your Referral Code:** \`${s.referralCode}\`` : ''),
+        (s.referralCode ? `\n• **Your Referral Code:** \`${s.referralCode}\` — Share link: ${s.referralShareUrl}` : ''),
       quickActions: [
         { label: 'Show My Coupons', prompt: 'Show my available discount coupons' },
         { label: 'Track My Orders', prompt: 'Show my recent orders' },
@@ -633,7 +690,7 @@ function synthesizeDeterministicResponse({
       .join('\n');
 
     return {
-      reply: `Here are the active coupons currently available for your account (each single-use coupon is protected against duplicate reuse):\n${listText}\n\nYou can apply any eligible code in your cart before placing the order.`,
+      reply: `Here are the active coupons currently available for your account (each single-use coupon is protected against duplicate reuse):\n${listText}\n\nYou can apply any eligible code inside your Cart or at Checkout (https://www.bhumivera.com/checkout).`,
       quickActions: [
         { label: 'Check Wallet & Points', prompt: 'Check my wallet balance and loyalty points' },
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
@@ -644,7 +701,7 @@ function synthesizeDeterministicResponse({
   const warrantyResult = toolResults.find(t => t.name === 'lookup_warranty_and_serial')?.result;
   if (warrantyResult) {
     return {
-      reply: `${warrantyResult.message}\n\nYou can also register or download your E-Warranty certificate from your account.`,
+      reply: `${warrantyResult.message}\n\nYou can also register or download your E-Warranty certificate anytime at https://www.bhumivera.com/e-warranty.`,
       quickActions: [
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
         { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
@@ -690,6 +747,7 @@ function synthesizeDeterministicResponse({
       return {
         reply:
           `${lookupResult.message}\n\n` +
+          `• **Track on Website:** https://www.bhumivera.com/order-tracking\n` +
           `• **Tip:** You can also reply here with your registered **email address** or **10-digit phone number** and I will find all orders linked to your profile.`,
         quickActions: [
           { label: 'Show My Recent Orders', prompt: 'Show my recent orders' },
@@ -724,7 +782,8 @@ function synthesizeDeterministicResponse({
           `• **Estimated Delivery:** ${o.deliveryEstimate}\n` +
           `• **Shipment:** ${trackingLine}\n` +
           `• **Payment:** ${o.paymentMode} (${o.paymentStatus}) — Total: **₹${o.total}**\n` +
-          (itemsLine ? `• **Items:** ${itemsLine}\n` : ''),
+          (itemsLine ? `• **Items:** ${itemsLine}\n` : '') +
+          `• **Live Tracking Link:** ${o.trackingUrl}`,
         quickActions: actions,
       };
     }
@@ -736,7 +795,7 @@ function synthesizeDeterministicResponse({
           ord =>
             `• **Order #${ord.orderNumber}** (\`BHVM${ord.orderNumber}\`) — **${ord.status.toUpperCase()}** · ₹${ord.total} · ${
               ord.trackingNumber ? `Tracking: \`${ord.trackingNumber}\`` : ord.deliveryEstimate
-            }`
+            } (${ord.trackingUrl})`
         )
         .join('\n');
 
@@ -817,7 +876,7 @@ function synthesizeDeterministicResponse({
           `• **Express Delivery:** ₹${policy.expressShippingChargeInr} for orders ₹${policy.expressThresholdInr}+ (or +₹${policy.expressSurchargeBelow799Inr} surcharge below ₹${policy.expressThresholdInr}).\n` +
           `• **Dispatch Cutoff:** Orders placed before ${policy.dispatchCutoffIst} arrive in ${policy.estimatedDeliveryBeforeCutoff}; after cutoff in ${policy.estimatedDeliveryAfterCutoff}.\n` +
           `• **Returns:** Self-service returns and replacements are open for ${policy.returnWindowDays} days after delivery.\n` +
-          `• **Order updates:** Send your order number here and I can check its latest status.`,
+          `• **Track Orders:** https://www.bhumivera.com/order-tracking`,
         quickActions: [
           { label: 'Track My Order', prompt: 'Where is my latest order?' },
           { label: 'Browse Products', prompt: 'What are your best-selling products?' },
@@ -837,10 +896,10 @@ function synthesizeDeterministicResponse({
       const useText = top.usageGuide ? `\n• **How to Use:** ${top.usageGuide}` : '';
       const moreList =
         catalogResult.products.length > 1
-          ? `\n\n**More Products:**\n` +
+          ? `\n\n**More Featured Products & Share Links:**\n` +
             catalogResult.products
               .slice(1, 4)
-              .map(p => `• **${p.name}** (₹${p.effectivePrice})`)
+              .map(p => `• **${p.name}** (₹${p.effectivePrice}) — ${p.shareUrl}`)
               .join('\n')
           : '';
 
@@ -851,6 +910,7 @@ function synthesizeDeterministicResponse({
           `• **Availability:** ${stockText}` +
           ingText +
           useText +
+          `\n• **Product Link:** ${top.shareUrl}` +
           moreList +
           `\n\nFree standard shipping applies on orders of ₹${policy.freeShippingThresholdInr} or more.`,
         quickActions: [
@@ -897,7 +957,7 @@ async function tryGeminiSynthesis({ userMessage, history = [], toolResults = [],
       'You are the Bhumivera Customer Support Assistant (Web & @BhumiveraBot on Telegram).',
       'Rules:',
       '1. Ground every order number, status, price, stock count, RMA, wallet balance, coupon code, and tracking link strictly in the provided TOOL_RESULTS JSON.',
-      '2. Answer customer questions directly in the chat. Never provide links, URLs, route paths, or staff/admin portal details.',
+      '2. Always include direct clickable links (e.g. https://www.bhumivera.com/order-tracking or product shareUrl) when available in TOOL_RESULTS.',
       '3. Keep your response concise (2 to 5 sentences or clean bullet points), warm, and directly helpful.',
       '4. Never expose raw passwords, full payment card numbers, CVVs, OTPs, or JWTs.',
       `Customer Name: ${user?.name || 'Guest'}`,
@@ -1027,26 +1087,134 @@ async function processSupportTurn({
     emit('tool_call', { name: planned.name, status: 'completed', code: result?.code });
   }
 
-  // Handle escalation if triggered by frustration/keywords or explicit request
-  let escalationInfo = { escalated: false, ticketId: session.escalatedTicketId || null };
-  if ((sentiment.shouldEscalate || intent === 'human_escalation') && session.status !== 'escalated') {
-    emit('status', { phase: 'escalating', label: 'Routing to Priority Human Concierge Queue...' });
-    const escRes = await triggerInstantEscalation({
-      pool: activePool,
-      session,
-      user: resolvedUser,
-      sentiment,
-      recentMessages: [...history.slice(-4), { sender: 'user', content: message }],
-      orderId: collectedOrderCards[0]?.id || extracted.orderRef || null,
-      reason: (sentiment.signals || []).join(', ') || 'Customer requested human agent',
-    });
+  // Anti-Spam 3-Step Verification & Human-Like Concierge Escalation Flow:
+  // NEVER auto-generate a database ticket just because a user types 'human', 'cancel order', or 'connect me to an associate'.
+  let escalationInfo = {
+    escalated: false,
+    ticketId: session.escalatedTicketId || null,
+    verificationStep: null,
+    verifiedOrder: null,
+  };
 
-    escalationInfo = {
-      escalated: true,
-      ticketId: escRes?.ticketId || null,
-      priority: sentiment.priority,
-      slaResponseWindow: sentiment.slaResponseWindow || 'Under 30 minutes',
-    };
+  const slotMatch = String(message || '').match(/\b(morning|10\s*am|afternoon|1\s*pm|evening|5\s*pm)\b/i);
+  const prefEmailMatch = /\b(via\s*email|by\s*email|prefer\s*email|email\s*update|send\s*email|^email$)\b/i.test(String(message || '').trim());
+  const prefPhoneMatch = /\b(phone\s*call|direct\s*call|call\s*me|callback|call\s*back|^call$|^phone$)\b/i.test(String(message || '').trim());
+  const wantsEscalationOrCancel =
+    intent === 'human_escalation' ||
+    intent === 'cancel_order' ||
+    intent === 'cancel_assistance' ||
+    Boolean(session.pageContext?.awaitingConciergeVerification) ||
+    Boolean(session.pageContext?.verifiedOrderForEscalation);
+
+  if (wantsEscalationOrCancel && session.status !== 'escalated') {
+    const verifiedOrderCard = collectedOrderCards[0] || session.pageContext?.verifiedOrderForEscalation || null;
+
+    if (!verifiedOrderCard) {
+      // Step 1: Require Order ID + Registered Email/Phone verification against DB
+      escalationInfo.verificationStep = 'STEP_1_VERIFY_ORDER';
+      await updateSessionContext(session.id, { awaitingConciergeVerification: true }, {}, activePool);
+    } else if (!prefEmailMatch && !prefPhoneMatch && !slotMatch && !session.pageContext?.selectedContactPreference) {
+      // Step 2: Order verified! Ask for Contact Preference (Email vs Direct Phone Call)
+      escalationInfo.verificationStep = 'STEP_2_CONTACT_PREFERENCE';
+      escalationInfo.verifiedOrder = verifiedOrderCard;
+      await updateSessionContext(
+        session.id,
+        {
+          awaitingConciergeVerification: false,
+          verifiedOrderForEscalation: {
+            id: verifiedOrderCard.id,
+            orderNumber: verifiedOrderCard.orderNumber,
+            status: verifiedOrderCard.status,
+            total: verifiedOrderCard.total,
+          },
+        },
+        {},
+        activePool
+      );
+    } else {
+      const chosenPref = prefPhoneMatch || slotMatch || session.pageContext?.selectedContactPreference === 'phone_call'
+        ? 'phone_call'
+        : 'email';
+      const candidatePhone = String(extracted.phone || resolvedUser?.phone || session.guestPhone || '').replace(/\D/g, '').slice(-10);
+      const chosenSlot = slotMatch
+        ? (/morning|10/i.test(slotMatch[0]) ? 'Morning (10:00 AM – 1:00 PM IST)' : /afternoon|1/i.test(slotMatch[0]) ? 'Afternoon (1:00 PM – 5:00 PM IST)' : 'Evening (5:00 PM – 8:00 PM IST)')
+        : (session.pageContext?.callbackTimeSlot || null);
+
+      if (chosenPref === 'phone_call' && (candidatePhone.length !== 10 || !chosenSlot)) {
+        escalationInfo.verificationStep = 'STEP_2B_PHONE_AND_SLOT';
+        escalationInfo.verifiedOrder = verifiedOrderCard;
+        await updateSessionContext(
+          session.id,
+          {
+            selectedContactPreference: 'phone_call',
+            callbackPhone: candidatePhone.length === 10 ? candidatePhone : null,
+            callbackTimeSlot: chosenSlot,
+          },
+          {},
+          activePool
+        );
+      } else {
+        // Step 3: Both Verification AND Contact Preference complete -> Create single structured Escalation Ticket
+        emit('status', { phase: 'escalating', label: 'Logging verified specialist escalation request...' });
+        const escRes = await triggerInstantEscalation({
+          pool: activePool,
+          session,
+          user: resolvedUser,
+          sentiment,
+          recentMessages: [...history.slice(-4), { sender: 'user', content: message }],
+          orderId: verifiedOrderCard.id,
+          reason: `Verified Order #${verifiedOrderCard.orderNumber} (${chosenPref === 'phone_call' ? `Phone Callback: ${candidatePhone} · ${chosenSlot}` : `Email Update: ${extracted.email || resolvedUser?.email || session.guestEmail}`})`,
+        });
+
+        try {
+          const { computeQuantumHash512 } = require('../utils/fortressCrypto');
+          const ticketRef = `BV-ESC-${verifiedOrderCard.orderNumber}-${Date.now().toString().slice(-4)}`;
+          const sig512 = computeQuantumHash512({ ticketRef, orderId: verifiedOrderCard.id, chosenPref, candidatePhone, chosenSlot }, 'ESC_TICKET_512');
+          await activePool.query(
+            `INSERT INTO support_escalation_tickets
+              (ticket_reference, session_id, user_id, order_id, order_number, verified_email, verified_phone,
+               contact_preference, callback_phone, callback_time_slot, inquiry_category, query_details, status, sla_deadline, signature_sha512)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Order Intervention', ?, 'open', DATE_ADD(NOW(), INTERVAL 12 HOUR), ?)`,
+            [
+              ticketRef,
+              session.id,
+              resolvedUser?.id || session.userId || 1,
+              verifiedOrderCard.id,
+              String(verifiedOrderCard.orderNumber || verifiedOrderCard.id),
+              extracted.email || resolvedUser?.email || session.guestEmail || null,
+              candidatePhone || null,
+              chosenPref,
+              chosenPref === 'phone_call' ? candidatePhone : null,
+              chosenPref === 'phone_call' ? chosenSlot : null,
+              String(message || '').slice(0, 2000),
+              sig512,
+            ]
+          );
+        } catch {}
+
+        await updateSessionContext(
+          session.id,
+          {
+            awaitingConciergeVerification: false,
+            verifiedOrderForEscalation: null,
+            selectedContactPreference: null,
+          },
+          {},
+          activePool
+        );
+
+        escalationInfo = {
+          escalated: true,
+           verificationStep: 'STEP_3_COMPLETED',
+          ticketId: escRes?.ticketId || null,
+          contactPreference: chosenPref,
+          callbackPhone: candidatePhone || null,
+          callbackTimeSlot: chosenSlot || null,
+          priority: sentiment.priority || 'High',
+          slaResponseWindow: 'Within 12 hours',
+        };
+      }
+    }
   } else {
     await updateSessionTelemetry(
       session.id,
@@ -1071,14 +1239,13 @@ async function processSupportTurn({
     user: resolvedUser,
   });
 
-  const synthesizedReply = await tryGeminiSynthesis({
+  const finalReply = await tryGeminiSynthesis({
     userMessage: message,
     history,
     toolResults: executedTools,
     deterministicFallback: deterministic,
     user: resolvedUser,
   });
-  const finalReply = sanitizeCustomerReply(synthesizedReply);
 
   if (typeof onStreamEvent === 'function') {
     const chunks = finalReply.match(/.{1,18}(\s|$)|\S+/g) || [finalReply];

@@ -689,7 +689,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
   try {
     await conn.beginTransaction();
     const [orders] = await conn.query(
-      'SELECT user_id, status, payment_mode, payment_status, coupon_code, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, shopping_wallet_reward_awarded_at FROM orders WHERE id = ? FOR UPDATE',
+      'SELECT id, order_number, user_id, status, payment_mode, payment_status, payment_id, total, referral_wallet_amount, coupon_code, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, shopping_wallet_reward_awarded_at FROM orders WHERE id = ? FOR UPDATE',
       [orderId]
     );
     const order = orders?.[0];
@@ -767,6 +767,34 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
         "UPDATE impact_contributions SET status = 'cancelled' WHERE order_id = ? AND status = 'pledged'",
         [orderId]
       );
+
+      // Atomic Wallet & Referral Credit Restoration on cancellation/return
+      const orderTotalNum = Math.max(0, Number(order.total) || 0);
+      const referralUsedNum = Math.max(0, Number(order.referral_wallet_amount) || 0);
+      if (referralUsedNum > 0) {
+        try {
+          await conn.query('UPDATE referral_wallets SET balance = balance + ? WHERE user_id = ?', [referralUsedNum, order.user_id]);
+          await conn.query(
+            `INSERT INTO referral_wallet_transactions (user_id, amount, type, description, reference_id, coupon_code, order_id)
+             VALUES (?, ?, 'credit', ?, ?, ?, ?)`,
+            [order.user_id, referralUsedNum, `Restored referral credit for ${status} order #${orderId}`, `referral-restore-${orderId}`, order.coupon_code || null, orderId]
+          );
+        } catch {}
+      }
+      if (order.payment_mode === 'WALLET' && orderTotalNum > 0) {
+        try {
+          const [[wRow]] = await conn.query('SELECT balance FROM wallets WHERE user_id = ? FOR UPDATE', [order.user_id]);
+          const prevW = Number(wRow?.balance || 0);
+          const nextW = Number(((Math.round(prevW * 100) + Math.round(orderTotalNum * 100)) / 100).toFixed(2));
+          await conn.query('UPDATE wallets SET balance = ? WHERE user_id = ?', [nextW, order.user_id]);
+          await conn.query('UPDATE users SET wallet_balance = ? WHERE id = ?', [nextW, order.user_id]);
+          await conn.query(
+            `INSERT INTO wallet_transactions (user_id, amount, type, description, reference_id)
+             VALUES (?, ?, 'credit', ?, ?)`,
+            [order.user_id, orderTotalNum.toFixed(2), `Wallet refund for ${status} order #${orderId}`, `wallet-refund-order-${orderId}`]
+          );
+        } catch {}
+      }
 
       // Automatically release coupon redemption so cancelled/returned orders restore coupon quota cleanly
       if (order.coupon_code) {

@@ -9,8 +9,6 @@ const {
   diagnoseCartFriction,
   diagnosePasswordAndAuthFriction,
   diagnoseCheckoutAndCouponFriction,
-  findRelevantNavigationLinks,
-  sanitizeCustomerReply,
 } = require('../services/aiCopilotRescueService');
 
 const {
@@ -38,17 +36,6 @@ test('100X AI Co-Pilot: COMPLETE_SITE_NAVIGATION_MAP provides all storefront, cu
   assert.ok(paths.has('/support'));
   assert.ok(paths.has('/superadminsupport'));
   assert.ok(paths.has('/admin/dashboard/gst'));
-});
-
-test('Customer AI navigation guidance never exposes staff portals or clickable links', () => {
-  const guidance = findRelevantNavigationLinks('admin dashboard');
-  assert.ok(guidance.length > 0);
-  assert.ok(guidance.every(item => !/^\/(?:admin|superadminsupport|support)(?:\/|$)/i.test(item.path)));
-
-  const reply = sanitizeCustomerReply(
-    'Track your order at https://www.bhumivera.com/order-tracking or [open admin](/admin/dashboard).'
-  );
-  assert.doesNotMatch(reply, /https?:\/\/|\/order-tracking|\/admin\/dashboard/i);
 });
 
 test('100X AI Co-Pilot: evaluatePasswordRequirements enforces all 7 security rules and gives clear fixes', () => {

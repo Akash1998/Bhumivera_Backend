@@ -137,7 +137,7 @@ const validateProfile = body => {
 };
 
 /**
- * Generates a 10X Luxury Branded GST Tax Invoice / Credit Note HTML page
+ * Generates a Bhumivera Maison GST Tax Invoice / Credit Note HTML page
  * with the Bhumivera Brand Logo, QR Verification Matrix, HSN Summary Table,
  * Indian Rupee Amount in Words, and Authorized Signatory Stamp.
  */
@@ -515,7 +515,7 @@ function renderLuxuryTaxInvoiceHtml(rawDoc) {
 <body>
   <div class="toolbar">
     <div>
-      <strong>BHUMIVERA 10X LUXURY GST TAX INVOICE</strong> · ${escapeHtml(doc.document_number)} (${escapeHtml(doc.supply_type)})
+      <strong>BHUMIVERA MAISON GST TAX INVOICE</strong> · ${escapeHtml(doc.document_number)} (${escapeHtml(doc.supply_type)})
     </div>
     <div>
       <button onclick="window.print()">Print / Save as PDF</button>
@@ -681,7 +681,7 @@ function renderLuxuryTaxInvoiceHtml(rawDoc) {
             <div class="qr-cell"></div><div class="qr-cell alt"></div><div class="qr-cell"></div><div class="qr-cell"></div>
           </div>
           <div>
-            <div><strong>512-Bit SHA-512 Document Digest:</strong> <code class="mono">${escapeHtml(String(doc.sha512_signature || '').slice(0, 32))}…</code></div>
+            <div><strong>Cryptographic SHA-512 Document Digest:</strong> <code class="mono">${escapeHtml(String(doc.sha512_signature || '').slice(0, 32))}…</code></div>
             <div style="color:#5b6d64;margin-top:2px;">Verify online at <strong>www.bhumivera.com/order-tracking?order=${escapeHtml(doc.order_number)}</strong></div>
           </div>
         </div>
@@ -1439,7 +1439,7 @@ router.get('/reports/export.csv', asyncRoute(async (req, res) => {
     'Line / Document Total (INR)',
     'ITC Eligible',
     'Credit Note Reason / Notes',
-    '512-Bit SHA-512 Signature',
+    'Cryptographic SHA-512 Signature',
   ];
 
   const csvRows = [headers.map(sanitizeCsvCell).join(',')];

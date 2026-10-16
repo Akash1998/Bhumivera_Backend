@@ -124,7 +124,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   // 3. 100X AI Co-Pilot & Friction Rescue
   {
     id: 'API-009',
-    domain: '100X AI Co-Pilot & Rescue',
+    domain: 'Bhumivera Client Concierge',
     method: 'GET',
     path: '/api/support/ai-copilot/navigation-map',
     auth: 'public',
@@ -132,7 +132,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-010',
-    domain: '100X AI Co-Pilot & Rescue',
+    domain: 'Bhumivera Client Concierge',
     method: 'POST',
     path: '/api/support/ai-copilot/diagnose',
     auth: 'public',
@@ -140,7 +140,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-011',
-    domain: '100X AI Co-Pilot & Rescue',
+    domain: 'Bhumivera Client Concierge',
     method: 'POST',
     path: '/api/support/ai-copilot/cart-rescue',
     auth: 'public',
@@ -148,7 +148,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-012',
-    domain: '100X AI Co-Pilot & Rescue',
+    domain: 'Bhumivera Client Concierge',
     method: 'POST',
     path: '/api/support/ai-copilot/password-rescue',
     auth: 'public',
@@ -197,10 +197,10 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
     description: 'Process customer chat message through AI Support Orchestrator & sentiment analyzer',
   },
 
-  // 5. 10X GST Portal & Luxury Branded Tax Invoices
+  // 5. Financial Ledger & GST Compliance & Luxury Branded Tax Invoices
   {
     id: 'API-018',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/settings',
     auth: 'admin',
@@ -208,7 +208,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-019',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'PUT',
     path: '/api/gst/settings',
     auth: 'admin',
@@ -216,7 +216,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-020',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/products',
     auth: 'admin',
@@ -224,7 +224,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-021',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'POST',
     path: '/api/gst/products/bulk-tax',
     auth: 'admin',
@@ -232,7 +232,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-022',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/orders',
     auth: 'admin',
@@ -240,7 +240,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-023',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'POST',
     path: '/api/gst/orders/batch-invoice',
     auth: 'admin',
@@ -248,7 +248,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-024',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/documents',
     auth: 'admin',
@@ -256,15 +256,15 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-025',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/documents/:id/luxury-html',
     auth: 'admin',
-    description: 'Render standalone 10X Luxury Branded GST Tax Invoice HTML with Bhumivera logo (/logo.webp)',
+    description: 'Render standalone Bhumivera Maison GST Tax Invoice HTML with Bhumivera logo (/logo.webp)',
   },
   {
     id: 'API-026',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/reports',
     auth: 'admin',
@@ -272,7 +272,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-027',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/reports/export.xlsx',
     auth: 'admin',
@@ -280,7 +280,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-028',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/reports/export.csv',
     auth: 'admin',
@@ -288,7 +288,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
   },
   {
     id: 'API-029',
-    domain: '10X GST & Books Portal',
+    domain: 'Financial Ledger & GST Compliance',
     method: 'GET',
     path: '/api/gst/reports/export.json',
     auth: 'admin',
@@ -350,7 +350,7 @@ const BACKEND_API_ENDPOINT_CATALOG = Object.freeze([
     method: 'GET',
     path: '/api/loyalty-tiers/matrix',
     auth: 'admin',
-    description: 'Fetch Loyalty Matrix configuration (45% max redemption) and active tiers',
+    description: 'Fetch Clientele Privilege & Tiers configuration (45% max redemption) and active tiers',
   },
   {
     id: 'API-037',
@@ -487,7 +487,7 @@ function verifyInvoiceMathematicalIntegrity(rawDoc) {
 }
 
 /**
- * Runs a comprehensive self-test of the Bhumivera 100X API Catalog, AI Co-Pilot, and GST Engine.
+ * Runs a comprehensive self-test of the Bhumivera Maison API Catalog, AI Co-Pilot, and GST Engine.
  */
 function runEnterpriseApiCatalogAudit() {
   const passwordAuditPass = evaluatePasswordRequirements('Bhumivera@2026', 'patron@bhumivera.com');

@@ -43,7 +43,7 @@ const ROLE_BENCHMARKS = Object.freeze({
     dailyCreditCapInr: 500,
     canDeleteResolvedChats: false,
     canIssueUnlimitedCoupons: false,
-    summary: 'All L1 rights + Order Cancellation, Chat Reassignment, 1 courtesy coupon per customer (max 12% off), and 1 goodwill wallet credit per customer (max ₹150, daily cap ₹500). Cannot delete chats.',
+    summary: 'All L1 rights + Chat Reassignment, 1 courtesy coupon per customer (max 12% off), and 1 goodwill wallet credit per customer (max ₹150, daily cap ₹500). Cannot cancel orders or delete chats.',
   }),
   manager: Object.freeze({
     tier: 'L3 Support Manager',
@@ -53,7 +53,7 @@ const ROLE_BENCHMARKS = Object.freeze({
     dailyCreditCapInr: 1200,
     canDeleteResolvedChats: false,
     canIssueUnlimitedCoupons: false,
-    summary: 'All L2 rights + Staff management, 1 courtesy coupon per customer (max 15% off), and 1 goodwill wallet credit per customer (max ₹250, daily cap ₹1,200). Cannot delete chats or issue multiple coupons to the same customer.',
+    summary: 'All L2 rights + Staff management, 1 courtesy coupon per customer (max 15% off), and 1 goodwill wallet credit per customer (max ₹250, daily cap ₹1,200). Cannot cancel orders, delete chats, or issue multiple coupons to the same customer.',
   }),
   superadmin: Object.freeze({
     tier: 'SuperAdmin / Owner',
@@ -96,7 +96,7 @@ const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     can_view_customers: true,
     can_send_reset_link: true,
     can_initiate_returns: true,
-    can_cancel_orders: true,
+    can_cancel_orders: false,
     can_issue_refund_links: true,
     can_adjust_wallet_goodwill: true,
     can_reassign_chats: true,
@@ -115,7 +115,7 @@ const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     can_view_customers: true,
     can_send_reset_link: true,
     can_initiate_returns: true,
-    can_cancel_orders: true,
+    can_cancel_orders: false,
     can_issue_refund_links: true,
     can_adjust_wallet_goodwill: true,
     can_reassign_chats: true,
@@ -148,7 +148,7 @@ const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
 
 const DEFAULT_AI_SUPPORT_FEATURES = Object.freeze({
   ai_support_enabled: true,
-  ai_auto_cancel_enabled: true,
+  ai_auto_cancel_enabled: false,
   ai_auto_return_rma_enabled: true,
   ai_auto_wallet_goodwill_enabled: true,
   ai_proactive_triggers_enabled: true,
@@ -491,7 +491,8 @@ async function createOrResumeSession({
   const cleanName = typeof guestName === 'string' && guestName.trim() ? maskPII(guestName.trim()).slice(0, 100) : null;
   const cleanPhone = typeof guestPhone === 'string' && guestPhone.trim() ? guestPhone.trim().slice(0, 25) : null;
 
-  if (!forceNew && typeof sessionToken === 'string' && /^[a-f0-9-]{16,64}$/i.test(sessionToken.trim())) {
+  // Anti-Spam Single-Thread Enforcement: Always reuse existing sessionToken or single active thread per userId
+  if (typeof sessionToken === 'string' && /^[a-f0-9-]{16,64}$/i.test(sessionToken.trim())) {
     const [existingRows] = await pool.query(
       'SELECT * FROM ai_support_sessions WHERE session_token = ? LIMIT 1',
       [sessionToken.trim()]
@@ -514,6 +515,19 @@ async function createOrResumeSession({
         return normalizeSessionRow(updatedRows?.[0] || existing);
       }
     }
+  }
+
+  // If authenticated customer already has an active/pending/escalated thread, reuse that single thread (never create infinite threads)
+  if (userId) {
+    try {
+      const [activeUserSessions] = await pool.query(
+        "SELECT * FROM ai_support_sessions WHERE user_id = ? AND status NOT IN ('resolved', 'closed') ORDER BY id DESC LIMIT 1",
+        [userId]
+      );
+      if (activeUserSessions?.[0]) {
+        return normalizeSessionRow(activeUserSessions[0]);
+      }
+    } catch {}
   }
 
   const newToken = crypto.randomBytes(24).toString('hex');

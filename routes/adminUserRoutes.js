@@ -272,10 +272,31 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ message: 'Invalid status' });
     }
+    if (status === 'cancelled' && req.user?.role !== 'superadmin') {
+      return res.status(403).json({
+        code: 'SUPERADMIN_REQUIRED_FOR_CANCELLATION',
+        message: 'Order cancellation can only be executed by the SuperAdmin.',
+      });
+    }
 
     const orderId = req.params.id;
     const previousOrder = await getOrderById(orderId);
     if (!previousOrder) return res.status(404).json({ message: 'Order not found' });
+    if (status === 'cancelled') {
+      const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
+      const { getRazorpayClient } = require('../services/razorpayService');
+      const cancelRes = await executeAtomicOrderCancellationAndRefund(db, {
+        orderId,
+        reason: req.body.cancel_reason || 'Cancelled by SuperAdmin',
+        executedByEmail: req.user?.email || 'adminbhumivera27@gmail.com',
+        razorpay: getRazorpayClient(),
+      });
+      return res.json({
+        message: 'Order cancelled and atomic refund/wallet ledger updated.',
+        refundSummary: cancelRes.refundSummary,
+        ledgerReference: cancelRes.ledgerReference,
+      });
+    }
     const updated = await updateOrderStatus(orderId, status, req.body.cancel_reason, {
       trackingNumber: tracking_number,
       courier,

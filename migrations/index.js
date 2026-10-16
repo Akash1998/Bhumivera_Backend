@@ -28,6 +28,7 @@ const { initGstAccountingTables } = require('../models/gstAccountingModel');
 const { initWarrantyTable } = require('../models/warrantyModel');
 const { initReturnRefundTable } = require('../models/returnRefundModel');
 const { initAiSupportTables } = require('../models/aiSupportModel');
+const { initSuperAdminFortressTables } = require('../models/superAdminVaultModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
 const { generateOrderNumber } = require('../services/orderNumber');
 const { DEFAULT_ORDER_SPIN_REWARDS, validateOrderSpinRewards } = require('../services/orderSpinPolicy');
@@ -726,6 +727,11 @@ const migrations = [
     version: 61,
     name: 'upgrade tamperproof coupon ledger and unify coupon columns',
     up: () => createCouponTable(),
+  },
+  {
+    version: 62,
+    name: 'initialize superadmin security vault, 108-module rbac matrix, and atomic wallet refund ledger',
+    up: () => initSuperAdminFortressTables(pool),
   },
 ];
 

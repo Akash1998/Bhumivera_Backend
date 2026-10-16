@@ -284,7 +284,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       const greetingMsg = await appendMessage({
         sessionId: session.id,
         sender: 'assistant',
-        senderName: 'Bhumivera Support',
+        senderName: 'Bhumivera Client Concierge',
         content: greeting,
         quickActions,
       });
@@ -332,7 +332,7 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
         {
           id: Date.now(),
           sender: 'assistant',
-          senderName: 'Bhumivera Support',
+          senderName: 'Bhumivera Client Concierge',
           content: fallbackGreeting.greeting,
           quickActions: fallbackGreeting.quickActions,
           orderCards: [],
@@ -494,8 +494,8 @@ router.post('/chat/session/:sessionToken/end-satisfied', supportSessionLimiter, 
     const sysMsg = await appendMessage({
       sessionId: session.id,
       sender: 'system',
-      senderName: 'Bhumivera Support',
-      content: 'This chat has ended. Thank you for contacting Bhumivera Support.',
+      senderName: 'Bhumivera Client Concierge',
+      content: 'This chat has ended. Thank you for contacting Bhumivera Client Concierge.',
     });
 
     await appendSupportAuditLog({
@@ -590,7 +590,7 @@ router.post('/chat/async-message', supportChatLimiter, optionalAuthenticateCusto
     const ackMsg = await appendMessage({
       sessionId: session.id,
       sender: 'assistant',
-      senderName: 'Bhumivera Support',
+      senderName: 'Bhumivera Client Concierge',
       content: `We have received your message${ticketId ? ` (Reference #${ticketId})` : ''}. Our support team will reply directly to your **Email (${resolvedEmail || 'registered email'})** and **Mobile App / Profile Support Inbox** shortly.`,
     });
 
@@ -803,6 +803,207 @@ router.get('/chat/stream', supportChatLimiter, optionalAuthenticateCustomer, han
 /**
  * POST /api/support/chat/escalate
  */
+/**
+ * POST /api/support/chat/verify-escalation
+ * Structured 3-Step Legitimate Customer Verification & Callback/Email Preference Flow:
+ *  - Step 1 (`step === 'verify_order'`): Validates Order ID + Registered Email/10-Digit Phone against MySQL `orders` + `users`.
+ *  - Step 2 & 3 (`step === 'submit_preference'`): Captures Email vs Direct Phone Call (with 10-digit phone + Preferred Callback Slot)
+ *    and creates a single verified Escalation Ticket.
+ */
+router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthenticateCustomer, async (req, res) => {
+  try {
+    const {
+      sessionToken,
+      step = 'verify_order',
+      orderId = '',
+      emailOrPhone = '',
+      contactPreference = '', // 'email' | 'phone_call'
+      callbackPhone = '',
+      callbackTimeSlot = '', // 'Morning (10 AM–1 PM)' | 'Afternoon (1 PM–5 PM)' | 'Evening (5 PM–8 PM)'
+      queryDetails = '',
+    } = req.body || {};
+
+    const cleanOrderRef = String(orderId || '').trim().replace(/^#?(?:BHVM[-_\s]*)?/i, '').trim();
+    const rawContact = String(emailOrPhone || req.user?.email || req.user?.phone || '').trim();
+    const isEmailInput = rawContact.includes('@');
+    const cleanEmail = isEmailInput ? rawContact.toLowerCase() : (req.user?.email ? String(req.user.email).toLowerCase() : '');
+    const cleanPhone = String(isEmailInput ? (req.user?.phone || '') : rawContact).replace(/\D/g, '').slice(-10);
+
+    if (!cleanOrderRef || (!cleanEmail && cleanPhone.length !== 10)) {
+      return res.status(400).json({
+        success: false,
+        code: 'VERIFICATION_FIELDS_REQUIRED',
+        message: 'Please provide both your Order ID (e.g., BHVM...) and your registered Email Address or 10-digit Phone Number.',
+      });
+    }
+
+    const numericId = /^\d+$/.test(cleanOrderRef) ? Number(cleanOrderRef) : 0;
+    const [orderRows] = await pool.query(
+      `SELECT o.id, o.order_number, o.user_id, o.status, o.total, o.payment_mode, o.payment_status, o.address_snapshot,
+              u.name AS user_name, u.email AS user_email, u.phone AS user_phone
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.user_id
+       WHERE o.order_number = ? OR o.id = ?
+       LIMIT 1`,
+      [cleanOrderRef, numericId]
+    );
+
+    const order = orderRows?.[0];
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        code: 'ORDER_NOT_FOUND',
+        message: `We could not locate an order matching #${cleanOrderRef}. Please check your 9-digit Order Number and try again.`,
+      });
+    }
+
+    const addrSnap = parseJsonSafe(order.address_snapshot, {});
+    const dbEmail = String(order.user_email || addrSnap?.email || '').trim().toLowerCase();
+    const dbPhone = String(order.user_phone || addrSnap?.phone || addrSnap?.mobile || '').replace(/\D/g, '').slice(-10);
+    const ownsByAuth = Boolean(req.user?.id && Number(req.user.id) === Number(order.user_id));
+    const matchesEmail = Boolean(cleanEmail && dbEmail && cleanEmail === dbEmail);
+    const matchesPhone = Boolean(cleanPhone.length === 10 && dbPhone && cleanPhone === dbPhone);
+
+    if (!ownsByAuth && !matchesEmail && !matchesPhone) {
+      return res.status(403).json({
+        success: false,
+        code: 'ORDER_OWNERSHIP_MISMATCH',
+        message: 'The provided Email or Phone Number does not match the registered details for this Order ID.',
+      });
+    }
+
+    if (step === 'verify_order') {
+      return res.json({
+        success: true,
+        verified: true,
+        step: 'AWAITING_CONTACT_PREFERENCE',
+        order: {
+          id: order.id,
+          orderNumber: order.order_number || String(order.id),
+          status: order.status,
+          total: Number(order.total || 0),
+          verifiedEmail: dbEmail || cleanEmail,
+          verifiedPhone: dbPhone || cleanPhone,
+        },
+        conciergePrompt: 'Our specialist team will reach out to you within 12 hours. Would you prefer to receive our update via Email or a Direct Phone Call?',
+      });
+    }
+
+    // Step 2 & 3: Validate Contact Preference and Create Single Escalation Ticket
+    if (!['email', 'phone_call'].includes(contactPreference)) {
+      return res.status(400).json({
+        success: false,
+        code: 'CONTACT_PREFERENCE_REQUIRED',
+        message: 'Please select whether you prefer an update via Email or a Direct Phone Call.',
+      });
+    }
+
+    const finalPhone = String(callbackPhone || cleanPhone || dbPhone || '').replace(/\D/g, '').slice(-10);
+    if (contactPreference === 'phone_call') {
+      if (finalPhone.length !== 10) {
+        return res.status(400).json({
+          success: false,
+          code: 'VALID_10_DIGIT_PHONE_REQUIRED',
+          message: 'Please enter a valid 10-digit Phone Number for your callback.',
+        });
+      }
+      if (!callbackTimeSlot || !String(callbackTimeSlot).trim()) {
+        return res.status(400).json({
+          success: false,
+          code: 'CALLBACK_SLOT_REQUIRED',
+          message: 'Please select a Preferred Callback Time Slot (Morning 10 AM–1 PM, Afternoon 1 PM–5 PM, or Evening 5 PM–8 PM).',
+        });
+      }
+    }
+
+    const session = await createOrResumeSession({
+      sessionToken,
+      userId: order.user_id,
+      guestName: order.user_name || 'Verified Client',
+      guestEmail: dbEmail || cleanEmail,
+      guestPhone: finalPhone || dbPhone,
+    });
+
+    const ticketReference = `BV-ESC-${order.order_number || order.id}-${Date.now().toString().slice(-4)}`;
+    const summaryDetails = String(queryDetails || `Verified client assistance request for Order #${order.order_number || order.id}`).trim().slice(0, 2000);
+    const sig512 = computeQuantumHash512(
+      {
+        ticketReference,
+        orderId: order.id,
+        userId: order.user_id,
+        contactPreference,
+        finalPhone,
+        callbackTimeSlot,
+      },
+      'BHUMIVERA_VERIFIED_ESCALATION_512'
+    );
+
+    const { ensureSuperAdminFortressTables } = require('../models/superAdminVaultModel');
+    await ensureSuperAdminFortressTables(pool);
+
+    await pool.query(
+      `INSERT INTO support_escalation_tickets
+        (ticket_reference, session_id, user_id, order_id, order_number, verified_email, verified_phone,
+         contact_preference, callback_phone, callback_time_slot, inquiry_category, query_details, status, sla_deadline, signature_sha512)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Order Intervention', ?, 'open', DATE_ADD(NOW(), INTERVAL 12 HOUR), ?)`,
+      [
+        ticketReference,
+        session.id,
+        order.user_id,
+        order.id,
+        String(order.order_number || order.id),
+        dbEmail || cleanEmail || null,
+        finalPhone || dbPhone || null,
+        contactPreference,
+        contactPreference === 'phone_call' ? finalPhone : null,
+        contactPreference === 'phone_call' ? String(callbackTimeSlot).trim() : null,
+        summaryDetails,
+        sig512,
+      ]
+    );
+
+    const escResult = await triggerInstantEscalation({
+      session,
+      user: { id: order.user_id, name: order.user_name, email: dbEmail || cleanEmail },
+      latestMessage: summaryDetails,
+      sentiment: { priority: 'High', score: -0.4, frustrationScore: 60 },
+      reason: `Verified ${contactPreference === 'phone_call' ? `Callback (${finalPhone} · ${callbackTimeSlot})` : `Email (${dbEmail || cleanEmail})`} for Order #${order.order_number || order.id}`,
+      orderId: order.id,
+      transcript: [],
+    });
+
+    const confirmationText =
+      contactPreference === 'phone_call'
+        ? `Thank you. Your verified escalation request (**${ticketReference}**) for **Order #${order.order_number || order.id}** has been logged. Our specialist team will call you at **+91 ${finalPhone}** during your preferred **${callbackTimeSlot}** slot within 12 hours.`
+        : `Thank you. Your verified escalation request (**${ticketReference}**) for **Order #${order.order_number || order.id}** has been logged. Our specialist team will send a detailed update to **${dbEmail || cleanEmail}** within 12 hours.`;
+
+    await appendMessage({
+      sessionId: session.id,
+      sender: 'assistant',
+      senderName: 'Bhumivera Client Concierge',
+      content: confirmationText,
+    });
+
+    return res.status(201).json({
+      success: true,
+      status: 'escalated',
+      ticketReference,
+      ticketId: escResult.ticketId || ticketReference,
+      contactPreference,
+      callbackPhone: contactPreference === 'phone_call' ? finalPhone : null,
+      callbackTimeSlot: contactPreference === 'phone_call' ? callbackTimeSlot : null,
+      reply: confirmationText,
+      message: confirmationText,
+    });
+  } catch (error) {
+    console.error('[VERIFY_ESCALATION_ERR]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Could not complete specialist verification. Please try again.',
+    });
+  }
+});
+
 router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCustomer, async (req, res) => {
   try {
     const {
@@ -832,7 +1033,7 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
       await appendMessage({
         sessionId: session.id,
         sender: 'assistant',
-        senderName: 'Bhumivera Support',
+        senderName: 'Bhumivera Client Concierge',
         content: botOnlyNotice,
       });
       return res.status(403).json({
@@ -866,7 +1067,7 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
     await appendMessage({
       sessionId: session.id,
       sender: 'assistant',
-      senderName: 'Bhumivera Support',
+      senderName: 'Bhumivera Client Concierge',
       content: confirmationText,
       sentiment,
     });
@@ -1164,7 +1365,7 @@ router.post('/sessions/:sessionToken/reply', authenticateSupportAgent, async (re
              VALUES (?, ?, ?, 'support_reply', 0)`,
             [
               session.userId,
-              `New reply from Bhumivera Support`,
+              `New reply from Bhumivera Client Concierge`,
               message.trim().slice(0, 240),
             ]
           );
@@ -1174,8 +1375,8 @@ router.post('/sessions/:sessionToken/reply', authenticateSupportAgent, async (re
       if (targetEmail && (session.pageContext?.channel === 'async_message' || req.body?.sendEmailCopy)) {
         sendMail({
           to: targetEmail,
-          subject: `Update on your Bhumivera Support Inquiry`,
-          text: `Hello ${session.guestName || 'Customer'},\n\n${message.trim()}\n\n— ${senderLabel}, Bhumivera Support`,
+          subject: `Update on your Bhumivera Client Concierge Inquiry`,
+          text: `Hello ${session.guestName || 'Customer'},\n\n${message.trim()}\n\n— ${senderLabel}, Bhumivera Client Concierge`,
           html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><p>Hello ${escapeHtml(session.guestName || 'Customer')},</p><p>${escapeHtml(message.trim()).replace(/\n/g, '<br>')}</p><p>— <strong>${escapeHtml(senderLabel)}</strong>, Bhumivera Customer Care</p></div>`,
         }).catch(() => null);
       }
@@ -1271,16 +1472,26 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
     if (!session) return res.status(404).json({ message: 'Chat session not found.' });
 
     if (action === 'cancel_order') {
-      if (!staff.permissions?.can_cancel_orders) {
+      if (staff.role !== 'superadmin') {
         return res.status(403).json({
-          code: 'SUPERVISOR_REQUIRED_FOR_CANCEL',
-          message: 'Agent role cannot directly cancel orders. Mark the chat as Waiting for Review or Escalated for a Supervisor/Manager.',
+          code: 'SUPERADMIN_REQUIRED_FOR_CANCEL',
+          message: 'Support staff cannot cancel orders. Order cancellation is restricted exclusively to the SuperAdmin Control Centre.',
         });
       }
-      const result = await cancelOrderTool(
-        { order_id: orderId, reason: reason || `Cancelled by ${staff.name} (${staff.role})` },
-        { pool, user: { id: session.userId, role: 'support_agent', name: staff.name }, session }
-      );
+      const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
+      const { getRazorpayClient } = require('../services/razorpayService');
+      const cancelRes = await executeAtomicOrderCancellationAndRefund(pool, {
+        orderId,
+        reason: reason || `Cancelled by SuperAdmin (${staff.name})`,
+        executedByEmail: staff.email || 'adminbhumivera27@gmail.com',
+        razorpay: getRazorpayClient(),
+      });
+      const result = {
+        success: true,
+        message: `Order #${cancelRes.orderNumber} cancelled by SuperAdmin (${cancelRes.ledgerReference}).`,
+        orderCards: [],
+        refundSummary: cancelRes.refundSummary,
+      };
       if (result.success) {
         await appendMessage({
           sessionId: session.id,
@@ -1978,7 +2189,7 @@ router.get('/superadmin/overview', authenticateSupportAgent, async (req, res) =>
           customerEmail: s.customerEmail || s.guestEmail || null,
           rating: s.csatRating,
           feedback: s.csatFeedback || 'Satisfied with resolution',
-          assignedAgentName: s.assignedAgentName || 'Bhumivera Support',
+          assignedAgentName: s.assignedAgentName || 'Bhumivera Client Concierge',
           assignedRole: s.assignedRole || 'ai',
           updatedAt: s.updatedAt,
         })),
@@ -2387,30 +2598,27 @@ router.patch('/tickets/:id', authenticateSupportAgent, async (req, res) => {
 
 
 const {
+  COMPLETE_SITE_NAVIGATION_MAP,
   evaluatePasswordRequirements,
   diagnoseCartFriction,
   diagnosePasswordAndAuthFriction,
   diagnoseCheckoutAndCouponFriction,
   findRelevantNavigationLinks,
-  sanitizeCustomerReply,
   diagnoseCustomerFriction,
 } = require('../services/aiCopilotRescueService');
 
 // ============================================================================
-// PART 5: 100X AI CO-PILOT FRICTION RESCUE & SUPERADMIN TICKET DELETION
+// PART 5: BHUMIVERA CLIENT CONCIERGE FRICTION RESCUE & SUPERADMIN TICKET DELETION
 // ============================================================================
 
 router.get('/ai-copilot/navigation-map', optionalCustomerAuth, async (req, res) => {
   try {
     const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-    const guidance = findRelevantNavigationLinks(query).map(({ title, description }) => ({
-      title: sanitizeCustomerReply(title),
-      description: sanitizeCustomerReply(description),
-    }));
+    const links = query ? findRelevantNavigationLinks(query) : COMPLETE_SITE_NAVIGATION_MAP;
     return res.json({
       success: true,
-      guidance,
-      total: guidance.length,
+      links,
+      total: COMPLETE_SITE_NAVIGATION_MAP.length,
     });
   } catch (error) {
     console.error('[AI_COPILOT_NAV_MAP]', error);

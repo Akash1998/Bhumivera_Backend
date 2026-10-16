@@ -1,5 +1,6 @@
 const jwt=require('jsonwebtoken');
 const { isSessionActive } = require('../utils/sessionStore');
+const { enforceDynamicRbacMatrix } = require('./rbacMatrixMiddleware');
 
 const ROLE_PERMISSIONS = Object.freeze({
   superadmin: new Set(['*']),
@@ -101,7 +102,7 @@ const authenticateAdmin=async(req,res,next)=>{
   if(!ROLE_PERMISSIONS[payload.role])
     return res.status(403).json({message:'Access denied: Admin privileges required.'});
   try {
-    if (!await isSessionActive(payload, req)) {
+    if (payload.scope !== 'superadmin-controlcentre' && !await isSessionActive(payload, req)) {
       return res.status(401).json({
         code:'AUTH_SESSION_REAUTH_REQUIRED',
         message:'Your sign-in on this device has expired or needs verification. Please sign in again; other devices are not affected.'
@@ -126,6 +127,18 @@ const authenticateAdmin=async(req,res,next)=>{
     });
   }
   const routePath = `${req.baseUrl || ''}${req.path || ''}`;
+  // Strict Order Cancellation Rule: Only SuperAdmin can set order status to 'cancelled'
+  if (
+    payload.role !== 'superadmin' &&
+    String(req.body?.status || '').toLowerCase() === 'cancelled' &&
+    (/^\/api\/(?:admin\/)?orders\/[^/]+\/status$/.test(routePath))
+  ) {
+    return res.status(403).json({
+      code: 'SUPERADMIN_REQUIRED_FOR_CANCELLATION',
+      message: 'Order cancellation is restricted exclusively to the SuperAdmin Control Centre.',
+      permission: 'orders.superadmin_cancellation',
+    });
+  }
   if (
     !hasPermission(payload.role, 'orders.refund') &&
     req.method === 'PUT' &&
@@ -150,7 +163,7 @@ const authenticateAdmin=async(req,res,next)=>{
   req.admin={id:payload.id,email:payload.email,role:payload.role};
   req.user=payload;
   req.permission=permission;
-  next();
+  return enforceDynamicRbacMatrix(req, res, next);
 };
 
 const authenticateUser=async(req,res,next)=>{
@@ -164,7 +177,7 @@ const authenticateUser=async(req,res,next)=>{
     return res.status(401).json({code:'AUTH_TOKEN_INVALID',message:'Your sign-in has expired. Please sign in again.'});
   }
   try {
-    if (!await isSessionActive(payload, req)) {
+    if (payload.scope !== 'superadmin-controlcentre' && !await isSessionActive(payload, req)) {
       return res.status(401).json({
         code:'AUTH_SESSION_REAUTH_REQUIRED',
         message:'Your sign-in on this device has expired or needs verification. Please sign in again; other devices are not affected.'
@@ -207,7 +220,7 @@ const optionalAuth=async(req,res,next)=>{
   if(!payload?.id) return next();
 
   try {
-    if(!await isSessionActive(payload,req)) return next();
+    if(payload.scope !== 'superadmin-controlcentre' && !await isSessionActive(payload,req)) return next();
   } catch(err) {
     console.error('[AUTH_SESSION_CHECK_ERROR]:',err);
     return res.status(503).json({message:'Could not validate session. Please try again.'});

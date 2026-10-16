@@ -75,6 +75,7 @@ const gamificationRoutes = require("./routes/gamificationRoutes");
 const impactRoutes = require("./routes/impactRoutes");
 const systemAdminRoutes = require("./routes/systemAdminRoutes");
 const supportRoutes = require("./routes/supportRoutes");
+const superAdminControlCentreRoutes = require("./routes/superAdminControlCentreRoutes");
 
 const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
 
@@ -114,7 +115,16 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Client-Platform", "Accept", "Origin"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "X-Client-Platform",
+    "X-SuperAdmin-Action-Passcode",
+    "X-CSRF-Token",
+    "Accept",
+    "Origin"
+  ],
   exposedHeaders: ["Content-Range", "X-Content-Range", "X-Request-Id"],
   optionsSuccessStatus: 204
 };
@@ -137,7 +147,6 @@ app.use((req, res, next) => {
     "trusted-types *;"
   );
   
-  // Explicitly override downstream noise and clear DevTools warnings
   res.setHeader(
     "Permissions-Policy",
     "camera=(), microphone=(), geolocation=(), browsing-topics=()"
@@ -168,6 +177,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use(redisResponseCache);
 
 // --- ROUTE REGISTRATION ---
+app.use("/api/superadmin/controlcentre", superAdminControlCentreRoutes);
 app.use("/api/admin/system", systemAdminRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/flash-sales", createModuleAvailabilityMiddleware('flash_sales'), flashSalesRoutes);
@@ -217,6 +227,7 @@ app.get("/sitemap.xml", async (req, res) => {
     let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`;
     
     xml += `\n  <url>\n    <loc>https://www.bhumivera.com/</loc>\n    <priority>1.0</priority>\n  </url>`;
+    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/products</loc>\n    <priority>0.95</priority>\n  </url>`;
     xml += `\n  <url>\n    <loc>https://www.bhumivera.com/shop</loc>\n    <priority>0.9</priority>\n  </url>`;
     xml += `\n  <url>\n    <loc>https://www.bhumivera.com/about</loc>\n    <priority>0.7</priority>\n  </url>`;
     xml += `\n  <url>\n    <loc>https://www.bhumivera.com/contact</loc>\n    <priority>0.7</priority>\n  </url>`;
@@ -237,7 +248,7 @@ app.get("/sitemap.xml", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.json({ status: "ok", message: "Bhumivera Eco-Lab Core API running!" }));
+app.get("/", (req, res) => res.json({ status: "ok", message: "Bhumivera Maison Core API running!" }));
 
 // --- ERROR HANDLING ---
 app.use("/api", (req, res) => {

@@ -101,7 +101,7 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
   const status = String(order.status || 'pending').toLowerCase();
   const stepMap = { pending: 0, placed: 0, confirmed: 1, packed: 2, shipped: 3, delivered: 4 };
   const currentStep = stepMap[status] ?? 0;
-  const cancellable = ['pending', 'confirmed'].includes(status);
+  const cancellable = false; // Strict Policy: Only SuperAdmin can execute order cancellations
 
   let canReturn = false;
   let returnEligibilityReason = null;
@@ -331,13 +331,28 @@ async function cancelOrderTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
   const { user, session, featureConfig = {} } = context;
   const rawOrderRef = stripOrderPrefix(args.order_id || args.order_number || '');
-  const reason = String(args.reason || 'Cancelled via Bhumivera AI Support Assistant').trim().slice(0, 500);
+  const reason = String(args.reason || 'Requested via Bhumivera Client Concierge').trim().slice(0, 500);
 
-  if (featureConfig.ai_auto_cancel_enabled === false) {
+  // Strict Order Cancellation Policy: ONLY SuperAdmin can execute order cancellations
+  const isSuperAdminCaller = Boolean(user && user.role === 'superadmin');
+  if (!isSuperAdminCaller && typeof context.updateOrderStatusFn !== 'function') {
+    return {
+      success: false,
+      code: 'CANCELLATION_REQUIRES_VERIFIED_ESCALATION',
+      requiresVerifiedEscalation: true,
+      orderNumber: rawOrderRef || null,
+      message:
+        `Direct order cancellation via chat is disabled once an order is placed or confirmed. ` +
+        `To request a cancellation review from our Executive Specialist team, please verify your **Order ID** along with your **Registered Email or 10-Digit Phone Number**, and let us know whether you prefer an update via **Email** or a **Direct Phone Call** (with your preferred callback slot).`,
+    };
+  }
+
+  if (featureConfig.ai_auto_cancel_enabled === false && !isSuperAdminCaller) {
     return {
       success: false,
       code: 'AUTO_CANCEL_PAUSED_BY_ADMIN',
-      message: 'Automated order cancellation is currently routed through our Supervisor Desk. I have flagged your request for immediate review.',
+      requiresVerifiedEscalation: true,
+      message: 'Direct order cancellation is restricted to SuperAdmin verification. Please verify your Order ID and registered Email/Phone to schedule a 12-hour specialist callback or email update.',
     };
   }
 

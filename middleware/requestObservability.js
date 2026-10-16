@@ -8,6 +8,14 @@ const MAX_RECENT_REQUESTS = 2000;
 const MAX_DISPLAYED_REQUESTS = 100;
 const METRICS_WINDOW_MS = 15 * 60 * 1000;
 
+function normalizeRouteBucket(path = '') {
+  return String(path || '/')
+    .split('?')[0]
+    .replace(/\/\d+\b/g, '/:id')
+    .replace(/\/sac_[a-f0-9]+\b/gi, '/:challengeId')
+    .replace(/\/[a-f0-9]{24,64}\b/gi, '/:token');
+}
+
 const getRequestMetrics = (now = Date.now()) => {
   const cutoff = Math.ceil((now - METRICS_WINDOW_MS) / 1000) * 1000;
   while (recentRequests.length && recentRequests[0].timestamp < cutoff) recentRequests.shift();
@@ -22,6 +30,56 @@ const getRequestMetrics = (now = Date.now()) => {
     .map(([, counts]) => counts);
   const requestCount = activeCountBuckets.reduce((total, counts) => total + counts.requests, 0);
   const serverErrorCount = activeCountBuckets.reduce((total, counts) => total + counts.serverErrors, 0);
+  const status2xxCount = recent.filter(r => r.statusCode >= 200 && r.statusCode < 400).length;
+  const status4xxCount = recent.filter(r => r.statusCode >= 400 && r.statusCode < 500).length;
+  const averageLatencyMs = recent.length
+    ? Math.round(recent.reduce((sum, r) => sum + (Number(r.durationMs) || 0), 0) / recent.length)
+    : 0;
+
+  const routeMap = new Map();
+  for (const reqItem of recent) {
+    const bucketKey = `${reqItem.method} ${normalizeRouteBucket(reqItem.path)}`;
+    const existing = routeMap.get(bucketKey) || {
+      route: normalizeRouteBucket(reqItem.path),
+      method: reqItem.method,
+      totalRequests: 0,
+      status2xx: 0,
+      status4xx: 0,
+      status5xx: 0,
+      totalLatencyMs: 0,
+      maxLatencyMs: 0,
+      lastStatusCode: reqItem.statusCode,
+      lastSeenAt: new Date(reqItem.timestamp).toISOString(),
+    };
+    existing.totalRequests += 1;
+    if (reqItem.statusCode >= 500) existing.status5xx += 1;
+    else if (reqItem.statusCode >= 400) existing.status4xx += 1;
+    else existing.status2xx += 1;
+    const dur = Number(reqItem.durationMs) || 0;
+    existing.totalLatencyMs += dur;
+    if (dur > existing.maxLatencyMs) existing.maxLatencyMs = dur;
+    existing.lastStatusCode = reqItem.statusCode;
+    existing.lastSeenAt = new Date(reqItem.timestamp).toISOString();
+    routeMap.set(bucketKey, existing);
+  }
+
+  const routeHealthTable = [...routeMap.values()]
+    .map(item => ({
+      route: item.route,
+      method: item.method,
+      totalRequests: item.totalRequests,
+      status2xx: item.status2xx,
+      status4xx: item.status4xx,
+      status5xx: item.status5xx,
+      avgLatencyMs: item.totalRequests ? Math.round(item.totalLatencyMs / item.totalRequests) : 0,
+      maxLatencyMs: item.maxLatencyMs,
+      lastStatusCode: item.lastStatusCode,
+      healthStatus: item.status5xx > 0 ? '5xx_errors' : item.status4xx > 0 ? '4xx_warnings' : '200_ok',
+      lastSeenAt: item.lastSeenAt,
+    }))
+    .sort((a, b) => b.status5xx - a.status5xx || b.totalRequests - a.totalRequests)
+    .slice(0, 60);
+
   const displayedRequests = recent.slice(-MAX_DISPLAYED_REQUESTS).reverse().map(({ timestamp, method, path, statusCode, requestId, durationMs }) => ({
     occurredAt: new Date(timestamp).toISOString(),
     method,
@@ -38,7 +96,11 @@ const getRequestMetrics = (now = Date.now()) => {
     windowMinutes: 15,
     scope: 'this_process',
     requestCount,
+    status2xxCount,
+    status4xxCount,
     serverErrorCount,
+    averageLatencyMs,
+    routeHealthTable,
     sampleLimit: MAX_DISPLAYED_REQUESTS,
     sampleRecordCount: displayedRequests.length,
     sampleIsCapped: requestCount > displayedRequests.length,
