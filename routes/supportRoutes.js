@@ -214,6 +214,7 @@ const authenticateSuperSupport = async (req, res, next) => {
  */
 const optionalAuthenticateCustomer = async (req, _res, next) => {
   req.user = null;
+  req.customerUser = null;
   const authHeader = req.headers.authorization;
   const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
   const rawToken = authHeader?.startsWith('Bearer ')
@@ -246,8 +247,10 @@ const optionalAuthenticateCustomer = async (req, _res, next) => {
   } catch {
     req.user = null;
   }
+  req.customerUser = req.user;
   return next();
 };
+const optionalCustomerAuth = optionalAuthenticateCustomer;
 
 // ============================================================================
 // PART 1: CUSTOMER SUPPORT CHAT & LIFECYCLE ENDPOINTS (`/api/support/chat/*`)
