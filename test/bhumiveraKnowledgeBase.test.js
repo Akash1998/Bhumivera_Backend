@@ -113,3 +113,29 @@ test('usage query returns forward-progressing suggestions without repeating the 
   assert.equal(pairingResult.matchedType, 'product_pairing');
   assert.match(pairingResult.reply, /Golden PM Ritual/i);
 });
+
+test('ingredient + ritual query returns botanical profile and 5-step ritual without escalation hijack', async () => {
+  const result = await searchAllKnowledgeSources(
+    'Tell me about Pure Aloe Vera and its step-by-step ritual'
+  );
+
+  assert.equal(result.matched, true);
+  assert.equal(result.matchedType, 'ingredient_ritual');
+  assert.match(result.reply, /Aloe Vera/i);
+  assert.match(result.reply, /5-Step Cleansing/i);
+  assert.match(result.reply, /60-Second Layering Rule/i);
+  assert.ok(result.quickActions.some(a => a.category === 'post_wash_routine'));
+});
+
+test('general skincare ritual query returns signature AM and PM routine', async () => {
+  const result = await searchAllKnowledgeSources(
+    'What is the step-by-step skincare ritual?'
+  );
+
+  assert.equal(result.matched, true);
+  assert.equal(result.matchedType, 'skincare_ritual');
+  assert.match(result.reply, /Morning \(AM\) Ritual/i);
+  assert.match(result.reply, /Evening \(PM\) Ritual/i);
+  assert.match(result.reply, /Kumkumadi Night Elixir/i);
+});
+

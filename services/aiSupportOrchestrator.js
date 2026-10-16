@@ -945,7 +945,7 @@ function synthesizeDeterministicResponse({
     reply:
       `Welcome to **Bhumivera Client Concierge**! Here are our most popular guides and instant actions you can explore right now:\n\n` +
       `• **Sea Buckthorn Face Wash:** formulated with **Sea Buckthorn (*Hippophae rhamnoides L.*)**, **Niacinamide (1%)**, **Hyaluronic Acid (0.5%)**, **Aloe Vera (5%)**, **Botanical Glycerin (4%)**, and **Tulsi** for daily AM/PM radiance.\n` +
-      `• **Charcoal Face Wash:** formulated with **3% Activated Charcoal**, **5% Glycerin**, **0.5% Neem**, **0.5% Haridra (Turmeric)**, **0.1% Hyaluronic Acid**, and **0.1% Niacinamide** (`/somatic-registry`).\n` +
+      `• **Charcoal Face Wash:** formulated with **3% Activated Charcoal**, **5% Glycerin**, **0.5% Neem**, **0.5% Haridra (Turmeric)**, **0.1% Hyaluronic Acid**, and **0.1% Niacinamide** (\`/somatic-registry\`).\n` +
       `• **Brand Ambassador Program:** Sign in at https://www.bhumivera.com/profile → **Brand Ambassador Program** to get your personal referral code and earn wallet credits, or visit https://www.bhumivera.com/affiliate.\n` +
       `• **Orders & Returns:** Share your 9-digit Order Number (e.g., \`BHVM815899599\`) for live tracking or RMA assistance.\n\n` +
       `👇 *Click any topic below to dive right in:*`,
@@ -1108,12 +1108,29 @@ async function processSupportTurn({
   const slotMatch = String(message || '').match(/\b(morning|10\s*am|afternoon|1\s*pm|evening|5\s*pm)\b/i);
   const prefEmailMatch = /\b(via\s*email|by\s*email|prefer\s*email|email\s*update|send\s*email|^email$)\b/i.test(String(message || '').trim());
   const prefPhoneMatch = /\b(phone\s*call|direct\s*call|call\s*me|callback|call\s*back|^call$|^phone$)\b/i.test(String(message || '').trim());
-  const wantsEscalationOrCancel =
+  const isExplicitEscalationOrCancel =
     intent === 'human_escalation' ||
     intent === 'cancel_order' ||
-    intent === 'cancel_assistance' ||
-    Boolean(session.pageContext?.awaitingConciergeVerification) ||
-    Boolean(session.pageContext?.verifiedOrderForEscalation);
+    intent === 'cancel_assistance';
+
+  const isAnsweringContactPref = (prefEmailMatch || prefPhoneMatch || Boolean(slotMatch)) && Boolean(session.pageContext?.verifiedOrderForEscalation);
+  const isAnsweringOrderVerify = (Boolean(extracted.orderRef) || Boolean(extracted.email) || Boolean(extracted.phone)) && Boolean(session.pageContext?.awaitingConciergeVerification);
+
+  const wantsEscalationOrCancel = isExplicitEscalationOrCancel || isAnsweringContactPref || isAnsweringOrderVerify;
+
+  if (!wantsEscalationOrCancel && (session.pageContext?.awaitingConciergeVerification || session.pageContext?.verifiedOrderForEscalation)) {
+    // Clear stale verification locks so the user can freely converse with the AI
+    await updateSessionContext(
+      session.id,
+      {
+        awaitingConciergeVerification: false,
+        verifiedOrderForEscalation: null,
+        selectedContactPreference: null,
+      },
+      {},
+      activePool
+    );
+  }
 
   if (wantsEscalationOrCancel && session.status !== 'escalated') {
     const verifiedOrderCard = collectedOrderCards[0] || session.pageContext?.verifiedOrderForEscalation || null;
