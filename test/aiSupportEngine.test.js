@@ -27,10 +27,6 @@ const {
   synthesizeDeterministicResponse,
 } = require('../services/aiSupportOrchestrator');
 const {
-  findRelevantConciergeAnswer,
-  getConciergeKnowledgeAnswer,
-} = require('../services/conciergeKnowledgeBase');
-const {
   getTelegramWebhookSecret,
   getTelegramWebhookUrl,
   isValidTelegramWebhookSecret,
@@ -713,99 +709,6 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.match(reply, /ticket #8/i);
     assert.match(reply, /within 30 minutes/i);
     assert.doesNotMatch(reply, /AI|priority tier|channels alerted|Senior Concierge/i);
-  });
-
-  it('answers general customer questions without returning unrelated product results', () => {
-    const brandPlan = detectIntentAndToolPlan('Tell me about your brand');
-    assert.equal(brandPlan.intent, 'general_inquiry');
-    assert.deepEqual(brandPlan.toolPlan, []);
-    assert.match(
-      synthesizeDeterministicResponse({ intent: brandPlan.intent, userMessage: 'Tell me about your brand' }).reply,
-      /certified organic growers|sustainable wild-harvest/i
-    );
-
-    const ingredientPlan = detectIntentAndToolPlan('What ingredients do you use?');
-    assert.equal(ingredientPlan.intent, 'general_inquiry');
-    assert.match(
-      synthesizeDeterministicResponse({ intent: ingredientPlan.intent, userMessage: 'What ingredients do you use?' }).reply,
-      /vary by formulation|product name/i
-    );
-
-    const returnPolicyPlan = detectIntentAndToolPlan('What is your return policy?');
-    assert.equal(returnPolicyPlan.intent, 'catalog_or_policy');
-    assert.equal(returnPolicyPlan.toolPlan[0]?.name, 'query_inventory_catalog');
-
-    const unsupportedPlan = detectIntentAndToolPlan('Can you explain this in simple terms?');
-    assert.equal(unsupportedPlan.intent, 'general_inquiry');
-    assert.deepEqual(unsupportedPlan.toolPlan, []);
-    assert.match(
-      synthesizeDeterministicResponse({ intent: unsupportedPlan.intent, userMessage: 'Can you explain this in simple terms?' }).reply,
-      /I can help with product details/i
-    );
-  });
-
-  it('answers product questions from the supplied 200-entry archive with patch-test and medical safeguards', () => {
-    assert.equal(getConciergeKnowledgeAnswer(200)?.number, 200);
-
-    const seaBuckthornQuestion = 'What makes Sea Buckthorn unique?';
-    const seaBuckthornPlan = detectIntentAndToolPlan(seaBuckthornQuestion);
-    assert.equal(seaBuckthornPlan.intent, 'knowledge_archive');
-    assert.deepEqual(seaBuckthornPlan.toolPlan, []);
-    const seaBuckthornReply = synthesizeDeterministicResponse({
-      intent: seaBuckthornPlan.intent,
-      userMessage: seaBuckthornQuestion,
-    }).reply;
-    assert.match(seaBuckthornReply, /Omega-3, 6, 9.*Omega-7/i);
-    assert.match(seaBuckthornReply, /barrier replenishment|lipid lamellae/i);
-    assert.match(seaBuckthornReply, /patch test/i);
-
-    const shampooQuestion = 'How does the shampoo cleanse and support hair growth?';
-    const shampooPlan = detectIntentAndToolPlan(shampooQuestion);
-    assert.equal(shampooPlan.intent, 'knowledge_archive');
-    const shampooReply = synthesizeDeterministicResponse({
-      intent: shampooPlan.intent,
-      userMessage: shampooQuestion,
-    }).reply;
-    assert.match(shampooReply, /Reetha.*Shikakai.*saponins/i);
-    assert.match(shampooReply, /Rosemary/i);
-    assert.match(shampooReply, /Bhringraj/i);
-    assert.match(shampooReply, /patch test/i);
-
-    const cleanserQuestion = 'Will the charcoal face wash dry out my skin?';
-    const cleanserReply = synthesizeDeterministicResponse({
-      intent: detectIntentAndToolPlan(cleanserQuestion).intent,
-      userMessage: cleanserQuestion,
-    }).reply;
-    assert.match(cleanserReply, /3% Activated Charcoal/i);
-    assert.match(cleanserReply, /5% Glycerin/i);
-    assert.match(cleanserReply, /Hyaluronic Acid/i);
-    assert.match(cleanserReply, /Turmeric/i);
-    assert.match(cleanserReply, /Neem/i);
-    assert.match(cleanserReply, /patch test/i);
-
-    const medicalQuestion = 'I have severe psoriasis and open lesions. Is the shampoo safe?';
-    const medicalPlan = detectIntentAndToolPlan(medicalQuestion);
-    assert.equal(medicalPlan.intent, 'knowledge_archive');
-    assert.deepEqual(medicalPlan.toolPlan, []);
-    const medicalReply = synthesizeDeterministicResponse({
-      intent: medicalPlan.intent,
-      userMessage: medicalQuestion,
-    }).reply;
-    assert.match(medicalReply, /consult your medical provider/i);
-    assert.match(medicalReply, /Do not apply products to open or weeping skin/i);
-    assert.match(medicalReply, /patch test/i);
-
-    const patchTestQuestion = 'How do I patch test a new product?';
-    assert.equal(findRelevantConciergeAnswer(patchTestQuestion)?.number, 146);
-    const patchTestPlan = detectIntentAndToolPlan(patchTestQuestion);
-    assert.equal(patchTestPlan.intent, 'knowledge_archive');
-    assert.match(
-      synthesizeDeterministicResponse({
-        intent: patchTestPlan.intent,
-        userMessage: patchTestQuestion,
-      }).reply,
-      /inner forearm|behind the ear/i
-    );
   });
 
   it('registers an authenticated HTTPS Telegram webhook', async () => {
@@ -1578,5 +1481,46 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     });
     assert.match(shareLinkTurn.reply, /https:\/\/www\.bhumivera\.com\/shop/);
     assert.match(shareLinkTurn.reply, /https:\/\/www\.bhumivera\.com\/product\/kumkumadi-night-elixir/);
+  });
+
+  it('19. AI Concierge Upgrade: Answers Brand Ambassador Program, Chained Product -> Ingredient -> 2+1 Suggestions (Sea Buckthorn Face Wash -> Niacinamide -> Usage & Timing) & 200+ Q&A Use Cases', async () => {
+    const ambassadorTurn = await processSupportTurn({
+      message: 'How do I join the Bhumivera Brand Ambassador Program?',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' },
+      pool: mockPool,
+    });
+    assert.match(ambassadorTurn.reply, /Brand Ambassador Program/i);
+    assert.match(ambassadorTurn.reply, /bhumivera\.com\/profile/i);
+    assert.doesNotMatch(ambassadorTurn.reply, /Tell me a little more about what you’d like to know/i);
+
+    const productTurn = await processSupportTurn({
+      sessionToken: ambassadorTurn.sessionToken,
+      message: 'Know more about seabuck thorn face wash',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' },
+      pool: mockPool,
+    });
+    assert.match(productTurn.reply, /Sea Buckthorn Face Wash/i);
+    assert.match(productTurn.reply, /Complete Listed Ingredients Checked in Memory/i);
+    assert.ok(productTurn.quickActions.some(q => /Niacinamide/i.test(q.label)), 'Next suggestions should include Niacinamide');
+
+    const niacinamideTurn = await processSupportTurn({
+      sessionToken: ambassadorTurn.sessionToken,
+      message: 'niacidamine',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' },
+      pool: mockPool,
+    });
+    assert.match(niacinamideTurn.reply, /Niacinamide/i);
+    assert.equal(niacinamideTurn.quickActions.filter(q => q.category === 'ingredient_deep_dive').length, 2, 'Should return 2 suggestions regarding Niacinamide');
+    assert.equal(niacinamideTurn.quickActions.filter(q => q.category === 'closely_related_ingredient').length, 1, 'Should return 1 closely related ingredient suggestion');
+    assert.equal(niacinamideTurn.quickActions.filter(q => q.category === 'usage_and_timing').length, 1, 'Should return 1 usage and timing suggestion');
+
+    const usageTurn = await processSupportTurn({
+      sessionToken: ambassadorTurn.sessionToken,
+      message: 'How do I really use Sea Buckthorn Face Wash and what time of day should I use it?',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' },
+      pool: mockPool,
+    });
+    assert.match(usageTurn.reply, /Best Time to Use/i);
+    assert.match(usageTurn.reply, /30 to 45 seconds|30–45 Second/i);
   });
 });

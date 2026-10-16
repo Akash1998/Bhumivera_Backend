@@ -51,6 +51,12 @@ const {
   processSupportTurn,
 } = require('../services/aiSupportOrchestrator');
 const {
+  INGREDIENT_MEMORY_GRAPH,
+  PRODUCT_INGREDIENT_GRAPH,
+  KNOWLEDGE_BASE_QA,
+  searchAllKnowledgeSources,
+} = require('../services/bhumiveraKnowledgeBase');
+const {
   lookupOrderTool,
   cancelOrderTool,
   initiateReturnTool,
@@ -704,13 +710,22 @@ router.post('/chat/message', supportChatLimiter, optionalAuthenticateCustomer, a
       return res.status(400).json({ success: false, code: error.code, message: error.message });
     }
     console.error('[AI_SUPPORT_MESSAGE_ERROR]', error);
+    const kbFallback = await searchAllKnowledgeSources(req.body?.message || '', req.body?.pageContext || {}, null).catch(() => null);
     return res.status(200).json({
       success: true,
-      degraded: true,
-      reply:
-        'Sorry, I couldn’t connect just now. Please try again or contact support@bhumivera.com or WhatsApp +91 7430985647.',
+      degraded: !kbFallback?.matched,
+      reply: kbFallback?.matched
+        ? kbFallback.reply
+        : 'Sorry, I couldn’t connect just now. Please try again or contact support@bhumivera.com or WhatsApp +91 7430985647.',
       orderCards: [],
-      quickActions: buildContextualGreeting({ user: req.user }).quickActions,
+      quickActions: kbFallback?.quickActions?.length
+        ? kbFallback.quickActions
+        : buildContextualGreeting({ user: req.user }).quickActions,
+      conciergeFlow: kbFallback ? {
+        flowType: kbFallback.flowType,
+        activeProductId: kbFallback.activeProductId || null,
+        lastIngredientId: kbFallback.lastIngredientId || null,
+      } : null,
       sentiment: { score: 0, frustrationScore: 0, priority: 'Low', label: 'neutral' },
       escalation: null,
     });
@@ -1479,12 +1494,12 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
         });
       }
       const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
-      const { getRazorpayClientIfConfigured } = require('../services/razorpayService');
+      const { getRazorpayClient } = require('../services/razorpayService');
       const cancelRes = await executeAtomicOrderCancellationAndRefund(pool, {
         orderId,
         reason: reason || `Cancelled by SuperAdmin (${staff.name})`,
         executedByEmail: staff.email || 'adminbhumivera27@gmail.com',
-        razorpay: getRazorpayClientIfConfigured(),
+        razorpay: getRazorpayClient(),
       });
       const result = {
         success: true,
@@ -1493,17 +1508,13 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
         refundSummary: cancelRes.refundSummary,
       };
       if (result.success) {
-        try {
-          await appendMessage({
-            sessionId: session.id,
-            sender: 'system',
-            senderName: `${staff.name} (${staff.role})`,
-            content: `✅ ${result.message}`,
-            orderCards: result.orderCards || [],
-          });
-        } catch (messageError) {
-          console.error('[SUPPORT_CANCEL_ORDER_TRANSCRIPT]', messageError);
-        }
+        await appendMessage({
+          sessionId: session.id,
+          sender: 'system',
+          senderName: `${staff.name} (${staff.role})`,
+          content: `✅ ${result.message}`,
+          orderCards: result.orderCards || [],
+        });
       }
       return res.status(result.success ? 200 : 400).json(result);
     }
@@ -1761,15 +1772,7 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
     return res.status(400).json({ message: 'Unsupported support action.' });
   } catch (error) {
     console.error('[SUPPORT_EXECUTE_ACTION]', error);
-    const statusCode = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode <= 599
-      ? error.statusCode
-      : 500;
-    return res.status(statusCode).json({
-      ...(error.code ? { code: error.code } : {}),
-      message: statusCode === 500
-        ? 'Could not execute support action. Please check the backend logs for the recorded error.'
-        : error.message,
-    });
+    return res.status(500).json({ message: 'Could not execute support action.' });
   }
 });
 
@@ -2820,6 +2823,117 @@ router.post('/tickets/bulk-delete', authenticateSupportAgent, async (req, res) =
   } catch (error) {
     console.error('[SUPPORT_TICKET_BULK_DELETE]', error);
     return res.status(500).json({ message: 'Could not bulk delete support tickets.' });
+  }
+});
+
+
+// ============================================================================
+// PART 6: AI KNOWLEDGE BASE, PRODUCT-INGREDIENT MEMORY & 2+1 SUGGESTION API
+// ============================================================================
+
+/**
+ * GET /api/support/knowledge-base
+ * Returns the Bhumivera Product -> Ingredient -> 2+1 Suggestion Graph & 300+ Q&A Use Cases,
+ * or resolves an interactive query when ?q=... is passed.
+ */
+router.get('/knowledge-base', async (req, res) => {
+  try {
+    const query = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
+    const category = typeof req.query?.category === 'string' ? req.query.category.trim().toLowerCase() : '';
+
+    if (query) {
+      const result = await searchAllKnowledgeSources(query, {
+        activeProductId: req.query?.productId || null,
+        lastIngredientId: req.query?.ingredientId || null,
+      }, pool);
+      return res.json({
+        success: true,
+        query,
+        ...result,
+      });
+    }
+
+    const filteredQa = category
+      ? KNOWLEDGE_BASE_QA.filter(item => String(item.category || '').toLowerCase() === category)
+      : KNOWLEDGE_BASE_QA;
+
+    return res.json({
+      success: true,
+      totalQuestionsAndUseCases: KNOWLEDGE_BASE_QA.length,
+      totalIngredients: Object.keys(INGREDIENT_MEMORY_GRAPH).length,
+      totalProducts: Object.keys(PRODUCT_INGREDIENT_GRAPH).length,
+      products: Object.values(PRODUCT_INGREDIENT_GRAPH),
+      ingredients: Object.values(INGREDIENT_MEMORY_GRAPH),
+      qaSample: filteredQa.slice(0, 100),
+    });
+  } catch (error) {
+    console.error('[AI_KNOWLEDGE_BASE_GET]', error);
+    return res.status(500).json({ success: false, message: 'Could not load AI knowledge base.' });
+  }
+});
+
+/**
+ * POST /api/support/knowledge-base
+ * Allows Admin / Support Staff to add custom Q&A use cases and next auto-suggestions to MySQL ai_knowledge_base.
+ */
+router.post('/knowledge-base', authenticateSupportAgent, async (req, res) => {
+  try {
+    const {
+      category = 'general',
+      question = '',
+      keywords = '',
+      answer = '',
+      relatedProduct = null,
+      relatedIngredient = null,
+      followUpSuggestions = [],
+    } = req.body || {};
+
+    if (!question.trim() || !answer.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Both question and answer are required to save a knowledge base entry.',
+      });
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_knowledge_base (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        category VARCHAR(80) NOT NULL DEFAULT 'general',
+        question VARCHAR(500) NOT NULL,
+        keywords TEXT NULL,
+        answer TEXT NOT NULL,
+        related_product VARCHAR(120) NULL,
+        related_ingredient VARCHAR(120) NULL,
+        follow_up_suggestions JSON NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
+    const [ins] = await pool.query(
+      `INSERT INTO ai_knowledge_base
+        (category, question, keywords, answer, related_product, related_ingredient, follow_up_suggestions, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+      [
+        String(category).trim().slice(0, 80),
+        String(question).trim().slice(0, 500),
+        Array.isArray(keywords) ? keywords.join(', ') : String(keywords || ''),
+        String(answer).trim(),
+        relatedProduct ? String(relatedProduct).trim() : null,
+        relatedIngredient ? String(relatedIngredient).trim() : null,
+        JSON.stringify(Array.isArray(followUpSuggestions) ? followUpSuggestions : []),
+      ]
+    );
+
+    return res.status(201).json({
+      success: true,
+      id: ins.insertId,
+      message: 'Custom Q&A use case added to Bhumivera AI Knowledge Base.',
+    });
+  } catch (error) {
+    console.error('[AI_KNOWLEDGE_BASE_POST]', error);
+    return res.status(500).json({ success: false, message: 'Could not save knowledge base entry.' });
   }
 });
 

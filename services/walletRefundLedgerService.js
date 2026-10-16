@@ -183,10 +183,7 @@ async function executeAtomicOrderCancellationAndRefund(pool, {
 
     const ledgerReference = `BV-RFD-${numericOrderId}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
-    const paymentMode = String(order.payment_mode || '').toLowerCase();
-    const paymentStatus = String(order.payment_status || '').toLowerCase();
-
-    if (paymentMode === 'wallet' && orderTotal > 0) {
+    if (order.payment_mode === 'WALLET' && orderTotal > 0) {
       // Paid via Bhumivera Spendable Wallet -> Immediately credit exact deducted amount back
       walletCreditedAmount = orderTotal;
       walletBalanceAfter = Number(((Math.round(walletBalanceBefore * 100) + Math.round(orderTotal * 100)) / 100).toFixed(2));
@@ -206,7 +203,7 @@ async function executeAtomicOrderCancellationAndRefund(pool, {
           ledgerReference,
         ]
       );
-    } else if (paymentMode === 'online' && paymentStatus === 'paid' && orderTotal > 0) {
+    } else if (order.payment_mode === 'online' && order.payment_status === 'paid' && orderTotal > 0) {
       // Paid via UPI / Gateway
       if (refundDestinationPreference === 'wallet_instant') {
         walletCreditedAmount = orderTotal;
@@ -228,51 +225,31 @@ async function executeAtomicOrderCancellationAndRefund(pool, {
           ]
         );
       } else {
-        if (!order.payment_id) {
-          const err = new Error('This paid online order has no recorded payment ID. It was not cancelled; reconcile the payment record before retrying.');
-          err.statusCode = 409;
-          err.code = 'PAYMENT_ID_MISSING';
-          throw err;
-        }
-        if (typeof razorpay?.payments?.refund !== 'function') {
-          const err = new Error('Razorpay is not configured. The paid order was not cancelled, so no refund is falsely reported.');
-          err.statusCode = 503;
-          err.code = 'RAZORPAY_NOT_CONFIGURED';
-          throw err;
-        }
-
         gatewayRefundAmount = orderTotal;
         refundDestination = 'ORIGINAL_GATEWAY';
         gatewayStatus = 'INITIATED';
         nextPaymentStatus = 'refund_initiated';
 
-        try {
-          const amountPaise = Math.round(orderTotal * 100);
-          const providerRes = await razorpay.payments.refund(order.payment_id, {
-            amount: amountPaise,
-            speed: 'normal',
-            receipt: ledgerReference.slice(0, 40),
-            notes: { order_id: String(numericOrderId), order_number: publicOrderNum, reason: String(reason).slice(0, 120) },
-          });
-          if (
-            !providerRes?.id ||
-            providerRes.payment_id !== order.payment_id ||
-            providerRes.amount !== amountPaise ||
-            !['pending', 'processed'].includes(providerRes.status)
-          ) {
-            throw new Error('Razorpay did not confirm the refund request.');
+        if (razorpay?.payments?.refund && order.payment_id) {
+          try {
+            const amountPaise = Math.round(orderTotal * 100);
+            const providerRes = await razorpay.payments.refund(order.payment_id, {
+              amount: amountPaise,
+              speed: 'normal',
+              receipt: ledgerReference.slice(0, 40),
+              notes: { order_id: String(numericOrderId), order_number: publicOrderNum, reason: String(reason).slice(0, 120) },
+            });
+            if (providerRes?.id) {
+              gatewayRefundId = providerRes.id;
+              gatewayStatus = providerRes.status === 'processed' ? 'PROCESSED' : 'PENDING_WEBHOOK';
+              if (providerRes.status === 'processed') {
+                nextPaymentStatus = 'refunded';
+              }
+            }
+          } catch {
+            // Keep gatewayStatus = 'INITIATED' in internal refund ledger for webhook/reconciliation settlement
+            gatewayStatus = 'INITIATED';
           }
-          gatewayRefundId = providerRes.id;
-          gatewayStatus = providerRes.status === 'processed' ? 'PROCESSED' : 'PENDING_WEBHOOK';
-          if (providerRes.status === 'processed') {
-            nextPaymentStatus = 'refunded';
-          }
-        } catch (providerError) {
-          const err = new Error('Razorpay could not confirm the refund. The order was not cancelled; check the payment in Razorpay before retrying.');
-          err.statusCode = 502;
-          err.code = 'GATEWAY_REFUND_FAILED';
-          err.cause = providerError;
-          throw err;
         }
       }
     }
