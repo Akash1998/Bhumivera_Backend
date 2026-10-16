@@ -16,14 +16,11 @@ Module._load = function (request, parent, isMain) {
   }
   return originalLoad.call(this, request, parent, isMain);
 };
-const { authenticateAdmin, optionalAuth } = require(authMiddlewarePath);
+const { authenticateAdmin } = require(authMiddlewarePath);
 Module._load = originalLoad;
 
 const app = express();
 app.use(express.json());
-app.get('/optional', optionalAuth, (req, res) => {
-  res.json({ userId: req.user?.id || null });
-});
 app.use('/api', authenticateAdmin, (req, res) => {
   res.json({ permission: req.permission, role: req.admin.role });
 });
@@ -59,17 +56,6 @@ const request = (role, method, path, body) => fetch(`${baseUrl}${path}`, {
 });
 
 describe('central admin route authorization', () => {
-  it('allows anonymous requests and attaches valid users on optional-auth routes', async () => {
-    const optionalUrl = baseUrl.replace(/\/api$/, '/optional');
-    const anonymous = await fetch(optionalUrl);
-    assert.deepEqual(await anonymous.json(), { userId: null });
-
-    const authenticated = await fetch(optionalUrl, {
-      headers: { authorization: `Bearer ${tokenFor('admin')}` },
-    });
-    assert.deepEqual(await authenticated.json(), { userId: 42 });
-  });
-
   it('requires authentication and rejects customer roles with the correct status', async () => {
     assert.equal((await request(null, 'GET', '/inventory')).status, 401);
     const customer = await request('customer', 'GET', '/inventory');

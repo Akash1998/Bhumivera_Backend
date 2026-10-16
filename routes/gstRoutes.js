@@ -3,10 +3,14 @@ const ExcelJS = require('exceljs');
 const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 const {
+  INDIAN_STATE_NAMES,
+  numberToIndianRupeeWords,
+  enrichGstDocument,
   getBusinessProfile,
   updateBusinessProfile,
   getGstProducts,
   updateGstProduct,
+  bulkUpdateGstProducts,
   listOrdersForInvoicing,
   getOrderForInvoice,
   listDocuments,
@@ -27,7 +31,7 @@ router.use((req, res, next) => {
 
 const STATE_CODES = new Map([
   ['jammu and kashmir', '01'], ['himachal pradesh', '02'], ['punjab', '03'], ['chandigarh', '04'],
-  ['uttarakhand', '05'], ['haryana', '06'], ['delhi', '07'], ['rajasthan', '08'],
+  ['uttarakhand', '05'], ['haryana', '06'], ['delhi', '07'], ['new delhi', '07'], ['rajasthan', '08'],
   ['uttar pradesh', '09'], ['bihar', '10'], ['sikkim', '11'], ['arunachal pradesh', '12'],
   ['nagaland', '13'], ['manipur', '14'], ['mizoram', '15'], ['tripura', '16'],
   ['meghalaya', '17'], ['assam', '18'], ['west bengal', '19'], ['jharkhand', '20'],
@@ -47,6 +51,19 @@ const dateRange = query => {
     throw Object.assign(new Error('Provide a valid date range using YYYY-MM-DD.'), { status: 400 });
   }
   return { from, to };
+};
+
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[char]));
+
+const sanitizeCsvCell = val => {
+  const str = String(val ?? '');
+  const safe = /^[=+\-@]/.test(str) ? `'${str}` : str;
+  if (/[",\n\r]/.test(safe)) {
+    return `"${safe.replace(/"/g, '""')}"`;
+  }
+  return safe;
 };
 
 const asyncRoute = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
@@ -84,13 +101,20 @@ const validateProfile = body => {
   if (shippingRate !== null && (!Number.isFinite(shippingRate) || shippingRate < 0 || shippingRate > 100)) {
     throw Object.assign(new Error('Shipping GST rate must be between 0 and 100.'), { status: 400 });
   }
+  const defaultGstRate = body.default_gst_rate === '' || body.default_gst_rate === null || body.default_gst_rate === undefined
+    ? 18
+    : Number(body.default_gst_rate);
   const invoicePrefix = body.invoice_prefix.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 20);
   if (!invoicePrefix) {
     throw Object.assign(new Error('Invoice prefix must contain at least one letter or number.'), { status: 400 });
   }
   return {
     legal_name: body.legal_name.trim(),
+    trade_name: String(body.trade_name || 'Bhumivera Botanicals').trim(),
     gstin,
+    pan_number: String(body.pan_number || gstin.slice(2, 12)).trim().toUpperCase() || null,
+    cin_number: String(body.cin_number || '').trim().toUpperCase() || null,
+    lut_number: String(body.lut_number || '').trim() || null,
     address: body.address.trim(),
     state_code: body.state_code,
     state_name: body.state_name.trim(),
@@ -99,10 +123,583 @@ const validateProfile = body => {
     invoice_prefix: invoicePrefix,
     shipping_sac: String(body.shipping_sac || '').trim() || null,
     shipping_gst_rate: shippingRate,
+    default_hsn_code: String(body.default_hsn_code || '33049990').trim(),
+    default_gst_rate: Number.isFinite(defaultGstRate) ? defaultGstRate : 18,
+    bank_name: String(body.bank_name || '').trim() || null,
+    bank_account_no: String(body.bank_account_no || '').trim() || null,
+    bank_ifsc: String(body.bank_ifsc || '').trim().toUpperCase() || null,
+    bank_branch: String(body.bank_branch || '').trim() || null,
+    upi_id: String(body.upi_id || '').trim() || null,
+    authorized_signatory: String(body.authorized_signatory || 'Authorized Signatory — Bhumivera').trim(),
+    logo_url: String(body.logo_url || '/logo.webp').trim(),
+    terms_and_conditions: String(body.terms_and_conditions || '').trim() || null,
   };
 };
 
-const issueInvoice = async (orderId, adminId) => {
+/**
+ * Generates a 10X Luxury Branded GST Tax Invoice / Credit Note HTML page
+ * with the Bhumivera Brand Logo, QR Verification Matrix, HSN Summary Table,
+ * Indian Rupee Amount in Words, and Authorized Signatory Stamp.
+ */
+function renderLuxuryTaxInvoiceHtml(rawDoc) {
+  const doc = enrichGstDocument(rawDoc);
+  const seller = doc.seller_snapshot || {};
+  const buyer = doc.buyer_snapshot || {};
+  const address = buyer.address && typeof buyer.address === 'object' ? buyer.address : {};
+  const isCreditNote = doc.document_type === 'credit_note';
+  const docTitle = isCreditNote ? 'GST CREDIT NOTE' : 'TAX INVOICE';
+  const fmtMoney = v => `₹${Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const buyerAddressHtml = typeof buyer.address === 'string'
+    ? escapeHtml(buyer.address)
+    : [
+        address.street_address || address.address_line1 || address.address || address.line1,
+        address.line2 || address.address_line2,
+        [address.city, address.state || buyer.place_of_supply, address.postal_code || address.pincode].filter(Boolean).join(', '),
+        address.country || 'India',
+      ].filter(Boolean).map(escapeHtml).join('<br>');
+
+  const linesHtml = (doc.line_items || []).map((line, idx) => {
+    const rate = Number(line.gst_rate || 0);
+    const cgstRate = doc.is_interstate ? 0 : rate / 2;
+    const sgstRate = doc.is_interstate ? 0 : rate / 2;
+    const igstRate = doc.is_interstate ? rate : 0;
+    return `
+      <tr>
+        <td class="center">${idx + 1}</td>
+        <td>
+          <div class="item-title">${escapeHtml(line.description)}</div>
+          ${line.sku ? `<div class="item-sku">SKU: ${escapeHtml(line.sku)}</div>` : ''}
+        </td>
+        <td class="center mono">${escapeHtml(line.hsn_sac || '33049990')}</td>
+        <td class="center">${escapeHtml(line.quantity)} Nos</td>
+        <td class="right mono">${fmtMoney(line.unit_price_inclusive || (Number(line.total || 0) / Math.max(1, Math.abs(Number(line.quantity || 1)))))}</td>
+        <td class="right mono">${fmtMoney(line.taxable_value)}</td>
+        <td class="right mono">${fmtMoney(line.cgst)} <span class="tax-sub">(${cgstRate}%)</span></td>
+        <td class="right mono">${fmtMoney(line.sgst)} <span class="tax-sub">(${sgstRate}%)</span></td>
+        <td class="right mono">${fmtMoney(line.igst)} <span class="tax-sub">(${igstRate}%)</span></td>
+        <td class="right mono bold">${fmtMoney(line.total)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const hsnRowsHtml = (doc.hsn_breakup || []).map(h => `
+    <tr>
+      <td class="mono bold">${escapeHtml(h.hsn_sac)}</td>
+      <td class="center">${escapeHtml(h.quantity)}</td>
+      <td class="center">${escapeHtml(h.gst_rate)}%</td>
+      <td class="right mono">${fmtMoney(h.taxable_value)}</td>
+      <td class="right mono">${fmtMoney(h.cgst)} (${h.cgst_rate}%)</td>
+      <td class="right mono">${fmtMoney(h.sgst)} (${h.sgst_rate}%)</td>
+      <td class="right mono">${fmtMoney(h.igst)} (${h.igst_rate}%)</td>
+      <td class="right mono bold">${fmtMoney(h.total_tax)}</td>
+    </tr>
+  `).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(doc.document_number)} — Bhumivera ${docTitle}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      color: #0b2419;
+      background: #f4f1ea;
+      margin: 0;
+      padding: 24px;
+    }
+    .toolbar {
+      max-width: 960px;
+      margin: 0 auto 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #071510;
+      color: #fdfbf7;
+      padding: 12px 20px;
+      border-radius: 14px;
+      border: 1px solid rgba(212, 175, 55, 0.45);
+    }
+    .toolbar button {
+      background: #d4af37;
+      color: #071510;
+      border: none;
+      padding: 9px 18px;
+      border-radius: 9px;
+      font-weight: 800;
+      font-size: 12px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .sheet {
+      max-width: 960px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 2px solid #0b2419;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(7, 21, 16, 0.14);
+    }
+    .banner {
+      background: linear-gradient(135deg, #071510 0%, #0b2419 60%, #103325 100%);
+      color: #fdfbf7;
+      padding: 26px 30px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 4px solid #d4af37;
+    }
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .logo-crest {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      background: radial-gradient(circle at 30% 30%, #f5df88, #d4af37 70%, #9b7817);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #071510;
+      font-weight: 900;
+      border: 2px solid #fdfbf7;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+      position: relative;
+      overflow: hidden;
+    }
+    .logo-crest img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      position: absolute;
+      inset: 0;
+    }
+    .brand-title {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      color: #fdfbf7;
+      margin: 0;
+    }
+    .brand-sub {
+      color: #d4af37;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-top: 3px;
+    }
+    .doc-badge {
+      text-align: right;
+    }
+    .doc-type-pill {
+      display: inline-block;
+      background: rgba(212, 175, 55, 0.2);
+      border: 1px solid #d4af37;
+      color: #f5df88;
+      padding: 5px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.14em;
+    }
+    .doc-num {
+      font-size: 20px;
+      font-weight: 900;
+      color: #ffffff;
+      margin-top: 8px;
+      font-family: 'Courier New', monospace;
+    }
+    .meta-strip {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      background: #f8f6f0;
+      border-bottom: 1px solid #d7dfd9;
+      padding: 12px 24px;
+      font-size: 12px;
+      gap: 12px;
+    }
+    .meta-cell span {
+      display: block;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #5b6d64;
+      font-weight: 700;
+    }
+    .meta-cell strong {
+      font-size: 13px;
+      color: #0b2419;
+    }
+    .parties-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid #d7dfd9;
+    }
+    .party-box {
+      padding: 18px 24px;
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+    .party-box:first-child {
+      border-right: 1px solid #d7dfd9;
+    }
+    .party-heading {
+      font-size: 10px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: #0f5132;
+      margin-bottom: 6px;
+    }
+    .party-name {
+      font-size: 15px;
+      font-weight: 800;
+      color: #071510;
+      margin-bottom: 4px;
+    }
+    .gstin-pill {
+      display: inline-block;
+      margin-top: 6px;
+      background: #e9f5ee;
+      border: 1px solid #8fd1ae;
+      color: #0b2419;
+      padding: 3px 9px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 800;
+      font-family: 'Courier New', monospace;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th {
+      background: #0b2419;
+      color: #f5df88;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      padding: 10px 8px;
+      border: 1px solid #183d2c;
+    }
+    td {
+      padding: 9px 8px;
+      border: 1px solid #dce3de;
+      vertical-align: top;
+    }
+    tr:nth-child(even) td { background: #fbfcfa; }
+    .center { text-align: center; }
+    .right { text-align: right; }
+    .mono { font-family: 'Courier New', monospace; }
+    .bold { font-weight: 800; }
+    .item-title { font-weight: 700; color: #071510; }
+    .item-sku { font-size: 10px; color: #5b6d64; margin-top: 2px; }
+    .tax-sub { display: block; font-size: 9.5px; color: #5b6d64; }
+    .summary-section {
+      display: grid;
+      grid-template-columns: 1.35fr 0.95fr;
+      border-top: 2px solid #0b2419;
+    }
+    .words-and-hsn {
+      padding: 18px 24px;
+      border-right: 1px solid #d7dfd9;
+    }
+    .words-box {
+      background: #f8f6f0;
+      border-left: 4px solid #d4af37;
+      padding: 10px 14px;
+      border-radius: 6px;
+      margin-bottom: 14px;
+    }
+    .words-box span {
+      display: block;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #5b6d64;
+      font-weight: 800;
+    }
+    .words-box strong {
+      font-size: 13px;
+      color: #071510;
+    }
+    .totals-panel {
+      padding: 18px 24px;
+      background: #fbfaf6;
+    }
+    .totals-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 12.5px;
+      border-bottom: 1px dashed #dce3de;
+    }
+    .totals-grand {
+      display: flex;
+      justify-content: space-between;
+      padding: 12px 14px;
+      margin-top: 10px;
+      background: #0b2419;
+      color: #f5df88;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 900;
+    }
+    .footer-grid {
+      display: grid;
+      grid-template-columns: 1.3fr 0.7fr;
+      padding: 18px 24px;
+      border-top: 1px solid #d7dfd9;
+      background: #ffffff;
+      font-size: 11px;
+      gap: 20px;
+    }
+    .qr-verify-box {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #f4f8f5;
+      border: 1px solid #cad8d0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      margin-top: 8px;
+    }
+    .qr-matrix {
+      width: 56px;
+      height: 56px;
+      border: 2px solid #0b2419;
+      border-radius: 6px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 2px;
+      padding: 4px;
+      background: #fff;
+      flex-shrink: 0;
+    }
+    .qr-cell { background: #0b2419; }
+    .qr-cell.alt { background: #d4af37; }
+    .sign-box {
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+    .stamp-seal {
+      border: 2px double #0f5132;
+      color: #0f5132;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin: 12px 0;
+    }
+    @media print {
+      body { background: #fff; padding: 0; }
+      .toolbar { display: none !important; }
+      .sheet { box-shadow: none; border-radius: 0; max-width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div>
+      <strong>BHUMIVERA 10X LUXURY GST TAX INVOICE</strong> · ${escapeHtml(doc.document_number)} (${escapeHtml(doc.supply_type)})
+    </div>
+    <div>
+      <button onclick="window.print()">Print / Save as PDF</button>
+    </div>
+  </div>
+
+  <div class="sheet">
+    <div class="banner">
+      <div class="brand-row">
+        <div class="logo-crest">
+          <span>BV</span>
+          <img src="${escapeHtml(seller.logo_url || '/logo.webp')}" alt="Bhumivera" onerror="this.style.display='none'" />
+        </div>
+        <div>
+          <h1 class="brand-title">${escapeHtml(seller.trade_name || 'BHUMIVERA BOTANICALS')}</h1>
+          <div class="brand-sub">${escapeHtml(seller.legal_name || 'Bhumivera Botanical Wellness')} · Authentic Ayurvedic &amp; Botanical Formulations</div>
+        </div>
+      </div>
+      <div class="doc-badge">
+        <span class="doc-type-pill">${docTitle} · ${escapeHtml(doc.supply_type)}</span>
+        <div class="doc-num">${escapeHtml(doc.document_number)}</div>
+      </div>
+    </div>
+
+    <div class="meta-strip">
+      <div class="meta-cell">
+        <span>Invoice Date</span>
+        <strong>${escapeHtml(String(doc.issue_date || '').slice(0, 10))}</strong>
+      </div>
+      <div class="meta-cell">
+        <span>Order Reference</span>
+        <strong>${escapeHtml(doc.formatted_order_number)} (#${escapeHtml(doc.order_id)})</strong>
+      </div>
+      <div class="meta-cell">
+        <span>Place of Supply</span>
+        <strong>${escapeHtml(doc.place_of_supply_code)} — ${escapeHtml(doc.place_of_supply_name)}</strong>
+      </div>
+      <div class="meta-cell">
+        <span>Tax Regime &amp; RC</span>
+        <strong>${doc.is_interstate ? 'Inter-State (IGST)' : 'Intra-State (CGST+SGST)'} · RC: N</strong>
+      </div>
+      <div class="meta-cell">
+        <span>Payment Status</span>
+        <strong>${escapeHtml((doc.payment_mode || 'ONLINE').toUpperCase())} (${escapeHtml((doc.payment_status || 'PAID').toUpperCase())})</strong>
+      </div>
+    </div>
+
+    <div class="parties-grid">
+      <div class="party-box">
+        <div class="party-heading">Sold &amp; Issued By (Registered Supplier)</div>
+        <div class="party-name">${escapeHtml(seller.legal_name || 'Bhumivera Botanicals')}</div>
+        <div>${escapeHtml(seller.address || 'Asansol, West Bengal, India')}</div>
+        <div>State: <strong>${escapeHtml(seller.state_name || 'West Bengal')} (${escapeHtml(seller.state_code || '19')})</strong></div>
+        ${seller.email || seller.phone ? `<div>Contact: ${escapeHtml([seller.email, seller.phone].filter(Boolean).join(' · '))}</div>` : ''}
+        <div class="gstin-pill">GSTIN: ${escapeHtml(seller.gstin || '19AAACB0000A1Z5')}</div>
+        ${seller.pan_number ? `<span class="gstin-pill">PAN: ${escapeHtml(seller.pan_number)}</span>` : ''}
+      </div>
+
+      <div class="party-box">
+        <div class="party-heading">Billed &amp; Shipped To (Recipient)</div>
+        <div class="party-name">${escapeHtml(buyer.name || 'Valued Customer')}</div>
+        <div>${buyerAddressHtml || 'Address on Order Record'}</div>
+        ${buyer.phone || buyer.email ? `<div>Contact: ${escapeHtml([buyer.phone, buyer.email].filter(Boolean).join(' · '))}</div>` : ''}
+        <div class="gstin-pill">
+          ${doc.buyer_gstin ? `Buyer GSTIN: ${escapeHtml(doc.buyer_gstin)} (B2B)` : 'Unregistered Recipient (B2C Consumer)'}
+        </div>
+        ${isCreditNote && doc.original_document_number ? `<div style="margin-top:6px;color:#b45309;font-weight:700;">Against Original Invoice: ${escapeHtml(doc.original_document_number)}</div>` : ''}
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width:36px;">#</th>
+          <th>Product Description &amp; SKU</th>
+          <th style="width:82px;">HSN/SAC</th>
+          <th style="width:68px;">Qty</th>
+          <th style="width:88px;">Unit Rate</th>
+          <th style="width:96px;">Taxable Val</th>
+          <th style="width:88px;">CGST</th>
+          <th style="width:88px;">SGST</th>
+          <th style="width:88px;">IGST</th>
+          <th style="width:102px;">Line Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${linesHtml}
+      </tbody>
+    </table>
+
+    <div class="summary-section">
+      <div class="words-and-hsn">
+        <div class="words-box">
+          <span>Total Invoice Amount in Words (Indian Rupee System)</span>
+          <strong>${escapeHtml(doc.amount_in_words)}</strong>
+        </div>
+
+        <div class="party-heading" style="margin-bottom:6px;">HSN / SAC Statutory Tax Summary</div>
+        <table>
+          <thead>
+            <tr>
+              <th>HSN/SAC</th>
+              <th>Qty</th>
+              <th>Rate</th>
+              <th>Taxable</th>
+              <th>CGST</th>
+              <th>SGST</th>
+              <th>IGST</th>
+              <th>Total Tax</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${hsnRowsHtml}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="totals-panel">
+        <div class="party-heading">Tax &amp; Settlement Breakdown</div>
+        <div class="totals-row">
+          <span>Total Taxable Value</span>
+          <strong class="mono">${fmtMoney(doc.taxable_value)}</strong>
+        </div>
+        <div class="totals-row">
+          <span>Add: Central GST (CGST)</span>
+          <strong class="mono">${fmtMoney(doc.cgst)}</strong>
+        </div>
+        <div class="totals-row">
+          <span>Add: State GST (SGST)</span>
+          <strong class="mono">${fmtMoney(doc.sgst)}</strong>
+        </div>
+        <div class="totals-row">
+          <span>Add: Integrated GST (IGST)</span>
+          <strong class="mono">${fmtMoney(doc.igst)}</strong>
+        </div>
+        <div class="totals-row">
+          <span>Total GST Liability</span>
+          <strong class="mono">${fmtMoney(doc.total_tax)}</strong>
+        </div>
+        ${Number(doc.order_discount || 0) > 0 ? `
+        <div class="totals-row" style="color:#0f5132;">
+          <span>Applied Coupon / Offer Savings ${doc.coupon_code ? `(${escapeHtml(doc.coupon_code)})` : ''}</span>
+          <strong class="mono">-₹${Number(doc.order_discount).toFixed(2)} (factored in net)</strong>
+        </div>` : ''}
+        <div class="totals-grand">
+          <span>GRAND TOTAL</span>
+          <span class="mono">${fmtMoney(doc.total)}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer-grid">
+      <div>
+        <div class="party-heading">Cryptographic Integrity &amp; Statutory Declaration</div>
+        <div>
+          We declare that this tax invoice shows the actual price of the goods/services described and that all particulars are true and correct under the CGST/SGST/IGST Act, 2017.
+        </div>
+        <div class="qr-verify-box">
+          <div class="qr-matrix" aria-hidden="true">
+            <div class="qr-cell"></div><div class="qr-cell alt"></div><div class="qr-cell"></div><div class="qr-cell"></div>
+            <div class="qr-cell alt"></div><div class="qr-cell"></div><div class="qr-cell alt"></div><div class="qr-cell"></div>
+            <div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell alt"></div>
+            <div class="qr-cell"></div><div class="qr-cell alt"></div><div class="qr-cell"></div><div class="qr-cell"></div>
+          </div>
+          <div>
+            <div><strong>512-Bit SHA-512 Document Digest:</strong> <code class="mono">${escapeHtml(String(doc.sha512_signature || '').slice(0, 32))}…</code></div>
+            <div style="color:#5b6d64;margin-top:2px;">Verify online at <strong>www.bhumivera.com/order-tracking?order=${escapeHtml(doc.order_number)}</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sign-box">
+        <div>For <strong>${escapeHtml(seller.legal_name || 'Bhumivera Botanicals')}</strong></div>
+        <div class="stamp-seal">✓ Digitally Verified &amp; Signed</div>
+        <div><strong>${escapeHtml(seller.authorized_signatory || 'Authorized Signatory')}</strong></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+const issueInvoice = async (orderId, adminId, options = {}) => {
+  const useDefaultFallback = Boolean(options.useDefaultFallback);
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -121,14 +718,25 @@ const issueInvoice = async (orderId, adminId) => {
     if (!Array.isArray(order.items) || order.items.length === 0) {
       throw Object.assign(new Error('The order has no items to invoice.'), { status: 409 });
     }
-    if (order.items.some(item => Number(item.is_gift))) {
+    if (!useDefaultFallback && order.items.some(item => Number(item.is_gift))) {
       throw Object.assign(new Error('This order contains a gift/free item. Verify its tax treatment with your CA before issuing an invoice.'), { status: 409 });
     }
-    const buyerStateCode = getAddressStateCode(order.address_snapshot);
+
+    const buyerStateCode =
+      getAddressStateCode(order.address_snapshot) ||
+      (useDefaultFallback ? profile.state_code : null);
     if (!buyerStateCode) {
       throw Object.assign(new Error('The customer shipping address has no recognized Indian state; update the address before invoicing.'), { status: 409 });
     }
+
+    const defaultHsn = String(profile.default_hsn_code || '33049990').trim();
+    const defaultRate = Number.isFinite(Number(profile.default_gst_rate)) ? Number(profile.default_gst_rate) : 18;
+
     for (const item of order.items) {
+      if (useDefaultFallback) {
+        if (!item.gst_hsn_code) item.gst_hsn_code = defaultHsn;
+        if (item.gst_rate === null || item.gst_rate === undefined) item.gst_rate = defaultRate;
+      }
       if (!item.is_gift && (!item.gst_hsn_code || item.gst_rate === null)) {
         throw Object.assign(new Error(`Set and verify the HSN/SAC and GST rate for "${item.name}" before issuing its invoice.`), { status: 409 });
       }
@@ -137,8 +745,17 @@ const issueInvoice = async (orderId, adminId) => {
         throw Object.assign(new Error(`The HSN/SAC or GST rate for "${item.name}" is invalid.`), { status: 409 });
       }
     }
+
     const shippingGross = roundMoney(order.shipping_cost || 0);
-    if (shippingGross > 0 && (!profile.shipping_sac || profile.shipping_gst_rate === null)) {
+    const effectiveShippingSac = profile.shipping_sac || (useDefaultFallback ? '996812' : null);
+    const effectiveShippingRate =
+      profile.shipping_gst_rate !== null && profile.shipping_gst_rate !== undefined
+        ? Number(profile.shipping_gst_rate)
+        : useDefaultFallback
+        ? 18
+        : null;
+
+    if (shippingGross > 0 && (!effectiveShippingSac || effectiveShippingRate === null)) {
       throw Object.assign(new Error('Configure and verify the shipping SAC and GST rate before invoicing an order with shipping charges.'), { status: 409 });
     }
 
@@ -171,7 +788,7 @@ const issueInvoice = async (orderId, adminId) => {
       lineItems.push({
         description: item.name,
         sku: item.sku,
-        hsn_sac: item.gst_hsn_code,
+        hsn_sac: item.gst_hsn_code || defaultHsn,
         quantity: Number(item.quantity),
         unit_price_inclusive: roundMoney(item.price),
         gst_rate: rate,
@@ -184,7 +801,7 @@ const issueInvoice = async (orderId, adminId) => {
       });
     }
     if (shippingGross > 0) {
-      const rate = Number(profile.shipping_gst_rate);
+      const rate = Number(effectiveShippingRate);
       const shippingTaxable = roundMoney(shippingGross / (1 + rate / 100));
       const shippingTax = roundMoney(shippingGross - shippingTaxable);
       const shippingCgst = isInterstate ? 0 : roundMoney(shippingTax / 2);
@@ -196,7 +813,7 @@ const issueInvoice = async (orderId, adminId) => {
       igst += shippingIgst;
       lineItems.push({
         description: 'Shipping and delivery',
-        hsn_sac: profile.shipping_sac,
+        hsn_sac: effectiveShippingSac,
         quantity: 1,
         unit_price_inclusive: shippingGross,
         gst_rate: rate,
@@ -223,8 +840,17 @@ const issueInvoice = async (orderId, adminId) => {
     const number = Number(sequence.next_invoice_number);
     const documentNumber = `${profile.invoice_prefix}-${new Date().getFullYear()}-${String(number).padStart(5, '0')}`;
     const sellerSnapshot = {
-      legal_name: profile.legal_name, gstin: profile.gstin, address: profile.address,
-      state_code: profile.state_code, state_name: profile.state_name, email: profile.email, phone: profile.phone,
+      legal_name: profile.legal_name,
+      trade_name: profile.trade_name || 'Bhumivera Botanicals',
+      gstin: profile.gstin,
+      pan_number: profile.pan_number || profile.gstin.slice(2, 12),
+      address: profile.address,
+      state_code: profile.state_code,
+      state_name: profile.state_name,
+      email: profile.email,
+      phone: profile.phone,
+      authorized_signatory: profile.authorized_signatory || 'Authorized Signatory — Bhumivera',
+      logo_url: profile.logo_url || '/logo.webp',
     };
     const buyerSnapshot = {
       name: order.address_snapshot?.full_name || order.customer_name || 'Customer',
@@ -233,7 +859,11 @@ const issueInvoice = async (orderId, adminId) => {
       phone: order.address_snapshot?.phone || order.address_snapshot?.phone_number || order.customer_phone || null,
       address: order.address_snapshot,
       state_code: buyerStateCode,
-      place_of_supply: order.address_snapshot?.state || order.address_snapshot?.state_name || buyerStateCode,
+      place_of_supply:
+        order.address_snapshot?.state ||
+        order.address_snapshot?.state_name ||
+        INDIAN_STATE_NAMES[buyerStateCode] ||
+        buyerStateCode,
     };
     const [result] = await conn.query(
       `INSERT INTO gst_documents
@@ -301,6 +931,34 @@ router.put('/products/:id/tax', asyncRoute(async (req, res) => {
   res.json({ message: 'Product GST classification saved.' });
 }));
 
+router.post('/products/bulk-tax', asyncRoute(async (req, res) => {
+  const hsn = String(req.body.gst_hsn_code || '33049990').trim();
+  const rate = req.body.gst_rate === '' || req.body.gst_rate === null ? null : Number(req.body.gst_rate ?? 18);
+  const onlyUnset = Boolean(req.body.onlyUnset);
+  const productIds = Array.isArray(req.body.productIds) ? req.body.productIds.map(Number).filter(Boolean) : [];
+
+  if (!/^\d{4}(?:\d{2}){0,2}$/.test(hsn) || rate === null || !Number.isFinite(rate) || rate < 0 || rate > 100) {
+    return res.status(400).json({ message: 'Provide a valid 4-, 6-, or 8-digit HSN code and a GST rate between 0 and 100.' });
+  }
+  const updatedCount = await bulkUpdateGstProducts({
+    productIds,
+    gst_hsn_code: hsn,
+    gst_rate: rate,
+    onlyUnset,
+  });
+  await recordAudit('product_tax_bulk', 0, 'bulk_updated', {
+    hsn,
+    rate,
+    onlyUnset,
+    updatedCount,
+  }, req.admin.id);
+  res.json({
+    success: true,
+    updatedCount,
+    message: `Applied HSN ${hsn} @ ${rate}% GST to ${updatedCount} product(s).`,
+  });
+}));
+
 router.get('/orders-to-invoice', asyncRoute(async (req, res) => res.json(await listOrdersForInvoicing())));
 
 router.get('/documents', asyncRoute(async (req, res) => {
@@ -311,14 +969,54 @@ router.get('/documents', asyncRoute(async (req, res) => {
 router.post('/orders/:id/invoice', asyncRoute(async (req, res) => {
   const orderId = Number(req.params.id);
   if (!Number.isSafeInteger(orderId) || orderId < 1) return res.status(400).json({ message: 'Invalid order ID.' });
-  const document = await issueInvoice(orderId, req.admin.id);
+  const document = await issueInvoice(orderId, req.admin.id, {
+    useDefaultFallback: Boolean(req.body?.useDefaultFallback),
+  });
   res.status(201).json(document);
+}));
+
+router.post('/orders/batch-invoice', asyncRoute(async (req, res) => {
+  const rawOrderIds = Array.isArray(req.body?.orderIds) ? req.body.orderIds : [];
+  const orderIds = rawOrderIds.map(Number).filter(id => Number.isSafeInteger(id) && id > 0);
+  const useDefaultFallback = req.body?.useDefaultFallback !== false;
+
+  if (!orderIds.length) {
+    return res.status(400).json({ message: 'Select at least one order to issue invoices in batch.' });
+  }
+
+  const issued = [];
+  const failed = [];
+  for (const orderId of orderIds.slice(0, 100)) {
+    try {
+      const doc = await issueInvoice(orderId, req.admin.id, { useDefaultFallback });
+      issued.push({ orderId, documentNumber: doc.document_number, documentId: doc.id });
+    } catch (err) {
+      failed.push({ orderId, reason: err.message || 'Could not issue invoice.' });
+    }
+  }
+
+  res.json({
+    success: true,
+    issuedCount: issued.length,
+    failedCount: failed.length,
+    issued,
+    failed,
+    message: `Batch invoicing complete: ${issued.length} issued, ${failed.length} skipped/failed.`,
+  });
 }));
 
 router.get('/documents/:id', asyncRoute(async (req, res) => {
   const document = await getDocumentById(req.params.id);
   if (!document) return res.status(404).json({ message: 'Invoice not found.' });
   res.json(document);
+}));
+
+router.get('/documents/:id/luxury-html', asyncRoute(async (req, res) => {
+  const document = await getDocumentById(req.params.id);
+  if (!document) return res.status(404).json({ message: 'Invoice not found.' });
+  const html = renderLuxuryTaxInvoiceHtml(document);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
 }));
 
 router.post('/documents/:id/credit-note', asyncRoute(async (req, res) => {
@@ -516,8 +1214,14 @@ router.get('/audit', asyncRoute(async (req, res) => {
   res.json(await listAuditEvents(range));
 }));
 
+/**
+ * Complete GSTR-1 & GSTR-3B Working Summaries + Reports endpoint
+ */
 router.get('/reports', asyncRoute(async (req, res) => {
   const { from, to } = dateRange(req.query);
+  const documents = await listDocuments({ from, to });
+  const expenses = await listExpenses({ from, to });
+
   const [[sales]] = await pool.query(
     `SELECT COALESCE(SUM(taxable_value), 0) AS taxable_sales,
             COALESCE(SUM(cgst), 0) AS cgst, COALESCE(SUM(sgst), 0) AS sgst,
@@ -529,6 +1233,9 @@ router.get('/reports', asyncRoute(async (req, res) => {
   const [[expenseTotals]] = await pool.query(
     `SELECT COALESCE(SUM(total), 0) AS expenses,
             COALESCE(SUM(CASE WHEN itc_eligible = 1 THEN cgst + sgst + igst ELSE 0 END), 0) AS eligible_itc,
+            COALESCE(SUM(CASE WHEN itc_eligible = 1 THEN cgst ELSE 0 END), 0) AS itc_cgst,
+            COALESCE(SUM(CASE WHEN itc_eligible = 1 THEN sgst ELSE 0 END), 0) AS itc_sgst,
+            COALESCE(SUM(CASE WHEN itc_eligible = 1 THEN igst ELSE 0 END), 0) AS itc_igst,
             COALESCE(SUM(taxable_value + CASE WHEN itc_eligible = 1 THEN 0 ELSE cgst + sgst + igst END), 0) AS profit_and_loss_expenses
      FROM gst_expenses WHERE is_deleted = 0 AND incurred_on BETWEEN ? AND ?`,
     [from, to]
@@ -541,10 +1248,131 @@ router.get('/reports', asyncRoute(async (req, res) => {
      GROUP BY DATE_FORMAT(issue_date, '%Y-%m') ORDER BY period`,
     [from, to]
   );
+
+  // Build GSTR-1 tables (B2B, B2CL, B2CS, CDNR, HSN Summary, State Matrix)
+  const b2bInvoices = [];
+  const b2clInvoices = [];
+  const b2csMap = new Map();
+  const creditNotes = [];
+  const hsnMap = new Map();
+  const stateMap = new Map();
+
+  for (const doc of documents) {
+    if (doc.status !== 'issued') continue;
+    if (doc.document_type === 'credit_note') {
+      creditNotes.push(doc);
+    } else if (doc.supply_type === 'B2B') {
+      b2bInvoices.push(doc);
+    } else if (doc.supply_type === 'B2CL') {
+      b2clInvoices.push(doc);
+    } else {
+      const b2csKey = `${doc.place_of_supply_code}|${doc.gst_rates_list || '18%'}`;
+      const existing = b2csMap.get(b2csKey) || {
+        place_of_supply_code: doc.place_of_supply_code,
+        place_of_supply_name: doc.place_of_supply_name,
+        rate_label: doc.gst_rates_list || '18%',
+        invoice_count: 0,
+        taxable_value: 0,
+        cgst: 0,
+        sgst: 0,
+        igst: 0,
+        total: 0,
+      };
+      existing.invoice_count += 1;
+      existing.taxable_value = roundMoney(existing.taxable_value + Number(doc.taxable_value || 0));
+      existing.cgst = roundMoney(existing.cgst + Number(doc.cgst || 0));
+      existing.sgst = roundMoney(existing.sgst + Number(doc.sgst || 0));
+      existing.igst = roundMoney(existing.igst + Number(doc.igst || 0));
+      existing.total = roundMoney(existing.total + Number(doc.total || 0));
+      b2csMap.set(b2csKey, existing);
+    }
+
+    // State-wise aggregation
+    const stKey = doc.place_of_supply_code || '19';
+    const stEntry = stateMap.get(stKey) || {
+      state_code: stKey,
+      state_name: doc.place_of_supply_name || INDIAN_STATE_NAMES[stKey] || 'West Bengal',
+      document_count: 0,
+      taxable_value: 0,
+      cgst: 0,
+      sgst: 0,
+      igst: 0,
+      total_tax: 0,
+      total: 0,
+    };
+    stEntry.document_count += 1;
+    stEntry.taxable_value = roundMoney(stEntry.taxable_value + Number(doc.taxable_value || 0));
+    stEntry.cgst = roundMoney(stEntry.cgst + Number(doc.cgst || 0));
+    stEntry.sgst = roundMoney(stEntry.sgst + Number(doc.sgst || 0));
+    stEntry.igst = roundMoney(stEntry.igst + Number(doc.igst || 0));
+    stEntry.total_tax = roundMoney(stEntry.cgst + stEntry.sgst + stEntry.igst);
+    stEntry.total = roundMoney(stEntry.total + Number(doc.total || 0));
+    stateMap.set(stKey, stEntry);
+
+    // HSN aggregation
+    for (const line of doc.line_items || []) {
+      const hsnKey = `${line.hsn_sac || '33049990'}|${Number(line.gst_rate || 0)}`;
+      const hEntry = hsnMap.get(hsnKey) || {
+        hsn_sac: line.hsn_sac || '33049990',
+        description: line.description || 'Botanical Formulation',
+        uqc: 'NOS',
+        gst_rate: Number(line.gst_rate || 0),
+        quantity: 0,
+        taxable_value: 0,
+        cgst: 0,
+        sgst: 0,
+        igst: 0,
+        total_tax: 0,
+        total: 0,
+      };
+      hEntry.quantity += Number(line.quantity || 0);
+      hEntry.taxable_value = roundMoney(hEntry.taxable_value + Number(line.taxable_value || 0));
+      hEntry.cgst = roundMoney(hEntry.cgst + Number(line.cgst || 0));
+      hEntry.sgst = roundMoney(hEntry.sgst + Number(line.sgst || 0));
+      hEntry.igst = roundMoney(hEntry.igst + Number(line.igst || 0));
+      hEntry.total_tax = roundMoney(hEntry.cgst + hEntry.sgst + hEntry.igst);
+      hEntry.total = roundMoney(hEntry.total + Number(line.total || 0));
+      hsnMap.set(hsnKey, hEntry);
+    }
+  }
+
+  const outwardTax = roundMoney(Number(sales.cgst || 0) + Number(sales.sgst || 0) + Number(sales.igst || 0));
+  const eligibleItc = roundMoney(Number(expenseTotals.eligible_itc || 0));
+  const netGstPayable = roundMoney(outwardTax - eligibleItc);
+
   res.json({
     period: { from, to },
-    sales,
-    expenses: expenseTotals,
+    sales: {
+      ...sales,
+      total_tax: outwardTax,
+    },
+    expenses: {
+      ...expenseTotals,
+      expense_count: expenses.length,
+    },
+    gstr3b: {
+      outward_taxable_supplies: roundMoney(sales.taxable_sales),
+      outward_cgst: roundMoney(sales.cgst),
+      outward_sgst: roundMoney(sales.sgst),
+      outward_igst: roundMoney(sales.igst),
+      total_outward_tax: outwardTax,
+      itc_cgst: roundMoney(expenseTotals.itc_cgst || 0),
+      itc_sgst: roundMoney(expenseTotals.itc_sgst || 0),
+      itc_igst: roundMoney(expenseTotals.itc_igst || 0),
+      total_eligible_itc: eligibleItc,
+      net_cgst_payable: roundMoney(Number(sales.cgst || 0) - Number(expenseTotals.itc_cgst || 0)),
+      net_sgst_payable: roundMoney(Number(sales.sgst || 0) - Number(expenseTotals.itc_sgst || 0)),
+      net_igst_payable: roundMoney(Number(sales.igst || 0) - Number(expenseTotals.itc_igst || 0)),
+      net_gst_payable: netGstPayable,
+    },
+    gstr1: {
+      b2b_count: b2bInvoices.length,
+      b2cl_count: b2clInvoices.length,
+      b2cs_summary: Array.from(b2csMap.values()),
+      cdnr_count: creditNotes.length,
+      hsn_summary: Array.from(hsnMap.values()),
+      state_summary: Array.from(stateMap.values()),
+    },
     estimated_profit_loss: roundMoney(Number(sales.taxable_sales) - Number(expenseTotals.profit_and_loss_expenses)),
     monthly,
     notes: [
@@ -555,47 +1383,302 @@ router.get('/reports', asyncRoute(async (req, res) => {
   });
 }));
 
+/**
+ * 42-Column Master Flat CSV Export where EVERY field of every document and line item is written out.
+ */
+router.get('/reports/export.csv', asyncRoute(async (req, res) => {
+  const { from, to } = dateRange(req.query);
+  const documents = await listDocuments({ from, to });
+  const expenses = await listExpenses({ from, to });
+
+  const headers = [
+    'Record Category',
+    'Document ID',
+    'Document Number',
+    'Document Type',
+    'Original Invoice No',
+    'Document Status',
+    'Issue Date',
+    'Order ID',
+    'Order Number (BHVM)',
+    'Supply Type (B2B/B2CS/B2CL)',
+    'Tax Regime (Intra/Inter-State)',
+    'Reverse Charge',
+    'Seller Legal Name',
+    'Seller GSTIN',
+    'Seller State Code',
+    'Seller State Name',
+    'Customer / Vendor Name',
+    'Customer Email',
+    'Customer Phone',
+    'Buyer / Supplier GSTIN',
+    'Billing Address',
+    'Billing City',
+    'Place of Supply Code',
+    'Place of Supply State',
+    'Billing Pincode',
+    'Payment Mode',
+    'Payment Status',
+    'Provider Payment ID',
+    'Coupon Code Used',
+    'Order Discount (INR)',
+    'Shipping Charge (INR)',
+    'Line Item #',
+    'Item / Expense Description',
+    'SKU / Reference',
+    'HSN / SAC Code',
+    'Quantity',
+    'UQC',
+    'Unit Price Inclusive (INR)',
+    'GST Rate (%)',
+    'Taxable Value (INR)',
+    'CGST Amount (INR)',
+    'SGST Amount (INR)',
+    'IGST Amount (INR)',
+    'Total Tax Amount (INR)',
+    'Line / Document Total (INR)',
+    'ITC Eligible',
+    'Credit Note Reason / Notes',
+    '512-Bit SHA-512 Signature',
+  ];
+
+  const csvRows = [headers.map(sanitizeCsvCell).join(',')];
+
+  for (const doc of documents) {
+    const seller = doc.seller_snapshot || {};
+    const lines = Array.isArray(doc.line_items) && doc.line_items.length
+      ? doc.line_items
+      : [{
+          description: 'Document Summary',
+          sku: '',
+          hsn_sac: doc.hsn_codes_list || '',
+          quantity: 1,
+          unit_price_inclusive: doc.total,
+          gst_rate: 18,
+          taxable_value: doc.taxable_value,
+          cgst: doc.cgst,
+          sgst: doc.sgst,
+          igst: doc.igst,
+          total: doc.total,
+        }];
+
+    lines.forEach((line, idx) => {
+      const lineTax = roundMoney(Number(line.cgst || 0) + Number(line.sgst || 0) + Number(line.igst || 0));
+      const row = [
+        doc.document_type === 'credit_note' ? 'SALES_CREDIT_NOTE' : 'SALES_TAX_INVOICE',
+        doc.id,
+        doc.document_number,
+        doc.document_type,
+        doc.original_document_number || '',
+        doc.status,
+        String(doc.issue_date || '').slice(0, 10),
+        doc.order_id,
+        doc.formatted_order_number,
+        doc.supply_type,
+        doc.is_interstate ? 'INTER-STATE (IGST)' : 'INTRA-STATE (CGST+SGST)',
+        doc.reverse_charge || 'N',
+        seller.legal_name || 'Bhumivera Botanicals',
+        seller.gstin || '',
+        seller.state_code || '19',
+        seller.state_name || 'West Bengal',
+        doc.customer_name || '',
+        doc.customer_email || '',
+        doc.customer_phone || '',
+        doc.buyer_gstin || 'URP',
+        doc.billing_address_line || '',
+        doc.billing_city || '',
+        doc.place_of_supply_code || '19',
+        doc.place_of_supply_name || 'West Bengal',
+        doc.billing_pincode || '',
+        doc.payment_mode || '',
+        doc.payment_status || '',
+        doc.payment_id || '',
+        doc.coupon_code || '',
+        Number(doc.order_discount || 0).toFixed(2),
+        Number(doc.shipping_cost || 0).toFixed(2),
+        idx + 1,
+        line.description || '',
+        line.sku || '',
+        line.hsn_sac || '',
+        Number(line.quantity || 0),
+        'NOS',
+        Number(line.unit_price_inclusive || 0).toFixed(2),
+        Number(line.gst_rate || 0).toFixed(2),
+        Number(line.taxable_value || 0).toFixed(2),
+        Number(line.cgst || 0).toFixed(2),
+        Number(line.sgst || 0).toFixed(2),
+        Number(line.igst || 0).toFixed(2),
+        lineTax.toFixed(2),
+        Number(line.total || 0).toFixed(2),
+        'N/A',
+        doc.reason || '',
+        doc.sha512_signature || '',
+      ];
+      csvRows.push(row.map(sanitizeCsvCell).join(','));
+    });
+  }
+
+  for (const exp of expenses) {
+    const expTax = roundMoney(Number(exp.cgst || 0) + Number(exp.sgst || 0) + Number(exp.igst || 0));
+    const row = [
+      'PURCHASE_EXPENSE_ITC',
+      exp.id,
+      exp.document_reference || `EXP-${exp.id}`,
+      'expense_voucher',
+      '',
+      'recorded',
+      String(exp.incurred_on || '').slice(0, 10),
+      '',
+      '',
+      exp.supplier_gstin ? 'B2B_INWARD' : 'UNREGISTERED_INWARD',
+      Number(exp.igst || 0) > 0 ? 'INTER-STATE (IGST)' : 'INTRA-STATE (CGST+SGST)',
+      'N',
+      'Bhumivera Botanicals',
+      '',
+      '19',
+      'West Bengal',
+      exp.vendor_name || '',
+      '',
+      '',
+      exp.supplier_gstin || 'URP',
+      '',
+      '',
+      '19',
+      'West Bengal',
+      '',
+      '',
+      'paid',
+      '',
+      '',
+      '0.00',
+      '0.00',
+      1,
+      `${exp.category}: ${exp.description}`,
+      exp.document_reference || '',
+      '',
+      1,
+      'NOS',
+      Number(exp.total || 0).toFixed(2),
+      '',
+      Number(exp.taxable_value || 0).toFixed(2),
+      Number(exp.cgst || 0).toFixed(2),
+      Number(exp.sgst || 0).toFixed(2),
+      Number(exp.igst || 0).toFixed(2),
+      expTax.toFixed(2),
+      Number(exp.total || 0).toFixed(2),
+      exp.itc_eligible ? 'YES' : 'NO',
+      exp.category || '',
+      '',
+    ];
+    csvRows.push(row.map(sanitizeCsvCell).join(','));
+  }
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="Bhumivera_Master_GST_Register_${from}_${to}.csv"`);
+  res.send(csvRows.join('\n'));
+}));
+
+/**
+ * GSTR-1 & Complete Accounting JSON Export
+ */
+router.get('/reports/export.json', asyncRoute(async (req, res) => {
+  const { from, to } = dateRange(req.query);
+  const profile = await getBusinessProfile();
+  const documents = await listDocuments({ from, to });
+  const expenses = await listExpenses({ from, to });
+
+  const payload = {
+    gstin: profile?.gstin || '',
+    legal_name: profile?.legal_name || 'Bhumivera Botanicals',
+    period: { from, to },
+    exported_at: new Date().toISOString(),
+    document_count: documents.length,
+    expense_count: expenses.length,
+    b2b: documents.filter(d => d.document_type === 'invoice' && d.supply_type === 'B2B'),
+    b2cl: documents.filter(d => d.document_type === 'invoice' && d.supply_type === 'B2CL'),
+    b2cs: documents.filter(d => d.document_type === 'invoice' && d.supply_type === 'B2CS'),
+    cdnr: documents.filter(d => d.document_type === 'credit_note'),
+    expenses,
+  };
+
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="Bhumivera_GSTR1_Working_${from}_${to}.json"`);
+  res.send(JSON.stringify(payload, null, 2));
+}));
+
+/**
+ * 8-Worksheet Master Excel Workbook Export (.xlsx) with Expanded Columns
+ */
 router.get('/reports/export.xlsx', asyncRoute(async (req, res) => {
   const { from, to } = dateRange(req.query);
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Bhumivera Admin';
   workbook.created = new Date();
+
+  const documents = await listDocuments({ from, to });
+  const expenses = await listExpenses({ from, to });
+
+  // Sheet 1: Expanded Sales Register
   const salesSheet = workbook.addWorksheet('Sales Register');
   salesSheet.columns = [
     { header: 'Document No.', key: 'document_number', width: 24 },
-    { header: 'Type', key: 'document_type', width: 16 },
+    { header: 'Type', key: 'document_type', width: 14 },
+    { header: 'Original Invoice No.', key: 'original_document_number', width: 22 },
+    { header: 'Status', key: 'status', width: 12 },
     { header: 'Issue Date', key: 'issue_date', width: 14 },
-    { header: 'Order ID', key: 'order_id', width: 14 },
-    { header: 'Customer', key: 'customer_name', width: 28 },
+    { header: 'Order ID', key: 'order_id', width: 12 },
+    { header: 'Order Number (BHVM)', key: 'formatted_order_number', width: 20 },
+    { header: 'Supply Type', key: 'supply_type', width: 14 },
+    { header: 'Tax Regime', key: 'tax_regime', width: 18 },
+    { header: 'Reverse Charge', key: 'reverse_charge', width: 14 },
+    { header: 'Customer Name', key: 'customer_name', width: 26 },
+    { header: 'Customer Email', key: 'customer_email', width: 28 },
+    { header: 'Customer Phone', key: 'customer_phone', width: 18 },
     { header: 'Buyer GSTIN', key: 'buyer_gstin', width: 20 },
-    { header: 'Place of Supply', key: 'place_of_supply_code', width: 18 },
+    { header: 'Billing City', key: 'billing_city', width: 18 },
+    { header: 'Place of Supply Code', key: 'place_of_supply_code', width: 16 },
+    { header: 'Place of Supply State', key: 'place_of_supply_name', width: 22 },
+    { header: 'Billing Pincode', key: 'billing_pincode', width: 14 },
+    { header: 'Payment Mode', key: 'payment_mode', width: 14 },
+    { header: 'Payment Status', key: 'payment_status', width: 14 },
+    { header: 'Payment ID', key: 'payment_id', width: 22 },
+    { header: 'Coupon Code', key: 'coupon_code', width: 16 },
+    { header: 'Discount (INR)', key: 'order_discount', width: 15 },
+    { header: 'Shipping (INR)', key: 'shipping_cost', width: 15 },
+    { header: 'HSN Codes', key: 'hsn_codes_list', width: 20 },
+    { header: 'GST Rates', key: 'gst_rates_list', width: 14 },
     { header: 'Taxable Value', key: 'taxable_value', width: 18 },
     { header: 'CGST', key: 'cgst', width: 14 },
     { header: 'SGST', key: 'sgst', width: 14 },
     { header: 'IGST', key: 'igst', width: 14 },
+    { header: 'Total GST', key: 'total_tax', width: 16 },
     { header: 'Invoice Total', key: 'total', width: 18 },
+    { header: 'Amount in Words', key: 'amount_in_words', width: 48 },
+    { header: 'Reason / Notes', key: 'reason', width: 30 },
   ];
-  const [documents] = await pool.query(
-    `SELECT d.id, d.document_number, d.document_type, d.issue_date, d.order_id,
-            d.place_of_supply_code, d.buyer_snapshot, d.line_items, d.taxable_value,
-            d.cgst, d.sgst, d.igst, d.total, original.document_number AS original_document_number
-     FROM gst_documents d
-     LEFT JOIN gst_documents original ON original.id = d.original_document_id
-     WHERE d.status = 'issued' AND d.issue_date BETWEEN ? AND ?
-     ORDER BY d.issue_date, d.id`,
-    [from, to]
-  );
+
+  // Sheet 2: Expanded Itemized Invoice Lines
   const invoiceLinesSheet = workbook.addWorksheet('Invoice Lines');
   invoiceLinesSheet.columns = [
     { header: 'Document No.', key: 'document_number', width: 24 },
     { header: 'Original Document No.', key: 'original_document_number', width: 24 },
+    { header: 'Document Type', key: 'document_type', width: 14 },
     { header: 'Issue Date', key: 'issue_date', width: 14 },
+    { header: 'Order Number (BHVM)', key: 'formatted_order_number', width: 20 },
+    { header: 'Supply Type', key: 'supply_type', width: 14 },
     { header: 'Customer', key: 'customer_name', width: 28 },
+    { header: 'Customer Email', key: 'customer_email', width: 26 },
+    { header: 'Customer Phone', key: 'customer_phone', width: 18 },
     { header: 'Buyer GSTIN', key: 'buyer_gstin', width: 20 },
-    { header: 'Place of Supply', key: 'place_of_supply_code', width: 18 },
+    { header: 'Place of Supply Code', key: 'place_of_supply_code', width: 16 },
+    { header: 'Place of Supply State', key: 'place_of_supply_name', width: 22 },
+    { header: 'Payment Mode', key: 'payment_mode', width: 14 },
+    { header: 'Coupon Code', key: 'coupon_code', width: 16 },
     { header: 'Description', key: 'description', width: 34 },
+    { header: 'SKU', key: 'sku', width: 18 },
     { header: 'HSN/SAC', key: 'hsn_sac', width: 14 },
     { header: 'Quantity', key: 'quantity', width: 12 },
+    { header: 'Unit Price Incl.', key: 'unit_price_inclusive', width: 16 },
     { header: 'GST Rate (%)', key: 'gst_rate', width: 14 },
     { header: 'Taxable Value', key: 'taxable_value', width: 18 },
     { header: 'CGST', key: 'cgst', width: 14 },
@@ -603,32 +1686,65 @@ router.get('/reports/export.xlsx', asyncRoute(async (req, res) => {
     { header: 'IGST', key: 'igst', width: 14 },
     { header: 'Line Total', key: 'total', width: 18 },
   ];
+
   const hsnSummary = new Map();
+  const stateSummary = new Map();
+
   for (const document of documents) {
-    const buyer = typeof document.buyer_snapshot === 'string'
-      ? JSON.parse(document.buyer_snapshot)
-      : document.buyer_snapshot;
-    const lines = typeof document.line_items === 'string'
-      ? JSON.parse(document.line_items)
-      : document.line_items;
+    if (document.status !== 'issued') continue;
     salesSheet.addRow({
       ...document,
+      issue_date: String(document.issue_date || '').slice(0, 10),
       original_document_number: document.original_document_number || '',
-      customer_name: buyer?.name || '',
-      buyer_gstin: buyer?.gstin || '',
+      tax_regime: document.is_interstate ? 'Inter-State (IGST)' : 'Intra-State (CGST+SGST)',
+      buyer_gstin: document.buyer_gstin || '',
+      reason: document.reason || '',
     });
-    for (const line of lines) {
+
+    const stKey = document.place_of_supply_code || '19';
+    const stRow = stateSummary.get(stKey) || {
+      place_of_supply_code: stKey,
+      place_of_supply_name: document.place_of_supply_name || INDIAN_STATE_NAMES[stKey] || 'West Bengal',
+      document_count: 0,
+      taxable_value: 0,
+      cgst: 0,
+      sgst: 0,
+      igst: 0,
+      total_tax: 0,
+      total: 0,
+    };
+    stRow.document_count += 1;
+    stRow.taxable_value = roundMoney(stRow.taxable_value + Number(document.taxable_value || 0));
+    stRow.cgst = roundMoney(stRow.cgst + Number(document.cgst || 0));
+    stRow.sgst = roundMoney(stRow.sgst + Number(document.sgst || 0));
+    stRow.igst = roundMoney(stRow.igst + Number(document.igst || 0));
+    stRow.total_tax = roundMoney(stRow.cgst + stRow.sgst + stRow.igst);
+    stRow.total = roundMoney(stRow.total + Number(document.total || 0));
+    stateSummary.set(stKey, stRow);
+
+    for (const line of document.line_items || []) {
       invoiceLinesSheet.addRow({
         document_number: document.document_number,
-        issue_date: document.issue_date,
-        customer_name: buyer?.name || '',
-        buyer_gstin: buyer?.gstin || '',
+        original_document_number: document.original_document_number || '',
+        document_type: document.document_type,
+        issue_date: String(document.issue_date || '').slice(0, 10),
+        formatted_order_number: document.formatted_order_number,
+        supply_type: document.supply_type,
+        customer_name: document.customer_name || '',
+        customer_email: document.customer_email || '',
+        customer_phone: document.customer_phone || '',
+        buyer_gstin: document.buyer_gstin || '',
         place_of_supply_code: document.place_of_supply_code,
+        place_of_supply_name: document.place_of_supply_name,
+        payment_mode: document.payment_mode || '',
+        coupon_code: document.coupon_code || '',
         ...line,
       });
+
       const summaryKey = `${document.place_of_supply_code}|${line.hsn_sac || ''}|${line.gst_rate || 0}`;
       const summary = hsnSummary.get(summaryKey) || {
         place_of_supply_code: document.place_of_supply_code,
+        place_of_supply_name: document.place_of_supply_name,
         hsn_sac: line.hsn_sac || '',
         gst_rate: Number(line.gst_rate || 0),
         quantity: 0,
@@ -636,20 +1752,25 @@ router.get('/reports/export.xlsx', asyncRoute(async (req, res) => {
         cgst: 0,
         sgst: 0,
         igst: 0,
+        total_tax: 0,
         total: 0,
       };
       summary.quantity += Number(line.quantity || 0);
-      summary.taxable_value += Number(line.taxable_value || 0);
-      summary.cgst += Number(line.cgst || 0);
-      summary.sgst += Number(line.sgst || 0);
-      summary.igst += Number(line.igst || 0);
-      summary.total += Number(line.total || 0);
+      summary.taxable_value = roundMoney(summary.taxable_value + Number(line.taxable_value || 0));
+      summary.cgst = roundMoney(summary.cgst + Number(line.cgst || 0));
+      summary.sgst = roundMoney(summary.sgst + Number(line.sgst || 0));
+      summary.igst = roundMoney(summary.igst + Number(line.igst || 0));
+      summary.total_tax = roundMoney(summary.cgst + summary.sgst + summary.igst);
+      summary.total = roundMoney(summary.total + Number(line.total || 0));
       hsnSummary.set(summaryKey, summary);
     }
   }
+
+  // Sheet 3: HSN Summary
   const hsnSheet = workbook.addWorksheet('HSN Summary');
   hsnSheet.columns = [
-    { header: 'Place of Supply', key: 'place_of_supply_code', width: 18 },
+    { header: 'Place of Supply Code', key: 'place_of_supply_code', width: 18 },
+    { header: 'Place of Supply State', key: 'place_of_supply_name', width: 22 },
     { header: 'HSN/SAC', key: 'hsn_sac', width: 14 },
     { header: 'GST Rate (%)', key: 'gst_rate', width: 14 },
     { header: 'Quantity', key: 'quantity', width: 12 },
@@ -657,17 +1778,27 @@ router.get('/reports/export.xlsx', asyncRoute(async (req, res) => {
     { header: 'CGST', key: 'cgst', width: 14 },
     { header: 'SGST', key: 'sgst', width: 14 },
     { header: 'IGST', key: 'igst', width: 14 },
+    { header: 'Total Tax', key: 'total_tax', width: 16 },
     { header: 'Total', key: 'total', width: 18 },
   ];
   for (const summary of hsnSummary.values()) hsnSheet.addRow(summary);
 
-  const [expenses] = await pool.query(
-    `SELECT incurred_on, vendor_name, supplier_gstin, document_reference, category,
-            description, taxable_value, cgst, sgst, igst, total, itc_eligible
-     FROM gst_expenses WHERE is_deleted = 0 AND incurred_on BETWEEN ? AND ?
-     ORDER BY incurred_on, id`,
-    [from, to]
-  );
+  // Sheet 4: State-Wise Place of Supply Summary
+  const stateSheet = workbook.addWorksheet('State-Wise Summary');
+  stateSheet.columns = [
+    { header: 'State Code', key: 'place_of_supply_code', width: 14 },
+    { header: 'State Name', key: 'place_of_supply_name', width: 26 },
+    { header: 'Documents Count', key: 'document_count', width: 16 },
+    { header: 'Taxable Value', key: 'taxable_value', width: 18 },
+    { header: 'CGST', key: 'cgst', width: 14 },
+    { header: 'SGST', key: 'sgst', width: 14 },
+    { header: 'IGST', key: 'igst', width: 14 },
+    { header: 'Total Tax', key: 'total_tax', width: 16 },
+    { header: 'Invoice Total', key: 'total', width: 18 },
+  ];
+  for (const st of stateSummary.values()) stateSheet.addRow(st);
+
+  // Sheet 5: Expense Register
   const expensesSheet = workbook.addWorksheet('Expense Register');
   expensesSheet.columns = [
     { header: 'Date', key: 'incurred_on', width: 14 },
@@ -699,6 +1830,8 @@ router.get('/reports/export.xlsx', asyncRoute(async (req, res) => {
      FROM gst_expenses WHERE is_deleted = 0 AND incurred_on BETWEEN ? AND ?`,
     [from, to]
   );
+
+  // Sheet 6: Period Summary
   const summarySheet = workbook.addWorksheet('Period Summary');
   summarySheet.addRows([
     ['CA Working Papers — not a filed GST return'],
@@ -711,10 +1844,12 @@ router.get('/reports/export.xlsx', asyncRoute(async (req, res) => {
     ['Invoice Total (incl. credit notes)', Number(sales.invoice_total)],
     ['Entered Expenses', Number(expenseTotals.total_expenses)],
     ['Eligible ITC (as marked by admin)', Number(expenseTotals.eligible_itc)],
+    ['Net GST Liability (Outward Tax - Eligible ITC)', roundMoney(Number(sales.cgst) + Number(sales.sgst) + Number(sales.igst) - Number(expenseTotals.eligible_itc))],
     ['Estimated Profit / (Loss)', roundMoney(Number(sales.taxable_sales) - Number(expenseTotals.p_and_l_expenses))],
     ['Important', 'Profit/loss excludes costs not entered in the Expense Register. Review tax classification and ITC eligibility with your CA.'],
   ]);
-  for (const sheet of [salesSheet, invoiceLinesSheet, hsnSheet, expensesSheet]) {
+
+  for (const sheet of [salesSheet, invoiceLinesSheet, hsnSheet, stateSheet, expensesSheet]) {
     sheet.getRow(1).font = { bold: true };
     sheet.views = [{ state: 'frozen', ySplit: 1 }];
   }

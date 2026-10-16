@@ -2382,4 +2382,219 @@ router.patch('/tickets/:id', authenticateSupportAgent, async (req, res) => {
   }
 });
 
+
+const {
+  COMPLETE_SITE_NAVIGATION_MAP,
+  evaluatePasswordRequirements,
+  diagnoseCartFriction,
+  diagnosePasswordAndAuthFriction,
+  diagnoseCheckoutAndCouponFriction,
+  findRelevantNavigationLinks,
+  diagnoseCustomerFriction,
+} = require('../services/aiCopilotRescueService');
+
+// ============================================================================
+// PART 5: 100X AI CO-PILOT FRICTION RESCUE & SUPERADMIN TICKET DELETION
+// ============================================================================
+
+router.get('/ai-copilot/navigation-map', optionalCustomerAuth, async (req, res) => {
+  try {
+    const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const links = query ? findRelevantNavigationLinks(query) : COMPLETE_SITE_NAVIGATION_MAP;
+    return res.json({
+      success: true,
+      links,
+      total: COMPLETE_SITE_NAVIGATION_MAP.length,
+    });
+  } catch (error) {
+    console.error('[AI_COPILOT_NAV_MAP]', error);
+    return res.status(500).json({ success: false, message: 'Could not load AI navigation directory.' });
+  }
+});
+
+router.post('/ai-copilot/diagnose', optionalCustomerAuth, async (req, res) => {
+  try {
+    const result = await diagnoseCustomerFriction(req.body || {}, {
+      pool,
+      user: req.customerUser || null,
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error('[AI_COPILOT_DIAGNOSE]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'AI Co-Pilot diagnostic encountered a temporary error.',
+    });
+  }
+});
+
+router.post('/ai-copilot/cart-rescue', optionalCustomerAuth, async (req, res) => {
+  try {
+    const result = await diagnoseCartFriction({
+      pool,
+      productId: req.body?.productId || null,
+      productName: req.body?.productName || '',
+      requestedQuantity: req.body?.requestedQuantity || 1,
+      currentCartQuantity: req.body?.currentCartQuantity || 0,
+      errorCode: req.body?.errorCode || '',
+      errorMessage: req.body?.errorMessage || '',
+      selectedVariant: req.body?.selectedVariant || null,
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error('[AI_COPILOT_CART_RESCUE]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Could not run AI cart rescue diagnostics.',
+    });
+  }
+});
+
+router.post('/ai-copilot/password-rescue', resetLinkLimiter, optionalCustomerAuth, async (req, res) => {
+  try {
+    const email = String(req.body?.email || req.customerUser?.email || '').trim().toLowerCase();
+    const candidatePassword = String(req.body?.candidatePassword || '');
+    const sendRecoveryLink = Boolean(req.body?.sendRecoveryLink);
+
+    const diagnostics = await diagnosePasswordAndAuthFriction({
+      pool,
+      email,
+      candidatePassword,
+      errorCode: req.body?.errorCode || '',
+      errorMessage: req.body?.errorMessage || '',
+      stage: req.body?.stage || 'password_setup',
+    });
+
+    let recoveryEmailDispatched = false;
+    let recoveryNotice = null;
+
+    if (sendRecoveryLink && email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      const [rows] = await pool.query(
+        'SELECT id, name, email, role, is_active FROM users WHERE LOWER(email) = ? LIMIT 1',
+        [email]
+      );
+      const user = rows?.[0];
+      if (user && user.role === 'customer' && (user.is_active === undefined || Number(user.is_active) === 1)) {
+        const token = jwt.sign(
+          { sub: String(user.id), email: user.email, role: 'customer', aud: 'reset', scope: 'reset-password' },
+          secret(),
+          { expiresIn: '30m', jwtid: crypto.randomUUID() }
+        );
+        const frontendUrl = (process.env.FRONTEND_URL || process.env.CLIENT_URL || 'https://www.bhumivera.com').replace(/\/+$/, '');
+        const resetUrl = `${frontendUrl}/reset-password?mode=support&token=${encodeURIComponent(token)}`;
+        try {
+          await sendMail({
+            to: user.email,
+            subject: 'Bhumivera AI Concierge — One-Click Password Setup & Recovery Link',
+            text: `Hello ${user.name || 'Customer'},\n\nYou requested AI Password Assistance on Bhumivera. Open this secure one-time link within 30 minutes to set your new password: ${resetUrl}\n\nPassword requirements: 8–72 characters, at least 1 uppercase letter, 1 lowercase letter, 1 digit, and 1 symbol.\n\n— Bhumivera AI Concierge`,
+            html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><h3>Bhumivera AI Password Assistance</h3><p>Hello ${escapeHtml(user.name || 'Customer')},</p><p>Click the secure link below within 30 minutes to set your new password:</p><p><a href="${escapeHtml(resetUrl)}" style="display:inline-block;padding:10px 18px;background:#10b981;color:#071510;font-weight:bold;text-decoration:none;border-radius:8px;">Set My New Password</a></p><p style="font-size:12px;color:#555;">Password rules: 8–72 characters with at least 1 uppercase, 1 lowercase, 1 number, and 1 special character.</p></div>`,
+          });
+          recoveryEmailDispatched = true;
+        } catch {
+          recoveryEmailDispatched = false;
+        }
+      }
+      recoveryNotice = 'If an active customer account matches that email address, a secure 30-minute password setup link has been sent.';
+    }
+
+    return res.json({
+      ...diagnostics,
+      recoveryEmailDispatched,
+      recoveryNotice,
+    });
+  } catch (error) {
+    console.error('[AI_COPILOT_PASSWORD_RESCUE]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Could not complete AI password assistance.',
+    });
+  }
+});
+
+// SuperAdmin-Exclusive Support Ticket Deletion (Single & Bulk)
+router.delete('/tickets/:id', authenticateSupportAgent, async (req, res) => {
+  if (!validId(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid ticket ID.' });
+  }
+  const actorRole = String(req.supportAgent?.role || '').toLowerCase();
+  if (actorRole !== 'superadmin') {
+    return res.status(403).json({
+      message: 'Only SuperAdmin can permanently delete support tickets. Support staff can mark tickets as resolved or closed.',
+    });
+  }
+  try {
+    const ticketId = Number(req.params.id);
+    const [[ticket]] = await pool.query(
+      'SELECT id, name, email, subject, status FROM support_tickets WHERE id = ?',
+      [ticketId]
+    );
+    if (!ticket) {
+      return res.status(404).json({ message: 'Support ticket not found.' });
+    }
+    const deleted = await ContactModel.deleteTicket(ticketId);
+    if (!deleted) {
+      return res.status(404).json({ message: 'Support ticket not found.' });
+    }
+    await recordSupportAuditLog({
+      actorId: req.supportAgent.id,
+      actorName: req.supportAgent.name || req.supportAgent.username || 'SuperAdmin',
+      actorRole: 'superadmin',
+      actionType: 'SUPERADMIN_DELETE_TICKET',
+      targetType: 'support_ticket',
+      targetId: String(ticketId),
+      details: `Deleted support ticket #${ticketId} (${ticket.subject || 'No subject'}) from ${ticket.email || 'customer'}`,
+      pool,
+    }).catch(() => {});
+
+    return res.json({
+      success: true,
+      deletedTicketId: ticketId,
+      message: `Support ticket #${ticketId} permanently deleted by SuperAdmin.`,
+    });
+  } catch (error) {
+    console.error('[SUPPORT_TICKET_DELETE]', error);
+    return res.status(500).json({ message: 'Could not delete support ticket.' });
+  }
+});
+
+router.post('/tickets/bulk-delete', authenticateSupportAgent, async (req, res) => {
+  const actorRole = String(req.supportAgent?.role || '').toLowerCase();
+  if (actorRole !== 'superadmin') {
+    return res.status(403).json({
+      message: 'Only SuperAdmin can permanently delete support tickets in bulk.',
+    });
+  }
+  const rawIds = Array.isArray(req.body?.ticketIds) ? req.body.ticketIds : [];
+  const ticketIds = rawIds.map(id => Number(id)).filter(id => Number.isInteger(id) && id > 0);
+  if (ticketIds.length === 0) {
+    return res.status(400).json({ message: 'Select at least one valid ticket ID to delete.' });
+  }
+  try {
+    let deletedCount = 0;
+    for (const tId of ticketIds.slice(0, 100)) {
+      const ok = await ContactModel.deleteTicket(tId);
+      if (ok) deletedCount += 1;
+    }
+    await recordSupportAuditLog({
+      actorId: req.supportAgent.id,
+      actorName: req.supportAgent.name || req.supportAgent.username || 'SuperAdmin',
+      actorRole: 'superadmin',
+      actionType: 'SUPERADMIN_BULK_DELETE_TICKETS',
+      targetType: 'support_ticket',
+      targetId: ticketIds.join(','),
+      details: `Bulk deleted ${deletedCount} support ticket(s): #${ticketIds.join(', #')}`,
+      pool,
+    }).catch(() => {});
+
+    return res.json({
+      success: true,
+      deletedCount,
+      message: `Permanently deleted ${deletedCount} support ticket(s).`,
+    });
+  } catch (error) {
+    console.error('[SUPPORT_TICKET_BULK_DELETE]', error);
+    return res.status(500).json({ message: 'Could not bulk delete support tickets.' });
+  }
+});
+
 module.exports = router;

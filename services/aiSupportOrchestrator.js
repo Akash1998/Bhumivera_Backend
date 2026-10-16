@@ -4,6 +4,11 @@ const { maskPII, sanitizeObjectPII } = require('../utils/piiMasker');
 const { analyzeSentiment, triggerInstantEscalation } = require('./sentimentEscalationEngine');
 const { executeSupportTool, SUPPORT_TOOLS_REGISTRY } = require('./aiSupportTools');
 const {
+  COMPLETE_SITE_NAVIGATION_MAP,
+  evaluatePasswordRequirements,
+  findRelevantNavigationLinks,
+} = require('./aiCopilotRescueService');
+const {
   ensureAiSupportTables,
   createOrResumeSession,
   updateSessionTelemetry,
@@ -208,6 +213,43 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     return { intent, toolPlan, extracted: { orderRef: orderRef || historyOrderRef, rmaNumber: rmaMatch?.[1], email, phone } };
   }
 
+  // 4b. 100X AI Co-Pilot: Unable to Add to Cart / Cart Friction Rescue
+  if (
+    /\b(unable\s*to\s*add\s*to\s*cart|can'?t\s*add\s*to\s*cart|cannot\s*add\s*to\s*cart|add\s*to\s*cart\s*(?:not\s*working|failed|error|issue|problem|disabled)|cart\s*(?:not\s*working|error|problem|issue|empty)|item\s*not\s*adding|button\s*disabled)\b/i.test(rawText)
+  ) {
+    intent = 'cart_friction_rescue';
+    toolPlan.push({
+      name: 'query_inventory_catalog',
+      args: {
+        query: pageContext?.productName || '',
+        product_id: pageContext?.productId || null,
+      },
+    });
+    return { intent, toolPlan, extracted: { productId: pageContext?.productId || null } };
+  }
+
+  // 4c. 100X AI Co-Pilot: Unable to Set Password / Reset Password / OTP / Login Rescue
+  if (
+    /^(password|forgot\s*password|reset\s*password|login\s*help|otp)$/i.test(text) ||
+    /\b(unable\s*to\s*(?:set|reset|change|create)\s*password|can'?t\s*(?:set|reset|change|login|sign\s*in)|cannot\s*(?:set|reset|change|login|sign\s*in)|password\s*(?:not\s*working|error|issue|problem|invalid|weak|rules?|requirements?|policy|reset|forgot)|forgot\s*(?:my\s*)?password|reset\s*(?:my\s*)?password|otp\s*(?:not\s*received|expired|invalid|error)|login\s*(?:failed|error|issue|problem)|passkey\s*(?:issue|help))\b/i.test(rawText)
+  ) {
+    intent = 'password_auth_rescue';
+    return { intent, toolPlan, extracted: { email, phone } };
+  }
+
+  // 4d. 100X AI Co-Pilot: GST Invoice / Tax Bill / B2B GSTIN Assistance
+  if (
+    /^(invoice|gst|gst\s*invoice|tax\s*invoice|bill|receipt)$/i.test(text) ||
+    /\b(gst\s*(?:invoice|bill|number|gstin|certificate|credit)|tax\s*invoice|download\s*(?:invoice|bill|receipt)|order\s*(?:invoice|bill|receipt)|b2b\s*invoice)\b/i.test(rawText)
+  ) {
+    intent = 'gst_invoice_assistance';
+    toolPlan.push({
+      name: 'lookup_order',
+      args: { order_id: orderRef || historyOrderRef || null, email, phone },
+    });
+    return { intent, toolPlan, extracted: { orderRef: orderRef || historyOrderRef, email, phone } };
+  }
+
   // 5. Account Wallet, Referral & Loyalty Points check
   if (
     /^(wallet|points|loyalty|balance|referral|tier|rewards)$/i.test(text) ||
@@ -398,6 +440,75 @@ function synthesizeDeterministicResponse({
         { label: 'Return or Replace', prompt: 'I want to return or replace an order' },
         { label: 'Active Coupons', prompt: 'Show my available discount coupons' },
         { label: 'Share Website Links', prompt: 'Share Bhumivera website and product links' },
+      ],
+    };
+  }
+
+  // 100X AI Co-Pilot: Cart Friction Rescue
+  if (intent === 'cart_friction_rescue') {
+    const catRes = toolResults.find(t => t.name === 'query_inventory_catalog')?.result;
+    const products = (catRes?.products || []).filter(p => p.stockQuantity > 0);
+    const inStockList = products
+      .slice(0, 3)
+      .map(p => `• **${p.name}** (₹${p.effectivePrice} · ${p.stockQuantity} in stock) — ${p.shareUrl}`)
+      .join('\n');
+
+    return {
+      reply:
+        `${nameGreeting}I can help you fix the **Add to Cart** issue right away! Here are the 4 most common reasons and instant fixes:\n` +
+        `1. **Option / Pack Size Required:** If a product has pack size or variant pills above the button, click one option first to unlock **Add to Cart**.\n` +
+        `2. **Stock Limit Reached:** If your requested quantity exceeds live warehouse stock, reduce the quantity selector to \`1\` or pick an in-stock formulation below.\n` +
+        `3. **Quick-Add from Shop:** Open https://www.bhumivera.com/shop and click the green **Shopping Bag** icon on any product card.\n` +
+        `4. **Checkout & Coupons:** Once added, open https://www.bhumivera.com/checkout to apply eligible promo codes and complete your order.` +
+        (inStockList ? `\n\n**Ready-to-Ship In-Stock Formulations:**\n${inStockList}` : ''),
+      quickActions: [
+        { label: 'Open Shop Catalog (/shop)', prompt: 'Share Bhumivera website and product links' },
+        { label: 'Show Active Coupons', prompt: 'Show my available discount coupons' },
+        { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
+      ],
+    };
+  }
+
+  // 100X AI Co-Pilot: Password Setup, Reset & Login Rescue
+  if (intent === 'password_auth_rescue') {
+    return {
+      reply:
+        `${nameGreeting}here is your step-by-step **AI Password & Account Recovery Guide**:\n` +
+        `• **Password Rules Checklist (Required for New / Reset Passwords):**\n` +
+        `  1. **8 to 72 characters** in total\n` +
+        `  2. At least **1 Uppercase letter** (\`A–Z\`) and **1 Lowercase letter** (\`a–z\`)\n` +
+        `  3. At least **1 Number** (\`0–9\`) and **1 Special Symbol** (\`! @ # $ % ^ & *\`)\n` +
+        `  4. Must not be a common password or contain your email username (Example valid format: \`Botanical#2026!\`)\n` +
+        `• **Forgot or Unable to Set Password?**\n` +
+        `  1. Open **Password Recovery**: https://www.bhumivera.com/forgot-password\n` +
+        `  2. Enter your registered email to receive a **6-digit verification code (OTP)** (valid for 10 minutes).\n` +
+        `  3. Or ask a Support Specialist in this chat to send you a **1-Click 30-Minute Password Reset Link** directly to your email!`,
+      quickActions: [
+        { label: 'Send Me a Password Reset Link', prompt: 'Connect me with a human support agent to send a password reset link' },
+        { label: 'Check My Orders', prompt: 'Show my recent orders' },
+        { label: 'Share All Account Links', prompt: 'Share Bhumivera website and product links' },
+      ],
+    };
+  }
+
+  // 100X AI Co-Pilot: GST Tax Invoice Assistance
+  if (intent === 'gst_invoice_assistance') {
+    const lookupRes = toolResults.find(t => t.name === 'lookup_order')?.result;
+    const latestOrder = lookupRes?.order || lookupRes?.orderCards?.[0] || null;
+    const orderLine = latestOrder
+      ? `\n• **Your Latest Order (#${latestOrder.orderNumber} / BHVM${latestOrder.orderNumber}):** Status is **${latestOrder.status.toUpperCase()}** (Total: ₹${latestOrder.total}).`
+      : '';
+
+    return {
+      reply:
+        `${nameGreeting}here is how to access your **GST-Compliant Tax Invoice (with HSN, CGST/SGST/IGST Breakup & Bhumivera Crest)**:` +
+        orderLine +
+        `\n• **Download from Profile:** Sign in at https://www.bhumivera.com/profile → **My Orders** → click **View / Print Tax Invoice** on any shipped or delivered order.\n` +
+        `• **Need B2B GSTIN on Your Invoice?** Add your 15-character GSTIN in your shipping address before checkout or share your Order Number (\`BHVM...\`) and GSTIN here so our team can assist you.`,
+      quickActions: [
+        { label: 'Show My Recent Orders', prompt: 'Show my recent orders' },
+        { label: 'Track My Order', prompt: 'Where is my latest order?' },
+        { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
       ],
     };
   }

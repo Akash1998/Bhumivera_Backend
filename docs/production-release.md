@@ -11,7 +11,7 @@ Set `NODE_ENV=production` and provide:
 
 If the corresponding feature is enabled, configure both Razorpay API credentials. To receive Razorpay events, configure `RAZORPAY_WEBHOOK_SECRET` and point the provider to `POST /api/webhooks/razorpay`, subscribing to `payment.captured`, `payment.failed`, `refund.created`, `refund.processed`, and `refund.failed`. Use the webhook secret from the provider dashboard, which is separate from the API key secret.
 
-Telegram customer support registers its incoming webhook automatically at startup. Set `API_BASE_URL` to the same public HTTPS backend origin used by the frontend (or set `SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL` to the full webhook URL); this avoids routing Telegram updates to a different deployment or database. Telegram webhook requests are authenticated using `SUPPORT_TELEGRAM_WEBHOOK_SECRET` or a key derived from the bot token. `SUPPORT_TELEGRAM_WEBHOOK_URL` remains the separate outgoing escalation notification URL.
+Telegram customer support registers its incoming webhook automatically at startup. Set `API_BASE_URL` to the public HTTPS backend origin (or override with `SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL`); Telegram webhook requests are authenticated using `SUPPORT_TELEGRAM_WEBHOOK_SECRET` or a key derived from the bot token. `SUPPORT_TELEGRAM_WEBHOOK_URL` remains the separate outgoing escalation notification URL.
 
 For more than one backend instance, set the same `REDIS_URL` or `RATE_LIMIT_REDIS_URL` on every instance to share rate-limit counters. A single instance can use the built-in in-memory rate-limit store.
 
