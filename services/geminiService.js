@@ -39,6 +39,7 @@ async function synthesizeWithGeminiOrDeterministic({
   toolResults = [],
   knowledgeResult = null,
   deterministicFallback = {},
+  user = null,
 } = {}) {
   const fallback = {
     ...deterministicFallback,
@@ -56,22 +57,66 @@ async function synthesizeWithGeminiOrDeterministic({
   const groundedData = {
     userQuestion: String(userMessage || '').slice(0, 2000),
     verifiedDeterministicResponse: fallback.reply,
+    suggestedQuickActions: fallback.quickActions || [],
     knowledgeBaseResponse: knowledgeResult?.matched ? knowledgeResult.reply : null,
     toolResults: Array.isArray(toolResults) ? toolResults.slice(0, 8) : [],
     recentConversation: recentHistory,
+    userName: user?.name ? user.name.split(' ')[0] : null,
   };
 
   try {
-    const reply = await callGeminiModel({
-      prompt:
-        'You are Bhumivera Client Concierge. Rephrase the verified response into a clear, concise and warm reply. ' +
-        'Use only facts contained in the supplied data. Do not invent product ingredients, product claims, prices, ' +
-        'shipping estimates, account/order details, or actions. Do not contradict or omit material safety guidance. ' +
-        'If the verified response is empty, return an empty string. Return only the customer-facing reply.\n\n' +
-        JSON.stringify(groundedData),
+    const prompt =
+      'You are the Bhumivera Client Concierge, an elite, warm, and highly knowledgeable conversational advisor for Bhumivera (Ayurvedic & Modern Botanical Skincare).\n' +
+      'Your role is to rephrase the verified deterministic response into a rich, welcoming, elegant, and deeply informed customer-facing response, and generate 3 to 4 forward-progressing follow-up quickAction suggestions.\n\n' +
+      'STRICT CONSTRAINTS:\n' +
+      '1. Truthfulness: Use only facts contained in the supplied grounded data. Never invent ingredients, claims, order IDs, prices, discounts, or external URLs.\n' +
+      '2. Invariant Preservation: If the verified response includes specific safety or timing instructions (e.g., "Best Time to Use", "30 to 45 seconds", order numbers, refund windows, or RMA numbers), you MUST preserve them clearly.\n' +
+      '3. Dynamic Forward-Moving Suggestions: Do NOT repeat the question just asked or previously asked in recent conversation. Suggest logical next steps that advance the customer journey (e.g., post-wash layering ritual, botanical active synergy, sensitive skin compatibility, PM pairing with Kumkumadi Night Elixir, order tracking, or Brand Ambassador Program).\n' +
+      '4. Output Format: Return a strictly valid JSON object with the following schema:\n' +
+      '{\n' +
+      '  "reply": "string (warm, markdown-formatted concierge response)",\n' +
+      '  "quickActions": [\n' +
+      '    {\n' +
+      '      "id": "string",\n' +
+      '      "label": "string (concise button label, 2-6 words, optional emoji)",\n' +
+      '      "prompt": "string (complete customer question to be sent upon clicking)",\n' +
+      '      "category": "string"\n' +
+      '    }\n' +
+      '  ]\n' +
+      '}\n\n' +
+      'Grounded Data:\n' +
+      JSON.stringify(groundedData);
+
+    const rawResponse = await callGeminiModel({
+      prompt,
+      responseMimeType: 'application/json',
       timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS) || 8000,
     });
-    if (reply) return { ...fallback, reply, provider: model };
+
+    if (rawResponse) {
+      let parsed = null;
+      try {
+        const cleaned = rawResponse.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+        parsed = JSON.parse(cleaned);
+      } catch {
+        parsed = null;
+      }
+
+      if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
+        const validQuickActions = Array.isArray(parsed.quickActions) && parsed.quickActions.length > 0
+          ? parsed.quickActions.filter(a => a && typeof a.label === 'string' && typeof a.prompt === 'string')
+          : fallback.quickActions;
+
+        return {
+          ...fallback,
+          reply: parsed.reply.trim(),
+          quickActions: validQuickActions && validQuickActions.length > 0 ? validQuickActions : fallback.quickActions,
+          provider: model,
+        };
+      }
+
+      return { ...fallback, reply: rawResponse, provider: model };
+    }
   } catch (error) {
     console.warn('[GEMINI_SYNTHESIS_FALLBACK]', error.message);
   }

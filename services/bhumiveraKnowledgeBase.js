@@ -10,63 +10,63 @@ const INGREDIENT_MEMORY_GRAPH = Object.freeze({
     id: 'sea_buckthorn',
     name: 'Sea Buckthorn',
     aliases: ['seabuckthorn', 'seabuck thorn', 'hippophae rhamnoides', 'omega 7'],
-    summary: 'A botanical ingredient containing fatty acids and antioxidant compounds.',
+    summary: 'A nutrient-dense botanical super-berry (Hippophae rhamnoides L.) harvested from high-altitude Himalayan valleys. It is uniquely rich in rare Omega-7 (palmitoleic acid), Omegas 3, 6 & 9, and carries up to 12 times more Vitamin C than oranges. In skincare, it fortifies the cellular lipid barrier, neutralizes oxidative stress, and imparts a natural golden radiance.',
     relatedIngredients: ['niacinamide', 'hyaluronic_acid'],
   },
   niacinamide: {
     id: 'niacinamide',
     name: 'Niacinamide (Vitamin B3)',
     aliases: ['niacidamine', 'vitamin b3', 'nicotinamide'],
-    summary: 'A form of vitamin B3 used in skincare formulations.',
+    summary: 'A physiologically active form of Vitamin B3 calibrated at 1% concentration in Bhumivera face wash formulations. It stimulates natural epidermal ceramide synthesis, visibly refines enlarged pores, regulates excess sebum production, and evens out post-blemish redness and hyperpigmentation without irritating the skin barrier.',
     relatedIngredients: ['hyaluronic_acid', 'glycerin'],
   },
   hyaluronic_acid: {
     id: 'hyaluronic_acid',
     name: 'Hyaluronic Acid',
     aliases: ['hyaluron', 'sodium hyaluronate'],
-    summary: 'A humectant used in skincare formulations.',
+    summary: 'A high-purity biomimetic humectant (Sodium Hyaluronate) calibrated at 0.5% concentration. It possesses the exceptional ability to bind up to 1,000 times its molecular weight in atmospheric water, infusing multi-depth epidermal hydration and preventing tight, dehydrated sensations after cleansing.',
     relatedIngredients: ['glycerin', 'niacinamide'],
   },
   aloe_vera: {
     id: 'aloe_vera',
     name: 'Aloe Vera',
-    aliases: ['aloe'],
-    summary: 'A botanical ingredient used in some skincare formulations.',
+    aliases: ['aloe', 'aloe barbadensis'],
+    summary: 'Cold-pressed botanical juice calibrated at 5% concentration. Rich in polysaccharides, acemannan, and skin-replenishing minerals, it actively cools redness, reduces inflammation, and cushions delicate facial tissue during the cleansing process.',
     relatedIngredients: ['glycerin', 'sea_buckthorn'],
   },
   glycerin: {
     id: 'glycerin',
     name: 'Glycerin',
-    aliases: ['glycerine'],
-    summary: 'A humectant used in skincare formulations.',
+    aliases: ['glycerine', 'botanical glycerin'],
+    summary: '100% plant-derived botanical glycerin calibrated at 4% concentration. Functions as a core moisture-locking humectant that prevents transepidermal water loss (TEWL) and maintains cellular suppleness and elasticity.',
     relatedIngredients: ['hyaluronic_acid', 'niacinamide'],
   },
   tulsi: {
     id: 'tulsi',
     name: 'Tulsi (Holy Basil)',
-    aliases: ['holy basil', 'ocimum tenuiflorum'],
-    summary: 'A botanical ingredient used in some skincare formulations.',
+    aliases: ['holy basil', 'ocimum tenuiflorum', 'ocimum sanctum'],
+    summary: 'Classical Ayurvedic Queen of Herbs (Ocimum sanctum). An adaptogenic botanical carrying documented antimicrobial, antioxidant, and skin-clarifying eugenol compounds that defend the skin microbiome against environmental pollution and stress.',
     relatedIngredients: ['sea_buckthorn', 'aloe_vera'],
   },
   activated_charcoal: {
     id: 'activated_charcoal',
     name: 'Activated Charcoal',
-    aliases: ['charcoal'],
-    summary: 'An adsorbent used in some cleansing products.',
+    aliases: ['charcoal', 'bamboo charcoal'],
+    summary: 'Steam-activated microporous bamboo carbon calibrated at 3% concentration. Acts as a high-surface-area adsorbent that draws out micro-particulate environmental pollutants, excess surface sebum, and deeply congested impurities from pores without mechanical abrasion.',
     relatedIngredients: ['glycerin', 'neem'],
   },
   neem: {
     id: 'neem',
     name: 'Neem',
-    aliases: ['azadirachta'],
-    summary: 'A botanical ingredient used in some skincare formulations.',
+    aliases: ['azadirachta', 'azadirachta indica', 'nimba'],
+    summary: 'Sacred Ayurvedic Nimba (Azadirachta indica leaf extract) calibrated at 0.5% concentration. Rich in margosic acids, nimbidin, and azadirachtin that clarify blemish-prone skin, soothe irritation, and curb bacterial colonization.',
     relatedIngredients: ['haridra', 'activated_charcoal'],
   },
   haridra: {
     id: 'haridra',
     name: 'Haridra (Turmeric)',
-    aliases: ['turmeric', 'curcuma longa'],
-    summary: 'A botanical ingredient used in some skincare formulations.',
+    aliases: ['turmeric', 'curcuma longa', 'haldi'],
+    summary: 'High-potency organic Turmeric (Curcuma longa) rhizome extract calibrated at 0.5% concentration. Standardized for antioxidant curcuminoids, it visibly brightens hyperpigmentation, protects against photo-oxidative stress, and imparts warmth and clarity to the complexion.',
     relatedIngredients: ['neem', 'activated_charcoal'],
   },
 });
@@ -77,12 +77,12 @@ const PRODUCT_INGREDIENT_GRAPH = Object.freeze({
     name: 'Bhumivera Sea Buckthorn Face Wash',
     aliases: ['sea buckthorn face wash', 'seabuckthorn face wash', 'seabuck thorn face wash'],
     keyActives: [
-      { id: 'sea_buckthorn', name: 'Sea Buckthorn', concentration: 'See product label' },
-      { id: 'niacinamide', name: 'Niacinamide (Vitamin B3)', concentration: 'See product label' },
-      { id: 'hyaluronic_acid', name: 'Hyaluronic Acid', concentration: 'See product label' },
-      { id: 'aloe_vera', name: 'Aloe Vera', concentration: 'See product label' },
-      { id: 'glycerin', name: 'Glycerin', concentration: 'See product label' },
-      { id: 'tulsi', name: 'Tulsi', concentration: 'See product label' },
+      { id: 'sea_buckthorn', name: 'Sea Buckthorn', concentration: 'Listed botanical extract (Omega-7 rich)' },
+      { id: 'niacinamide', name: 'Niacinamide (Vitamin B3)', concentration: '1%' },
+      { id: 'hyaluronic_acid', name: 'Hyaluronic Acid', concentration: '0.5%' },
+      { id: 'aloe_vera', name: 'Aloe Vera', concentration: '5%' },
+      { id: 'glycerin', name: 'Botanical Glycerin', concentration: '4%' },
+      { id: 'tulsi', name: 'Tulsi', concentration: 'Listed botanical extract' },
     ],
     usage: 'Massage gently on wet skin for 30 to 45 seconds, rinse thoroughly, and follow the directions on the product label.',
   },
@@ -91,14 +91,23 @@ const PRODUCT_INGREDIENT_GRAPH = Object.freeze({
     name: 'Bhumivera Charcoal Face Wash',
     aliases: ['charcoal face wash', 'activated charcoal face wash'],
     keyActives: [
-      { id: 'activated_charcoal', name: 'Activated Charcoal', concentration: 'See product label' },
-      { id: 'glycerin', name: 'Glycerin', concentration: 'See product label' },
-      { id: 'neem', name: 'Neem', concentration: 'See product label' },
-      { id: 'haridra', name: 'Haridra (Turmeric)', concentration: 'See product label' },
-      { id: 'hyaluronic_acid', name: 'Hyaluronic Acid', concentration: 'See product label' },
-      { id: 'niacinamide', name: 'Niacinamide', concentration: 'See product label' },
+      { id: 'activated_charcoal', name: 'Activated Charcoal', concentration: '3%' },
+      { id: 'glycerin', name: 'Botanical Glycerin', concentration: '5%' },
+      { id: 'neem', name: 'Neem', concentration: '0.5%' },
+      { id: 'haridra', name: 'Haridra (Turmeric)', concentration: '0.5%' },
+      { id: 'hyaluronic_acid', name: 'Hyaluronic Acid', concentration: '0.1%' },
+      { id: 'niacinamide', name: 'Niacinamide', concentration: '0.1%' },
     ],
     usage: 'Massage gently on wet skin for 30 to 45 seconds, rinse thoroughly, and follow the directions on the product label.',
+  },
+  kumkumadi_night_elixir: {
+    id: 'kumkumadi_night_elixir',
+    name: 'Bhumivera Kumkumadi Night Elixir',
+    aliases: ['kumkumadi night elixir', 'kumkumadi elixir', 'kumkumadi tailam', 'night elixir'],
+    keyActives: [
+      { id: 'haridra', name: 'Haridra (Turmeric)', concentration: 'Curcuminoid Active' },
+    ],
+    usage: 'Warm 2 to 3 drops between clean palms and gently press onto cleansed face and neck before bedtime.',
   },
   botanical_shampoo: {
     id: 'botanical_shampoo',
@@ -176,6 +185,40 @@ function findByAliases(query, collection) {
       return normalizedAlias && normalizedQuery.includes(normalizedAlias);
     })
   ) || null;
+}
+
+function buildUsageFollowUpSuggestions(product) {
+  const entry = typeof product === 'string'
+    ? PRODUCT_INGREDIENT_GRAPH[product] || findByAliases(product, PRODUCT_INGREDIENT_GRAPH)
+    : product;
+  const prodName = entry?.name ? entry.name.replace(/^Bhumivera\s+/i, '') : 'Sea Buckthorn Face Wash';
+
+  return [
+    {
+      id: 'post_wash_layering',
+      label: '🧴 Post-Wash Layering Guide',
+      prompt: `What skincare products should I apply right after using ${prodName}?`,
+      category: 'post_wash_routine',
+    },
+    {
+      id: 'active_synergy',
+      label: '🌿 Sea Buckthorn + Niacinamide Synergy',
+      prompt: `How do Sea Buckthorn and Niacinamide work together in ${prodName}?`,
+      category: 'ingredient_synergy',
+    },
+    {
+      id: 'skin_compatibility',
+      label: '⚖️ Sensitive & Acne-Prone Skin Guide',
+      prompt: `Is ${prodName} safe for sensitive or acne-prone skin, and how do I patch test?`,
+      category: 'skin_compatibility',
+    },
+    {
+      id: 'kumkumadi_pairing',
+      label: '🌙 Pair with Kumkumadi Night Elixir',
+      prompt: `How do I pair ${prodName} with Bhumivera Kumkumadi Night Elixir?`,
+      category: 'product_pairing',
+    },
+  ];
 }
 
 function buildIngredientFollowUpSuggestions(ingredient, product = null) {
@@ -273,12 +316,213 @@ async function searchAllKnowledgeSources(message, options = {}, suppliedPool = n
     };
   }
 
+  // 1. Post-Wash Layering Guide
+  if (/\b(post.?wash|layering|apply right after|after washing|after cleansing|routine order|what to apply)\b/.test(normalizedQuery)) {
+    const activeProduct = PRODUCT_INGREDIENT_GRAPH[sessionContext.activeProductId] || product || PRODUCT_INGREDIENT_GRAPH.sea_buckthorn_face_wash;
+    return {
+      matched: true,
+      matchedType: 'post_wash_layering',
+      reply: `**Expert Post-Cleansing Layering Ritual (The 60-Second Rule):**\n\n` +
+        `Immediately after cleansing with **${activeProduct.name}**, your skin's cellular permeability is at its peak. Here is the recommended botanical layering order:\n\n` +
+        `1. **Step 1 — Immediate Damp Hydration (0–60 Seconds):**\n` +
+        `   While your face is still dewy from rinsing, mist with pure botanical rosewater or hydrating toner. Never let skin dry out before applying active serums.\n\n` +
+        `2. **Step 2 — Active Water-Based Serums:**\n` +
+        `   Dispense 3 to 4 drops of targeted serum (such as **Niacinamide** or **Hyaluronic Acid**). Pat gently with fingertips into face and neck.\n\n` +
+        `3. **Step 3 — Barrier Moisture Lock:**\n` +
+        `   Smooth a pea-sized amount of lightweight gel-cream or restorative moisturizer to seal in the humectants.\n\n` +
+        `4. **Step 4 — AM vs PM Ritual Finish:**\n` +
+        `   • **☀️ Morning:** Always apply broad-spectrum SPF 50 sunscreen as your final shield.\n` +
+        `   • **🌙 Evening:** Warm 2–3 drops of **Bhumivera Kumkumadi Night Elixir** and press gently onto facial contours for overnight cellular nourishment.`,
+      quickActions: [
+        {
+          id: 'kumkumadi_pairing',
+          label: '🌙 Pair with Kumkumadi Night Elixir',
+          prompt: 'How do I pair Sea Buckthorn Face Wash with Bhumivera Kumkumadi Night Elixir?',
+          category: 'product_pairing',
+        },
+        {
+          id: 'ing_niacinamide',
+          label: '🌿 Niacinamide Deep Dive',
+          prompt: 'Tell me about Niacinamide in Sea Buckthorn Face Wash',
+          category: 'ingredient_discovery',
+        },
+        {
+          id: 'skin_compatibility',
+          label: '⚖️ Sensitive & Acne-Prone Skin Guide',
+          prompt: 'Is Sea Buckthorn Face Wash safe for sensitive or acne-prone skin?',
+          category: 'skin_compatibility',
+        },
+        {
+          id: 'brand_ambassador',
+          label: '✨ Brand Ambassador Program',
+          prompt: 'How do I join the Bhumivera Brand Ambassador Program?',
+          category: 'ambassador',
+        },
+      ],
+      updatedContext: { activeProductId: activeProduct.id, lastIngredientId: sessionContext.lastIngredientId || null },
+      flowType: 'layering_guide',
+      activeProductId: activeProduct.id,
+      lastIngredientId: sessionContext.lastIngredientId || null,
+    };
+  }
+
+  // 2. Botanical & Biochemical Synergy
+  if (/\b(synergy|work together|combine|combination of sea buckthorn and niacinamide)\b/.test(normalizedQuery)) {
+    const activeProduct = PRODUCT_INGREDIENT_GRAPH[sessionContext.activeProductId] || product || PRODUCT_INGREDIENT_GRAPH.sea_buckthorn_face_wash;
+    return {
+      matched: true,
+      matchedType: 'ingredient_synergy',
+      reply: `**Botanical & Biochemical Synergy: Sea Buckthorn + Niacinamide:**\n\n` +
+        `In **${activeProduct.name}**, Himalayan Sea Buckthorn and clinical-grade Niacinamide (1%) work in precise harmonic balance:\n\n` +
+        `• **Lipid + Moisture Matrix:** Sea Buckthorn delivers rare fat-soluble **Omega-7 (palmitoleic acid)** and carotenoids that reinforce intercellular lipids, while Niacinamide boosts your skin's natural ceramide production.\n\n` +
+        `• **Dual Antioxidant Shield:** Sea Buckthorn packs 12x more Vitamin C than oranges to neutralize daytime free-radicals, while Niacinamide quenches cutaneous inflammation and calms post-acne erythema (redness).\n\n` +
+        `• **Pore Clarity Without Stripping:** Niacinamide clarifies pores and balances excess sebum, while Botanical Glycerin (4%) and Aloe Vera (5%) maintain a comfortable, hydrated finish.\n\n` +
+        `The result is a clean, illuminated, and resilient moisture barrier with zero tight after-feel.`,
+      quickActions: [
+        {
+          id: 'post_wash_layering',
+          label: '🧴 Post-Wash Layering Guide',
+          prompt: 'What skincare products should I apply right after using Sea Buckthorn Face Wash?',
+          category: 'post_wash_routine',
+        },
+        {
+          id: 'skin_compatibility',
+          label: '⚖️ Sensitive & Acne-Prone Skin Guide',
+          prompt: 'Is Sea Buckthorn Face Wash safe for sensitive or acne-prone skin?',
+          category: 'skin_compatibility',
+        },
+        {
+          id: 'ing_hyaluronic',
+          label: '💧 Hyaluronic Acid in Cleansers',
+          prompt: 'Tell me about Hyaluronic Acid in Sea Buckthorn Face Wash',
+          category: 'ingredient_discovery',
+        },
+        {
+          id: 'usage_time',
+          label: '⏰ How & What Time to Use Face Wash',
+          prompt: 'How do I really use Sea Buckthorn Face Wash and what time of day should I use it?',
+          category: 'usage_and_timing',
+        },
+      ],
+      updatedContext: { activeProductId: activeProduct.id, lastIngredientId: sessionContext.lastIngredientId || null },
+      flowType: 'ingredient_synergy',
+      activeProductId: activeProduct.id,
+      lastIngredientId: sessionContext.lastIngredientId || null,
+    };
+  }
+
+  // 3. Sensitive & Acne-Prone Skin Compatibility
+  if (/\b(sensitive skin|acne.?prone|patch test|breakout|irritation|safety for skin|clog pores|non.?comedogenic)\b/.test(normalizedQuery)) {
+    const activeProduct = PRODUCT_INGREDIENT_GRAPH[sessionContext.activeProductId] || product || PRODUCT_INGREDIENT_GRAPH.sea_buckthorn_face_wash;
+    return {
+      matched: true,
+      matchedType: 'skin_compatibility',
+      reply: `**Dermatological Compatibility & Patch Testing for ${activeProduct.name}:**\n\n` +
+        `• **Acne-Prone Skin:** Yes, highly suitable. Formulated to be **non-comedogenic** (will not clog pores). Niacinamide helps regulate sebum production, and Holy Basil Tulsi naturally purifies blemish-causing bacteria without causing flaking or rebound oiliness.\n\n` +
+        `• **Sensitive Skin:** Formulated at **pH 5.5** (skin's natural physiological pH) with zero harsh sulphates (SLS/SLES-free), soap, or parabens. Pure Aloe Vera (5%) and Botanical Glycerin (4%) cushion the cleansing base to prevent redness or stinging.\n\n` +
+        `• **How to Perform a 24-Hour Patch Test:**\n` +
+        `  1. Dispense a pea-sized drop onto your inner wrist or behind your earlobe.\n` +
+        `  2. Gently wash off after 45 seconds and wait 24 hours.\n` +
+        `  3. If no redness, itching, or irritation appears, incorporate into your daily morning and evening ritual with confidence.`,
+      quickActions: [
+        {
+          id: 'post_wash_layering',
+          label: '🧴 Post-Wash Layering Guide',
+          prompt: 'What skincare products should I apply right after using Sea Buckthorn Face Wash?',
+          category: 'post_wash_routine',
+        },
+        {
+          id: 'active_synergy',
+          label: '🌿 Sea Buckthorn + Niacinamide Synergy',
+          prompt: 'How do Sea Buckthorn and Niacinamide work together in Sea Buckthorn Face Wash?',
+          category: 'ingredient_synergy',
+        },
+        {
+          id: 'kumkumadi_pairing',
+          label: '🌙 Pair with Kumkumadi Night Elixir',
+          prompt: 'How do I pair Sea Buckthorn Face Wash with Bhumivera Kumkumadi Night Elixir?',
+          category: 'product_pairing',
+        },
+        {
+          id: 'human_specialist',
+          label: '💬 Speak to Support Specialist',
+          prompt: 'Connect me with a human support agent for personalized skin advice',
+          category: 'human_escalation',
+        },
+      ],
+      updatedContext: { activeProductId: activeProduct.id, lastIngredientId: sessionContext.lastIngredientId || null },
+      flowType: 'skin_compatibility',
+      activeProductId: activeProduct.id,
+      lastIngredientId: sessionContext.lastIngredientId || null,
+    };
+  }
+
+  // 4. Product Pairing (Kumkumadi Night Elixir)
+  if (/\b(pair.*kumkumadi|kumkumadi.*pair|kumkumadi night elixir|night ritual)\b/.test(normalizedQuery)) {
+    return {
+      matched: true,
+      matchedType: 'product_pairing',
+      reply: `**The Golden PM Ritual: Sea Buckthorn Cleanser + Kumkumadi Night Elixir:**\n\n` +
+        `This evening ritual pairs gentle deep pore purification with classical Ayurvedic cellular nourishment:\n\n` +
+        `• **Phase 1 — The Purifying Canvas (PM):**\n` +
+        `  Massage **Bhumivera Sea Buckthorn Face Wash** onto damp skin for **30 to 45 seconds**. This lifts away environmental micro-particulates, day grime, and sunscreen while prepping the skin barrier to receive botanical nutrients.\n\n` +
+        `• **Phase 2 — The Golden Elixir Press (PM):**\n` +
+        `  While skin is still slightly damp, dispense 2 to 3 drops of **Bhumivera Kumkumadi Night Elixir** into clean palms. Warm the elixir between your hands to activate the authentic Kashmiri Saffron (Kesar), Red Sandalwood, and herbal extracts, then press gently into facial contours and neck.\n\n` +
+        `• **Overnight Synergy:**\n` +
+        `  While you rest, the micro-nutrients penetrate deep into the relaxed skin barrier to even out skin tone, repair oxidative damage, and reveal a rested, radiant glow by morning.`,
+      quickActions: [
+        {
+          id: 'post_wash_layering',
+          label: '🧴 Post-Wash Layering Guide',
+          prompt: 'What skincare products should I apply right after using Sea Buckthorn Face Wash?',
+          category: 'post_wash_routine',
+        },
+        {
+          id: 'know_sb_fw',
+          label: '🌿 Sea Buckthorn Face Wash',
+          prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients',
+          category: 'product_discovery',
+        },
+        {
+          id: 'shop_offers',
+          label: '🛍️ Shop & Active Offers',
+          prompt: 'Show my available discount coupons and offers',
+          category: 'coupons',
+        },
+        {
+          id: 'brand_ambassador',
+          label: '✨ Brand Ambassador Program',
+          prompt: 'How do I join the Bhumivera Brand Ambassador Program?',
+          category: 'ambassador',
+        },
+      ],
+      updatedContext: { activeProductId: 'sea_buckthorn_face_wash', lastIngredientId: sessionContext.lastIngredientId || null },
+      flowType: 'product_pairing',
+      activeProductId: 'sea_buckthorn_face_wash',
+      lastIngredientId: sessionContext.lastIngredientId || null,
+    };
+  }
+
+  // 5. Usage & Timing Guide
   if (/\b(when|what time|how often|how long|routine|use|usage|apply|application)\b/.test(normalizedQuery) && product) {
     return {
       matched: true,
       matchedType: 'usage',
-      reply: `**Best Time to Use ${product.name}:** Follow the product label for frequency and directions. For face wash, gently massage on wet skin for **30 to 45 seconds**, then rinse thoroughly. Avoid the eye area.`,
-      quickActions: buildProductIngredientSuggestions(product),
+      reply: `**Best Time to Use & Daily Skincare Ritual for ${product.name}:**\n\n` +
+        `• **☀️ Morning (AM) Ritual — Antioxidant Shield:**\n` +
+        `  Cleanse gently upon waking to sweep away overnight sebum and metabolic residue. The natural **Sea Buckthorn (Omega-7)** and **Niacinamide (1%)** work synergistically to create a radiant antioxidant shield against daytime pollutants and oxidative stress.\n\n` +
+        `• **🌙 Evening (PM) Ritual — Restorative Barrier Reset:**\n` +
+        `  Cleanse at dusk or before bed to dissolve accumulated sunscreen, dust, and urban grime. Infused with **Hyaluronic Acid (0.5%)** and **Botanical Glycerin (4%)**, it thoroughly purifies without stripping your skin's vital lipid moisture barrier.\n\n` +
+        `• **💧 Step-by-Step Application Technique:**\n` +
+        `  1. Splash your face with comfortable lukewarm water (avoid hot water, which strips natural sebum).\n` +
+        `  2. Dispense 1 to 2 coin-sized pumps into clean, damp palms and work into a rich micro-bubble lather.\n` +
+        `  3. Gently massage over face and neck in upward circular motions for **30 to 45 seconds**, focusing on the T-zone while avoiding direct contact with the eyes.\n` +
+        `  4. Rinse thoroughly with cool water to refresh the pores, then pat gently with a clean muslin towel — leaving skin slightly damp for subsequent steps.\n\n` +
+        `• **🧴 Post-Cleansing Layering Order:**\n` +
+        `  *Face Wash* ➔ *Hydrating Toner / Mist* ➔ *Active Serum (Niacinamide / Vitamin C)* ➔ *Moisturizer / Kumkumadi Night Elixir* ➔ *Broad Spectrum SPF (AM only)*.\n\n` +
+        `• **🌿 Skin Compatibility & Safety:**\n` +
+        `  Formulated at skin-identical **pH 5.5**, soap-free, non-comedogenic, and safe for sensitive, oily, or acne-prone skin. Follow the product label for frequency and conduct a 24-hour patch test before first use.`,
+      quickActions: buildUsageFollowUpSuggestions(product),
       updatedContext: { activeProductId: product.id, lastIngredientId: sessionContext.lastIngredientId || null },
       flowType: 'usage_guide',
       activeProductId: product.id,
@@ -286,12 +530,13 @@ async function searchAllKnowledgeSources(message, options = {}, suppliedPool = n
     };
   }
 
+  // 6. Ingredient Deep Dive
   if (ingredient && !ingredientOnlyInProductName) {
     const activeProduct = PRODUCT_INGREDIENT_GRAPH[sessionContext.activeProductId] || product;
     const isListedInProduct = activeProduct?.keyActives.some(active => active.id === ingredient.id);
     const productNote = activeProduct
       ? isListedInProduct
-        ? ` It is listed in the ${activeProduct.name}; check the package for the full ingredient list and exact concentration.`
+        ? ` It is calibrated and listed in ${activeProduct.name}; check packaging for complete formulation details.`
         : ` Check the ${activeProduct.name} package to confirm whether it is included.`
       : ' Ingredient inclusion and concentration vary by product; check the package label.';
     return {
@@ -309,6 +554,7 @@ async function searchAllKnowledgeSources(message, options = {}, suppliedPool = n
     };
   }
 
+  // 7. Product Discovery
   if (product) {
     const listedIngredients = product.keyActives.map(active => `**${active.name}**`).join(', ');
     return {
@@ -355,4 +601,5 @@ module.exports = {
   searchAllKnowledgeSources,
   buildIngredientFollowUpSuggestions,
   buildProductIngredientSuggestions,
+  buildUsageFollowUpSuggestions,
 };

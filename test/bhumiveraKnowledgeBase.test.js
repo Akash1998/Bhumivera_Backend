@@ -63,3 +63,53 @@ test('Gemini synthesis preserves the deterministic response when not configured'
   assert.deepEqual(result.quickActions, [{ id: 'next' }]);
   assert.equal(result.provider, 'deterministic-verified');
 });
+
+test('usage query returns forward-progressing suggestions without repeating the usage prompt', async () => {
+  const usageResult = await searchAllKnowledgeSources(
+    'How do I use Sea Buckthorn Face Wash and what time of day should I use it?'
+  );
+
+  assert.equal(usageResult.matchedType, 'usage');
+  assert.match(usageResult.reply, /Morning \(AM\) Ritual/i);
+  assert.match(usageResult.reply, /Evening \(PM\) Ritual/i);
+  assert.match(usageResult.reply, /30 to 45 seconds/i);
+
+  // Suggestions must NOT repeat the usage question just asked
+  assert.ok(!usageResult.quickActions.some(a => a.category === 'usage_and_timing'), 'Must not loop back to usage suggestion');
+  assert.ok(usageResult.quickActions.some(a => a.category === 'post_wash_routine'));
+  assert.ok(usageResult.quickActions.some(a => a.category === 'ingredient_synergy'));
+  assert.ok(usageResult.quickActions.some(a => a.category === 'skin_compatibility'));
+  assert.ok(usageResult.quickActions.some(a => a.category === 'product_pairing'));
+
+  // Test clicking through to post-wash layering
+  const layeringResult = await searchAllKnowledgeSources(
+    'What skincare products should I apply right after using Sea Buckthorn Face Wash?',
+    { activeProductId: 'sea_buckthorn_face_wash' }
+  );
+  assert.equal(layeringResult.matchedType, 'post_wash_layering');
+  assert.match(layeringResult.reply, /60-Second Rule/i);
+  assert.match(layeringResult.reply, /Kumkumadi Night Elixir/i);
+
+  // Test clicking through to synergy
+  const synergyResult = await searchAllKnowledgeSources(
+    'How do Sea Buckthorn and Niacinamide work together in Sea Buckthorn Face Wash?'
+  );
+  assert.equal(synergyResult.matchedType, 'ingredient_synergy');
+  assert.match(synergyResult.reply, /Omega-7/i);
+  assert.match(synergyResult.reply, /ceramide/i);
+
+  // Test clicking through to sensitive skin
+  const skinResult = await searchAllKnowledgeSources(
+    'Is Sea Buckthorn Face Wash safe for sensitive or acne-prone skin, and how do I patch test?'
+  );
+  assert.equal(skinResult.matchedType, 'skin_compatibility');
+  assert.match(skinResult.reply, /pH 5\.5/i);
+  assert.match(skinResult.reply, /24-Hour Patch Test/i);
+
+  // Test clicking through to Kumkumadi pairing
+  const pairingResult = await searchAllKnowledgeSources(
+    'How do I pair Sea Buckthorn Face Wash with Bhumivera Kumkumadi Night Elixir?'
+  );
+  assert.equal(pairingResult.matchedType, 'product_pairing');
+  assert.match(pairingResult.reply, /Golden PM Ritual/i);
+});
