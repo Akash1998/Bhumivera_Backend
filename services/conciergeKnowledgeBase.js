@@ -82,7 +82,12 @@ function getConciergeKnowledgeAnswer(number) {
   return knowledgeEntries.find(entry => entry.number === Number(number)) || null;
 }
 
+function getAllConciergeKnowledgeAnswers() {
+  return knowledgeEntries.map(entry => ({ ...entry }));
+}
+
 module.exports = {
   findRelevantConciergeAnswer,
   getConciergeKnowledgeAnswer,
+  getAllConciergeKnowledgeAnswers,
 };
