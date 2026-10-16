@@ -722,6 +722,11 @@ const migrations = [
     name: 'initialize autonomous ai customer support engine schema',
     up: () => initAiSupportTables(pool),
   },
+  {
+    version: 61,
+    name: 'upgrade tamperproof coupon ledger and unify coupon columns',
+    up: () => createCouponTable(),
+  },
 ];
 
 module.exports = migrations;

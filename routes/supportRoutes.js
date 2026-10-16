@@ -1492,11 +1492,19 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
 
       try {
         await pool.query(
-          `INSERT INTO coupons (code, discount_type, discount_value, min_order_amount, max_discount, usage_limit, restricted_user_id, is_active, expires_at)
-           VALUES (?, 'percentage', ?, 299, ?, 1, ?, 1, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
+          `INSERT INTO coupons (code, discount_type, discount_value, min_order_amount, min_order_value, minimum_order_amount, max_discount, usage_limit, per_user_limit, restricted_user_id, status, is_active, expiry_date, expires_at)
+           VALUES (?, 'percentage', ?, 299, 299, 299, ?, 1, 1, ?, 'active', 1, DATE_ADD(NOW(), INTERVAL 30 DAY), DATE_ADD(NOW(), INTERVAL 30 DAY))`,
           [code, discountPercent, maxDiscountCap, session.userId || null]
         );
-      } catch {}
+      } catch {
+        try {
+          await pool.query(
+            `INSERT INTO coupons (code, discount_type, discount_value, min_order_amount, max_discount, usage_limit, restricted_user_id, is_active, expires_at)
+             VALUES (?, 'percentage', ?, 299, ?, 1, ?, 1, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
+            [code, discountPercent, maxDiscountCap, session.userId || null]
+          );
+        } catch {}
+      }
 
       try {
         const customerIdent = session.guestEmail || session.guestPhone || `sess_${session.id}`;
@@ -1717,6 +1725,7 @@ router.get('/universal-search', authenticateSupportAgent, async (req, res) => {
     return res.status(400).json({ message: 'Enter an Order ID, Tracking Number, Customer Email, or Phone Number.' });
   }
   const cleanRef = rawQuery.replace(/^#/, '').trim();
+  const strippedOrderRef = cleanRef.replace(/^(?:BHVM|ORD|ORDER)[-_\s]*/i, "").trim() || cleanRef;
   const cleanDigits = cleanRef.replace(/\D/g, '');
   const likeTerm = `%${cleanRef}%`;
   const phoneTail = cleanDigits.length >= 10 ? `%${cleanDigits.slice(-10)}` : null;
@@ -1741,8 +1750,8 @@ router.get('/universal-search', authenticateSupportAgent, async (req, res) => {
        ORDER BY o.created_at DESC
        LIMIT 25`,
       [
-        cleanRef,
-        /^\d+$/.test(cleanRef) ? Number(cleanRef) : 0,
+        strippedOrderRef,
+        /^\d+$/.test(strippedOrderRef) ? Number(strippedOrderRef) : 0,
         likeTerm,
         likeTerm,
         likeTerm,

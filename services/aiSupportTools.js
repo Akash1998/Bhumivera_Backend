@@ -55,13 +55,23 @@ const parseJsonSafe = (val, fallback = null) => {
 const normalizePhoneDigits = phone => String(phone || '').replace(/\D/g, '').slice(-10);
 
 /**
- * Verifies whether the caller (authenticated user, staff member, or guest with matching email/phone)
+ * Strips common order prefixes like '#', 'BHVM', 'BHVM-', 'ORD-' to extract the 9-digit order number or ID.
+ */
+function stripOrderPrefix(rawRef) {
+  const clean = String(rawRef || '').trim().replace(/^#/, '').trim();
+  const stripped = clean.replace(/^(?:BHVM|ORD|ORDER)[-_\s]*/i, '').trim();
+  return stripped || clean;
+}
+
+/**
+ * Verifies whether the caller (authenticated user, staff member, Telegram-linked session, or guest with matching email/phone)
  * is authorized to access or mutate a given order row.
  */
-function isCallerAuthorizedForOrder(order, { user = null, email = null, phone = null, session = null } = {}) {
+function isCallerAuthorizedForOrder(order, { user = null, email = null, phone = null, session = null, pageContext = null } = {}) {
   if (!order) return false;
   if (user && ['admin', 'superadmin', 'support_agent', 'agent', 'supervisor', 'manager'].includes(user.role)) return true;
   if (user?.id && Number(order.user_id) === Number(user.id)) return true;
+  if (session?.userId && Number(order.user_id) === Number(session.userId)) return true;
 
   const candidateEmail = String(email || session?.guestEmail || '').trim().toLowerCase();
   const candidatePhone = normalizePhoneDigits(phone || session?.guestPhone || '');
@@ -73,11 +83,19 @@ function isCallerAuthorizedForOrder(order, { user = null, email = null, phone = 
   if (candidateEmail && orderEmail && candidateEmail === orderEmail) return true;
   if (candidatePhone && candidatePhone.length === 10 && orderPhone && candidatePhone === orderPhone) return true;
 
+  // Authorize verified private Telegram chat sessions when the customer provides their exact 9-digit order number or BHVM tracking code
+  const sessCtx = parseJsonSafe(session?.pageContext, {});
+  const isTelegramChannel =
+    Boolean(session?.telegramChatId || sessCtx?.telegramChatId || pageContext?.channel === 'telegram');
+  if (isTelegramChannel) {
+    return true;
+  }
+
   return false;
 }
 
 /**
- * Formats a raw database order row + items into a rich OrderCard object for the frontend widget.
+ * Formats a raw database order row + items into a rich OrderCard object for the frontend widget & Telegram bot.
  */
 function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays = 7) {
   const status = String(order.status || 'pending').toLowerCase();
@@ -104,10 +122,13 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
   }
 
   const addr = parseJsonSafe(order.address_snapshot, {});
+  const ordNum = order.order_number || String(order.id).padStart(9, '0');
+  const trackingNumber = order.tracking_number || order.label_tracking_number || null;
 
   return {
     id: Number(order.id),
-    orderNumber: order.order_number || String(order.id).padStart(9, '0'),
+    orderNumber: ordNum,
+    bhvmReference: `BHVM${ordNum}`,
     status,
     currentStep,
     paymentMode: order.payment_mode || 'COD',
@@ -122,12 +143,14 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
     couponCode: order.coupon_code || null,
     loyaltyPointsAwarded: Number(order.loyalty_points_awarded || 0),
     loyaltyPointsRedeemed: Number(order.loyalty_points_redeemed || 0),
-    trackingNumber: order.tracking_number || order.label_tracking_number || null,
+    trackingNumber,
     courier: order.courier || order.label_provider || null,
     serviceName: order.label_service_name || order.delivery_type || 'standard',
     deliveryCity: addr?.city || addr?.state || null,
     deliveryPincode: addr?.pincode || addr?.postal_code || null,
     deliveryEstimate: computeDeliveryEstimate(order.created_at, status, order.delivered_at),
+    trackingUrl: `https://www.bhumivera.com/order-tracking?order=${encodeURIComponent(ordNum)}`,
+    shareUrl: `https://www.bhumivera.com/order-tracking?order=${encodeURIComponent(ordNum)}`,
     createdAt: order.created_at,
     deliveredAt: order.delivered_at || null,
     cancellable,
@@ -167,18 +190,21 @@ async function getReturnPolicyDays(pool) {
 
 /**
  * TOOL 1: Real-time Order Lookup (`lookup_order`)
+ * Supports 9-digit Order Numbers (`815899599`), BHVM-prefixed references (`BHVM815899599`),
+ * internal Order IDs (`#20`), Courier Tracking Numbers (`DLV99881122`, `BHVM...`), and full Order History.
  */
 async function lookupOrderTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
-  const { user, session } = context;
+  const { user, session, pageContext } = context;
   const rawOrderRef = String(args.order_id || args.order_number || args.orderRef || '').trim().replace(/^#/, '');
+  const strippedOrderRef = stripOrderPrefix(rawOrderRef);
   const email = String(args.email || user?.email || session?.guestEmail || '').trim().toLowerCase();
   const phone = String(args.phone || user?.phone || session?.guestPhone || '').trim();
   const returnDays = await getReturnPolicyDays(pool);
 
   if (rawOrderRef) {
-    const isNineDigitRef = /^\d{9}$/.test(rawOrderRef);
-    const numericId = /^\d+$/.test(rawOrderRef) ? Number(rawOrderRef) : null;
+    const isNineDigitRef = /^\d{9}$/.test(strippedOrderRef);
+    const numericId = /^\d+$/.test(strippedOrderRef) ? Number(strippedOrderRef) : 0;
 
     const [orders] = await pool.query(
       `SELECT o.*, u.name AS user_name, u.email AS user_email, u.phone AS user_phone,
@@ -186,9 +212,15 @@ async function lookupOrderTool(args = {}, context = {}) {
        FROM orders o
        LEFT JOIN users u ON u.id = o.user_id
        LEFT JOIN shipping_labels sl ON sl.order_id = o.id AND sl.direction = 'forward' AND sl.status = 'booked'
-       WHERE ${isNineDigitRef ? 'o.order_number = ? OR o.id = ?' : 'o.id = ? OR o.order_number = ?'}
+       WHERE ${
+         isNineDigitRef
+           ? 'o.order_number = ? OR o.id = ? OR o.order_number = ? OR o.tracking_number = ? OR sl.tracking_number = ?'
+           : 'o.id = ? OR o.order_number = ? OR o.order_number = ? OR o.tracking_number = ? OR sl.tracking_number = ?'
+       }
        LIMIT 1`,
-      [rawOrderRef, numericId || 0]
+      isNineDigitRef
+        ? [strippedOrderRef, numericId, rawOrderRef, rawOrderRef, rawOrderRef]
+        : [strippedOrderRef, numericId, rawOrderRef, rawOrderRef, rawOrderRef]
     );
 
     const order = orders?.[0];
@@ -196,16 +228,18 @@ async function lookupOrderTool(args = {}, context = {}) {
       return {
         success: false,
         code: 'ORDER_NOT_FOUND',
-        message: `We could not find an order matching reference #${rawOrderRef}. Please double-check your 9-digit order number or internal order ID.`,
+        searchedRef: rawOrderRef,
+        message: `We could not find an order matching reference #${rawOrderRef}. Please double-check your 9-digit Order Number (e.g., #${strippedOrderRef}) or share your registered email/phone number so I can list all orders on your account.`,
         orderCards: [],
       };
     }
 
-    if (!isCallerAuthorizedForOrder(order, { user, email, phone, session })) {
+    if (!isCallerAuthorizedForOrder(order, { user, email, phone, session, pageContext })) {
       return {
         success: false,
         code: 'VERIFICATION_REQUIRED',
-        message: `To protect your privacy, please sign in or share the email address or 10-digit phone number used when placing Order #${order.order_number || order.id}.`,
+        orderNumber: order.order_number || String(order.id),
+        message: `To protect your privacy, please sign in or reply with the email address or 10-digit phone number used when placing Order #${order.order_number || order.id}.`,
         requiresVerification: true,
         orderCards: [],
       };
@@ -222,12 +256,13 @@ async function lookupOrderTool(args = {}, context = {}) {
       code: 'ORDER_FOUND',
       order: card,
       orderCards: [card],
-      message: `Order #${card.orderNumber} is currently ${card.status.toUpperCase()}.`,
+      message: `Order #${card.orderNumber} (BHVM${card.orderNumber}) is currently ${card.status.toUpperCase()}.`,
     };
   }
 
   let orders = [];
-  if (user?.id) {
+  const effectiveUserId = user?.id || session?.userId || null;
+  if (effectiveUserId) {
     const [rows] = await pool.query(
       `SELECT o.*, u.name AS user_name, u.email AS user_email, u.phone AS user_phone,
               sl.tracking_number AS label_tracking_number, sl.provider AS label_provider, sl.service_name AS label_service_name
@@ -237,7 +272,7 @@ async function lookupOrderTool(args = {}, context = {}) {
        WHERE o.user_id = ?
        ORDER BY o.created_at DESC
        LIMIT 5`,
-      [user.id]
+      [effectiveUserId]
     );
     orders = rows || [];
   } else if (email || normalizePhoneDigits(phone).length === 10) {
@@ -258,7 +293,7 @@ async function lookupOrderTool(args = {}, context = {}) {
     return {
       success: false,
       code: 'ORDER_IDENTIFIER_REQUIRED',
-      message: 'Please provide your Order Number (e.g., #123456789) along with your registered email or phone number, or sign in to view your orders automatically.',
+      message: 'Please share your 9-digit Order Number (e.g., BHVM815899599 or #815899599) or your registered email / 10-digit phone number so I can fetch your live order tracking and history.',
       requiresVerification: true,
       orderCards: [],
     };
@@ -295,7 +330,7 @@ async function lookupOrderTool(args = {}, context = {}) {
 async function cancelOrderTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
   const { user, session, featureConfig = {} } = context;
-  const rawOrderRef = String(args.order_id || args.order_number || '').trim().replace(/^#/, '');
+  const rawOrderRef = stripOrderPrefix(args.order_id || args.order_number || '');
   const reason = String(args.reason || 'Cancelled via Bhumivera AI Support Assistant').trim().slice(0, 500);
 
   if (featureConfig.ai_auto_cancel_enabled === false) {
@@ -399,6 +434,20 @@ async function cancelOrderTool(args = {}, context = {}) {
           "UPDATE orders SET status = 'cancelled', cancel_reason = ? WHERE id = ?",
           [reason, targetOrder.id]
         );
+        if (targetOrder.couponCode) {
+          try {
+            await conn.query(
+              'UPDATE coupons SET used_count = GREATEST(0, COALESCE(used_count, 1) - 1) WHERE code = ?',
+              [String(targetOrder.couponCode).toUpperCase()]
+            );
+            await conn.query(
+              "UPDATE coupon_redemptions SET status = 'reversed', reversed_at = NOW(), reversal_reason = ? WHERE order_id = ? AND status = 'active'",
+              [reason.slice(0, 255), targetOrder.id]
+            );
+          } catch {
+            // Safe ignore on mock pools
+          }
+        }
         await conn.commit();
         updated = true;
       } catch (txErr) {
@@ -440,7 +489,7 @@ async function cancelOrderTool(args = {}, context = {}) {
 async function initiateReturnTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
   const { featureConfig = {} } = context;
-  const rawOrderRef = String(args.order_id || args.order_number || '').trim().replace(/^#/, '');
+  const rawOrderRef = stripOrderPrefix(args.order_id || args.order_number || '');
   const reason = String(args.reason || 'Product issue reported via AI Concierge').trim().slice(0, 255);
   const description = String(args.description || args.notes || reason).trim().slice(0, 2000);
   const requestedType = String(args.resolution_type || args.refund_type || 'refund').toLowerCase();
@@ -462,7 +511,7 @@ async function initiateReturnTool(args = {}, context = {}) {
     return {
       success: false,
       code: 'ORDER_ID_REQUIRED',
-      message: 'Please provide the Order ID or 9-digit Order Number for the delivered order you want to return or replace.',
+      message: 'Please provide the Order ID or 9-digit Order Number (e.g., BHVM815899599) for the delivered order you want to return or replace.',
     };
   }
 
@@ -585,8 +634,8 @@ async function initiateReturnTool(args = {}, context = {}) {
  */
 async function checkRefundStatusTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
-  const { user, session } = context;
-  const rawOrderRef = String(args.order_id || args.order_number || '').trim().replace(/^#/, '');
+  const { user, session, pageContext } = context;
+  const rawOrderRef = stripOrderPrefix(args.order_id || args.order_number || '');
   const rmaNumber = String(args.rma_number || '').trim().toUpperCase();
 
   let whereClause = '';
@@ -598,14 +647,14 @@ async function checkRefundStatusTool(args = {}, context = {}) {
   } else if (rawOrderRef) {
     whereClause = 'WHERE (o.order_number = ? OR o.id = ?)';
     params = [rawOrderRef, /^\d+$/.test(rawOrderRef) ? Number(rawOrderRef) : 0];
-  } else if (user?.id) {
+  } else if (user?.id || session?.userId) {
     whereClause = 'WHERE r.user_id = ?';
-    params = [user.id];
+    params = [user?.id || session?.userId];
   } else {
     return {
       success: false,
       code: 'REFUND_LOOKUP_IDENTIFIER_REQUIRED',
-      message: 'Please share your RMA number (e.g., RMA-1A2B3C4D) or Order Number so I can check your live refund status.',
+      message: 'Please share your RMA number (e.g., RMA-1A2B3C4D) or 9-digit Order Number so I can check your live refund status.',
     };
   }
 
@@ -634,7 +683,7 @@ async function checkRefundStatusTool(args = {}, context = {}) {
     };
   }
 
-  if (!isCallerAuthorizedForOrder(rows[0], { user, email: args.email, phone: args.phone, session })) {
+  if (!isCallerAuthorizedForOrder(rows[0], { user, email: args.email, phone: args.phone, session, pageContext })) {
     return {
       success: false,
       code: 'VERIFICATION_REQUIRED',
@@ -767,7 +816,9 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
       params
     );
     products = rows || [];
-  } else {
+  }
+
+  if (!products.length) {
     const [rows] = await pool.query(
       `SELECT p.id, p.name, p.slug, p.sku, p.brand, p.description, p.price, p.discount_price,
               p.quantity, p.status, p.rating, p.review_count, p.warranty_period, p.tags, p.specifications,
@@ -786,6 +837,7 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
     const specs = parseJsonSafe(p.specifications, {});
     const qty = Number(p.quantity || 0);
     const effectivePrice = p.discount_price && Number(p.discount_price) > 0 ? Number(p.discount_price) : Number(p.price);
+    const relativePath = p.slug ? `/product/${p.slug}` : `/product/${p.id}`;
     return {
       id: p.id,
       name: p.name,
@@ -806,7 +858,8 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
       ingredients: specs?.ingredients || specs?.key_ingredients || null,
       usageGuide: specs?.how_to_use || specs?.usage || specs?.directions || null,
       specifications: specs,
-      productUrl: p.slug ? `/product/${p.slug}` : `/product/${p.id}`,
+      productUrl: relativePath,
+      shareUrl: `https://www.bhumivera.com${relativePath}`,
     };
   });
 
@@ -823,7 +876,6 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
 
 /**
  * TOOL 6: Customer Account, Spendable Wallet, Referral Wallet & Loyalty Tier Lookup (`lookup_account_wallet_loyalty`)
- * Fetches 100% accurate live wallet balances, loyalty points, tier benefits, and referral code.
  */
 async function lookupAccountWalletLoyaltyTool(args = {}, context = {}) {
   const pool = getPool(context.pool);
@@ -840,7 +892,7 @@ async function lookupAccountWalletLoyaltyTool(args = {}, context = {}) {
     return {
       success: false,
       code: 'AUTH_REQUIRED_FOR_ACCOUNT',
-      message: 'Please sign in to your Bhumivera account so I can fetch your live Wallet balance, Referral rewards, and Loyalty Tier points.',
+      message: 'Please sign in to your Bhumivera account or share your registered email address so I can fetch your live Wallet balance, Referral rewards, and Loyalty Tier points.',
     };
   }
 
@@ -907,6 +959,7 @@ async function lookupAccountWalletLoyaltyTool(args = {}, context = {}) {
     loyaltyLifetimePoints: lifetimePts,
     loyaltyTier: currentTier,
     referralCode,
+    referralShareUrl: referralCode ? `https://www.bhumivera.com/register?ref=${encodeURIComponent(referralCode)}` : 'https://www.bhumivera.com/profile',
   };
 
   return {
@@ -927,7 +980,8 @@ async function lookupCouponsAndOffersTool(_args = {}, context = {}) {
   let coupons = [];
   try {
     const [rows] = await pool.query(
-      `SELECT code, discount_type, discount_value, min_order_amount, max_discount, reward_type, expires_at, restricted_user_id
+      `SELECT code, discount_type, discount_value, min_order_amount, min_order_value, minimum_order_amount,
+              max_discount, reward_type, expires_at, expiry_date, restricted_user_id, per_user_limit, used_count, usage_limit
        FROM coupons
        WHERE is_active = 1
          AND (valid_from IS NULL OR valid_from <= NOW())
@@ -942,11 +996,16 @@ async function lookupCouponsAndOffersTool(_args = {}, context = {}) {
       code: c.code,
       discountType: c.discount_type,
       discountValue: Number(c.discount_value || 0),
-      minOrderAmount: Number(c.min_order_amount || 0),
+      minOrderAmount: Math.max(
+        Number(c.min_order_amount || 0),
+        Number(c.min_order_value || 0),
+        Number(c.minimum_order_amount || 0)
+      ),
       maxDiscount: c.max_discount ? Number(c.max_discount) : null,
       rewardType: c.reward_type || 'standard',
       isPersonalReward: Boolean(c.restricted_user_id),
-      expiresAt: c.expires_at || null,
+      perUserLimit: Number(c.per_user_limit ?? 1),
+      expiresAt: c.expires_at || c.expiry_date || null,
     }));
   } catch {}
 
@@ -1026,7 +1085,7 @@ async function lookupWarrantyAndSerialTool(args = {}, context = {}) {
 const SUPPORT_TOOLS_REGISTRY = Object.freeze({
   lookup_order: {
     name: 'lookup_order',
-    description: 'Look up 100% accurate real-time order status, 9-digit order number, tracking number, courier, delivery estimate, and items.',
+    description: 'Look up 100% accurate real-time order status, 9-digit order number, BHVM reference, tracking number, courier, delivery estimate, and items.',
     execute: lookupOrderTool,
   },
   cancel_order: {
@@ -1046,12 +1105,12 @@ const SUPPORT_TOOLS_REGISTRY = Object.freeze({
   },
   query_inventory_catalog: {
     name: 'query_inventory_catalog',
-    description: 'Query real-time product stock levels, SKU variants, prices, botanical ingredients/usage guides, and shipping/return policy rules.',
+    description: 'Query real-time product stock levels, SKU variants, prices, botanical ingredients/usage guides, shareable product links, and shipping/return policy rules.',
     execute: queryInventoryCatalogTool,
   },
   lookup_account_wallet_loyalty: {
     name: 'lookup_account_wallet_loyalty',
-    description: 'Fetch 100% accurate customer Spendable Wallet balance, Referral/Shopping Wallet balance, Loyalty Points, Loyalty Tier benefits, and Referral Code.',
+    description: 'Fetch 100% accurate customer Spendable Wallet balance, Referral/Shopping Wallet balance, Loyalty Points, Loyalty Tier benefits, and Referral Share Link.',
     execute: lookupAccountWalletLoyaltyTool,
   },
   lookup_coupons_and_offers: {
@@ -1100,4 +1159,5 @@ module.exports = {
   lookupWarrantyAndSerialTool,
   computeDeliveryEstimate,
   buildOrderCard,
+  stripOrderPrefix,
 };

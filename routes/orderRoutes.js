@@ -29,6 +29,7 @@ const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../servic
 const { reconcileReferralRewards, getReferralConfig } = require('../models/referralModel');
 const { calculateShippingCost } = require('../services/shippingPolicy');
 const { createNotification } = require('../models/notificationModel');
+const { validateCoupon } = require('../models/couponModel');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -199,7 +200,6 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     }
     if (!addressId) return res.status(400).json({ message: "Delivery address is required." });
 
-    // [FIX]: Use AddressModel.getAddressesByUser
     const addresses = await AddressModel.getAddressesByUser(req.user.id);
     const address = addresses.find((a) => a.id === parseInt(addressId, 10));
     if (!address) return res.status(404).json({ message: "Address not found." });
@@ -233,30 +233,34 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     let recoveryCoupon = false;
     let couponFreeShipping = false;
 
-    if (couponCode) {
+    if (couponCode && String(couponCode).trim()) {
       await reconcileReferralRewards(req.user.id);
-      const [coupons] = await pool.query(
-        `SELECT * FROM coupons WHERE code=? AND is_active=1
-         AND (restricted_user_id IS NULL OR restricted_user_id = ?)
-         AND (valid_from IS NULL OR valid_from <= NOW())
-         AND (expires_at IS NULL OR expires_at >= NOW())
-         AND (usage_limit IS NULL OR used_count < usage_limit)`,
-        [couponCode.toUpperCase(), req.user.id]
-      );
-      const coupon = coupons[0];
-      if (!coupon) return res.status(400).json({ code: 'INVALID_COUPON', message: 'This coupon is invalid, expired, already used, or assigned to another customer.' });
-      if (cartTotal < (Number(coupon.min_order_amount) || 0)) {
-        return res.status(400).json({ code: 'COUPON_MINIMUM_NOT_MET', message: `Add ₹${(Number(coupon.min_order_amount) - cartTotal).toFixed(2)} more to use this coupon.` });
+      let validated;
+      try {
+        validated = await validateCoupon(couponCode, cartTotal, req.user.id, {
+          paymentMode,
+          items,
+        });
+      } catch (couponErr) {
+        return res.status(400).json({
+          code: couponErr.code || 'INVALID_COUPON',
+          message: couponErr.message || 'This coupon is invalid, expired, already used, or assigned to another customer.',
+        });
       }
+      if (!validated || !validated.valid || !validated.coupon) {
+        return res.status(400).json({
+          code: validated?.code || 'INVALID_COUPON',
+          message: validated?.message || 'This coupon is invalid, expired, already used, or assigned to another customer.',
+        });
+      }
+      const coupon = validated.coupon;
+      resolvedCoupon = coupon.code;
+      couponId = coupon.id;
+      recoveryCoupon = Boolean(coupon.restricted_user_id) && String(coupon.restricted_user_id) === String(req.user.id);
+
       if (coupon.reward_type !== 'referral_wallet') {
-        couponFreeShipping = coupon.reward_type === 'free_shipping';
-        couponDiscount = couponFreeShipping ? 0 : coupon.discount_type === "percentage"
-          ? Math.min((cartTotal * Number(coupon.discount_value)) / 100, Number(coupon.max_discount) || Infinity)
-          : Number(coupon.discount_value) || 0;
-        couponDiscount = Math.max(0, Math.min(couponDiscount, cartTotal));
-        resolvedCoupon = coupon.code;
-        couponId = coupon.id;
-        recoveryCoupon = Boolean(coupon.restricted_user_id) && String(coupon.restricted_user_id) === String(req.user.id);
+        couponFreeShipping = Boolean(validated.freeShipping || coupon.reward_type === 'free_shipping' || coupon.discount_type === 'free_shipping');
+        couponDiscount = couponFreeShipping ? 0 : Math.max(0, Math.min(Number(validated.discountAmount ?? validated.discount ?? 0), cartTotal));
       }
     }
 
@@ -375,6 +379,8 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       termsVersion: TERMS_VERSION,
       lifecycleGiftProductId,
       loyaltyPointsToRedeem: pointsToRedeemForOrder,
+      ipAddress: req.ip || null,
+      userAgent: req.headers?.['user-agent'] || null,
     });
     const orderId = orderResult.id;
     if (orderResult.reused) {
@@ -390,7 +396,6 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
 
     await clearCart(req.user.id);
 
-    // [ENHANCEMENT]: Immediately dispatch Order Confirmation Email upon successful placement
     const orderNotifications = [
       {
         user_id: req.user.id,
@@ -458,7 +463,7 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
         message: err.message,
       });
     }
-    if (err.status === 409) return res.status(409).json({ message: err.message });
+    if (err.status === 409) return res.status(409).json({ code: err.code, message: err.message });
     if (err.message?.includes("Insufficient stock")) return res.status(400).json({ message: err.message });
     if (err.message?.includes("not found")) return res.status(400).json({ message: "Product no longer available." });
     return res.status(500).json({ message: "Checkout failed due to a server error. Please try again." });

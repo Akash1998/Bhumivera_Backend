@@ -120,4 +120,37 @@ describe('referral wallet coupon validation', () => {
     assert.equal(result.discount, 0);
     assert.equal(result.coupon.reward_type, 'free_shipping');
   });
+
+  it('blocks a customer from reusing the same storewide coupon once per_user_limit is reached', async () => {
+    state.query = async sql => {
+      if (sql.includes('SELECT * FROM coupons')) {
+        return [[{
+          id: 55,
+          code: 'SAVE20',
+          status: 'active',
+          is_active: 1,
+          discount_type: 'percentage',
+          discount_value: 20,
+          min_order_value: 500,
+          max_discount: 300,
+          usage_limit: 100,
+          per_user_limit: 1,
+          used_count: 1,
+          reward_type: 'standard',
+        }], []];
+      }
+      if (sql.includes('FROM coupon_redemptions')) {
+        return [[{ cnt: 1 }], []];
+      }
+      if (sql.includes('FROM orders')) {
+        return [[{ cnt: 1 }], []];
+      }
+      return [[], []];
+    };
+
+    await assert.rejects(
+      () => couponModel.validateCoupon('SAVE20', 1200, 7),
+      err => err.code === 'COUPON_USER_LIMIT_REACHED' && /already used coupon SAVE20/i.test(err.message)
+    );
+  });
 });

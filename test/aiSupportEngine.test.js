@@ -697,7 +697,7 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
 
   it('confirms support escalation in plain language without internal workflow terms', () => {
     const { reply } = synthesizeDeterministicResponse({
-      userMessage: 'Please connect me with a human support agent.',
+      message: 'Please connect me with a human support agent.',
       escalation: {
         escalated: true,
         ticketId: 8,
@@ -921,6 +921,39 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     );
     assert.doesNotMatch(storedUserMsg.content, /MyPass123!/);
     assert.match(storedUserMsg.content, /\[REDACTED_SECRET\]/);
+  });
+
+  it("7b. Handles BHVM-prefixed order numbers (e.g. BHVM815899599), greetings (Hi), and single-word return/order intents without falling back to generic text", async () => {
+    const hiTurn = await processSupportTurn({
+      message: "Hi",
+      user: { id: 7, name: "Aarav Sharma", email: "aarav@example.com" },
+      pool: mockPool,
+    });
+    assert.match(hiTurn.reply, /Hello Aarav|Bhumivera Concierge/i);
+    assert.doesNotMatch(hiTurn.reply, /^I can help with orders, returns, refunds, or product questions\. What would you like to sort out\?$/);
+
+    const orderTurn = await processSupportTurn({
+      message: "order",
+      user: { id: 7, name: "Aarav Sharma", email: "aarav@example.com" },
+      pool: mockPool,
+    });
+    assert.ok(orderTurn.orderCards.length > 0);
+    assert.match(orderTurn.reply, /918273645|918273646/);
+
+    const returnTurn = await processSupportTurn({
+      message: "return",
+      user: null,
+      pool: mockPool,
+    });
+    assert.match(returnTurn.reply, /BHVM|return|replacement/i);
+
+    const bhvmTurn = await processSupportTurn({
+      message: "BHVM918273646",
+      user: { id: 7, name: "Aarav Sharma", email: "aarav@example.com" },
+      pool: mockPool,
+    });
+    assert.equal(bhvmTurn.orderCards[0]?.orderNumber, "918273646");
+    assert.match(bhvmTurn.orderCards[0]?.trackingUrl || "", /order-tracking\?order=918273646/);
   });
 });
 
@@ -1398,5 +1431,55 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     const tgData = await tgRes.json();
     assert.equal(tgData.ok, true);
     assert.equal(tgData.handled, true);
+  });
+
+  it('18. Telegram & Web A-to-Z Conversational Queries: BHVM Order IDs, Greetings, Single-Word Return/Order, and Share Links', async () => {
+    const hiTurn = await processSupportTurn({
+      message: 'Hi',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      pool: mockPool,
+    });
+    assert.match(hiTurn.reply, /Welcome to \*\*Bhumivera Support\*\*/i);
+    assert.match(hiTurn.reply, /BHVM918273645/);
+
+    const bhvmTurn = await processSupportTurn({
+      message: 'BHVM918273646',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      pool: mockPool,
+    });
+    assert.equal(bhvmTurn.orderCards.length, 1);
+    assert.equal(bhvmTurn.orderCards[0].orderNumber, '918273646');
+    assert.match(bhvmTurn.reply, /DLV99881122/);
+    assert.match(bhvmTurn.reply, /bhumivera\.com\/order-tracking\?order=918273646/);
+
+    const missingBhvmTurn = await processSupportTurn({
+      message: 'BHVM815899599',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      pool: mockPool,
+    });
+    assert.match(missingBhvmTurn.reply, /could not find an order matching reference #BHVM815899599/i);
+    assert.doesNotMatch(missingBhvmTurn.reply, /What would you like to sort out/i);
+
+    const returnWordTurn = await processSupportTurn({
+      message: 'return',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      pool: mockPool,
+    });
+    assert.match(returnWordTurn.reply, /return #918273646/i);
+
+    const orderWordTurn = await processSupportTurn({
+      message: 'order',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      pool: mockPool,
+    });
+    assert.match(orderWordTurn.reply, /Order #918273645/);
+
+    const shareLinkTurn = await processSupportTurn({
+      message: 'share link',
+      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      pool: mockPool,
+    });
+    assert.match(shareLinkTurn.reply, /https:\/\/www\.bhumivera\.com\/shop/);
+    assert.match(shareLinkTurn.reply, /https:\/\/www\.bhumivera\.com\/product\/kumkumadi-night-elixir/);
   });
 });

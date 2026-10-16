@@ -63,6 +63,38 @@ router.get("/admin/all", authenticateAdmin, async (req, res) => {
   }
 });
 
+// DELETE /api/serials/admin/:serialId - admin purge by serial PK id (registered BEFORE /:productId/:serialId to prevent route shadowing)
+router.delete("/admin/:serialId", authenticateAdmin, async (req, res) => {
+  try {
+    const serialId = req.params.serialId;
+    const [existing] = await pool.query(
+      `SELECT ps.id, ps.product_id, ps.serial_number, ps.status, wr.id AS warranty_id
+       FROM product_serials ps
+       LEFT JOIN warranty_registrations wr ON ps.serial_number = wr.registered_serial
+       WHERE ps.id = ?`,
+      [serialId]
+    );
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ success: false, message: "Serial not found" });
+    }
+    const row = existing[0];
+    if (row.warranty_id || (row.status && row.status.toLowerCase() === 'registered')) {
+      return res.status(400).json({
+        success: false,
+        message: "Serial is already registered under warranty. Cancel warranty registration first."
+      });
+    }
+    const [del] = await pool.query(`DELETE FROM product_serials WHERE id = ?`, [serialId]);
+    if (del.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "Serial not found" });
+    }
+    res.json({ success: true, deleted: serialId });
+  } catch (err) {
+    console.error('[SERIAL ADMIN DELETE ERROR]:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // GET /api/serials/:productId - list all serials for a product
 router.get("/:productId", async (req, res) => {
   try {
@@ -149,38 +181,6 @@ router.delete("/:productId/:serialId", authenticateAdmin, async (req, res) => {
     const result = await deleteProductSerial(req.params.productId, req.params.serialId);
     res.json({ success: true, result });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// DELETE /api/serials/admin/:serialId - admin purge by serial PK id (with warranty link safety)
-router.delete("/admin/:serialId", authenticateAdmin, async (req, res) => {
-  try {
-    const serialId = req.params.serialId;
-    const [existing] = await pool.query(
-      `SELECT ps.id, ps.product_id, ps.serial_number, ps.status, wr.id AS warranty_id
-       FROM product_serials ps
-       LEFT JOIN warranty_registrations wr ON ps.serial_number = wr.registered_serial
-       WHERE ps.id = ?`,
-      [serialId]
-    );
-    if (!existing || existing.length === 0) {
-      return res.status(404).json({ success: false, message: "Serial not found" });
-    }
-    const row = existing[0];
-    if (row.warranty_id || (row.status && row.status.toLowerCase() === 'registered')) {
-      return res.status(400).json({
-        success: false,
-        message: "Serial is already registered under warranty. Cancel warranty registration first."
-      });
-    }
-    const [del] = await pool.query(`DELETE FROM product_serials WHERE id = ?`, [serialId]);
-    if (del.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: "Serial not found" });
-    }
-    res.json({ success: true, deleted: serialId });
-  } catch (err) {
-    console.error('[SERIAL ADMIN DELETE ERROR]:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });

@@ -11,7 +11,7 @@ const DEFAULT_LOYALTY_CONFIG = {
   enabled: 1,
   points_per_rupee: 0.1,
   redemption_points_per_rupee: 10,
-  max_redemption_percent: 25,
+  max_redemption_percent: 45,
   minimum_redemption_points: 100,
 };
 

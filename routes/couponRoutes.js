@@ -1,186 +1,347 @@
-const { couponValidateLimiter } = require('../middleware/rateLimiter');
 // backend/routes/couponRoutes.js
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
-
-const optionalAuth = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return next();
-  try {
-    const payload = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET || 'fallback_secret');
-    req.user = payload;
-  } catch (err) {}
-  next();
-};
-
 const pool = require('../config/db');
-const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
-const { createCouponTable, createCoupon, getAllCoupons, getCouponByCode, updateCoupon, deleteCoupon, validateCoupon } = require('../models/couponModel');
-const { reconcileReferralRewards } = require('../models/referralModel');
-const { validateDateRange } = require('../utils/dateValidation');
+const { authenticateAdmin, authenticateUser, optionalAuth } = require('../middleware/authMiddleware');
+const {
+  getAllCoupons,
+  getCouponById,
+  createCoupon,
+  bulkCreateCoupons,
+  updateCoupon,
+  deleteCoupon,
+  validateCoupon,
+  getUserCouponUsageMap,
+  getCouponRedemptions,
+  getCouponAnalyticsSummary,
+} = require('../models/couponModel');
 
-const sendInvalidDate = (res, result) => res.status(400).json({
-  code: 'INVALID_DATE',
-  field: result.field,
-  message: result.message,
-  userAction: 'Enter a valid start and end date.',
-});
-
-router.use(async (req, res, next) => {
+// 1. PUBLIC: Fetch active storewide coupons (excluding already-redeemed coupons for logged-in customer)
+router.get('/public/active', optionalAuth, async (req, res) => {
   try {
-    await createCouponTable();
-    return next();
+    const userId = req.user?.id || null;
+    const usageMap = userId ? await getUserCouponUsageMap(userId) : {};
+
+    let hasPriorOrders = false;
+    if (userId) {
+      try {
+        const [ordRows] = await pool.query(
+          "SELECT COUNT(*) AS cnt FROM orders WHERE user_id = ? AND status NOT IN ('cancelled')",
+          [userId]
+        );
+        hasPriorOrders = Number(ordRows?.[0]?.cnt || 0) > 0;
+      } catch {
+        hasPriorOrders = false;
+      }
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, code, discount_type, discount_value,
+              GREATEST(COALESCE(min_order_value, 0), COALESCE(min_order_amount, 0), COALESCE(minimum_order_amount, 0)) AS minimum_order_amount,
+              GREATEST(COALESCE(min_order_value, 0), COALESCE(min_order_amount, 0), COALESCE(minimum_order_amount, 0)) AS min_order_value,
+              max_discount, COALESCE(expiry_date, expires_at) AS expiry_date, reward_type,
+              usage_limit, used_count, COALESCE(per_user_limit, 1) AS per_user_limit,
+              COALESCE(first_order_only, 0) AS first_order_only,
+              allowed_payment_modes, description, campaign_tag
+       FROM coupons
+       WHERE COALESCE(status, 'active') = 'active'
+         AND COALESCE(is_active, 1) = 1
+         AND restricted_user_id IS NULL
+         AND (valid_from IS NULL OR valid_from <= NOW())
+         AND (expiry_date IS NULL OR expiry_date > NOW())
+         AND (expires_at IS NULL OR expires_at > NOW())
+         AND (usage_limit IS NULL OR COALESCE(used_count, 0) < usage_limit)
+       ORDER BY discount_value DESC`
+    );
+
+    const eligibleCoupons = rows
+      .map((c) => {
+        const codeUpper = String(c.code || '').toUpperCase();
+        const usedByUser = Number(usageMap[codeUpper] || 0);
+        const perUserLimit = c.per_user_limit !== null && c.per_user_limit !== undefined ? Number(c.per_user_limit) : 1;
+        const reachedUserLimit = userId && perUserLimit > 0 && usedByUser >= perUserLimit;
+        const blockedByFirstOrder = userId && Number(c.first_order_only) === 1 && hasPriorOrders;
+        return {
+          ...c,
+          user_used_count: usedByUser,
+          already_redeemed: Boolean(reachedUserLimit),
+          ineligible_first_order: Boolean(blockedByFirstOrder),
+          remaining_uses_for_user: perUserLimit > 0 ? Math.max(0, perUserLimit - usedByUser) : null,
+        };
+      })
+      .filter((c) => !c.already_redeemed && !c.ineligible_first_order);
+
+    res.json({ success: true, coupons: eligibleCoupons });
   } catch (error) {
-    console.error(`[COUPON_SCHEMA_UNAVAILABLE] code=${error.code || 'UNKNOWN'} message=${error.message}`);
-    return res.status(503).json({
-      code: 'COUPON_SCHEMA_UNAVAILABLE',
-      message: 'Coupon services are temporarily unavailable. Please try again shortly.',
-    });
+    res.status(500).json({ success: false, message: 'Failed to load active coupons', error: error.message });
   }
 });
 
-// POST /api/coupons/validate - validate coupon (public)
-router.post('/validate', couponValidateLimiter, optionalAuth, async (req, res) => {
-  try {
-    const { code, orderTotal } = req.body;
-    if (typeof code !== 'string' || !code.trim()) {
-      return res.status(400).json({ code: 'COUPON_CODE_REQUIRED', message: 'Coupon code is required.' });
-    }
-    const parsedOrderTotal = orderTotal === undefined ? 0 : Number(orderTotal);
-    if (!Number.isFinite(parsedOrderTotal) || parsedOrderTotal < 0) {
-      return res.status(400).json({ code: 'INVALID_ORDER_TOTAL', message: 'Enter a valid order total.' });
-    }
-    const result = await validateCoupon(code.trim(), parsedOrderTotal, req.user?.id || null);
-    if (!result.valid) return res.status(400).json({ code: 'INVALID_COUPON', message: result.message });
-    res.json({
-      valid: true,
-      discount: result.discount,
-      referralWalletAmount: result.referralWalletAmount || 0,
-      rewardType: result.coupon.reward_type || 'standard',
-      coupon: {
-        code: result.coupon.code,
-        discount_type: result.coupon.discount_type,
-        discount_value: result.coupon.discount_value,
-        wallet_per_order_limit: result.coupon.wallet_per_order_limit || null,
-      },
-    });
-  } catch (err) {
-    console.error(`[COUPON_VALIDATE] code=${err.code || 'UNKNOWN'} table=${err.table || 'unknown'} message=${err.sqlMessage || err.message}`);
-    res.status(500).json({
-      code: 'COUPON_VALIDATION_FAILED',
-      message: 'Could not validate this coupon right now. Please try again shortly.',
-    });
-  }
-});
-
+// 2. CUSTOMER: Fetch personal coupons assigned to the logged-in user
 router.get('/mine', authenticateUser, async (req, res) => {
   try {
-    await reconcileReferralRewards(req.user?.id || null);
-    const [coupons] = await pool.query(
-      `SELECT id, code, description, discount_type, discount_value, min_order_amount,
-              max_discount, usage_limit, used_count, valid_from, expires_at,
-              reward_type, wallet_per_order_limit,
-              1 AS is_personal
-       FROM coupons
-       WHERE restricted_user_id = ? AND is_active = 1
-         AND (valid_from IS NULL OR valid_from <= NOW())
-         AND (expires_at IS NULL OR expires_at >= NOW())
-         AND (usage_limit IS NULL OR used_count < usage_limit)
-       ORDER BY created_at DESC`,
-      [req.user?.id || null]
-    );
-    return res.json({ success: true, coupons });
-  } catch (error) {
-    console.error('[CUSTOMER_COUPONS]', error);
-    return res.status(500).json({ success: false, message: 'Could not load your assigned coupons.' });
-  }
-});
-
-// GET /api/coupons/public/active - list of currently active coupons (for customers)
-router.get('/public/active', async (req, res) => {
-  try {
+    const usageMap = await getUserCouponUsageMap(req.user.id);
     const [rows] = await pool.query(
-      `SELECT code,
-              discount_type AS type,
-              discount_value AS value,
-              min_order_amount AS min_order_value,
-              max_discount,
-              valid_from,
-              expires_at AS valid_until,
-              usage_limit,
-              used_count,
-              discount_type,
-              discount_value,
-              min_order_amount,
-              expires_at
+      `SELECT id, code, discount_type, discount_value,
+              GREATEST(COALESCE(min_order_value, 0), COALESCE(min_order_amount, 0), COALESCE(minimum_order_amount, 0)) AS minimum_order_amount,
+              GREATEST(COALESCE(min_order_value, 0), COALESCE(min_order_amount, 0), COALESCE(minimum_order_amount, 0)) AS min_order_value,
+              max_discount, COALESCE(expiry_date, expires_at) AS expiry_date,
+              COALESCE(status, 'active') AS status, reward_type,
+              usage_limit, used_count, COALESCE(per_user_limit, 1) AS per_user_limit,
+              wallet_per_order_limit, description, campaign_tag
        FROM coupons
-       WHERE is_active = 1
-         AND restricted_user_id IS NULL
-         AND (description IS NULL OR description NOT LIKE 'spin_reward:%')
+       WHERE restricted_user_id = ?
+         AND COALESCE(status, 'active') = 'active'
+         AND COALESCE(is_active, 1) = 1
          AND (valid_from IS NULL OR valid_from <= NOW())
-         AND (expires_at IS NULL OR expires_at >= NOW())
-         AND (usage_limit IS NULL OR used_count < usage_limit)
-       ORDER BY created_at DESC`
+         AND (expiry_date IS NULL OR expiry_date > NOW())
+         AND (expires_at IS NULL OR expires_at > NOW())
+         AND (usage_limit IS NULL OR COALESCE(used_count, 0) < usage_limit)
+       ORDER BY created_at DESC`,
+      [req.user.id]
     );
-    res.json(rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to load coupons' });
+
+    const personalCoupons = rows
+      .map((c) => {
+        const codeUpper = String(c.code || '').toUpperCase();
+        const usedByUser = Number(usageMap[codeUpper] || 0);
+        const perUserLimit = c.per_user_limit !== null && c.per_user_limit !== undefined ? Number(c.per_user_limit) : 1;
+        const isRedeemed = perUserLimit > 0 && usedByUser >= perUserLimit;
+        return {
+          ...c,
+          user_used_count: usedByUser,
+          is_redeemed: isRedeemed,
+        };
+      })
+      .filter((c) => !c.is_redeemed);
+
+    res.json({ success: true, coupons: personalCoupons });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to load your coupons', error: error.message });
   }
 });
 
-// GET /api/coupons - admin: get all coupons
+// 3. CHECKOUT: Validate a coupon code (enforces per-user limit, global limit, min order, first-order, payment mode)
+router.post('/validate', optionalAuth, async (req, res) => {
+  try {
+    const { code, orderTotal, subtotal, paymentMode, items } = req.body;
+    const effectiveTotal = orderTotal !== undefined ? orderTotal : (subtotal !== undefined ? subtotal : 0);
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        code: 'COUPON_CODE_REQUIRED',
+        message: 'Coupon code is required.',
+      });
+    }
+
+    const validationResult = await validateCoupon(
+      code,
+      effectiveTotal,
+      req.user?.id || null,
+      { paymentMode, items }
+    );
+    if (validationResult && validationResult.valid === false) {
+      return res.status(400).json({
+        success: false,
+        code: validationResult.code || 'COUPON_INVALID',
+        message: validationResult.message || 'Invalid coupon code.',
+      });
+    }
+    res.json({
+      success: true,
+      message: 'Coupon applied successfully!',
+      data: validationResult,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      code: error.code || 'COUPON_INVALID',
+      message: error.message,
+    });
+  }
+});
+
+// 4. ADMIN: Get Coupon Analytics & Redemption Ledger Summary
+router.get('/admin/analytics', authenticateAdmin, async (req, res) => {
+  try {
+    const [summary, recentRedemptions] = await Promise.all([
+      getCouponAnalyticsSummary(),
+      getCouponRedemptions(null, 50),
+    ]);
+    res.json({
+      success: true,
+      summary,
+      recentRedemptions,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to load coupon analytics', error: error.message });
+  }
+});
+
+// 5. ADMIN: Get Redemption Audit Trail for a Specific Coupon
+router.get('/:id/redemptions', authenticateAdmin, async (req, res) => {
+  try {
+    const coupon = await getCouponById(req.params.id);
+    if (!coupon) {
+      return res.status(404).json({ success: false, message: 'Coupon not found' });
+    }
+    const redemptions = await getCouponRedemptions(req.params.id, 100);
+    res.json({
+      success: true,
+      coupon,
+      redemptions,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to load coupon redemptions', error: error.message });
+  }
+});
+
+// 6. ADMIN: Bulk Generate Campaign Coupons
+router.post('/bulk-generate', authenticateAdmin, async (req, res) => {
+  try {
+    const {
+      prefix = 'BHVM',
+      count = 10,
+      discount_type = 'percentage',
+      discount_value = 10,
+      min_order_value = 500,
+      max_discount = 300,
+      usage_limit = 1,
+      per_user_limit = 1,
+      first_order_only = false,
+      expiry_date,
+      reward_type = 'standard',
+      campaign_tag = 'BULK_CAMPAIGN',
+      description = null,
+    } = req.body;
+
+    if (!expiry_date) {
+      return res.status(400).json({ success: false, message: 'Expiry date is required for bulk generation.' });
+    }
+
+    const generated = await bulkCreateCoupons({
+      prefix,
+      count,
+      discount_type,
+      discount_value,
+      min_order_value,
+      max_discount,
+      usage_limit,
+      per_user_limit,
+      first_order_only,
+      expiry_date,
+      reward_type,
+      campaign_tag,
+      description,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Generated ${generated.length} tamper-proof coupons.`,
+      coupons: generated,
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message || 'Failed to bulk generate coupons' });
+  }
+});
+
+// 7. ADMIN: Quick Toggle Coupon Status (active <-> disabled)
+router.patch('/:id/status', authenticateAdmin, async (req, res) => {
+  try {
+    const coupon = await getCouponById(req.params.id);
+    if (!coupon) {
+      return res.status(404).json({ success: false, message: 'Coupon not found' });
+    }
+    const nextStatus = req.body?.status && ['active', 'disabled', 'expired'].includes(req.body.status)
+      ? req.body.status
+      : (coupon.status === 'active' && Number(coupon.is_active ?? 1) === 1 ? 'disabled' : 'active');
+    const nextIsActive = nextStatus === 'active' ? 1 : 0;
+
+    await pool.query('UPDATE coupons SET status = ?, is_active = ? WHERE id = ?', [nextStatus, nextIsActive, coupon.id]);
+    res.json({
+      success: true,
+      status: nextStatus,
+      message: `Coupon ${coupon.code} marked as ${nextStatus.toUpperCase()}.`,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to update coupon status', error: error.message });
+  }
+});
+
+// 8. ADMIN: Get all coupons
 router.get('/', authenticateAdmin, async (req, res) => {
   try {
-    const coupons = await getAllCoupons();
-    res.json(coupons);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to get coupons' });
+    const [coupons, summary] = await Promise.all([
+      getAllCoupons(),
+      getCouponAnalyticsSummary(),
+    ]);
+    res.json({ success: true, count: coupons.length, data: coupons, summary });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error fetching coupons', error: error.message });
   }
 });
 
-// POST /api/coupons - admin: create coupon
+// 9. ADMIN: Create a new coupon
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
-    const dateRange = validateDateRange(req.body, 'valid_from', 'valid_until', { minDurationMs: 60 * 60 * 1000 });
-    if (!dateRange.valid) return sendInvalidDate(res, dateRange);
-    const { code, discount_type, discount_value } = req.body;
-    if (!code || !discount_type || !discount_value) return res.status(400).json({ message: 'code, discount_type, discount_value are required' });
-    const id = await createCoupon({ ...req.body, valid_from: dateRange.startDate, expires_at: dateRange.endDate });
-    res.status(201).json({ message: 'Coupon created', id });
-  } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Coupon code already exists' });
-    console.error(err);
-    res.status(500).json({ message: 'Failed to create coupon' });
+    const { code, discount_type, discount_value, expiry_date, reward_type } = req.body;
+
+    if (!code || !discount_type || !expiry_date) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide code, discount_type, and expiry_date.',
+      });
+    }
+    if (discount_type !== 'free_shipping' && reward_type !== 'free_shipping' && (discount_value === undefined || discount_value === '')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a discount_value.',
+      });
+    }
+
+    const couponId = await createCoupon({
+      ...req.body,
+      created_by_role: req.admin?.role || 'admin',
+    });
+    res.status(201).json({
+      success: true,
+      message: 'Coupon created successfully',
+      couponId,
+    });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ success: false, message: 'A coupon with this code already exists.' });
+    }
+    res.status(400).json({ success: false, message: error.message || 'Failed to create coupon' });
   }
 });
 
-// PUT /api/coupons/:id - admin: update coupon
+// 10. ADMIN: Update an existing coupon
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
-    const dateRange = validateDateRange(req.body, 'valid_from', 'valid_until', { minDurationMs: 60 * 60 * 1000 });
-    if (!dateRange.valid) return sendInvalidDate(res, dateRange);
-    const update = { ...req.body };
-    if (Object.hasOwn(req.body, 'valid_from')) update.valid_from = dateRange.startDate;
-    if (Object.hasOwn(req.body, 'valid_until')) update.valid_until = dateRange.endDate;
-    await updateCoupon(req.params.id, update);
-    res.json({ message: 'Coupon updated' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to update coupon' });
+    const updated = await updateCoupon(req.params.id, req.body);
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Coupon not found' });
+    }
+    res.json({ success: true, message: 'Coupon updated successfully' });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ success: false, message: 'A coupon with this code already exists.' });
+    }
+    res.status(400).json({ success: false, message: error.message || 'Failed to update coupon' });
   }
 });
 
-// DELETE /api/coupons/:id - admin: delete coupon
+// 11. ADMIN: Delete a coupon
 router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
-    await deleteCoupon(req.params.id);
-    res.json({ message: 'Coupon deleted' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to delete coupon' });
+    const deleted = await deleteCoupon(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Coupon not found' });
+    }
+    res.json({ success: true, message: 'Coupon deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to delete coupon', error: error.message });
   }
 });
 
