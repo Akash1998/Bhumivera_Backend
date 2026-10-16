@@ -12,6 +12,7 @@ const { getAllOrders, getOrdersByUser, updateOrderStatus, getOrderById } = requi
 const { getAllReviews } = require('../models/reviewModel');
 const { sendMail } = require('../utils/mail');
 const { sendCustomerPasswordResetLink } = require('../services/customerPasswordResetLink');
+const { getRazorpayClientIfConfigured } = require('../services/razorpayService');
 
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -284,12 +285,11 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
     if (!previousOrder) return res.status(404).json({ message: 'Order not found' });
     if (status === 'cancelled') {
       const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
-      const { getRazorpayClient } = require('../services/razorpayService');
       const cancelRes = await executeAtomicOrderCancellationAndRefund(db, {
         orderId,
         reason: req.body.cancel_reason || 'Cancelled by SuperAdmin',
         executedByEmail: req.user?.email || 'adminbhumivera27@gmail.com',
-        razorpay: getRazorpayClient(),
+        razorpay: getRazorpayClientIfConfigured(),
       });
       return res.json({
         message: 'Order cancelled and atomic refund/wallet ledger updated.',
@@ -305,8 +305,11 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
     return res.json({ message: 'Order updated successfully' });
   } catch (err) {
     console.error("Update Order Error:", err);
-    if (err.status) return res.status(err.status).json({ code: err.code, message: err.message });
-    return res.status(500).json({ message: 'Failed to update order' });
+    const statusCode = err.statusCode || err.status || 500;
+    return res.status(statusCode).json({
+      ...(err.code ? { code: err.code } : {}),
+      message: statusCode === 500 ? 'Failed to update order.' : err.message,
+    });
   }
 });
 

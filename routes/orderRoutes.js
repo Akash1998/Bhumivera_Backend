@@ -24,7 +24,7 @@ const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { getUserLoyaltyTier } = require('../models/loyaltyTierModel');
 const { getLoyaltyConfig } = require('../models/loyaltyTierModel');
 const { calculateTierDiscount, calculateLoyaltyRedemption } = require('../services/loyaltyPolicy');
-const { getRazorpayClient } = require('../services/razorpayService');
+const { getRazorpayClient, getRazorpayClientIfConfigured } = require('../services/razorpayService');
 const { MAX_RECONCILIATION_ORDERS, reconcileOrderPayments } = require('../services/paymentReconciliationService');
 const { reconcileReferralRewards, getReferralConfig } = require('../models/referralModel');
 const { calculateShippingCost } = require('../services/shippingPolicy');
@@ -66,7 +66,7 @@ router.get('/admin/reconciliation/payments', authenticateAdmin, async (req, res)
   try {
     const rows = await reconcileOrderPayments({
       pool,
-      razorpay: getRazorpayClient(),
+      razorpay: getRazorpayClientIfConfigured(),
       orderIds,
     });
     return res.json({ success: true, readOnly: true, rows });
@@ -158,8 +158,12 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
     res.json({ success: true, message: "Order status updated." });
   } catch (err) {
     console.error("[OrderUpdate Error]:", err);
-    if (err.status === 409) return res.status(409).json({ code: err.code, message: err.message });
-    res.status(500).json({ success: false, message: err.message });
+    const statusCode = err.statusCode || err.status || 500;
+    res.status(statusCode).json({
+      success: false,
+      ...(err.code ? { code: err.code } : {}),
+      message: statusCode === 500 ? 'Failed to update order.' : err.message,
+    });
   }
 });
 

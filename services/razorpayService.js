@@ -13,6 +13,13 @@ const getRazorpayClient = () => {
   return new Razorpay({ key_id: keyId, key_secret: keySecret });
 };
 
+const getRazorpayClientIfConfigured = () => {
+  if (!process.env.RAZORPAY_KEY_ID?.trim() || !process.env.RAZORPAY_KEY_SECRET?.trim()) {
+    return null;
+  }
+  return getRazorpayClient();
+};
+
 const isValidPaymentSignature = (orderId, paymentId, signature) => {
   if (![orderId, paymentId, signature].every(value => typeof value === 'string' && value.length > 0)) {
     return false;
@@ -84,4 +91,9 @@ const verifyRazorpayPayment = async ({
   return { order, payment };
 };
 
-module.exports = { getRazorpayClient, isValidPaymentSignature, verifyRazorpayPayment };
+module.exports = {
+  getRazorpayClient,
+  getRazorpayClientIfConfigured,
+  isValidPaymentSignature,
+  verifyRazorpayPayment,
+};

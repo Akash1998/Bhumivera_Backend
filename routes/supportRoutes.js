@@ -1479,12 +1479,12 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
         });
       }
       const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
-      const { getRazorpayClient } = require('../services/razorpayService');
+      const { getRazorpayClientIfConfigured } = require('../services/razorpayService');
       const cancelRes = await executeAtomicOrderCancellationAndRefund(pool, {
         orderId,
         reason: reason || `Cancelled by SuperAdmin (${staff.name})`,
         executedByEmail: staff.email || 'adminbhumivera27@gmail.com',
-        razorpay: getRazorpayClient(),
+        razorpay: getRazorpayClientIfConfigured(),
       });
       const result = {
         success: true,
@@ -1493,13 +1493,17 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
         refundSummary: cancelRes.refundSummary,
       };
       if (result.success) {
-        await appendMessage({
-          sessionId: session.id,
-          sender: 'system',
-          senderName: `${staff.name} (${staff.role})`,
-          content: `✅ ${result.message}`,
-          orderCards: result.orderCards || [],
-        });
+        try {
+          await appendMessage({
+            sessionId: session.id,
+            sender: 'system',
+            senderName: `${staff.name} (${staff.role})`,
+            content: `✅ ${result.message}`,
+            orderCards: result.orderCards || [],
+          });
+        } catch (messageError) {
+          console.error('[SUPPORT_CANCEL_ORDER_TRANSCRIPT]', messageError);
+        }
       }
       return res.status(result.success ? 200 : 400).json(result);
     }
@@ -1757,7 +1761,15 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
     return res.status(400).json({ message: 'Unsupported support action.' });
   } catch (error) {
     console.error('[SUPPORT_EXECUTE_ACTION]', error);
-    return res.status(500).json({ message: 'Could not execute support action.' });
+    const statusCode = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode <= 599
+      ? error.statusCode
+      : 500;
+    return res.status(statusCode).json({
+      ...(error.code ? { code: error.code } : {}),
+      message: statusCode === 500
+        ? 'Could not execute support action. Please check the backend logs for the recorded error.'
+        : error.message,
+    });
   }
 });
 
