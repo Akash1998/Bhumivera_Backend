@@ -695,7 +695,7 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.doesNotMatch(greeting, /Namaste|20X|AI|bot/i);
   });
 
-  it('confirms support escalation in plain language without internal workflow terms', () => {
+  it('is transparent about follow-up timing instead of promising a live specialist response', () => {
     const { reply } = synthesizeDeterministicResponse({
       message: 'Please connect me with a human support agent.',
       escalation: {
@@ -705,10 +705,78 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
       },
     });
 
-    assert.match(reply, /support specialist/i);
+    assert.match(reply, /verified follow-up request/i);
     assert.match(reply, /ticket #8/i);
-    assert.match(reply, /within 30 minutes/i);
-    assert.doesNotMatch(reply, /AI|priority tier|channels alerted|Senior Concierge/i);
+    assert.match(reply, /reply when available/i);
+    assert.match(reply, /not a live-agent chat/i);
+  });
+
+  it('gives a self-service reply first and records later support requests without implying live staffing', () => {
+    const firstReply = synthesizeDeterministicResponse({
+      intent: 'human_escalation',
+      escalation: { followUpRequested: false },
+    }).reply;
+    const laterReply = synthesizeDeterministicResponse({
+      intent: 'human_escalation',
+      escalation: { followUpRequested: true },
+    }).reply;
+    const orderVerificationReply = synthesizeDeterministicResponse({
+      intent: 'human_escalation',
+      escalation: {
+        followUpRequested: true,
+        verificationStep: 'STEP_1_VERIFY_ORDER',
+      },
+    }).reply;
+
+    assert.match(firstReply, /automated assistant/i);
+    assert.match(firstReply, /ask for customer support again/i);
+    assert.match(laterReply, /noted your request in this conversation/i);
+    assert.match(orderVerificationReply, /order-related follow-up requests require verification/i);
+  });
+
+  it('classifies an explicit customer support request as a human follow-up intent', () => {
+    const result = detectIntentAndToolPlan('I need customer support', { history: [] });
+    const shortResult = detectIntentAndToolPlan('I need support', { history: [] });
+    const productQuestion = detectIntentAndToolPlan('How does the formula support human skin?', { history: [] });
+
+    assert.equal(result.intent, 'human_escalation');
+    assert.equal(shortResult.intent, 'human_escalation');
+    assert.notEqual(productQuestion.intent, 'human_escalation');
+  });
+
+  it('requires repeated support requests and verifies orders only for order-related follow-up', async () => {
+    const flowPool = createMockSupportPool();
+    const firstOrderRequest = await processSupportTurn({
+      message: 'I need customer support for an order.',
+      guestName: 'Order Support Test',
+      pageContext: { supportCategory: 'order' },
+      pool: flowPool,
+    });
+    assert.equal(firstOrderRequest.escalation.verificationStep, null);
+    assert.match(firstOrderRequest.reply, /automated assistant/i);
+
+    const repeatedOrderRequest = await processSupportTurn({
+      sessionToken: firstOrderRequest.sessionToken,
+      message: 'I still need customer support about this order.',
+      pageContext: { supportCategory: 'order' },
+      pool: flowPool,
+    });
+    assert.equal(repeatedOrderRequest.escalation.verificationStep, 'STEP_1_VERIFY_ORDER');
+
+    const firstGeneralRequest = await processSupportTurn({
+      message: 'I need customer support.',
+      guestName: 'General Support Test',
+      pageContext: { supportCategory: 'general' },
+      pool: flowPool,
+    });
+    const repeatedGeneralRequest = await processSupportTurn({
+      sessionToken: firstGeneralRequest.sessionToken,
+      message: 'I still need customer support.',
+      pageContext: { supportCategory: 'general' },
+      pool: flowPool,
+    });
+    assert.equal(repeatedGeneralRequest.escalation.verificationStep, null);
+    assert.match(repeatedGeneralRequest.reply, /noted your request in this conversation/i);
   });
 
   it('registers an authenticated HTTPS Telegram webhook', async () => {

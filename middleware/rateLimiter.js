@@ -108,6 +108,7 @@ function createLimiter(name, {
   keyGenerator,
   skipSuccessfulRequests = false,
   ignoreServerErrors = false,
+  skip = null,
   userAction,
   store,
 }) {
@@ -123,6 +124,7 @@ function createLimiter(name, {
     passOnStoreError: false,
     handler: createRateLimitHandler({ code, message, windowMs, userAction }),
   };
+  if (skip) options.skip = skip;
   if (store) {
     options.store = store;
   } else if (sharedRedisClient) {
@@ -317,6 +319,28 @@ const supportChatLimiter = createLimiter('ai-support-chat', {
   userAction: 'Wait a few seconds before sending your next message.',
 });
 
+const supportDuplicateMessageLimiter = createLimiter('ai-support-duplicate-message', {
+  windowMs: TEN_MINUTES,
+  max: 1,
+  skip: req => {
+    const message = typeof req.body?.message === 'string' ? req.body.message : '';
+    return !message.trim() || /^(?:agent|human|support|live\s*agent|executive|supervisor|manager|escalate|helpdesk)$|\b(?:customer support|support team|(?:need|want|request)\s+(?:some\s+)?support|(?:need|want|request)\s+(?:a\s+)?human(?:\s+(?:agent|support))?|live\s*agent|real\s*person|customer\s*care|speak\s*to\s*(?:someone|agent|manager|supervisor)|talk\s*to\s*(?:agent|human|person|support)|connect\s*me\s*(?:to|with)\s*(?:an?\s*)?(?:agent|human|support)|escalat(?:e|ion))\b/i.test(message);
+  },
+  keyGenerator: req => {
+    const principal = req.user?.id
+      ? `user:${req.user.id}`
+      : `ip:${getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56))}`;
+    const normalizedMessage = typeof req.body?.message === 'string'
+      ? req.body.message.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase()
+      : '';
+    const messageHash = crypto.createHash('sha256').update(normalizedMessage).digest('hex');
+    return `${principal}:${messageHash}`;
+  },
+  code: 'SUPPORT_DUPLICATE_MESSAGE_LIMIT',
+  message: 'You already sent this message recently. Please wait 10 minutes before sending it again.',
+  userAction: 'You can send a different question now, or retry this message after 10 minutes.',
+});
+
 const supportEscalationLimiter = createLimiter('ai-support-escalation', {
   windowMs: FIFTEEN_MINUTES,
   max: 6,
@@ -347,6 +371,7 @@ module.exports = {
   newsletterLimiter,
   supportSessionLimiter,
   supportChatLimiter,
+  supportDuplicateMessageLimiter,
   supportEscalationLimiter,
   connectRateLimitStore,
   closeRateLimitStore,

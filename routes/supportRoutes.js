@@ -12,6 +12,7 @@ const { isSessionActive } = require('../utils/sessionStore');
 const {
   supportSessionLimiter,
   supportChatLimiter,
+  supportDuplicateMessageLimiter,
   supportEscalationLimiter,
 } = require('../middleware/rateLimiter');
 const {
@@ -532,7 +533,7 @@ router.post('/chat/session/:sessionToken/end-satisfied', supportSessionLimiter, 
  * POST /api/support/chat/async-message
  * Unified async message channel for customers without a placed order (or who prefer email/app inbox reply).
  */
-router.post('/chat/async-message', supportChatLimiter, optionalAuthenticateCustomer, async (req, res) => {
+router.post('/chat/async-message', supportChatLimiter, optionalAuthenticateCustomer, supportDuplicateMessageLimiter, async (req, res) => {
   try {
     const {
       sessionToken,
@@ -674,7 +675,7 @@ router.get('/chat/history/:sessionToken', optionalAuthenticateCustomer, async (r
 /**
  * POST /api/support/chat/message
  */
-router.post('/chat/message', supportChatLimiter, optionalAuthenticateCustomer, async (req, res) => {
+router.post('/chat/message', supportChatLimiter, optionalAuthenticateCustomer, supportDuplicateMessageLimiter, async (req, res) => {
   try {
     const {
       sessionToken,
@@ -812,7 +813,7 @@ const handleSseStream = async (req, res) => {
   }
 };
 
-router.post('/chat/stream', supportChatLimiter, optionalAuthenticateCustomer, handleSseStream);
+router.post('/chat/stream', supportChatLimiter, optionalAuthenticateCustomer, supportDuplicateMessageLimiter, handleSseStream);
 router.get('/chat/stream', supportChatLimiter, optionalAuthenticateCustomer, handleSseStream);
 
 /**
@@ -900,7 +901,7 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
           verifiedEmail: dbEmail || cleanEmail,
           verifiedPhone: dbPhone || cleanPhone,
         },
-        conciergePrompt: 'Our specialist team will reach out to you within 12 hours. Would you prefer to receive our update via Email or a Direct Phone Call?',
+        conciergePrompt: 'Your verified follow-up request can be recorded for later review; replies are not live and may take some time. Would you prefer an update via Email or a Phone Call?',
       });
     }
 
@@ -989,8 +990,8 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
 
     const confirmationText =
       contactPreference === 'phone_call'
-        ? `Thank you. Your verified escalation request (**${ticketReference}**) for **Order #${order.order_number || order.id}** has been logged. Our specialist team will call you at **+91 ${finalPhone}** during your preferred **${callbackTimeSlot}** slot within 12 hours.`
-        : `Thank you. Your verified escalation request (**${ticketReference}**) for **Order #${order.order_number || order.id}** has been logged. Our specialist team will send a detailed update to **${dbEmail || cleanEmail}** within 12 hours.`;
+        ? `Thank you. Your verified follow-up request (**${ticketReference}**) for **Order #${order.order_number || order.id}** has been recorded. A team member will review it and may call **+91 ${finalPhone}** during your preferred **${callbackTimeSlot}** slot. Replies are not live and may take some time.`
+        : `Thank you. Your verified follow-up request (**${ticketReference}**) for **Order #${order.order_number || order.id}** has been recorded. A team member will review it and may send an update to **${dbEmail || cleanEmail}**. Replies are not live and may take some time.`;
 
     await appendMessage({
       sessionId: session.id,
@@ -1076,8 +1077,8 @@ router.post('/chat/escalate', supportEscalationLimiter, optionalAuthenticateCust
     });
 
     const confirmationText =
-      `I’ve sent your request to a support specialist${escalation.ticketId ? ` (ticket #${escalation.ticketId})` : ''}. ` +
-      `They should be in touch within ${escalation.slaResponseWindow.toLowerCase().replace(/^under /, '')}.`;
+      `Your follow-up request has been recorded${escalation.ticketId ? ` (ticket #${escalation.ticketId})` : ''}. ` +
+      `A team member will review it and reply when available; this is not a live-agent chat.`;
 
     await appendMessage({
       sessionId: session.id,

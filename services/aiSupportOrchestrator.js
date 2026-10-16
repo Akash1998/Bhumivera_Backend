@@ -2,6 +2,8 @@
 
 const { maskPII, sanitizeObjectPII } = require('../utils/piiMasker');
 const { analyzeSentiment, triggerInstantEscalation } = require('./sentimentEscalationEngine');
+const SUPPORT_REQUEST_PATTERN = /^(?:agent|human|support|live\s*agent|executive|supervisor|manager|escalate|helpdesk)$|\b(?:customer support|support team|(?:need|want|request)\s+(?:some\s+)?support|(?:need|want|request)\s+(?:a\s+)?human(?:\s+(?:agent|support))?|live\s*agent|real\s*person|customer\s*care|speak\s*to\s*(?:someone|agent|manager|supervisor)|talk\s*to\s*(?:agent|human|person|support)|connect\s*me\s*(?:to|with)\s*(?:an?\s*)?(?:agent|human|support)|escalat(?:e|ion))\b/i;
+const ORDER_SUPPORT_PATTERN = /\b(?:order|delivery|shipping|payment|return|refund|replacement|tracking|parcel|package)\b/i;
 const { executeSupportTool, SUPPORT_TOOLS_REGISTRY } = require('./aiSupportTools');
 const {
   COMPLETE_SITE_NAVIGATION_MAP,
@@ -143,10 +145,11 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
   // 1. Human agent / escalation request
   if (
     /^(agent|human|support|live\s*agent|executive|supervisor|manager|escalate|helpdesk)$/i.test(text) ||
-    /\b(human|live\s*agent|real\s*person|customer\s*care\s*executive|speak\s*to\s*(?:someone|agent|manager|supervisor)|talk\s*to\s*(?:agent|human|person|support)|escalate|connect\s*me\s*(?:to|with)\s*(?:an?\s*)?(?:agent|human|support))\b/i.test(rawText)
+    SUPPORT_REQUEST_PATTERN.test(rawText) ||
+    (/\bcustomer\s+support\b/i.test(rawText) && /\b(?:need|want|request|contact|speak|talk|connect)\b/i.test(rawText))
   ) {
     intent = 'human_escalation';
-    if (orderRef || user?.id) {
+    if (orderRef) {
       toolPlan.push({ name: 'lookup_order', args: { order_id: orderRef, email, phone } });
     }
     return { intent, toolPlan, extracted: { orderRef, email, phone } };
@@ -407,10 +410,34 @@ function synthesizeDeterministicResponse({
   const nameGreeting = firstName ? `${firstName}, ` : '';
   const esc = escalation || escalationInfo;
 
+  if (intent === 'human_escalation' && !esc?.followUpRequested) {
+    return {
+      reply:
+        `${nameGreeting}I’m an automated assistant, so there isn’t a live agent in this chat. I can still help with common questions here. ` +
+        `If you still need a follow-up after sharing the issue, ask for customer support again. For an order-related request, we’ll verify the order before recording it for later review.`,
+      quickActions: [
+        { label: 'Order-related issue', prompt: 'I need help with an order.' },
+        { label: 'General question', prompt: 'I have a general question.' },
+      ],
+    };
+  }
+
+  if (intent === 'human_escalation' && esc?.followUpRequested && !esc?.verificationStep) {
+    return {
+      reply:
+        `${nameGreeting}I’ve noted your request in this conversation for later review. This is not a live-agent chat, so a reply may take some time. ` +
+        `For an order-related issue, please choose **Order-related issue** and verify your order details.`,
+      quickActions: [
+        { label: 'Order-related issue', prompt: 'I need help with an order.' },
+        { label: 'General question', prompt: 'I have a general question.' },
+      ],
+    };
+  }
+
   if (esc?.verificationStep === 'STEP_1_VERIFY_ORDER') {
     return {
       reply:
-        `${nameGreeting}as part of our **Bhumivera Client Concierge** security protocol, orders that are confirmed or in fulfillment cannot be cancelled automatically via chat, and specialist escalations require order verification first.\n\n` +
+        `${nameGreeting}as part of our **Bhumivera Client Concierge** security protocol, order-related follow-up requests require verification first.\n\n` +
         `Please share your **9-digit Order ID (e.g., BHVM815899599)** along with your **Registered Email Address or 10-Digit Phone Number** so I can verify your purchase against our records.`,
       quickActions: [
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
@@ -423,8 +450,8 @@ function synthesizeDeterministicResponse({
     const ordNum = esc.verifiedOrder?.orderNumber || '';
     return {
       reply:
-        `Thank you for verifying **Order #${ordNum}**. Our specialist team will reach out to you within 12 hours.\n\n` +
-        `Would you prefer to receive our update via **Email** or a **Direct Phone Call**?`,
+        `Thank you for verifying **Order #${ordNum}**. Your follow-up request can be recorded for later review; replies are not live and may take some time.\n\n` +
+        `Would you prefer an update via **Email** or a **Phone Call**?`,
       quickActions: [
         { label: 'Prefer Email Update', prompt: 'Prefer Email update' },
         { label: 'Prefer Direct Phone Call', prompt: 'Prefer Direct Phone Call' },
@@ -448,8 +475,6 @@ function synthesizeDeterministicResponse({
   }
 
   if (esc?.escalated) {
-    const rawWindow = String(esc.slaResponseWindow || 'Within 12 hours');
-    const windowFormatted = rawWindow.toLowerCase().replace(/^under\s+/i, 'within ');
     const prefDetail = esc.contactPreference === 'phone_call'
       ? ` via **Direct Phone Call** (${esc.callbackPhone || 'registered phone'} · **${esc.callbackTimeSlot || 'Scheduled Slot'}**)`
       : esc.contactPreference === 'email'
@@ -457,8 +482,8 @@ function synthesizeDeterministicResponse({
       : '';
     return {
       reply:
-        `I’ve logged your request with a support specialist${esc.ticketId ? ` (ticket #${esc.ticketId})` : ''} at the **Bhumivera Client Concierge** desk. ` +
-        `Our support specialist team will reach out to you ${windowFormatted}${prefDetail}.`,
+        `Your verified follow-up request has been recorded${esc.ticketId ? ` (ticket #${esc.ticketId})` : ''}. ` +
+        `A team member will review it and reply when available; this is not a live-agent chat${prefDetail}.`,
       quickActions: [
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
         { label: 'Check Refund Status', prompt: 'Check the status of my refund' },
@@ -1039,6 +1064,15 @@ async function processSupportTurn({
     pageContext: mergedPageContext,
     history,
   });
+  const priorSupportRequests = history.filter(
+    entry => entry.sender === 'user' && SUPPORT_REQUEST_PATTERN.test(String(entry.content || ''))
+  ).length;
+  const followUpRequested = intent === 'human_escalation' && priorSupportRequests > 0;
+  const isOrderRelatedSupportRequest =
+    session.pageContext?.supportCategory === 'order' ||
+    pageContext?.supportCategory === 'order' ||
+    ORDER_SUPPORT_PATTERN.test(message) ||
+    history.some(entry => entry.sender === 'user' && ORDER_SUPPORT_PATTERN.test(String(entry.content || '')));
 
   if ((extracted?.email && !session.guestEmail) || (extracted?.phone && !session.guestPhone)) {
     session.guestEmail = session.guestEmail || extracted.email || null;
@@ -1103,13 +1137,14 @@ async function processSupportTurn({
     ticketId: session.escalatedTicketId || null,
     verificationStep: null,
     verifiedOrder: null,
+    followUpRequested,
   };
 
   const slotMatch = String(message || '').match(/\b(morning|10\s*am|afternoon|1\s*pm|evening|5\s*pm)\b/i);
   const prefEmailMatch = /\b(via\s*email|by\s*email|prefer\s*email|email\s*update|send\s*email|^email$)\b/i.test(String(message || '').trim());
   const prefPhoneMatch = /\b(phone\s*call|direct\s*call|call\s*me|callback|call\s*back|^call$|^phone$)\b/i.test(String(message || '').trim());
   const isExplicitEscalationOrCancel =
-    intent === 'human_escalation' ||
+    (intent === 'human_escalation' && followUpRequested && isOrderRelatedSupportRequest) ||
     intent === 'cancel_order' ||
     intent === 'cancel_assistance';
 
@@ -1234,7 +1269,6 @@ async function processSupportTurn({
           callbackPhone: candidatePhone || null,
           callbackTimeSlot: chosenSlot || null,
           priority: sentiment.priority || 'High',
-          slaResponseWindow: 'Within 12 hours',
         };
       }
     }
@@ -1245,6 +1279,7 @@ async function processSupportTurn({
         sentimentScore: sentiment.score ?? sentiment.sentimentScore ?? 0,
         frustrationScore: sentiment.frustrationScore ?? 0,
         priority: sentiment.priority || 'Low',
+        status: followUpRequested && !isOrderRelatedSupportRequest ? 'pending' : undefined,
       },
       activePool
     );
@@ -1272,8 +1307,14 @@ async function processSupportTurn({
     user: resolvedUser,
   });
 
-  const finalReply = synthesized.reply;
-  const finalQuickActions = synthesized.quickActions || deterministic.quickActions;
+  const mustUseSupportPolicyReply =
+    intent === 'human_escalation' ||
+    Boolean(escalationInfo.verificationStep) ||
+    Boolean(escalationInfo.escalated);
+  const finalReply = mustUseSupportPolicyReply ? deterministic.reply : synthesized.reply;
+  const finalQuickActions = mustUseSupportPolicyReply
+    ? deterministic.quickActions
+    : synthesized.quickActions || deterministic.quickActions;
 
   if (typeof onStreamEvent === 'function') {
     const chunks = finalReply.match(/.{1,18}(\s|$)|\S+/g) || [finalReply];
@@ -1306,7 +1347,7 @@ async function processSupportTurn({
     orderCards: collectedOrderCards,
     quickActions: finalQuickActions,
     toolCalls: executedTools.map(t => ({ name: t.name, code: t.result?.code, success: t.result?.success, result: t.result })),
-    provider: synthesized.provider || 'deterministic-verified',
+    provider: mustUseSupportPolicyReply ? 'deterministic-support-policy' : synthesized.provider || 'deterministic-verified',
   };
 }
 

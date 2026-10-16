@@ -9,6 +9,7 @@ const {
   loginLimiter,
   otpRequestLimiter,
   otpVerificationLimiter,
+  supportDuplicateMessageLimiter,
 } = require('../middleware/rateLimiter');
 
 const app = express();
@@ -17,6 +18,7 @@ app.post('/login-test', loginLimiter, (req, res) => {
   if (req.body.error) return res.status(503).json({ error: true });
   return res.status(req.body.success ? 200 : 401).json({ success: Boolean(req.body.success) });
 });
+app.post('/support-message-test', supportDuplicateMessageLimiter, (_req, res) => res.status(200).end());
 
 let server;
 let baseUrl;
@@ -101,6 +103,24 @@ describe('authentication rate limiting', () => {
     assert.equal(getLoginIpKey('::ffff:192.0.2.4'), getLoginIpKey('192.0.2.4'));
     assert.equal(getLoginIpKey('2001:db8:1234:5600::1'), getLoginIpKey('2001:db8:1234:56ff::9'));
     assert.notEqual(getLoginIpKey('2001:db8:1234:5600::1'), getLoginIpKey('2001:db8:1234:5700::1'));
+  });
+
+  it('blocks duplicate support messages for 10 minutes while allowing other questions and repeat support requests', async () => {
+    const url = baseUrl.replace('/login-test', '/support-message-test');
+    const uniqueMessage = `Where is my order ${Date.now()}?`;
+    assert.equal((await post(url, { message: uniqueMessage })).status, 200);
+
+    const duplicate = await post(url, { message: `  ${uniqueMessage.toLowerCase()}  ` });
+    assert.equal(duplicate.status, 429);
+    assert.equal((await duplicate.json()).code, 'SUPPORT_DUPLICATE_MESSAGE_LIMIT');
+
+    assert.equal((await post(url, { message: 'Can I return my order?' })).status, 200);
+    assert.equal((await post(url, { message: 'I need customer support' })).status, 200);
+    assert.equal((await post(url, { message: 'I need customer support' })).status, 200);
+    assert.equal((await post(url, { message: 'I need support' })).status, 200);
+    assert.equal((await post(url, { message: 'I need support' })).status, 200);
+    assert.equal((await post(url, { message: '' })).status, 200);
+    assert.equal((await post(url, { message: '' })).status, 200);
   });
 
   it('separates OTP issuance throttles from failed OTP verification throttles', async () => {
