@@ -41,7 +41,9 @@ function resolveTelegramBotToken(featureConfig = {}) {
 }
 
 function getTelegramWebhookSecret(botToken = resolveTelegramBotToken()) {
-  const configuredSecret = process.env.TELEGRAM_WEBHOOK_SECRET && process.env.TELEGRAM_WEBHOOK_SECRET.trim();
+  const configuredSecret =
+    process.env.SUPPORT_TELEGRAM_WEBHOOK_SECRET?.trim() ||
+    process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
   if (configuredSecret) return configuredSecret;
   if (!botToken) return '';
   return crypto.createHmac('sha256', botToken).update('bhumivera-telegram-webhook-v1').digest('hex');
@@ -57,11 +59,14 @@ function isValidTelegramWebhookSecret(headerValue, botToken = resolveTelegramBot
 }
 
 function getTelegramWebhookUrl(customUrl = null) {
-  const rawUrl =
+  const explicitUrl =
     customUrl ||
-    process.env.TELEGRAM_WEBHOOK_URL ||
-    (process.env.BACKEND_PUBLIC_URL
-      ? `${process.env.BACKEND_PUBLIC_URL.replace(/\/+$/, '')}/api/support/telegram/webhook`
+    process.env.SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL ||
+    process.env.TELEGRAM_WEBHOOK_URL;
+  const baseUrl = process.env.BACKEND_PUBLIC_URL || process.env.API_BASE_URL;
+  const rawUrl = explicitUrl ||
+    (baseUrl
+      ? `${baseUrl.replace(/\/+$/, '')}/api/support/telegram/webhook`
       : 'https://bhumivera-backend-production.up.railway.app/api/support/telegram/webhook');
   const trimmed = String(rawUrl || '').trim();
   if (!trimmed) return '';

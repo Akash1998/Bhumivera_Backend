@@ -730,6 +730,42 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.equal(isValidTelegramWebhookSecret('invalid', 'test-bot-token'), false);
   });
 
+  it('uses the documented backend URL and webhook secret configuration', () => {
+    const envNames = [
+      'SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL',
+      'TELEGRAM_WEBHOOK_URL',
+      'BACKEND_PUBLIC_URL',
+      'API_BASE_URL',
+      'SUPPORT_TELEGRAM_WEBHOOK_SECRET',
+      'TELEGRAM_WEBHOOK_SECRET',
+    ];
+    const originalEnv = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
+    try {
+      for (const name of envNames) delete process.env[name];
+      process.env.API_BASE_URL = 'https://service.bhumivera.com/';
+      assert.equal(
+        getTelegramWebhookUrl(),
+        'https://service.bhumivera.com/api/support/telegram/webhook'
+      );
+
+      process.env.SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL =
+        'https://webhook.bhumivera.com/custom/telegram';
+      assert.equal(
+        getTelegramWebhookUrl(),
+        'https://webhook.bhumivera.com/custom/telegram'
+      );
+
+      process.env.SUPPORT_TELEGRAM_WEBHOOK_SECRET = 'documented-secret';
+      process.env.TELEGRAM_WEBHOOK_SECRET = 'legacy-secret';
+      assert.equal(getTelegramWebhookSecret('test-bot-token'), 'documented-secret');
+    } finally {
+      for (const name of envNames) {
+        if (originalEnv[name] === undefined) delete process.env[name];
+        else process.env[name] = originalEnv[name];
+      }
+    }
+  });
+
   it('1. PII Masker redacts payment cards, CVVs, passwords, OTPs, and JWTs while preserving 9-digit Order IDs', () => {
     const raw =
       'My order is #918273645 and phone is 9876543210. My card 4532 0151 1283 0366 CVV: 842 password is SuperSecret99! OTP is 482910 and Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjo3fQ.sig12345678';
