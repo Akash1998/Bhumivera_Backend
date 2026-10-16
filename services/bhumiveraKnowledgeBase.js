@@ -66,7 +66,7 @@ const INGREDIENT_MEMORY_GRAPH = Object.freeze({
     id: 'haridra',
     name: 'Haridra (Turmeric)',
     aliases: ['turmeric', 'curcuma longa', 'haldi'],
-    summary: 'High-potency organic Turmeric (Curcuma longa) rhizome extract calibrated at 0.5% concentration. Standardized for antioxidant curcuminoids, it visibly brightens hyperpigmentation, protects against photo-oxidative stress, and imparts warmth and clarity to the complexion.',
+    summary: 'High-potency standardized Ayurvedic Turmeric (Curcuma longa) rhizome extract calibrated at 0.5% concentration. Standardized for antioxidant curcuminoids, it visibly brightens hyperpigmentation, protects against photo-oxidative stress, and imparts warmth and clarity to the complexion.',
     relatedIngredients: ['neem', 'activated_charcoal'],
   },
 });

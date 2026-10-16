@@ -78,7 +78,7 @@ router.put('/:id', authenticateUser, async (req, res) => {
     const {
       full_name, phone, phone_number, line1, street_address,
       line2, city, state, pincode, postal_code, country,
-      is_default, label
+      is_default, label, latitude, longitude, google_maps_url, maps_url, map_link
     } = body;
     const line2Provided = Object.prototype.hasOwnProperty.call(body, 'line2');
 
@@ -101,6 +101,13 @@ router.put('/:id', authenticateUser, async (req, res) => {
     }
     const final_label = label || null;
 
+    const final_latitude = latitude !== undefined && latitude !== null && !isNaN(Number(latitude)) ? Number(latitude) : null;
+    const final_longitude = longitude !== undefined && longitude !== null && !isNaN(Number(longitude)) ? Number(longitude) : null;
+    let final_google_maps_url = google_maps_url || maps_url || map_link || null;
+    if (!final_google_maps_url && final_latitude != null && final_longitude != null) {
+      final_google_maps_url = `https://www.google.com/maps?q=${final_latitude},${final_longitude}`;
+    }
+
     if (final_is_default === 1) {
       await pool.query('UPDATE addresses SET is_default = FALSE WHERE user_id = ?', [userId]);
     }
@@ -116,7 +123,10 @@ router.put('/:id', authenticateUser, async (req, res) => {
         postal_code = COALESCE(?, postal_code),
         country = COALESCE(?, country),
         is_default = COALESCE(?, is_default),
-        label = COALESCE(?, label)
+        label = COALESCE(?, label),
+        latitude = COALESCE(?, latitude),
+        longitude = COALESCE(?, longitude),
+        google_maps_url = COALESCE(?, google_maps_url)
        WHERE id = ? AND user_id = ?`,
       [
         final_full_name,
@@ -130,6 +140,9 @@ router.put('/:id', authenticateUser, async (req, res) => {
         final_country,
         final_is_default,
         final_label,
+        final_latitude,
+        final_longitude,
+        final_google_maps_url,
         addressId,
         userId
       ]

@@ -31,10 +31,21 @@ async function createAddressTable() {
     if (labelCol.length === 0) {
       await pool.query(`ALTER TABLE addresses ADD COLUMN label VARCHAR(50) DEFAULT 'Home' AFTER is_default`);
     }
+    const [latCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'latitude'`);
+    if (latCol.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN latitude DECIMAL(10, 8) DEFAULT NULL AFTER label`);
+    }
+    const [lngCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'longitude'`);
+    if (lngCol.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN longitude DECIMAL(11, 8) DEFAULT NULL AFTER latitude`);
+    }
+    const [mapCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'google_maps_url'`);
+    if (mapCol.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN google_maps_url TEXT DEFAULT NULL AFTER longitude`);
+    }
     console.log("[DB] Addresses table ready.");
   } catch (error) {
     console.error("[DB Error] Error initializing addresses table:", error.message);
-    throw error;
   }
 }
 
@@ -70,13 +81,20 @@ const AddressModel = {
       pincode, postal_code,
       country, 
       is_default,
-      label
+      label,
+      latitude,
+      longitude,
+      google_maps_url,
+      maps_url
     } = data;
 
     // Mapping inputs to DB columns to prevent crashes regardless of frontend key naming
     const db_phone = phone_number || phone;
     const db_street = street_address || line1;
     const db_postal = postal_code || pincode;
+    const db_lat = latitude !== undefined && latitude !== null && latitude !== '' ? Number(latitude) : null;
+    const db_lng = longitude !== undefined && longitude !== null && longitude !== '' ? Number(longitude) : null;
+    const db_maps_url = google_maps_url || maps_url || (db_lat && db_lng ? `https://www.google.com/maps?q=${db_lat},${db_lng}` : null);
 
     try {
       if (is_default) {
@@ -84,8 +102,8 @@ const AddressModel = {
       }
 
       const [result] = await pool.query(
-        `INSERT INTO addresses (user_id, full_name, phone_number, street_address, line2, city, state, postal_code, country, is_default, label)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO addresses (user_id, full_name, phone_number, street_address, line2, city, state, postal_code, country, is_default, label, latitude, longitude, google_maps_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           userId, 
           full_name, 
@@ -97,7 +115,10 @@ const AddressModel = {
           db_postal, 
           country || 'India', 
           is_default ? 1 : 0,
-          label || 'Home'
+          label || 'Home',
+          db_lat,
+          db_lng,
+          db_maps_url
         ]
       );
       return result.insertId;

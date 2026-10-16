@@ -86,6 +86,23 @@ function normalizeAddressKeys(input = {}) {
     }
   }
 
+  const latitude = pickFirstValue(src, ['latitude', 'lat']);
+  if (latitude !== undefined) {
+    out.latitude = latitude;
+  }
+
+  const longitude = pickFirstValue(src, ['longitude', 'lng', 'lon']);
+  if (longitude !== undefined) {
+    out.longitude = longitude;
+  }
+
+  const google_maps_url = pickFirstValue(src, ['google_maps_url', 'googleMapsUrl', 'maps_url', 'mapsUrl', 'map_link']);
+  if (google_maps_url !== undefined) {
+    out.google_maps_url = google_maps_url;
+  } else if (out.latitude && out.longitude) {
+    out.google_maps_url = `https://www.google.com/maps?q=${out.latitude},${out.longitude}`;
+  }
+
   if (src.is_default !== undefined) {
     out.is_default = src.is_default ? 1 : 0;
   } else if (src.isDefault !== undefined) {
