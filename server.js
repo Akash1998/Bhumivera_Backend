@@ -134,14 +134,14 @@ app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " +
-    "script-src 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://vercel.live https://overbridgenet.com https://www.google-analytics.com https://ssl.google-analytics.com https://www.googletagmanager.com https://checkout.razorpay.com https://cdn.razorpay.com https://translate.google.com https://translate.googleapis.com; " +
-    "script-src-elem 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://vercel.live https://overbridgenet.com https://www.google-analytics.com https://ssl.google-analytics.com https://www.googletagmanager.com https://checkout.razorpay.com https://cdn.razorpay.com https://translate.google.com https://translate.googleapis.com; " +
+    "script-src 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://vercel.live https://overbridgenet.com https://www.google-analytics.com https://ssl.google-analytics.com https://www.googletagmanager.com https://checkout.razorpay.com https://cdn.razorpay.com https://translate.google.com https://translate.googleapis.com https://translate-pa.googleapis.com; " +
+    "script-src-elem 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://vercel.live https://overbridgenet.com https://www.google-analytics.com https://ssl.google-analytics.com https://www.googletagmanager.com https://checkout.razorpay.com https://cdn.razorpay.com https://translate.google.com https://translate.googleapis.com https://translate-pa.googleapis.com; " +
     "worker-src 'self' blob:; " +
     "frame-src 'self' https://challenges.cloudflare.com https://vercel.live https://*.google.com https://checkout.razorpay.com https://api.razorpay.com; " +
-    "connect-src 'self' https://challenges.cloudflare.com https://vercel.live https://bhumivera-backend.railway.app https://bhumiverabackend-production.up.railway.app https://service.bhumivera.com https://analytics.google.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://*.r2.cloudflarestorage.com https://overbridgenet.com https://api.razorpay.com https://lumberjack.razorpay.com https://translate.google.com https://translate.googleapis.com; " +
+    "connect-src 'self' https://challenges.cloudflare.com https://vercel.live https://bhumivera-backend.railway.app https://bhumiverabackend-production.up.railway.app https://service.bhumivera.com https://analytics.google.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://*.r2.cloudflarestorage.com https://overbridgenet.com https://api.razorpay.com https://lumberjack.razorpay.com https://translate.google.com https://translate.googleapis.com https://translate-pa.googleapis.com; " +
     "img-src 'self' data: blob: https: https://*.google-analytics.com https://*.analytics.google.com https://*.razorpay.com; " +
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://www.gstatic.com; " +
+    "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com https://www.gstatic.com; " +
     "font-src 'self' data: https://fonts.gstatic.com https://fonts.googleapis.com; " +
     "trusted-types *;"
   );
