@@ -24,7 +24,7 @@ const state = {
 const pass = (_req, _res, next) => next();
 const mocks = new Map([
   ['../middleware/authMiddleware', { authenticateAdmin: pass }],
-  ['../config/db', { query: async () => [[], []], appConfig: { connectionLimit: 3, maxIdle: 1, queueLimit: 100 } }],
+  ['../config/db', { query: async () => [[], []], appConfig: { connectionLimit: 2, maxIdle: 1, queueLimit: 100 } }],
   ['../utils/mail', { getMailMetrics: () => ({ acceptedCount: 0, failedCount: 0, recipientCount: 0 }) }],
   ['../middleware/requestObservability', {
     getRequestMetrics: () => ({
@@ -96,7 +96,7 @@ describe('admin health overview', () => {
     assert.equal(health.services.rateLimits.status, 'process_local');
     assert.equal(health.services.responseCache.status, 'connected');
     assert.deepEqual(health.databaseUsage, {
-      connectionLimit: 3,
+      connectionLimit: 2,
       maxIdleConnections: 1,
       queueLimit: 100,
     });

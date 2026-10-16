@@ -1,7 +1,7 @@
 const mysql = require("mysql2");
 
 const connectionLimit = process.env.DB_POOL_SIZE === undefined
-  ? 3
+  ? 2
   : Number(process.env.DB_POOL_SIZE);
 
 if (!Number.isSafeInteger(connectionLimit) || connectionLimit < 1) {

@@ -2,6 +2,10 @@
 
 const { maskPII, sanitizeObjectPII } = require('../utils/piiMasker');
 const { analyzeSentiment, triggerInstantEscalation } = require('./sentimentEscalationEngine');
+const {
+  findRelevantConciergeAnswer,
+  getConciergeKnowledgeAnswer,
+} = require('./conciergeKnowledgeBase');
 const { executeSupportTool, SUPPORT_TOOLS_REGISTRY } = require('./aiSupportTools');
 const {
   COMPLETE_SITE_NAVIGATION_MAP,
@@ -167,8 +171,9 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
 
   // 3. Return / Replacement / Damaged item intent (including single-word 'return', 'replace', 'exchange')
   if (
-    /^(return|returns|replace|replacement|exchange|rma|damaged|defective|leaking|broken)$/i.test(text) ||
-    /\b(initiate\s*(?:a\s*)?return|return\s*(?:my\s*|this\s*|the\s*|an?\s*)?(?:order|item|product|bottle|jar|package)?|want\s*to\s*(?:return|replace|exchange)|replace\s*(?:my\s*|this\s*)?(?:order|item|product)?|damaged\s*(?:item|product|bottle|box|order)|wrong\s*(?:item|product)|defective|leaking|broken)\b/i.test(rawText)
+    (/^(return|returns|replace|replacement|exchange|rma|damaged|defective|leaking|broken)$/i.test(text) ||
+      /\b(initiate\s*(?:a\s*)?return|return\s*(?:my\s*|this\s*|the\s*|an?\s*)?(?:order|item|product|bottle|jar|package)?|want\s*to\s*(?:return|replace|exchange)|replace\s*(?:my\s*|this\s*)?(?:order|item|product)?|damaged\s*(?:item|product|bottle|box|order)|wrong\s*(?:item|product)|defective|leaking|broken)\b/i.test(rawText)) &&
+    !/\breturn\s+policy\b/i.test(rawText)
   ) {
     const isReplacement = /\b(replace|replacement|exchange)\b/i.test(rawText);
     const wantsWallet = /\b(wallet|store\s*credit|instant\s*credit)\b/i.test(rawText);
@@ -348,6 +353,30 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     return { intent, toolPlan, extracted: { email, phone } };
   }
 
+  const hasActiveMedicalConcern =
+    /\b(psoriasis|eczema|infection|infected|open\s+(?:lesions?|wounds?|sores?)|weeping\s+(?:eczema|lesions?|sores?)|active\s+(?:skin\s+)?(?:lesions?|infection))\b/i.test(rawText);
+  if (hasActiveMedicalConcern) {
+    return { intent: 'knowledge_archive', toolPlan, extracted: { email, phone } };
+  }
+
+  const archiveAnswer = findRelevantConciergeAnswer(rawText);
+  const isOperationalQuery =
+    /\b(price|cost|stock|availability|available|buy|purchase|shipping|delivery|coupon|order|tracking|track)\b/i.test(rawText);
+  const asksForProductKnowledge =
+    /\b(what|why|how|does|do|can|is|are|will|should|safe|use|ingredient|benefit|work|contain|suitable|explain|tell)\b/i.test(rawText);
+  if (archiveAnswer && !isOperationalQuery && asksForProductKnowledge) {
+    return { intent: 'knowledge_archive', toolPlan, extracted: { knowledgeEntry: archiveAnswer.number } };
+  }
+
+  // Answer common non-order questions directly instead of searching the product catalog.
+  if (
+    /\b(brand\s+story|about\s+bhumivera|about\s+(?:your|the)\s+brand|tell\s+me\s+about\s+(?:your|the)\s+brand|what\s+is\s+bhumivera|who\s+are\s+you|your\s+philosophy|brand\s+philosophy)\b/i.test(rawText) ||
+    /\b(what\s+ingredients?\s+do\s+you\s+use|are\s+your\s+products?\s+natural|how\s+do\s+i\s+choose\s+a\s+product|how\s+do\s+i\s+place\s+an?\s+order|how\s+to\s+order|place\s+an?\s+order|payment\s+methods?|cash\s+on\s+delivery|cod\s+available|contact\s+(?:customer\s+)?support|customer\s+care\s+number)\b/i.test(rawText) ||
+    /\b(is\s+this\s+safe\s+for\s+my\s+skin|allerg(?:y|ic)|medical\s+advice)\b/i.test(rawText)
+  ) {
+    return { intent: 'general_inquiry', toolPlan, extracted: { email, phone } };
+  }
+
   // 12. Product Catalog, Ingredients, Pricing, Stock & Shipping Policy
   if (
     /\b(stock|available|availability|price|cost|ingredient|how\s*to\s*use|benefit|shipping\s*charge|free\s*shipping|delivery\s*charge|return\s*policy|cod|cash\s*on\s*delivery|kumkumadi|elixir|oil|serum|cream|cleanser|shampoo|soap|toner|gel|balm|scrub|mask|face|hair|skin|product|catalog|shop|buy|recommend|best\s*seller)\b/i.test(rawText)
@@ -369,15 +398,8 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     return { intent, toolPlan, extracted: { query: cleanedQuery } };
   }
 
-  // 13. Fallback: Query catalog & policy so we always give a helpful, grounded answer
-  intent = 'catalog_or_policy';
-  toolPlan.push({
-    name: 'query_inventory_catalog',
-    args: {
-      query: text.length >= 3 ? text : '',
-      product_id: pageContext?.productId || null,
-    },
-  });
+  // Unknown questions should receive a relevant clarification, not unrelated catalog results.
+  intent = 'general_inquiry';
   return { intent, toolPlan, extracted: { orderRef, email, phone } };
 }
 
@@ -455,6 +477,141 @@ function synthesizeDeterministicResponse({
       quickActions: [
         { label: 'Track My Order', prompt: 'Where is my latest order?' },
         { label: 'Check Refund Status', prompt: 'Check the status of my refund' },
+      ],
+    };
+  }
+
+  if (intent === 'knowledge_archive') {
+    const question = String(userMessage || '');
+    const lowerQuestion = question.toLowerCase();
+
+    if (/\b(psoriasis|eczema|infection|infected|open\s+(?:lesions?|wounds?|sores?)|weeping\s+(?:eczema|lesions?|sores?)|active\s+(?:skin\s+)?(?:lesions?|infection))\b/i.test(question)) {
+      return {
+        reply:
+          'I’m sorry you’re dealing with this. Please consult your medical provider or dermatologist before using a cosmetic product on an active skin or scalp condition. Do not apply products to open or weeping skin, and do not use cosmetic care in place of prescribed treatment. Once your provider confirms it is appropriate, patch test before first use.',
+        quickActions: [],
+      };
+    }
+
+    if (/\bsea\s*buckthorn\b/i.test(question)) {
+      const profile = getConciergeKnowledgeAnswer(1);
+      const barrier = getConciergeKnowledgeAnswer(5);
+      return {
+        reply:
+          `${profile.answer} ${barrier.answer.replace(/^Absolutely\.\s*/i, '')} Before first use, please perform a 24-hour patch test.`,
+        quickActions: [],
+      };
+    }
+
+    if (/\b(shampoo|reetha|shikakai|bhringraj|rosemary)\b/i.test(question)) {
+      const rosemary = getConciergeKnowledgeAnswer(78);
+      const bhringraj = getConciergeKnowledgeAnswer(79);
+      return {
+        reply:
+          `Reetha and Shikakai use natural saponins rather than high-foaming chemical sulfates (like SLS/SLES), creating a gentle lather that lifts sebum and buildup while maintaining the scalp’s acidic protective mantle. ${rosemary.answer} ${bhringraj.answer} Before first use, please perform a 24-hour patch test.`,
+        quickActions: [],
+      };
+    }
+
+    if (/\b(face\s*wash|face\s*cleanser|cleanser|charcoal|glycerin|hyaluronic|turmeric|neem)\b/i.test(question)) {
+      const charcoal = getConciergeKnowledgeAnswer(37);
+      const hydration = getConciergeKnowledgeAnswer(38);
+      const turmeric = getConciergeKnowledgeAnswer(39);
+      const neem = getConciergeKnowledgeAnswer(40);
+      return {
+        reply:
+          `${charcoal.answer.replace(/^It utilizes/i, 'The 3% Activated Charcoal uses')} ${hydration.answer.replace(/^No\.\s*/i, '')} ${turmeric.answer.replace(/^Haridra/i, 'Haridra (Turmeric)')} ${neem.answer} Before first use, please perform a 24-hour patch test.`,
+        quickActions: [],
+      };
+    }
+
+    const knowledge = findRelevantConciergeAnswer(question);
+    if (knowledge) {
+      const patchTestAdvice = knowledge.number <= 185 && !/\bpatch\s*test\b/i.test(knowledge.answer)
+        ? ' Before first use, please perform a 24-hour patch test.'
+        : '';
+      return {
+        reply: `${knowledge.answer}${patchTestAdvice}`,
+        quickActions: [],
+      };
+    }
+  }
+
+  if (intent === 'general_inquiry') {
+    const question = String(userMessage || '');
+    if (/\b(brand\s+story|about\s+bhumivera|about\s+(?:your|the)\s+brand|tell\s+me\s+about\s+(?:your|the)\s+brand|what\s+is\s+bhumivera|who\s+are\s+you|your\s+philosophy|brand\s+philosophy)\b/i.test(question)) {
+      const sourcing = getConciergeKnowledgeAnswer(186);
+      const crueltyFree = getConciergeKnowledgeAnswer(187);
+      const vegan = getConciergeKnowledgeAnswer(188);
+      const testing = getConciergeKnowledgeAnswer(194);
+      return {
+        reply: `The documented Bhumivera standards include ethical botanical sourcing: ${sourcing.answer} The products are cruelty-free and vegan. ${crueltyFree.answer} ${vegan.answer} ${testing.answer}`,
+        quickActions: [
+          { label: 'Ask About Ingredients', prompt: 'What ingredients are used in this product?' },
+          { label: 'Shipping & Delivery', prompt: 'What are your shipping charges and delivery timelines?' },
+        ],
+      };
+    }
+    if (/\b(what\s+ingredients?\s+do\s+you\s+use|are\s+your\s+products?\s+natural)\b/i.test(question)) {
+      return {
+        reply: 'Ingredients vary by formulation, so I don’t want to guess or give you a brand-wide list that may not apply. Tell me the product name and I can check its listed ingredients and usage details.',
+        quickActions: [
+          { label: 'Ask About a Product', prompt: 'What are the ingredients in [product name]?' },
+          { label: 'Product Availability', prompt: 'Show me available products' },
+        ],
+      };
+    }
+    if (/\b(how\s+do\s+i\s+choose\s+a\s+product|is\s+this\s+safe\s+for\s+my\s+skin|allerg(?:y|ic)|medical\s+advice)\b/i.test(question)) {
+      return {
+        reply: 'I can explain the documented ingredients and directions for a specific product, but I can’t assess an individual allergy or diagnose a skin concern. Please consult a qualified healthcare professional if you have a sensitivity or active condition, and perform a 24-hour patch test before first use.',
+        quickActions: [
+          { label: 'Ask About Ingredients', prompt: 'What ingredients are used in this product?' },
+          { label: 'Product Information', prompt: 'Show me available products' },
+        ],
+      };
+    }
+    if (/\b(how\s+do\s+i\s+place\s+an?\s+order|how\s+to\s+order|place\s+an?\s+order)\b/i.test(question)) {
+      return {
+        reply: 'Choose a product, add it to your bag, then continue to checkout to enter your delivery details and select an available payment method. The site shows applicable delivery charges and payment options before you confirm the order.',
+        quickActions: [
+          { label: 'Shipping & Delivery', prompt: 'What are your shipping charges and delivery timelines?' },
+          { label: 'Payment Options', prompt: 'What payment methods are available?' },
+        ],
+      };
+    }
+    if (/\b(cash\s+on\s+delivery|cod\s+available)\b/i.test(question)) {
+      return {
+        reply: 'Cash on Delivery becomes available after two orders have been successfully delivered. If you meet that requirement, check the payment options shown for your order at checkout.',
+        quickActions: [
+          { label: 'How to Place an Order', prompt: 'How do I place an order?' },
+          { label: 'Shipping & Delivery', prompt: 'What are your shipping charges and delivery timelines?' },
+        ],
+      };
+    }
+    if (/\bpayment\s+methods?\b/i.test(question)) {
+      return {
+        reply: 'Available payment methods are shown during checkout and can depend on your order and eligibility. Cash on Delivery becomes available after two successfully delivered orders.',
+        quickActions: [
+          { label: 'Cash on Delivery', prompt: 'Is Cash on Delivery available?' },
+          { label: 'How to Place an Order', prompt: 'How do I place an order?' },
+        ],
+      };
+    }
+    if (/\bcontact\s+(?:customer\s+)?support|customer\s+care\s+number\b/i.test(question)) {
+      return {
+        reply: 'You can contact Bhumivera support at support@bhumivera.com or by WhatsApp at +91 7430985647. You can also tell me what you need help with here.',
+        quickActions: [
+          { label: 'Shipping & Delivery', prompt: 'What are your shipping charges and delivery timelines?' },
+          { label: 'Order Support', prompt: 'I need help with an order' },
+        ],
+      };
+    }
+    return {
+      reply: 'I can help with product details, ingredients, usage, shipping, payment options, order tracking, returns, refunds, coupons, and account questions. Tell me a little more about what you’d like to know.',
+      quickActions: [
+        { label: 'Product Information', prompt: 'Show me available products' },
+        { label: 'Shipping & Delivery', prompt: 'What are your shipping charges and delivery timelines?' },
+        { label: 'Order Support', prompt: 'I need help with an order' },
       ],
     };
   }
@@ -937,6 +1094,7 @@ function synthesizeDeterministicResponse({
  * Optional Gemini LLM synthesis when GEMINI_API_KEY is configured in production.
  */
 async function tryGeminiSynthesis({ userMessage, history = [], toolResults = [], deterministicFallback, user = null }) {
+  if (!toolResults.length) return deterministicFallback.reply;
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
   if (!apiKey) return deterministicFallback.reply;
 
@@ -952,6 +1110,7 @@ async function tryGeminiSynthesis({ userMessage, history = [], toolResults = [],
       .slice(-6)
       .map(m => `${m.sender.toUpperCase()}: ${maskPII(m.content)}`)
       .join('\n');
+    const knowledge = findRelevantConciergeAnswer(userMessage);
 
     const systemPrompt = [
       'You are the Bhumivera Customer Support Assistant (Web & @BhumiveraBot on Telegram).',
@@ -960,8 +1119,12 @@ async function tryGeminiSynthesis({ userMessage, history = [], toolResults = [],
       '2. Always include direct clickable links (e.g. https://www.bhumivera.com/order-tracking or product shareUrl) when available in TOOL_RESULTS.',
       '3. Keep your response concise (2 to 5 sentences or clean bullet points), warm, and directly helpful.',
       '4. Never expose raw passwords, full payment card numbers, CVVs, OTPs, or JWTs.',
+      '5. Ground product, formulation, usage, and safety facts only in KNOWLEDGE_ARCHIVE_ENTRY. Do not add unverified efficacy claims or guess missing product facts.',
+      '6. Always recommend a 24-hour patch test before first use of a topical or haircare product.',
+      '7. For active medical conditions, open lesions, or infection, advise the customer to consult their medical provider and do not present cosmetics as treatment.',
       `Customer Name: ${user?.name || 'Guest'}`,
       `Recent Conversation:\n${recentTurns || 'None'}`,
+      `KNOWLEDGE_ARCHIVE_ENTRY:\n${knowledge ? `Q${knowledge.number}: ${knowledge.question}\nA: ${knowledge.answer}` : 'No relevant archive entry. Do not make product or formulation claims.'}`,
       `TOOL_RESULTS:\n${JSON.stringify(sanitizedToolContext)}`,
       `Customer Message: ${maskPII(userMessage)}`,
     ].join('\n\n');
@@ -1246,9 +1409,18 @@ async function processSupportTurn({
     deterministicFallback: deterministic,
     user: resolvedUser,
   });
+  const hasCatalogProducts = executedTools.some(
+    tool => tool.name === 'query_inventory_catalog' && tool.result?.products?.length
+  );
+  const productKnowledgeQuery =
+    /\b(ingredient|how\s+to\s+use|safe|suitable|benefit|skin|hair|face\s*wash|face\s*cleanser|shampoo|sea\s*buckthorn)\b/i.test(message);
+  const replyWithSafetyAdvice =
+    hasCatalogProducts && productKnowledgeQuery && !/\bpatch\s*test\b/i.test(finalReply)
+      ? `${finalReply} Before first use, please perform a 24-hour patch test.`
+      : finalReply;
 
   if (typeof onStreamEvent === 'function') {
-    const chunks = finalReply.match(/.{1,18}(\s|$)|\S+/g) || [finalReply];
+    const chunks = replyWithSafetyAdvice.match(/.{1,18}(\s|$)|\S+/g) || [replyWithSafetyAdvice];
     for (const chunk of chunks) {
       emit('token', { text: chunk });
     }
@@ -1257,7 +1429,7 @@ async function processSupportTurn({
   const savedAssistantMessage = await appendMessage({
     sessionId: session.id,
     sender: 'assistant',
-    content: finalReply,
+    content: replyWithSafetyAdvice,
     toolCalls: executedTools.map(t => ({ name: t.name, code: t.result?.code, success: t.result?.success, result: t.result })),
     orderCards: collectedOrderCards,
     quickActions: deterministic.quickActions,
@@ -1271,7 +1443,7 @@ async function processSupportTurn({
     status: escalationInfo.escalated ? 'escalated' : session.status,
     messageId: savedAssistantMessage.id,
     message: savedAssistantMessage,
-    reply: finalReply,
+    reply: replyWithSafetyAdvice,
     intent,
     sentiment,
     escalation: escalationInfo,
