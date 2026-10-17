@@ -19,8 +19,6 @@ const DEFAULT_OUTPUT_DIR = path.resolve(
   '../../Bhumivera_Frontend/public/videos/concierge'
 );
 
-const DEFAULT_VEO_MODEL = 'veo-3.1-fast-generate-preview';
-
 const CONCIERGE_VIDEO_JOBS = [
   {
     id: 'facial_phase_1',
@@ -184,49 +182,22 @@ async function executeVeoJob(job, { apiKey, outputDir = resolveOutputDir() } = {
 
   console.log(`[VEO SERVICE] Starting job: ${job.id} (${job.title})...`);
 
-  const candidateModels = [
-    process.env.VEO_MODEL?.trim(),
-    'veo-3.1-fast-generate-preview',
-    'veo-3.1-generate-preview',
-    'veo-3.0-generate-preview',
-    'veo-2.0-generate-001',
-  ].filter(Boolean);
-
-  let operation = null;
-  let lastError = null;
-  let modelUsed = null;
-
-  for (const modelName of candidateModels) {
-    try {
-      console.log(`[VEO SERVICE] Attempting video generation with model "${modelName}"...`);
-      operation = await ai.models.generateVideos({
-        model: modelName,
-        source: { prompt: job.prompt },
-        config: {
-          numberOfVideos: 1,
-          aspectRatio: job.aspectRatio || '16:9',
-          durationSeconds: Math.min(8, job.durationSeconds || 10),
-          resolution: '720p',
-        },
-      });
-      modelUsed = modelName;
-      break;
-    } catch (err) {
-      lastError = err;
-      console.warn(`[VEO SERVICE] Model "${modelName}" attempt failed:`, err.message);
-      // If error is not a 404/NOT_FOUND, don't keep trying models
-      if (!err.message?.includes('404') && !err.message?.includes('NOT_FOUND')) {
-        break;
-      }
-    }
+  let operation;
+  try {
+    operation = await ai.models.generateVideos({
+      model: 'veo-2.0-generate-001',
+      source: { prompt: job.prompt },
+      config: {
+        numberOfVideos: 1,
+        aspectRatio: job.aspectRatio || '16:9',
+        durationSeconds: job.durationSeconds || 10,
+        resolution: '1080p',
+      },
+    });
+  } catch (err) {
+    queueState.jobHistory[job.id] = { status: 'failed', error: err.message };
+    throw err;
   }
-
-  if (!operation) {
-    queueState.jobHistory[job.id] = { status: 'failed', error: lastError?.message };
-    throw lastError || new Error('No candidate Veo model could be initiated.');
-  }
-
-  console.log(`[VEO SERVICE] Generation accepted by "${modelUsed}". Polling operation...`);
 
   const startTime = Date.now();
   while (!operation.done) {
@@ -261,17 +232,12 @@ async function executeVeoJob(job, { apiKey, outputDir = resolveOutputDir() } = {
   return { success: true, filePath: destPath, fileName: job.fileName };
 }
 
-let autoProvisionStarted = false;
-
 /**
  * Background auto-provisioner:
  * Automatically checks whether any concierge video MP4s are missing from disk.
  * If missing, it initiates background generation 1-by-1 without blocking the server.
  */
 function autoProvisionMissingVideos({ delayMs = 6000 } = {}) {
-  if (autoProvisionStarted) return;
-  autoProvisionStarted = true;
-
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     console.log('[VEO AUTO-PROVISION] Skipped: GEMINI_API_KEY is not configured in .env.');
@@ -295,28 +261,16 @@ function autoProvisionMissingVideos({ delayMs = 6000 } = {}) {
       console.log(`[VEO AUTO-PROVISION] Found ${missing.length} missing concierge video(s). Auto-generating in background (1-by-1 queue)...`);
       queueState.isProcessing = true;
 
-      let consecutiveModelFailures = 0;
       for (let i = 0; i < missing.length; i++) {
         const job = missing[i];
         console.log(`[VEO AUTO-PROVISION] Auto-generating (${i + 1}/${missing.length}): ${job.id}...`);
         try {
           await executeVeoJob(job, { apiKey });
-          consecutiveModelFailures = 0;
           if (i < missing.length - 1) {
             await new Promise(r => setTimeout(r, 5000));
           }
         } catch (jobErr) {
           console.error(`[VEO AUTO-PROVISION] Failed job ${job.id}:`, jobErr.message);
-          if (jobErr.message?.includes('404') || jobErr.message?.includes('NOT_FOUND')) {
-            consecutiveModelFailures++;
-            if (consecutiveModelFailures >= 2) {
-              console.warn(
-                '[VEO AUTO-PROVISION] Pausing auto-provisioning: Veo video generation is not enabled or accessible on this GEMINI_API_KEY project. ' +
-                'The AI Concierge will continue running seamlessly with high-performance SVG animations.'
-              );
-              break;
-            }
-          }
         }
       }
       queueState.isProcessing = false;
@@ -330,7 +284,24 @@ function autoProvisionMissingVideos({ delayMs = 6000 } = {}) {
   timer.unref();
 }
 
+
+const STOREFRONT_VIDEO_JOBS = [
+  { id: "hero_seabuckthorn", category: "Storefront Hero", title: "Himalayan Sea Buckthorn Ritual Hero Film", fileName: "hero-seabuckthorn.mp4", publicPath: "/assets/videos/hero-seabuckthorn.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "planting_vision", category: "Impact & Roots", title: "Live Botanical Planting Vision Film", fileName: "planting-vision.mp4", publicPath: "/assets/videos/planting-vision.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "river_stewardship", category: "Impact & Roots", title: "River & Waterway Stewardship Film", fileName: "river-stewardship.mp4", publicPath: "/assets/videos/river-stewardship.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "community_nourishment", category: "Impact & Roots", title: "Community Garden & Nourishment Film", fileName: "community-nourishment.mp4", publicPath: "/assets/videos/community-nourishment.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "seabuckthorn_botanical", category: "Botanical Palette", title: "Sea Buckthorn Omega-7 Field Film", fileName: "seabuckthorn-botanical.mp4", publicPath: "/assets/videos/seabuckthorn-botanical.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "charcoal_purification", category: "Botanical Palette", title: "Activated Bamboo Charcoal Purification Film", fileName: "charcoal-purification.mp4", publicPath: "/assets/videos/charcoal-purification.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "tulsi_botanical", category: "Botanical Palette", title: "Tulsi Holy Basil Botanical Film", fileName: "tulsi-botanical.mp4", publicPath: "/assets/videos/tulsi-botanical.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "aloevera_cellular", category: "Botanical Palette", title: "Aloe Vera Cellular Hydration Film", fileName: "aloevera-cellular.mp4", publicPath: "/assets/videos/aloevera-cellular.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "aloe_science_lab", category: "Formulation Science", title: "Botanical & Dermatological Active Laboratory Film", fileName: "aloe-science-lab.mp4", publicPath: "/assets/videos/aloe-science-lab.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "niacinamide_actives", category: "Formulation Science", title: "Niacinamide & Hyaluronic Acid Synergy Film", fileName: "niacinamide-actives.mp4", publicPath: "/assets/videos/niacinamide-actives.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "founder_manifesto", category: "Brand & Footer Cinema", title: "Founder Manifesto & Living Earth Cinema", fileName: "founder-manifesto.mp4", publicPath: "/assets/videos/founder-manifesto.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+  { id: "unboxing_protection", category: "Legal & Anti-Fraud Shield", title: "Mandatory 360-Degree Uncut Unboxing & Seal Verification Film", fileName: "unboxing-protection.mp4", publicPath: "/assets/videos/unboxing-protection.mp4", aspectRatio: "16:9", durationSeconds: 6 },
+];
+
 module.exports = {
+  STOREFRONT_VIDEO_JOBS,
   CONCIERGE_VIDEO_JOBS,
   getRegisteredJobs,
   executeVeoJob,

@@ -201,4 +201,40 @@ router.post('/veo/generate', authenticateAdmin, async (req, res) => {
   }
 });
 
+
+/**
+ * GET /api/ai/legal-charter
+ * Returns structured metadata for the 4x-expanded 8-part, 88-clause Bhumivera Master Legal & Anti-Scam Charter
+ * and the 12 Storefront/Footer + 9 Concierge MP4 video assets.
+ */
+router.get('/legal-charter', (_req, res) => {
+  const { STOREFRONT_VIDEO_JOBS, CONCIERGE_VIDEO_JOBS } = require('../services/veoVideoService');
+  return res.json({
+    success: true,
+    version: '2026-10-17-v4X',
+    totalParts: 8,
+    totalClauses: 88,
+    governingLaws: [
+      'Consumer Protection Act, 2019 & Consumer Protection (E-Commerce) Rules, 2020',
+      'Information Technology Act, 2000 & Intermediary Rules, 2021',
+      'Digital Personal Data Protection (DPDP) Act, 2023',
+      'Indian Contract Act, 1872 & Sale of Goods Act, 1930',
+      'Drugs and Cosmetics Act, 1940 & Cosmetics Rules, 2020',
+      'Bharatiya Sakshya Adhiniyam, 2023 (Section 63 Electronic Evidence)',
+      'Arbitration and Conciliation Act, 1996 (Seat: Paschim Bardhaman / Asansol, West Bengal)',
+    ],
+    antiScamProtections: {
+      hygieneNonReturnRule: true,
+      mandatory360UncutUnboxingVideoWithin48Hours: true,
+      warehouseCctvAndDigitalWeightVerification: true,
+      superAdminExclusiveOrderCancellationLock: true,
+      dualLedgerWalletRingFencing: true,
+      chargebackAndSybilFraudEnforcement: true,
+    },
+    storefrontVideos: STOREFRONT_VIDEO_JOBS,
+    conciergeVideosCount: CONCIERGE_VIDEO_JOBS.length,
+  });
+});
+
 module.exports = router;
+

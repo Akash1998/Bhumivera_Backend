@@ -171,50 +171,25 @@ async function processJob(job, ai, outputDir, dryRun = false) {
     return true;
   }
 
-  console.log(`🚀 Dispatching Veo generation request...`);
+  console.log(`🚀 Dispatching Veo 2 generation request...`);
   const startTime = Date.now();
 
-  const candidateModels = [
-    process.env.VEO_MODEL?.trim(),
-    'veo-3.1-fast-generate-preview',
-    'veo-3.1-generate-preview',
-    'veo-3.0-generate-preview',
-    'veo-2.0-generate-001',
-  ].filter(Boolean);
-
-  let operation = null;
-  let lastError = null;
-  let modelUsed = null;
-
-  for (const modelName of candidateModels) {
-    try {
-      console.log(`Testing model: "${modelName}"...`);
-      operation = await ai.models.generateVideos({
-        model: modelName,
-        source: { prompt: job.prompt },
-        config: {
-          numberOfVideos: 1,
-          aspectRatio: job.aspectRatio || '16:9',
-          durationSeconds: Math.min(8, job.durationSeconds || 10),
-          resolution: '720p',
-        },
-      });
-      modelUsed = modelName;
-      break;
-    } catch (err) {
-      lastError = err;
-      console.warn(`Model "${modelName}" rejected:`, err.message);
-      if (!err.message?.includes('404') && !err.message?.includes('NOT_FOUND')) {
-        break;
-      }
-    }
+  let operation;
+  try {
+    operation = await ai.models.generateVideos({
+      model: 'veo-2.0-generate-001',
+      source: { prompt: job.prompt },
+      config: {
+        numberOfVideos: 1,
+        aspectRatio: job.aspectRatio || '16:9',
+        durationSeconds: job.durationSeconds || 10,
+        resolution: '1080p',
+      },
+    });
+  } catch (err) {
+    console.error(`❌ Failed to initiate Veo generation:`, err.message);
+    throw err;
   }
-
-  if (!operation) {
-    throw lastError || new Error('No candidate Veo model accepted the request.');
-  }
-
-  console.log(`Accepted by "${modelUsed}". Waiting for render...`);
 
   // Poll strictly 1-by-1 to stay well within the max-3 concurrency limit
   let pollCount = 0;
