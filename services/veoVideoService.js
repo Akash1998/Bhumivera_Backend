@@ -19,6 +19,8 @@ const DEFAULT_OUTPUT_DIR = path.resolve(
   '../../Bhumivera_Frontend/public/videos/concierge'
 );
 
+const DEFAULT_VEO_MODEL = 'veo-3.1-fast-generate-preview';
+
 const CONCIERGE_VIDEO_JOBS = [
   {
     id: 'facial_phase_1',
