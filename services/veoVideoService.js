@@ -182,22 +182,49 @@ async function executeVeoJob(job, { apiKey, outputDir = resolveOutputDir() } = {
 
   console.log(`[VEO SERVICE] Starting job: ${job.id} (${job.title})...`);
 
-  let operation;
-  try {
-    operation = await ai.models.generateVideos({
-      model: 'veo-2.0-generate-001',
-      source: { prompt: job.prompt },
-      config: {
-        numberOfVideos: 1,
-        aspectRatio: job.aspectRatio || '16:9',
-        durationSeconds: job.durationSeconds || 10,
-        resolution: '1080p',
-      },
-    });
-  } catch (err) {
-    queueState.jobHistory[job.id] = { status: 'failed', error: err.message };
-    throw err;
+  const candidateModels = [
+    process.env.VEO_MODEL?.trim(),
+    'veo-3.1-fast-generate-preview',
+    'veo-3.1-generate-preview',
+    'veo-3.0-generate-preview',
+    'veo-2.0-generate-001',
+  ].filter(Boolean);
+
+  let operation = null;
+  let lastError = null;
+  let modelUsed = null;
+
+  for (const modelName of candidateModels) {
+    try {
+      console.log(`[VEO SERVICE] Attempting video generation with model "${modelName}"...`);
+      operation = await ai.models.generateVideos({
+        model: modelName,
+        source: { prompt: job.prompt },
+        config: {
+          numberOfVideos: 1,
+          aspectRatio: job.aspectRatio || '16:9',
+          durationSeconds: Math.min(8, job.durationSeconds || 10),
+          resolution: '720p',
+        },
+      });
+      modelUsed = modelName;
+      break;
+    } catch (err) {
+      lastError = err;
+      console.warn(`[VEO SERVICE] Model "${modelName}" attempt failed:`, err.message);
+      // If error is not a 404/NOT_FOUND, don't keep trying models
+      if (!err.message?.includes('404') && !err.message?.includes('NOT_FOUND')) {
+        break;
+      }
+    }
   }
+
+  if (!operation) {
+    queueState.jobHistory[job.id] = { status: 'failed', error: lastError?.message };
+    throw lastError || new Error('No candidate Veo model could be initiated.');
+  }
+
+  console.log(`[VEO SERVICE] Generation accepted by "${modelUsed}". Polling operation...`);
 
   const startTime = Date.now();
   while (!operation.done) {
@@ -232,12 +259,17 @@ async function executeVeoJob(job, { apiKey, outputDir = resolveOutputDir() } = {
   return { success: true, filePath: destPath, fileName: job.fileName };
 }
 
+let autoProvisionStarted = false;
+
 /**
  * Background auto-provisioner:
  * Automatically checks whether any concierge video MP4s are missing from disk.
  * If missing, it initiates background generation 1-by-1 without blocking the server.
  */
 function autoProvisionMissingVideos({ delayMs = 6000 } = {}) {
+  if (autoProvisionStarted) return;
+  autoProvisionStarted = true;
+
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     console.log('[VEO AUTO-PROVISION] Skipped: GEMINI_API_KEY is not configured in .env.');
@@ -261,16 +293,28 @@ function autoProvisionMissingVideos({ delayMs = 6000 } = {}) {
       console.log(`[VEO AUTO-PROVISION] Found ${missing.length} missing concierge video(s). Auto-generating in background (1-by-1 queue)...`);
       queueState.isProcessing = true;
 
+      let consecutiveModelFailures = 0;
       for (let i = 0; i < missing.length; i++) {
         const job = missing[i];
         console.log(`[VEO AUTO-PROVISION] Auto-generating (${i + 1}/${missing.length}): ${job.id}...`);
         try {
           await executeVeoJob(job, { apiKey });
+          consecutiveModelFailures = 0;
           if (i < missing.length - 1) {
             await new Promise(r => setTimeout(r, 5000));
           }
         } catch (jobErr) {
           console.error(`[VEO AUTO-PROVISION] Failed job ${job.id}:`, jobErr.message);
+          if (jobErr.message?.includes('404') || jobErr.message?.includes('NOT_FOUND')) {
+            consecutiveModelFailures++;
+            if (consecutiveModelFailures >= 2) {
+              console.warn(
+                '[VEO AUTO-PROVISION] Pausing auto-provisioning: Veo video generation is not enabled or accessible on this GEMINI_API_KEY project. ' +
+                'The AI Concierge will continue running seamlessly with high-performance SVG animations.'
+              );
+              break;
+            }
+          }
         }
       }
       queueState.isProcessing = false;
