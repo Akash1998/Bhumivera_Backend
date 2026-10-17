@@ -307,6 +307,12 @@ const initializeDatabase = async () => {
       telegramWebhookTimer.unref();
     }
     console.log("[STARTUP] Database initialization complete; API is ready.");
+    try {
+      const { autoProvisionMissingVideos } = require("./services/veoVideoService");
+      autoProvisionMissingVideos({ delayMs: 8000 });
+    } catch (veoErr) {
+      console.warn("[STARTUP] Veo video auto-provisioning could not be scheduled:", veoErr.message);
+    }
   } catch (err) {
     databaseReady = false;
     startupFailure = err.migration

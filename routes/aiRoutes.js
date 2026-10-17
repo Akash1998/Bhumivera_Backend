@@ -133,4 +133,72 @@ router.post('/ask', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/ai/veo/jobs
+ * Returns registered Veo concierge video jobs and their cached asset status.
+ */
+router.get('/veo/jobs', (_req, res) => {
+  try {
+    const { getRegisteredJobs, queueState } = require('../services/veoVideoService');
+    const jobs = getRegisteredJobs();
+    return res.json({
+      success: true,
+      activeJobId: queueState.activeJobId,
+      activeProgressSeconds: queueState.activeProgressSeconds,
+      jobs,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * POST /api/ai/veo/generate
+ * Triggers sequential Veo 2 video generation for a specific job or custom prompt.
+ */
+router.post('/veo/generate', authenticateAdmin, async (req, res) => {
+  try {
+    const { CONCIERGE_VIDEO_JOBS, executeVeoJob, queueState } = require('../services/veoVideoService');
+    const { jobId, prompt, durationSeconds = 10, aspectRatio = '16:9' } = req.body || {};
+
+    if (queueState.activeJobId) {
+      return res.status(429).json({
+        success: false,
+        message: `A video generation job (${queueState.activeJobId}) is currently active. To protect API limits, only 1 video can be generated at a time.`,
+        activeJobId: queueState.activeJobId,
+      });
+    }
+
+    let targetJob = CONCIERGE_VIDEO_JOBS.find(j => j.id === jobId);
+    if (!targetJob) {
+      if (!prompt) {
+        return res.status(400).json({ success: false, message: 'Valid jobId or prompt is required.' });
+      }
+      targetJob = {
+        id: `custom_${Date.now()}`,
+        category: 'Custom Admin',
+        title: 'Custom Admin Prompt',
+        fileName: `custom_${Date.now()}.mp4`,
+        prompt: String(prompt).trim(),
+        durationSeconds: Math.min(10, Math.max(5, Number(durationSeconds) || 10)),
+        aspectRatio: aspectRatio === '9:16' ? '9:16' : '16:9',
+      };
+    }
+
+    // Trigger asynchronously so HTTP request doesn't hang for 90s
+    executeVeoJob(targetJob).catch(err => {
+      console.error(`[VEO ASYNC ERROR for ${targetJob.id}]:`, err);
+    });
+
+    return res.json({
+      success: true,
+      message: `Veo video generation initiated for "${targetJob.id}". Processing in background.`,
+      job: targetJob,
+    });
+  } catch (err) {
+    console.error('[VEO GENERATE ERROR]:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;
