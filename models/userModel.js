@@ -307,10 +307,16 @@ const saveRememberDevice = async (userId, hash) => {
 };
 
 const linkGoogleId = async (userId, googleId) => {
-  await pool.query(
-    'UPDATE users SET google_id = ? WHERE id = ?',
-    [googleId, userId]
+  const [result] = await pool.query(
+    'UPDATE users SET google_id = ? WHERE id = ? AND (google_id IS NULL OR google_id = ?)',
+    [googleId, userId, googleId]
   );
+  return result.affectedRows === 1;
+};
+
+const getUserByGoogleId = async googleId => {
+  const [rows] = await pool.query('SELECT * FROM users WHERE google_id = ? LIMIT 1', [googleId]);
+  return rows[0];
 };
 
 const initAuthTables = async () => {
@@ -587,6 +593,7 @@ module.exports = {
   initAuthTables,
   createUser,
   getUserByEmail,
+  getUserByGoogleId,
   getUserById,
   getAdminCustomers,
   updateUserStatus,

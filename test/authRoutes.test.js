@@ -12,7 +12,10 @@ process.env.JWT_SECRET = secret;
 
 const state = {
   admin: { id: 17, email: 'admin@example.com', role: 'admin', login_otp: 'hashed-123456' },
+  loginUser: null,
   recoveryUser: null,
+  googlePayload: null,
+  createdGoogleUser: null,
   sentMail: null,
   activeSession: true,
   otpConsumed: true,
@@ -46,6 +49,14 @@ const pool = {
 const mocks = new Map([
   ['../config/db', pool],
   ['../utils/mail', { sendMail: async message => { state.sentMail = message; } }],
+  ['google-auth-library', {
+    OAuth2Client: class {
+      async verifyIdToken({ idToken }) {
+        if (idToken !== 'valid-google-token') throw new Error('Invalid ID token');
+        return { getPayload: () => state.googlePayload };
+      }
+    },
+  }],
   ['../middleware/rateLimiter', new Proxy({}, { get: () => pass })],
   ['../middleware/authMiddleware', { authenticateAdmin: pass, authenticateUser: pass }],
   ['../utils/passwordPolicy', {}],
@@ -85,7 +96,29 @@ const mocks = new Map([
     getAdminByEmail: async email => email === state.admin.email ? state.admin : null,
   }],
   ['../models/userModel', {
-    getUserByEmail: async email => email === state.recoveryUser?.email ? state.recoveryUser : null,
+    getUserByEmail: async email => [state.loginUser, state.recoveryUser, state.createdGoogleUser].find(user => user?.email === email) || null,
+    getUserByGoogleId: async googleId => [state.loginUser, state.recoveryUser, state.createdGoogleUser].find(user => user?.google_id === googleId) || null,
+    getUserById: async id => state.createdGoogleUser?.id === id ? state.createdGoogleUser : null,
+    createUser: async user => {
+      state.createdGoogleUser = {
+        id: 99,
+        name: user.name,
+        email: user.email,
+        role: 'customer',
+        google_id: null,
+        two_factor_enabled: 0,
+      };
+      return state.createdGoogleUser.id;
+    },
+    linkGoogleId: async (userId, googleId) => {
+      const user = [state.loginUser, state.recoveryUser, state.createdGoogleUser].find(candidate => candidate?.id === userId);
+      if (!user || user.google_id && user.google_id !== googleId) return false;
+      user.google_id = googleId;
+      return true;
+    },
+    verifyPassword: async (password, hash) => password === 'correct-password' && hash === 'test-hash',
+    getUserLockStatus: async () => ({ locked: false }),
+    updateUserFailedAttempts: async () => {},
     saveResetOtp: async (userId, otp) => {
       if (state.recoveryUser?.id === userId) {
         state.recoveryUser.reset_otp = `hashed-${otp}`;
@@ -160,8 +193,25 @@ beforeEach(() => {
     id: 42,
     email: 'customer@example.com',
     role: 'customer',
+    google_id: null,
     reset_otp: null,
     reset_otp_expires: null,
+  };
+  state.loginUser = {
+    id: 54,
+    email: 'login@example.com',
+    name: 'Customer',
+    role: 'customer',
+    password_hash: 'test-hash',
+    two_factor_enabled: 0,
+    google_id: null,
+  };
+  state.createdGoogleUser = null;
+  state.googlePayload = {
+    sub: 'google-subject-123',
+    email: state.recoveryUser.email,
+    email_verified: true,
+    name: 'Google Customer',
   };
   state.sentMail = null;
   state.issued.length = 0;
@@ -260,6 +310,92 @@ describe('admin OTP and token refresh flows', () => {
 
     assert.equal(response.status, 401);
     assert.equal((await response.json()).code, 'SESSION_REAUTH_REQUIRED');
+    assert.equal(state.issued.length, 0);
+  });
+});
+
+describe('customer password login', () => {
+  it('allows a password-only login when 2FA is disabled on an untrusted device', async () => {
+    const response = await fetch(`${baseUrl}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: state.loginUser.email, password: 'correct-password' }),
+    });
+
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.user.id, state.loginUser.id);
+    assert.equal(jwt.verify(body.token, secret).sessionType, 'user');
+    assert.equal(state.sentMail, null);
+    assert.equal(state.issued.length, 1);
+  });
+
+  it('still requires an authenticator code when customer 2FA is enabled', async () => {
+    state.loginUser.two_factor_enabled = 1;
+    const response = await fetch(`${baseUrl}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: state.loginUser.email, password: 'correct-password' }),
+    });
+
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).requires2FA, true);
+    assert.equal(state.issued.length, 0);
+  });
+});
+
+describe('customer Google sign-in', () => {
+  const signIn = (body = { idToken: 'valid-google-token', termsAccepted: true }) => fetch(`${baseUrl}/google`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  it('rejects invalid Google ID tokens', async () => {
+    const response = await signIn({ idToken: 'invalid-token', termsAccepted: true });
+    assert.equal(response.status, 401);
+    assert.equal(state.issued.length, 0);
+  });
+
+  it('rejects Google tokens with unverified email addresses', async () => {
+    state.googlePayload.email_verified = false;
+    const response = await signIn();
+    assert.equal(response.status, 401);
+    assert.equal(state.issued.length, 0);
+  });
+
+  it('requires acceptance before creating a new Google account', async () => {
+    state.googlePayload.email = 'new-customer@example.com';
+    const response = await signIn({ idToken: 'valid-google-token' });
+    assert.equal(response.status, 428);
+    assert.equal(state.createdGoogleUser, null);
+  });
+
+  it('creates an account with accepted terms and issues a customer session', async () => {
+    state.googlePayload.email = 'new-customer@example.com';
+    const response = await signIn();
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.user.id, 99);
+    assert.equal(state.createdGoogleUser.google_id, 'google-subject-123');
+    assert.equal(jwt.verify(body.token, secret).sessionType, 'user');
+  });
+
+  it('links an existing customer using a verified email and enforces enabled 2FA', async () => {
+    state.recoveryUser.two_factor_enabled = 1;
+    const response = await signIn();
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.equal(body.requires2FA, true);
+    assert.equal(state.recoveryUser.google_id, 'google-subject-123');
+    assert.equal(state.issued.length, 0);
+  });
+
+  it('rejects privileged accounts from customer Google sign-in', async () => {
+    state.recoveryUser.role = 'admin';
+    const response = await signIn();
+    assert.equal(response.status, 403);
     assert.equal(state.issued.length, 0);
   });
 });

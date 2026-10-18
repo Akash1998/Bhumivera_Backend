@@ -3,6 +3,7 @@ const express = require("express"),
   crypto = require("crypto"),
   jwt = require("jsonwebtoken"),
   bcrypt = require("bcryptjs"),
+  { OAuth2Client } = require('google-auth-library'),
 qrcode = require('qrcode'),
 { generateSecret, generateURI, verify } = require('otplib'),
   pool = require('../config/db'),
@@ -43,6 +44,7 @@ const {
 const {
   createUser,
   getUserByEmail,
+  getUserByGoogleId,
   getUserById,
   verifyPassword: verifyCustomerPassword,
   saveResetOtp,
@@ -53,11 +55,15 @@ const {
   insertPasswordHistory,
   getUserLockStatus,
   updateUserFailedAttempts,
+  linkGoogleId,
 } = require("../models/userModel");
 
 const router = express.Router();
 const TERMS_VERSION = '2026-10-14';
 const AD_PERSONALIZATION_CONSENT_VERSION = 'product-recommendations-v2';
+const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_OAUTH_WEB_CLIENT_ID ||
+  '445526551634-kr5t8oq6p1stodd8hf2mdmcpep201j9l.apps.googleusercontent.com';
+const googleOAuthClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
 
 const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
 const hashAdminOtp = (adminId, otp) => hashOtp('admin-login', adminId, otp);
@@ -276,25 +282,8 @@ router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
         message: 'Enter the code from your authenticator app.'
       });
     }
-    let deviceHash;
-    try {
-      deviceHash = await isTrustedDevice(u.id, req);
-      if (!deviceHash) {
-        await sendDeviceChallenge(u, req);
-        return res.status(202).json({
-          requires2FA: true,
-          factor: 'email',
-          message: 'We sent a verification code to your email because this browser is not trusted yet.',
-          email: u.email
-        });
-      }
-    } catch (challengeError) {
-      console.error('[NEW_DEVICE_CHALLENGE_ERROR]:', challengeError);
-      return res.status(503).json({ message: 'Could not verify this browser. Please try again later.' });
-    }
-    
     const role = isA ? (u.role || "admin") : (u.role || "customer");
-    const token = await issueToken({ id: u.id, email: u.email, role }, req, { sessionType: 'user', deviceHash });
+    const token = await issueToken({ id: u.id, email: u.email, role }, req, { sessionType: 'user' });
     
     return res.json({
       token,
@@ -310,6 +299,116 @@ router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
   } catch (err) {
     console.error("Universal Login Error:", err);
     res.status(500).json({ message: "Internal server error occurred." });
+  }
+});
+
+router.post('/google', googleCallbackLimiter, async (req, res) => {
+  const idToken = typeof req.body?.idToken === 'string' ? req.body.idToken : '';
+  if (!idToken || idToken.length > 8192) {
+    return res.status(400).json({ message: 'A valid Google identity token is required.' });
+  }
+
+  let payload;
+  try {
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken,
+      audience: GOOGLE_WEB_CLIENT_ID,
+    });
+    payload = ticket.getPayload();
+  } catch (error) {
+    console.error('[GOOGLE_ID_TOKEN_VERIFICATION_ERROR]', error);
+    return res.status(401).json({ message: 'Google sign-in could not verify this account. Please try again.' });
+  }
+
+  const googleId = typeof payload?.sub === 'string' ? payload.sub : '';
+  const email = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : '';
+  const emailVerified = payload?.email_verified === true || payload?.email_verified === 'true';
+  if (!googleId || !email || !emailVerified) {
+    return res.status(401).json({ message: 'Google must verify the email address before it can be used to sign in.' });
+  }
+
+  try {
+    let user = await getUserByGoogleId(googleId);
+    if (!user) {
+      user = await getUserByEmail(email);
+      if (user && user.google_id && user.google_id !== googleId) {
+        return res.status(409).json({
+          code: 'GOOGLE_ACCOUNT_ALREADY_LINKED',
+          message: 'This email is linked to a different Google account. Sign in with your existing account first.',
+        });
+      }
+      if (!user) {
+        if (req.body?.termsAccepted !== true) {
+          return res.status(428).json({
+            code: 'TERMS_ACCEPTANCE_REQUIRED',
+            message: 'Accept the Conditions of Use and acknowledge the Privacy Notice before creating an account.',
+          });
+        }
+        const name = typeof payload.name === 'string' && payload.name.trim()
+          ? payload.name.trim().slice(0, 100)
+          : email.split('@')[0].slice(0, 100);
+        try {
+          const userId = await createUser({
+            name,
+            email,
+            password: crypto.randomBytes(48).toString('base64url'),
+            securityAnswer: crypto.randomBytes(32).toString('hex'),
+            termsVersion: TERMS_VERSION,
+          });
+          user = await getUserById(userId);
+        } catch (error) {
+          if (error.code !== 'ER_DUP_ENTRY') throw error;
+          user = await getUserByEmail(email);
+        }
+      }
+
+      if (!user || user.role && user.role !== 'customer') {
+        return res.status(403).json({ message: 'Google sign-in is available for customer accounts only.' });
+      }
+      if (!user.google_id && !await linkGoogleId(user.id, googleId)) {
+        user = await getUserByGoogleId(googleId);
+        if (!user) {
+          return res.status(409).json({
+            code: 'GOOGLE_ACCOUNT_LINK_CONFLICT',
+            message: 'This Google account could not be linked safely. Sign in with your existing account or contact support.',
+          });
+        }
+      } else if (!user.google_id) {
+        user.google_id = googleId;
+      }
+    }
+
+    if (user.role && user.role !== 'customer') {
+      return res.status(403).json({ message: 'Google sign-in is available for customer accounts only.' });
+    }
+    if (Number(user.is_active) === 0) {
+      return res.status(403).json({ message: 'This account is currently unavailable. Please contact support.' });
+    }
+    if (user.two_factor_enabled) {
+      return res.status(202).json({
+        requires2FA: true,
+        factor: 'authenticator',
+        email: user.email,
+        message: 'Enter the code from your authenticator app.',
+      });
+    }
+
+    const role = user.role || 'customer';
+    const token = await issueToken({ id: user.id, email: user.email, role }, req, { sessionType: 'user' });
+    return res.json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role,
+        ad_personalization_opt_in: Number(user.ad_personalization_opt_in) === 1 ? 1 : 0,
+        ad_personalization_consent_version: user.ad_personalization_consent_version || null,
+      },
+    });
+  } catch (error) {
+    console.error('[GOOGLE_LOGIN_ERROR]', error);
+    return res.status(500).json({ message: 'Could not complete Google sign-in. Please try again.' });
   }
 });
 
