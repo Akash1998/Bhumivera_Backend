@@ -4,9 +4,15 @@ const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { initImpactTables, getPublicImpact, getAllContributions, getAllImpactUpdates } = require('../models/impactModel');
 
 const router = express.Router();
-const PROJECTS = new Set(['native-trees', 'river-care', 'community-care']);
+const PROJECTS = new Set([
+  'native-trees',
+  'river-care',
+  'community-care',
+  'saffron-pollinators',
+  'sacred-groves',
+  'wetland-rejuvenation',
+]);
 const safeMediaUrl = value => {
-  if (typeof value !== 'string' || !value.trim()) return null;
   try {
     const url = new URL(value.trim());
     return url.protocol === 'https:' ? url.toString() : null;
