@@ -176,6 +176,15 @@ const loginIpLimiter = createLimiter('login-network', {
   userAction: 'Wait for the retry interval to expire before trying again.',
 });
 
+const emailAccountLookupLimiter = createLimiter('email-account-lookup-ip', {
+  windowMs: FIFTEEN_MINUTES,
+  max: 30,
+  keyGenerator: req => getLoginIpKey(req.ip, ipKeyGenerator(req.ip, 56)),
+  code: 'EMAIL_LOOKUP_RATE_LIMIT',
+  message: 'Too many email checks from this network. Please try again later.',
+  userAction: 'Wait for the retry interval to expire before checking again.',
+});
+
 const otpRequestLimiter = createLimiter('otp-request-account-network', {
   windowMs: FIFTEEN_MINUTES,
   max: 10,
@@ -360,6 +369,7 @@ module.exports = {
   referralPreviewLimiter,
   loginLimiter,
   loginIpLimiter,
+  emailAccountLookupLimiter,
   otpRequestLimiter,
   otpVerificationLimiter,
   forgotLimiter,

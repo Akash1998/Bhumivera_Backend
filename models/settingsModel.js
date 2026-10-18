@@ -119,9 +119,13 @@ const getSetting = async (key) => {
 };
 
 const updateSetting = async (key, value) => {
+  const groupName = key.startsWith('gamification_') ? 'gamification' : 'general';
   await pool.query(
-    'INSERT INTO settings (key_name, value, group_name) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
-    [key, value, 'general']
+    `INSERT INTO settings (key_name, value, group_name) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       value = VALUES(value),
+       group_name = IF(VALUES(group_name) = 'gamification', VALUES(group_name), group_name)`,
+    [key, value, groupName]
   );
 };
 

@@ -149,9 +149,25 @@ router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
     const eligible = !['cancelled', 'returned'].includes(order.status) &&
       order.payment_status !== 'failed' &&
       (order.payment_mode === 'COD' || order.payment_status === 'paid');
+    const enabled = (await getSetting('gamification_spin_after_purchase_enabled')) === '1';
+    const spinSettings = enabled && eligible && !claims[0]
+      ? validateOrderSpinRewards(await getSetting('gamification_order_spin_rewards'))
+      : null;
+    if (spinSettings && !spinSettings.valid) {
+      console.error('[ORDER_SPIN_CONFIGURATION_INVALID]', spinSettings.message);
+      return res.status(503).json({
+        code: 'ORDER_SPIN_CONFIGURATION_INVALID',
+        message: 'Reward spins are temporarily unavailable. Please contact support.',
+      });
+    }
     return res.json({
-      enabled: (await getSetting('gamification_spin_after_purchase_enabled')) === '1',
+      enabled,
       eligible,
+      rewards: spinSettings?.rewards.map(reward => ({
+        label: reward.label,
+        chance: reward.chance,
+        rewardType: reward.rewardType,
+      })) || [],
       claim: claims[0] ? {
         reward: claims[0].reward_label,
         couponCode: claims[0].coupon_code,

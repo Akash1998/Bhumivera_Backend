@@ -8,7 +8,7 @@ qrcode = require('qrcode'),
 { generateSecret, generateURI, verify } = require('otplib'),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
-  { registerLimiter, loginLimiter, loginIpLimiter, otpRequestLimiter, otpVerificationLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
+  { registerLimiter, loginLimiter, loginIpLimiter, emailAccountLookupLimiter, otpRequestLimiter, otpVerificationLimiter, forgotLimiter, adminStrictLimiter, magicLinkLimiter, googleCallbackLimiter, challengeLimiter } = require('../middleware/rateLimiter'),
   { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware'),
   { validatePassword } = require('../utils/passwordPolicy'),
   { isPwned } = require('../utils/hibp'),
@@ -193,6 +193,21 @@ async function adminPasswordLogin(req, res) {
 router.post('/admin/login', adminStrictLimiter, loginIpLimiter, loginLimiter, adminPasswordLogin);
 
 // --- CORE UNIVERSAL LOGIN ---
+router.post('/account-exists', emailAccountLookupLimiter, async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ message: 'Enter a valid email address.' });
+  }
+
+  try {
+    const user = await getUserByEmail(email);
+    return res.json({ accountExists: Boolean(user) });
+  } catch (error) {
+    console.error('[AUTH_ACCOUNT_LOOKUP_ERROR]', error);
+    return res.status(500).json({ message: 'Could not check this email right now. Please try again.' });
+  }
+});
+
 router.post("/login", loginIpLimiter, loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
