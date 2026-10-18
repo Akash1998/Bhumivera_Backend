@@ -59,9 +59,18 @@ const getTokensForUser = async (userId) => {
   return rows;
 };
 
+const getAllActiveTokens = async () => {
+  await ensureDeviceTokensTable();
+  const [rows] = await pool.query(
+    'SELECT token FROM user_device_tokens WHERE is_active = 1'
+  );
+  return rows;
+};
+
 module.exports = {
   ensureDeviceTokensTable,
   registerDeviceToken,
   unregisterDeviceToken,
   getTokensForUser,
+  getAllActiveTokens,
 };

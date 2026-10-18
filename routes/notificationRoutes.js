@@ -142,6 +142,11 @@ router.delete('/:id', authenticateUser, async (req, res) => {
 
 // --- NATIVE PUSH NOTIFICATION TOKEN REGISTRATION ---
 const { registerDeviceToken, unregisterDeviceToken } = require('../models/deviceTokenModel');
+const { isFirebasePushConfigured } = require('../services/firebasePushService');
+
+router.get('/push-status', authenticateUser, (req, res) => {
+  return res.json({ configured: isFirebasePushConfigured() });
+});
 
 router.post('/register-device', authenticateUser, async (req, res) => {
   try {

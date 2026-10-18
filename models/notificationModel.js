@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { sendStoredNotification } = require('../services/firebasePushService');
 
 const createNotificationTable = async () => {
   await pool.query(`
@@ -30,6 +31,21 @@ const createNotification = async (data) => {
     'INSERT INTO notifications (user_id, title, message, type, is_global) VALUES (?, ?, ?, ?, ?)',
     [user_id || null, title, message, type || 'system', is_global ? 1 : 0]
   );
+  try {
+    await sendStoredNotification({
+      notificationId: result.insertId,
+      userId: user_id,
+      title,
+      message,
+      isGlobal: Boolean(is_global),
+    });
+  } catch (error) {
+    console.error('[PUSH_NOTIFICATION_DELIVERY_FAILED]', {
+      notificationId: result.insertId,
+      userId: user_id || null,
+      error,
+    });
+  }
   return result.insertId;
 };
 
