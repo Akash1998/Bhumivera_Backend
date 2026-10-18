@@ -4,6 +4,7 @@ const {
   issueOrderShoppingWalletReward,
   reconcileShoppingWalletRewardRefund,
 } = require('../models/shoppingWalletRewardModel');
+const { sendImpactCertificateForContribution } = require('./impactDonationService');
 
 const isValidWebhookSignature = (rawBody, signature, secret) => {
   if (!Buffer.isBuffer(rawBody) || typeof signature !== 'string' ||
@@ -15,7 +16,12 @@ const isValidWebhookSignature = (rawBody, signature, secret) => {
   return received.length === expected.length && crypto.timingSafeEqual(received, expected);
 };
 
-const processRazorpayWebhook = async ({ pool, eventId, event }) => {
+const processRazorpayWebhook = async ({
+  pool,
+  eventId,
+  event,
+  sendImpactCertificate = sendImpactCertificateForContribution,
+}) => {
   if (typeof eventId !== 'string' || !eventId.trim() || eventId.length > 100) {
     throw Object.assign(new Error('A valid webhook event ID is required.'), { status: 400 });
   }
@@ -23,19 +29,40 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
     throw Object.assign(new Error('A valid webhook event type is required.'), { status: 400 });
   }
 
-  const connection = await pool.getConnection();
+  let connection = await pool.getConnection();
+  let transactionOpen = false;
   try {
     await connection.beginTransaction();
+    transactionOpen = true;
     const [insertResult] = await connection.query(
       'INSERT IGNORE INTO razorpay_webhook_events (event_id, event_type) VALUES (?, ?)',
       [eventId, event.event]
     );
     if (insertResult.affectedRows === 0) {
       await connection.commit();
+      transactionOpen = false;
+      connection.release();
+      connection = null;
+      if (event.event === 'payment.captured') {
+        const payment = event.payload?.payment?.entity;
+        if (payment?.id && payment.order_id) {
+          const [contributions] = await pool.query(
+            `SELECT id FROM impact_contributions
+             WHERE razorpay_order_id = ? AND payment_id = ? AND status = 'collected'
+             LIMIT 1`,
+            [payment.order_id, payment.id]
+          );
+          if (contributions[0] &&
+              !await sendImpactCertificate(pool, contributions[0].id)) {
+            throw Object.assign(new Error('Impact certificate email delivery needs a webhook retry.'), { status: 503 });
+          }
+        }
+      }
       return { duplicate: true, updated: false };
     }
 
     let updated = false;
+    let impactContributionId = null;
     if (event.event === 'payment.captured' || event.event === 'payment.failed') {
       const payment = event.payload?.payment?.entity;
       if (!payment?.id || !Number.isSafeInteger(payment.amount) || payment.currency !== 'INR') {
@@ -51,12 +78,40 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
       );
       const order = orders[0];
       if (!order) {
-        throw Object.assign(
-          new Error('The order for this payment is not committed yet; retry the webhook.'),
-          { status: 503 }
+        const [impactRows] = await connection.query(
+          `SELECT id, amount, status, payment_id
+           FROM impact_contributions
+           WHERE razorpay_order_id = ? FOR UPDATE`,
+          [payment.order_id]
         );
-      }
-      if (order && order.payment_mode === 'online' &&
+        const contribution = impactRows[0];
+        if (!contribution) {
+          throw Object.assign(
+            new Error('The order for this payment is not committed yet; retry the webhook.'),
+            { status: 503 }
+          );
+        }
+        if (
+          payment.currency === 'INR' &&
+          Math.round(Number(contribution.amount) * 100) === payment.amount
+        ) {
+          if (event.event === 'payment.failed') {
+            updated = true;
+          } else if (
+            contribution.status === 'pledged' ||
+            contribution.payment_id === payment.id
+          ) {
+            const [result] = await connection.query(
+              `UPDATE impact_contributions
+               SET payment_id = ?, status = 'collected', collected_at = COALESCE(collected_at, NOW())
+               WHERE id = ? AND (payment_id IS NULL OR payment_id = ?)`,
+              [payment.id, contribution.id, payment.id]
+            );
+            updated = result.affectedRows === 1 || contribution.payment_id === payment.id;
+            if (updated) impactContributionId = contribution.id;
+          }
+        }
+      } else if (order && order.payment_mode === 'online' &&
           Math.round(Number(order.total) * 100) === payment.amount) {
         const nextStatus = event.event === 'payment.captured' ? 'paid' : 'failed';
         const [result] = await connection.query(
@@ -149,12 +204,20 @@ const processRazorpayWebhook = async ({ pool, eventId, event }) => {
     }
 
     await connection.commit();
+    transactionOpen = false;
+    connection.release();
+    connection = null;
+    if (impactContributionId) {
+      if (!await sendImpactCertificate(pool, impactContributionId)) {
+        throw Object.assign(new Error('Impact certificate email delivery needs a webhook retry.'), { status: 503 });
+      }
+    }
     return { duplicate: false, updated };
   } catch (error) {
-    await connection.rollback();
+    if (transactionOpen) await connection.rollback();
     throw error;
   } finally {
-    connection.release();
+    connection?.release();
   }
 };
 

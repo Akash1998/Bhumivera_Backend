@@ -184,15 +184,17 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     }
     const rawImpactAmount = req.body.impactAmount;
     const impactAmount = rawImpactAmount === undefined ? 0 : Number(rawImpactAmount);
-    const impactProjects = ['native-trees', 'river-care', 'community-care'];
     const allowedImpactAmounts = [0, 50, 100, 250, 500];
-    const impactProject = req.body.impactProject;
     if (!Number.isFinite(impactAmount) || !allowedImpactAmounts.includes(impactAmount)) {
       return res.status(400).json({ message: 'Choose a supported contribution amount.' });
     }
-    if (impactAmount > 0 && (!impactProjects.includes(impactProject) || (paymentMode || 'COD') !== 'COD')) {
-      return res.status(400).json({ message: 'Impact contributions are available with cash-on-delivery orders only.' });
+    if (impactAmount > 0) {
+      return res.status(400).json({
+        code: 'IMPACT_PAYMENT_REQUIRED',
+        message: 'Impact co-sponsorships must be paid through the secure Razorpay checkout on the impact project page.',
+      });
     }
+    const impactProject = null;
     if (!addressId) return res.status(400).json({ message: "Delivery address is required." });
 
     const addresses = await AddressModel.getAddressesByUser(req.user.id);

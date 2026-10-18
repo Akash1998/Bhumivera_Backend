@@ -18,7 +18,7 @@ const { createLoyaltyTierTable } = require('../models/loyaltyTierModel');
 const { createNewsletterTable } = require('../models/newsletterModel');
 const { createShippingTable } = require('../models/shippingModel');
 const { initSerialTable } = require('../models/serialModel');
-const { initImpactTables } = require('../models/impactModel');
+const { initImpactTables, upgradeImpactContributionSchema } = require('../models/impactModel');
 const { initSubcategoriesTable } = require('../models/subcategoryModel');
 const { createWishlistTable } = require('../models/wishlistModel');
 const { createRecommendationTables } = require('../models/recommendationModel');
@@ -732,6 +732,11 @@ const migrations = [
     version: 62,
     name: 'initialize superadmin security vault, 108-module rbac matrix, and atomic wallet refund ledger',
     up: () => initSuperAdminFortressTables(pool),
+  },
+  {
+    version: 63,
+    name: 'link impact contributions to verified Razorpay payments and certificates',
+    up: upgradeImpactContributionSchema,
   },
 ];
 

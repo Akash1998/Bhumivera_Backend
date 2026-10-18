@@ -28,6 +28,10 @@ const createPool = () => {
     get hasOrder() { return hasOrder; },
     set hasOrder(value) { hasOrder = value; },
     eventIds,
+    async query(sql) {
+      if (sql.includes('FROM impact_contributions')) return [[]];
+      throw new Error(`Unexpected pool query: ${sql}`);
+    },
     async getConnection() {
       let transactionEventIds;
       let transactionPaymentStatus;
@@ -53,6 +57,7 @@ const createPool = () => {
           if (sql.includes('FROM orders') && sql.includes('WHERE payment_id = ?')) {
             return [hasOrder ? [{ ...order }] : []];
           }
+          if (sql.includes('FROM impact_contributions')) return [[]];
           if (sql.includes('UPDATE orders SET payment_status')) {
             if (order.payment_status !== 'pending') return [{ affectedRows: 0 }];
             order.payment_status = params[0];
@@ -175,6 +180,70 @@ describe('Razorpay webhooks', () => {
     assert.equal(repeated.status, 200);
     assert.deepEqual(await repeated.json(), { received: true, duplicate: true, updated: false });
     pool.order.payment_status = 'pending';
+  });
+
+  it('records impact contributions and sends their certificate when Razorpay captures payment', async () => {
+    const eventIds = new Set();
+    const contribution = {
+      id: 44,
+      amount: 150,
+      status: 'pledged',
+      payment_id: null,
+    };
+    let certificateSentFor = null;
+    const pool = {
+      async getConnection() {
+        return {
+          async beginTransaction() {},
+          async commit() {},
+          async rollback() {},
+          release() {},
+          async query(sql, params) {
+            if (sql.includes('INSERT IGNORE INTO razorpay_webhook_events')) {
+              if (eventIds.has(params[0])) return [{ affectedRows: 0 }];
+              eventIds.add(params[0]);
+              return [{ affectedRows: 1 }];
+            }
+            if (sql.includes('FROM orders') && sql.includes('WHERE payment_id = ?')) return [[]];
+            if (sql.includes('FROM impact_contributions') && sql.includes('razorpay_order_id')) {
+              return [[{ ...contribution }]];
+            }
+            if (sql.includes('UPDATE impact_contributions')) {
+              contribution.payment_id = params[0];
+              contribution.status = 'collected';
+              return [{ affectedRows: 1 }];
+            }
+            throw new Error(`Unexpected impact webhook query: ${sql}`);
+          },
+        };
+      },
+    };
+    const result = await processRazorpayWebhook({
+      pool,
+      eventId: 'evt_impact_captured',
+      event: {
+        event: 'payment.captured',
+        payload: {
+          payment: {
+            entity: {
+              id: 'pay_impact',
+              order_id: 'order_impact',
+              amount: 15000,
+              currency: 'INR',
+            },
+          },
+        },
+      },
+      sendImpactCertificate: async (_pool, contributionId) => {
+        certificateSentFor = contributionId;
+        return true;
+      },
+    });
+
+    assert.deepEqual(result, { duplicate: false, updated: true });
+    assert.equal(contribution.payment_id, 'pay_impact');
+    assert.equal(contribution.status, 'collected');
+    assert.equal(certificateSentFor, 44);
   });
 
   it('does not change orders when the captured amount does not match the recorded total', async () => {

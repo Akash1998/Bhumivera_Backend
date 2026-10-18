@@ -1,7 +1,14 @@
+const crypto = require('crypto');
 const express = require('express');
 const pool = require('../config/db');
-const { authenticateAdmin } = require('../middleware/authMiddleware');
+const { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware');
+const { orderLimiter } = require('../middleware/rateLimiter');
 const { initImpactTables, getPublicImpact, getAllContributions, getAllImpactUpdates } = require('../models/impactModel');
+const { getRazorpayClient, verifyRazorpayPayment } = require('../services/razorpayService');
+const {
+  IMPACT_DONATION_PROJECTS,
+  sendImpactCertificateForContribution,
+} = require('../services/impactDonationService');
 
 const router = express.Router();
 const PROJECTS = new Set([
@@ -20,6 +27,172 @@ const safeMediaUrl = value => {
     return null;
   }
 };
+router.post('/donations/create-order', orderLimiter, authenticateUser, async (req, res) => {
+  const amount = Number(req.body?.amount);
+  const projectKey = req.body?.projectKey;
+  if (!Number.isSafeInteger(amount) || amount < 50 || amount > 500000) {
+    return res.status(400).json({ success: false, message: 'Enter a contribution amount between ₹50 and ₹5,00,000.' });
+  }
+  if (!IMPACT_DONATION_PROJECTS.has(projectKey)) {
+    return res.status(400).json({ success: false, message: 'Choose a valid impact project.' });
+  }
+
+  try {
+    await initImpactTables();
+    const [[user]] = await pool.query('SELECT id, email FROM users WHERE id = ?', [req.user.id]);
+    if (!user || typeof user.email !== 'string' || !user.email.trim()) {
+      return res.status(409).json({ success: false, message: 'A registered email address is required for the certificate.' });
+    }
+    const amountPaise = amount * 100;
+    const razorpay = getRazorpayClient();
+    const order = await razorpay.orders.create({
+      amount: amountPaise,
+      currency: 'INR',
+      receipt: `impact-${req.user.id}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      notes: {
+        purpose: 'impact_donation',
+        userId: String(req.user.id),
+        projectKey,
+        amountPaise: String(amountPaise),
+      },
+    });
+    const certificateCode = `BV-${projectKey.slice(0, 4).toUpperCase()}-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const dedication = typeof req.body?.dedication === 'string' ? req.body.dedication.trim().slice(0, 100) : '';
+    await pool.query(
+      `INSERT INTO impact_contributions
+        (user_id, project_key, amount, status, razorpay_order_id, certificate_code, dedication)
+       VALUES (?, ?, ?, 'pledged', ?, ?, ?)`,
+      [req.user.id, projectKey, amount, order.id, certificateCode, dedication || null]
+    );
+    return res.status(201).json({
+      order_id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      key_id: process.env.RAZORPAY_KEY_ID,
+    });
+  } catch (error) {
+    console.error('[IMPACT_DONATION_CREATE_ORDER]', error);
+    const status = error.code === 'RAZORPAY_NOT_CONFIGURED'
+      ? 503
+      : error.statusCode === 401 || error.status === 401
+        ? 401
+        : 500;
+    return res.status(status).json({
+      success: false,
+      message: error.code === 'RAZORPAY_NOT_CONFIGURED'
+        ? 'Razorpay is not configured on the payment server.'
+        : status === 401
+          ? 'Razorpay authentication failed. Check the backend payment credentials.'
+          : 'Could not create the impact contribution payment.',
+    });
+  }
+});
+
+router.post('/donations/verify-payment', authenticateUser, async (req, res) => {
+  const {
+    razorpay_order_id: orderId,
+    razorpay_payment_id: paymentId,
+    razorpay_signature: signature,
+  } = req.body || {};
+  const amountPaise = Number(req.body?.amountPaise);
+  if (![orderId, paymentId, signature].every(value => typeof value === 'string' && value.trim()) ||
+      !Number.isSafeInteger(amountPaise) || amountPaise < 5000 || amountPaise > 50000000) {
+    return res.status(400).json({ success: false, message: 'Verified payment details are required.' });
+  }
+
+  let connection;
+  let transactionOpen = false;
+  try {
+    const verified = await verifyRazorpayPayment({
+      orderId,
+      paymentId,
+      signature,
+      userId: req.user.id,
+      expectedAmount: amountPaise,
+    });
+    const { order, payment } = verified;
+    const projectKey = order.notes?.projectKey;
+    if (
+      order.notes?.purpose !== 'impact_donation' ||
+      String(order.notes?.userId) !== String(req.user.id) ||
+      String(order.notes?.amountPaise) !== String(amountPaise) ||
+      !IMPACT_DONATION_PROJECTS.has(projectKey)
+    ) {
+      return res.status(400).json({ success: false, message: 'Payment does not match this impact contribution.' });
+    }
+
+    await initImpactTables();
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    transactionOpen = true;
+    const [existingRows] = await connection.query(
+      `SELECT ic.*, u.name AS customer_name, u.email AS customer_email
+       FROM impact_contributions ic
+       JOIN users u ON u.id = ic.user_id
+       WHERE ic.razorpay_order_id = ? FOR UPDATE`,
+      [order.id]
+    );
+
+    let contribution = existingRows[0];
+    if (!contribution ||
+        String(contribution.user_id) !== String(req.user.id) ||
+        contribution.project_key !== projectKey ||
+        Math.round(Number(contribution.amount) * 100) !== amountPaise ||
+        contribution.payment_id && contribution.payment_id !== payment.id) {
+      await connection.rollback();
+      transactionOpen = false;
+      return res.status(409).json({ success: false, message: 'This payment is not linked to an eligible impact contribution.' });
+    }
+    await connection.query(
+      `UPDATE impact_contributions
+       SET payment_id = ?, status = 'collected', collected_at = COALESCE(collected_at, NOW())
+       WHERE id = ? AND (payment_id IS NULL OR payment_id = ?)`,
+      [payment.id, contribution.id, payment.id]
+    );
+    contribution.payment_id = payment.id;
+    contribution.status = 'collected';
+    await connection.commit();
+    transactionOpen = false;
+    connection.release();
+    connection = null;
+
+    const certificateSent = await sendImpactCertificateForContribution(pool, contribution.id);
+
+    return res.json({
+      success: true,
+      certificateSent,
+      certificate: {
+        code: contribution.certificate_code,
+        name: contribution.customer_name,
+        email: contribution.customer_email,
+        amount: Number(contribution.amount),
+        projectTitle: IMPACT_DONATION_PROJECTS.get(contribution.project_key),
+        dedication: contribution.dedication,
+        issuedAt: contribution.created_at || new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    if (transactionOpen && connection) await connection.rollback().catch(() => {});
+    console.error('[IMPACT_DONATION_VERIFY]', error);
+    const status = error.code === 'RAZORPAY_NOT_CONFIGURED'
+      ? 503
+      : error.statusCode === 401 || error.status === 401
+        ? 401
+        : error.statusCode || 500;
+    return res.status(status).json({
+      success: false,
+      message: status === 400
+        ? error.message || 'Payment verification failed.'
+        : status === 401
+          ? 'Razorpay authentication failed. Check the backend payment credentials.'
+          : status === 503
+            ? 'Razorpay is not configured on the payment server.'
+            : 'Could not verify and record the impact contribution.',
+    });
+  } finally {
+    connection?.release();
+  }
+});
 
 router.get('/public', async (req, res) => {
   try {
