@@ -373,6 +373,15 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     return { intent, toolPlan, extracted: { email, phone } };
   }
 
+  // 11b. General Inquiries & High-Level Storefront / Knowledge Overview
+  if (
+    /\b(general\s*(?:question|inquiry|inquiries)|products?,\s*ingredients?,\s*or\s*policies|about\s*bhumivera|store\s*policies|general\s*help)\b/i.test(rawText) ||
+    /^(general|policies|products\s*and\s*policies|help\s*me)$/i.test(text)
+  ) {
+    intent = 'general_inquiry';
+    return { intent, toolPlan: [], extracted: { email, phone } };
+  }
+
   // 12. Product, Ingredient Deep-Dive, Usage/Timing, Catalog & Policy Queries
   intent = 'catalog_or_policy';
   const cleanedQuery = rawText

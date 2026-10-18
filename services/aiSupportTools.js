@@ -852,7 +852,8 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
     const specs = parseJsonSafe(p.specifications, {});
     const qty = Number(p.quantity || 0);
     const effectivePrice = p.discount_price && Number(p.discount_price) > 0 ? Number(p.discount_price) : Number(p.price);
-    const relativePath = p.slug ? `/product/${p.slug}` : `/product/${p.id}`;
+    const cleanSlug = p.slug ? encodeURI(String(p.slug).trim().toLowerCase().replace(/\s+/g, '-')) : null;
+    const relativePath = cleanSlug ? `/product/${cleanSlug}` : `/product/${p.id}`;
     return {
       id: p.id,
       name: p.name,
