@@ -48,9 +48,9 @@ router.post('/donations/create-order', orderLimiter, authenticateUser, async (re
     const order = await razorpay.orders.create({
       amount: amountPaise,
       currency: 'INR',
-      receipt: `impact-${req.user.id}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      receipt: `stewardship-${req.user.id}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       notes: {
-        purpose: 'impact_donation',
+        purpose: 'community_stewardship_token',
         userId: String(req.user.id),
         projectKey,
         amountPaise: String(amountPaise),
@@ -112,8 +112,9 @@ router.post('/donations/verify-payment', authenticateUser, async (req, res) => {
     });
     const { order, payment } = verified;
     const projectKey = order.notes?.projectKey;
+    const validPurposes = new Set(['community_stewardship_token', 'eco_action_sponsorship', 'impact_donation']);
     if (
-      order.notes?.purpose !== 'impact_donation' ||
+      !validPurposes.has(order.notes?.purpose) ||
       String(order.notes?.userId) !== String(req.user.id) ||
       String(order.notes?.amountPaise) !== String(amountPaise) ||
       !IMPACT_DONATION_PROJECTS.has(projectKey)
