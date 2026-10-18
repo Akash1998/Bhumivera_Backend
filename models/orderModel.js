@@ -680,6 +680,21 @@ const getOrderById = async (orderId) => {
   return parseOrder(o);
 };
 
+const trackOrderByCustomer = async (orderReference, email) => {
+  const [orders] = await pool.query(
+    `SELECT o.id, o.order_number, o.status, o.tracking_number, o.courier,
+            o.created_at, o.updated_at, o.delivered_at
+     FROM orders o
+     INNER JOIN users u ON u.id = o.user_id
+     WHERE (CAST(o.id AS CHAR) = ? OR o.order_number = ?)
+       AND LOWER(TRIM(u.email)) = LOWER(?)
+       AND o.status <> 'archived'
+     LIMIT 1`,
+    [orderReference, orderReference, email]
+  );
+  return orders[0] || null;
+};
+
 const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) => {
   const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled', 'returned', 'archived'];
   const statusRank = { pending: 0, confirmed: 1, packed: 2, shipped: 3, delivered: 4, cancelled: 5, returned: 5, archived: 6 };
@@ -864,6 +879,7 @@ module.exports = {
   getOrdersByUser,
   getAllOrders,
   getOrderById,
+  trackOrderByCustomer,
   assertOrderStatusTransition,
   updateOrderStatus,
   updatePaymentStatus,

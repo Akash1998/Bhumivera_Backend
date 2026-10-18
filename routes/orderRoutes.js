@@ -10,6 +10,7 @@ const {
   getDeliveredOrderCount,
   getOrdersByUser, 
   getOrderById, 
+  trackOrderByCustomer,
   getAllOrders,
   updateOrderStatus
 } = require("../models/orderModel");
@@ -493,6 +494,32 @@ router.get("/my", authenticateUser, async (req, res) => {
     return res.json(orders);
   } catch (err) {
     return res.status(500).json({ message: "Failed to load orders" });
+  }
+});
+
+router.post("/track", orderLimiter, async (req, res) => {
+  const orderReference = typeof req.body?.orderId === 'string'
+    ? req.body.orderId.trim().replace(/^#/, '')
+    : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+  if (!orderReference || orderReference.length > 50 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({
+      code: 'INVALID_ORDER_TRACKING_DETAILS',
+      message: 'Enter your order number and the email address used at checkout.',
+    });
+  }
+  try {
+    const order = await trackOrderByCustomer(orderReference, email);
+    if (!order) {
+      return res.status(404).json({
+        code: 'ORDER_NOT_FOUND',
+        message: 'We could not find an order matching those details. Check the order number and checkout email, then try again.',
+      });
+    }
+    return res.json({ order });
+  } catch (error) {
+    console.error('[CUSTOMER_ORDER_TRACKING]', error);
+    return res.status(500).json({ message: 'Order tracking is temporarily unavailable. Please try again shortly.' });
   }
 });
 

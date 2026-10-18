@@ -1568,7 +1568,8 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
       pool: mockPool,
     });
     assert.match(productTurn.reply, /Sea Buckthorn Face Wash/i);
-    assert.match(productTurn.reply, /Complete Listed Ingredients Checked in Memory/i);
+    assert.match(productTurn.reply, /Formulation Architecture|Barrier & Radiance/i);
+    assert.match(productTurn.reply, /Niacinamide/i);
     assert.ok(productTurn.quickActions.some(q => /Niacinamide/i.test(q.label)), 'Next suggestions should include Niacinamide');
 
     const niacinamideTurn = await processSupportTurn({

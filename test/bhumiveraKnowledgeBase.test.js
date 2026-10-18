@@ -19,7 +19,9 @@ test('product questions return ingredient suggestions and persist product flow c
   const result = await searchAllKnowledgeSources('Know more about seabuck thorn face wash');
 
   assert.equal(result.matched, true);
-  assert.match(result.reply, /Complete Listed Ingredients Checked in Memory/);
+  assert.match(result.reply, /Sea Buckthorn Face Wash/);
+  assert.match(result.reply, /Architecture|how our.*formula really works/i);
+  assert.match(result.reply, /Niacinamide/i);
   assert.ok(result.quickActions.some(action => /Niacinamide/i.test(action.label)));
   assert.equal(result.updatedContext.activeProductId, 'sea_buckthorn_face_wash');
 });

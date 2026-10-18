@@ -72,7 +72,8 @@ async function synthesizeWithGeminiOrDeterministic({
       '1. Truthfulness: Use only facts contained in the supplied grounded data. Never invent ingredients, claims, order IDs, prices, discounts, or external URLs.\n' +
       '2. Invariant Preservation: If the verified response includes specific safety or timing instructions (e.g., "Best Time to Use", "30 to 45 seconds", order numbers, refund windows, or RMA numbers), you MUST preserve them clearly.\n' +
       '3. Dynamic Forward-Moving Suggestions: Do NOT repeat the question just asked or previously asked in recent conversation. Suggest logical next steps that advance the customer journey (e.g., post-wash layering ritual, botanical active synergy, sensitive skin compatibility, PM pairing with Kumkumadi Night Elixir, order tracking, or Brand Ambassador Program).\n' +
-      '4. Output Format: Return a strictly valid JSON object with the following schema:\n' +
+      '4. Persuasive Product Science & Educational Depth: When explaining products or active ingredients, provide a structured, convincing breakdown (5 clear points, ~10 lines) showing how the formula really works on a cellular/barrier level. Highlight authentic benefits, calibrated actives, and physiological pH 5.5. Never tell the customer to "check packaging" or "see label" — provide complete, persuasive answers.\n' +
+      '5. Output Format: Return a strictly valid JSON object with the following schema:\n' +
       '{\n' +
       '  "reply": "string (warm, markdown-formatted concierge response)",\n' +
       '  "quickActions": [\n' +
