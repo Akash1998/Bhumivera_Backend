@@ -165,7 +165,6 @@ router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
       eligible,
       rewards: spinSettings?.rewards.map(reward => ({
         label: reward.label,
-        chance: reward.chance,
         rewardType: reward.rewardType,
       })) || [],
       claim: claims[0] ? {

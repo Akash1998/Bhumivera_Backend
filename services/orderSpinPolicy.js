@@ -1,6 +1,14 @@
 const crypto = require('crypto');
 
 const DEFAULT_ORDER_SPIN_REWARDS = [
+  { label: '₹50 off', rewardType: 'discount', discountType: 'fixed', discountValue: 50, minimumOrderAmount: 500, maxDiscount: null, chance: 80, expiryDays: 30 },
+  { label: '5% off (up to ₹200)', rewardType: 'discount', discountType: 'percentage', discountValue: 5, minimumOrderAmount: 500, maxDiscount: 200, chance: 85, expiryDays: 30 },
+  { label: '₹100 off', rewardType: 'discount', discountType: 'fixed', discountValue: 100, minimumOrderAmount: 599, maxDiscount: null, chance: 20, expiryDays: 30 },
+  { label: '10% off (up to ₹500)', rewardType: 'discount', discountType: 'percentage', discountValue: 10, minimumOrderAmount: 1000, maxDiscount: 500, chance: 40, expiryDays: 30 },
+  { label: '₹500 off', rewardType: 'discount', discountType: 'fixed', discountValue: 500, minimumOrderAmount: 2000, maxDiscount: null, chance: 5, expiryDays: 30 },
+];
+
+const LEGACY_DEFAULT_ORDER_SPIN_REWARDS = [
   { label: '₹50 off', rewardType: 'discount', discountType: 'fixed', discountValue: 50, minimumOrderAmount: 500, maxDiscount: null, chance: 35, expiryDays: 30 },
   { label: '5% off (up to ₹200)', rewardType: 'discount', discountType: 'percentage', discountValue: 5, minimumOrderAmount: 500, maxDiscount: 200, chance: 25, expiryDays: 30 },
   { label: '₹100 off', rewardType: 'discount', discountType: 'fixed', discountValue: 100, minimumOrderAmount: 1000, maxDiscount: null, chance: 18, expiryDays: 30 },
@@ -35,7 +43,7 @@ const validateOrderSpinRewards = value => {
     const expiryDays = Number(reward?.expiryDays);
     if (!label || label.length > 120 ||
         !['discount', 'free_shipping', 'points'].includes(rewardType) ||
-        !Number.isInteger(chance) || chance < 0 || chance > 100) {
+        !Number.isInteger(chance) || chance < 0 || chance > 100000) {
       return { valid: false, message: `Spin reward ${index + 1} has invalid fields.` };
     }
     if (rewardType === 'points') {
@@ -61,20 +69,32 @@ const validateOrderSpinRewards = value => {
       : { label, rewardType, discountType, discountValue, minimumOrderAmount, maxDiscount, chance, expiryDays });
   }
 
-  if (normalized.reduce((sum, reward) => sum + reward.chance, 0) !== 100) {
-    return { valid: false, message: 'Spin reward chances must add up to exactly 100%.' };
+  if (normalized.reduce((sum, reward) => sum + reward.chance, 0) < 1) {
+    return { valid: false, message: 'At least one spin reward must have a positive chance weight.' };
   }
   return { valid: true, rewards: normalized };
 };
 
-const chooseOrderSpinReward = (rewards, roll = crypto.randomInt(100)) => {
-  if (!Number.isInteger(roll) || roll < 0 || roll >= 100) throw new RangeError('Spin roll must be an integer from 0 to 99.');
+const chooseOrderSpinReward = (rewards, roll) => {
+  const totalWeight = rewards.reduce((sum, reward) => sum + reward.chance, 0);
+  if (!Number.isSafeInteger(totalWeight) || totalWeight < 1) {
+    throw new RangeError('Spin reward weights must have a positive total.');
+  }
+  const selectedRoll = roll === undefined ? crypto.randomInt(totalWeight) : roll;
+  if (!Number.isInteger(selectedRoll) || selectedRoll < 0 || selectedRoll >= totalWeight) {
+    throw new RangeError(`Spin roll must be an integer from 0 to ${totalWeight - 1}.`);
+  }
   let cumulativeChance = 0;
   for (const [index, reward] of rewards.entries()) {
     cumulativeChance += reward.chance;
-    if (roll < cumulativeChance) return { ...reward, index };
+    if (selectedRoll < cumulativeChance) return { ...reward, index };
   }
-  throw new Error('Spin reward chances must total 100%.');
+  throw new Error('Spin reward weights could not select a reward.');
 };
 
-module.exports = { DEFAULT_ORDER_SPIN_REWARDS, validateOrderSpinRewards, chooseOrderSpinReward };
+module.exports = {
+  DEFAULT_ORDER_SPIN_REWARDS,
+  LEGACY_DEFAULT_ORDER_SPIN_REWARDS,
+  validateOrderSpinRewards,
+  chooseOrderSpinReward,
+};

@@ -31,7 +31,11 @@ const { initAiSupportTables } = require('../models/aiSupportModel');
 const { initSuperAdminFortressTables } = require('../models/superAdminVaultModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
 const { generateOrderNumber } = require('../services/orderNumber');
-const { DEFAULT_ORDER_SPIN_REWARDS, validateOrderSpinRewards } = require('../services/orderSpinPolicy');
+const {
+  DEFAULT_ORDER_SPIN_REWARDS,
+  LEGACY_DEFAULT_ORDER_SPIN_REWARDS,
+  validateOrderSpinRewards,
+} = require('../services/orderSpinPolicy');
 const pool = require('../config/db');
 
 const migrations = [
@@ -737,6 +741,38 @@ const migrations = [
     version: 63,
     name: 'link impact contributions to verified Razorpay payments and certificates',
     up: upgradeImpactContributionSchema,
+  },
+  {
+    version: 64,
+    name: 'apply configured post-order reward spin weights',
+    up: async () => {
+      const [settings] = await pool.query(
+        'SELECT value FROM settings WHERE key_name = ?',
+        ['gamification_order_spin_rewards']
+      );
+      if (!settings.length) {
+        await pool.query(
+          `INSERT INTO settings (key_name, value, group_name)
+           VALUES ('gamification_order_spin_rewards', ?, 'gamification')`,
+          [JSON.stringify(DEFAULT_ORDER_SPIN_REWARDS)]
+        );
+        return;
+      }
+
+      let savedRewards;
+      try {
+        savedRewards = JSON.parse(settings[0].value);
+      } catch {
+        return;
+      }
+      if (JSON.stringify(savedRewards) !== JSON.stringify(LEGACY_DEFAULT_ORDER_SPIN_REWARDS)) return;
+      await pool.query(
+        `UPDATE settings
+         SET value = ?, group_name = 'gamification'
+         WHERE key_name = 'gamification_order_spin_rewards'`,
+        [JSON.stringify(DEFAULT_ORDER_SPIN_REWARDS)]
+      );
+    },
   },
 ];
 
