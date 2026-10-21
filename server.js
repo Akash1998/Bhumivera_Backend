@@ -290,9 +290,16 @@ const initializeDatabase = async () => {
         telegramWebhookSetupRunning = true;
         try {
           const featureConfig = await getAiSupportFeatureConfig(pool);
-          await registerTelegramWebhook({
+          const webhookResult = await registerTelegramWebhook({
             botToken: resolveTelegramBotToken(featureConfig),
           });
+          if (!webhookResult.ok) {
+            console.error(
+              "[TELEGRAM_WEBHOOK_SETUP]",
+              webhookResult.description || webhookResult.error || "Telegram webhook registration failed."
+            );
+            return;
+          }
           clearInterval(telegramWebhookTimer);
           telegramWebhookTimer = null;
           console.log("[TELEGRAM] Incoming bot webhook registered.");

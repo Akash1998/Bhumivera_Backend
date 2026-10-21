@@ -37,6 +37,8 @@ const supportRoutes = require('../routes/supportRoutes');
 
 const TEST_JWT_SECRET = 'ai-support-live-test-secret-with-more-than-32-chars';
 process.env.JWT_SECRET = TEST_JWT_SECRET;
+process.env.SUPPORT_TELEGRAM_BOT_TOKEN = 'test-telegram-bot-token-12345';
+process.env.API_BASE_URL = 'https://service.bhumivera.com';
 
 /**
  * In-memory MySQL Pool Mock for deterministic end-to-end verification of
@@ -882,7 +884,7 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.equal(guestAuth.success, true);
     assert.equal(guestAuth.code, 'ORDER_FOUND');
     assert.equal(guestAuth.order.orderNumber, '918273645');
-    assert.equal(guestAuth.order.cancellable, false);
+    assert.equal(guestAuth.order.cancellable, true);
     assert.equal(guestAuth.order.items.length, 1);
     assert.equal(guestAuth.order.paymentMode, 'COD');
 

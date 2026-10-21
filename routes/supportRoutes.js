@@ -1887,8 +1887,12 @@ router.post('/telegram/webhook', async (req, res) => {
 router.post('/telegram/sync', authenticateSupportAgent, async (_req, res) => {
   try {
     const syncRes = await syncTelegramBotUpdates({ pool });
+    if (syncRes.error) {
+      return res.status(502).json({ success: false, message: syncRes.error });
+    }
     return res.json({ success: true, ...syncRes });
   } catch (error) {
+    console.error('[TELEGRAM_MANUAL_SYNC_ERR]', error);
     return res.status(500).json({ message: 'Could not sync Telegram bot updates.' });
   }
 });

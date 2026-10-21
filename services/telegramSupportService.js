@@ -6,7 +6,7 @@
  * Allows customers to chat on Telegram (`t.me/BhumiveraBot` or `web.telegram.org/k/#@BhumiveraBot`)
  * and have their messages appear in `/support` and `/superadminsupport`, while replies from Support
  * Executives, Supervisors, Managers, or the AI Concierge are delivered straight back to the customer's
- * Telegram chat with full order tracking, order history, return/replacement RMA, coupons, and share links.
+ * Telegram chat with full order tracking, order history, pre-dispatch cancellations, coupons, and share links.
  */
 
 const crypto = require('crypto');
@@ -20,29 +20,29 @@ const {
 } = require('../models/aiSupportModel');
 const { processSupportTurn } = require('./aiSupportOrchestrator');
 
-// Encrypted 512-bit envelope holding the default @BhumiveraBot token
-const DEFAULT_ENCRYPTED_BOT_TOKEN_ENV =
-  'q512:921e17c580f685bb194dc60bfbd0eb1e:6243b4cf5b29ca06360449db8d44f0ca6a72844b2434c0142516aa073fa1d219:be578f2512ed95461b6f3cf6bfae05ef5563201b529faef63307c3318b989d1305c9f10da934db6df2a3dc6c68f8db8f9bdacae42bd30992f32f28e2bc5711d1ef77092b305497db1a3aa50cc6aa9ec2cd4976be531f3b80197240';
-
 const DEFAULT_TELEGRAM_BOT_USERNAME = 'BhumiveraBot';
 const DEFAULT_BOT_USERNAME = DEFAULT_TELEGRAM_BOT_USERNAME;
-const FALLBACK_BOT_TOKEN = '8304879119:AAGEC1XbwxJhxdNv0JPaknsnMHk9xeops9g';
 
 function resolveTelegramBotToken(featureConfig = {}) {
-  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN.trim()) {
-    return process.env.TELEGRAM_BOT_TOKEN.trim();
+  const environmentToken =
+    process.env.SUPPORT_TELEGRAM_BOT_TOKEN ||
+    process.env.TELEGRAM_BOT_TOKEN;
+  if (environmentToken && environmentToken.trim()) {
+    return environmentToken.trim();
   }
   if (featureConfig?.telegram_bot_token && String(featureConfig.telegram_bot_token).trim()) {
     const raw = String(featureConfig.telegram_bot_token).trim();
     const dec = raw.startsWith('q512:') ? decryptQuantumPayload(raw) : raw;
     if (dec) return dec;
   }
-  return decryptQuantumPayload(DEFAULT_ENCRYPTED_BOT_TOKEN_ENV) || FALLBACK_BOT_TOKEN;
+  return '';
 }
 
 function getTelegramWebhookSecret(botToken = resolveTelegramBotToken()) {
-  const configuredSecret = process.env.TELEGRAM_WEBHOOK_SECRET && process.env.TELEGRAM_WEBHOOK_SECRET.trim();
-  if (configuredSecret) return configuredSecret;
+  const configuredSecret =
+    process.env.SUPPORT_TELEGRAM_WEBHOOK_SECRET ||
+    process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (configuredSecret && configuredSecret.trim()) return configuredSecret.trim();
   if (!botToken) return '';
   return crypto.createHmac('sha256', botToken).update('bhumivera-telegram-webhook-v1').digest('hex');
 }
@@ -57,12 +57,14 @@ function isValidTelegramWebhookSecret(headerValue, botToken = resolveTelegramBot
 }
 
 function getTelegramWebhookUrl(customUrl = null) {
+  const backendUrl = process.env.BACKEND_PUBLIC_URL || process.env.API_BASE_URL;
+  const backendBase = String(backendUrl || '').replace(/\/+$/, '');
+  const apiBase = /\/api$/i.test(backendBase) ? backendBase : `${backendBase}/api`;
   const rawUrl =
     customUrl ||
+    process.env.SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL ||
     process.env.TELEGRAM_WEBHOOK_URL ||
-    (process.env.BACKEND_PUBLIC_URL
-      ? `${process.env.BACKEND_PUBLIC_URL.replace(/\/+$/, '')}/api/support/telegram/webhook`
-      : 'https://bhumivera-backend-production.up.railway.app/api/support/telegram/webhook');
+    (backendBase ? `${apiBase}/support/telegram/webhook` : '');
   const trimmed = String(rawUrl || '').trim();
   if (!trimmed) return '';
   try {
@@ -350,7 +352,8 @@ async function processIncomingTelegramUpdate(update, { pool } = {}) {
       `Your Telegram chat is now linked to Support Session \`#${session.sessionToken.slice(0, 8)}\`.${accountLine}\n` +
       `• **Track an Order:** Send your 9-digit Order Number or BHVM ID (e.g., \`BHVM815899599\`)\n` +
       `• **Order History:** Type \`my orders\` or \`order history\`\n` +
-      `• **Returns & Replacements:** Type \`return\` or \`return #<OrderNumber>\`\n` +
+      `• **Cancel Order (Pre-Dispatch Only):** Type \`cancel order\` (only before order is packed and shipped)\n` +
+      `• **Policy:** All personal care items are 100% non-returnable once delivered\n` +
       `• **Coupons & Wallet:** Type \`my coupons\` or \`my wallet\`\n` +
       `• **Website & Product Links:** Type \`share link\` or ask about any product\n` +
       `• **Human Support:** Type \`talk to agent\` and our team will reply right here in Telegram!`;
@@ -417,13 +420,29 @@ async function syncTelegramBotUpdates({ pool } = {}) {
   const token = resolveTelegramBotToken(featureConfig);
   if (!token) return { synced: 0, error: 'No Telegram Bot token configured' };
 
+  const webhookInfo = await callTelegramApi('getWebhookInfo', {}, token);
+  if (!webhookInfo.ok) {
+    return {
+      synced: 0,
+      error: webhookInfo.description || webhookInfo.error || 'Could not check Telegram webhook status.',
+    };
+  }
+  if (webhookInfo.result?.url) {
+    return {
+      synced: 0,
+      webhookActive: true,
+      webhookUrl: webhookInfo.result.url,
+      message: 'Telegram webhook is active; incoming messages sync automatically.',
+    };
+  }
+
   let lastUpdateId = Number(featureConfig.telegram_last_update_id || 0);
   try {
     const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${lastUpdateId + 1}&limit=25&timeout=1`;
     const res = await fetch(url);
     const data = await res.json().catch(() => ({}));
     if (!data.ok || !Array.isArray(data.result)) {
-      return { synced: 0, lastUpdateId };
+      return { synced: 0, lastUpdateId, error: data.description || 'Telegram getUpdates failed.' };
     }
 
     let syncedCount = 0;

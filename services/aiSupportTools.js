@@ -980,22 +980,22 @@ const SUPPORT_TOOLS_REGISTRY = Object.freeze({
   },
   cancel_order: {
     name: 'cancel_order',
-    description: 'Cancel a customer order if status is pending or confirmed, restocking inventory and safeguarding online payments.',
+    description: 'Cancel an order before it is packed and shipped (status pending, confirmed, placed, or processing), restoring inventory and initiating refund.',
     execute: cancelOrderTool,
   },
   initiate_return: {
     name: 'initiate_return',
-    description: 'Initiate an automated item return or replacement request for a delivered order and generate an RMA number.',
+    description: 'Provide the strict 100% non-returnable policy for intimate personal care cosmetics and guide transit damage claims via 48-hour unboxing video.',
     execute: initiateReturnTool,
   },
   check_refund_status: {
     name: 'check_refund_status',
-    description: 'Check real-time status of an RMA return, replacement, or Razorpay refund receipt.',
+    description: 'Check real-time status of a cancellation refund, transit damage claim, or Razorpay refund receipt.',
     execute: checkRefundStatusTool,
   },
   query_inventory_catalog: {
     name: 'query_inventory_catalog',
-    description: 'Query real-time product stock levels, SKU variants, prices, botanical ingredients/usage guides, shareable product links, and shipping/return policy rules.',
+    description: 'Query real-time product stock levels, SKU variants, prices, botanical ingredients/usage guides, shareable product links, and non-returnable policy rules.',
     execute: queryInventoryCatalogTool,
   },
   lookup_account_wallet_loyalty: {

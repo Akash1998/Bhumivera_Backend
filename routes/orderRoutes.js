@@ -85,12 +85,12 @@ router.get('/admin/reconciliation/payments', authenticateAdmin, async (req, res)
 
 const { executeAtomicOrderCancellationAndRefund } = require("../services/walletRefundLedgerService");
 
-// Strict Order Cancellation Policy: Customer self-cancellation is disabled.
+// Arbitrary customer status tampering is disabled; cancellation must use POST /:id/cancel
 router.patch("/:id/status", authenticateUser, async (req, res) => {
   return res.status(403).json({
     success: false,
-    code: "CUSTOMER_SELF_CANCEL_DISABLED",
-    message: "Direct self-service order cancellation is disabled to protect your payment and fulfillment state. Please open the Bhumivera Client Concierge to verify your Order ID and request specialist callback or email assistance.",
+    code: "CUSTOMER_STATUS_TAMPER_DISABLED",
+    message: "Direct status editing is disabled. If your order has not yet been packed or shipped, please use the Cancel Order button in your order details.",
   });
 });
 
