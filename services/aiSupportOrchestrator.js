@@ -54,7 +54,6 @@ function buildContextualGreeting({ user = null, pageContext = {} } = {}) {
     { id: 'know_sb_fw', label: 'Know More: Sea Buckthorn Face Wash', prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients' },
     { id: 'ing_niacinamide', label: 'Ingredient: Niacinamide', prompt: 'Tell me about Niacinamide in Sea Buckthorn Face Wash' },
     { id: 'how_to_join', label: 'Brand Ambassador Program', prompt: 'How do I join the Bhumivera Brand Ambassador Program?' },
-    { id: 'track_order', label: 'Track My Order', prompt: 'Where is my latest order?' },
     { id: 'active_coupons', label: 'Active Coupons', prompt: 'Show my available discount coupons' },
   ];
 
@@ -69,10 +68,9 @@ function buildContextualGreeting({ user = null, pageContext = {} } = {}) {
   } else if (proactiveTrigger === 'rage_click') {
     greeting = `${greetingPrefix} it looks like something on this page isn't responding as expected. Tell me what you're trying to do and I'll help right away.`;
   } else if (pathname.includes('/order-tracking') || pathname.includes('/profile')) {
-    greeting = `${greetingPrefix} I can check your order status, start a return or replacement, look up a refund, or guide you through our Brand Ambassador Program.`;
+    greeting = `${greetingPrefix} I can help with product, policy, reward, and website questions. For help with a specific order, use Customer Support in your profile.`;
     quickActions = [
-      { id: 'latest_order', label: 'Check Latest Order', prompt: 'Show the status of my latest order' },
-      { id: 'start_return', label: 'Start Return / Replace', prompt: 'I need to return or replace a delivered item' },
+      { id: 'order_support', label: 'Open Customer Support', prompt: '__OPEN_SUPPORT_CENTER__' },
       { id: 'how_to_join', label: 'Brand Ambassador Program', prompt: 'How do I join the Bhumivera Brand Ambassador Program?' },
       { id: 'know_sb_fw', label: 'Sea Buckthorn Face Wash', prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients' },
     ];
@@ -145,6 +143,36 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
 
   const toolPlan = [];
   let intent = 'general_inquiry';
+  const returnPolicyQuestion =
+    /\b(?:what\s+is\s+(?:your|the)\s+return\s+policy|how\s+do\s+returns?\s+work)\b/i.test(rawText);
+  const orderSupportRequest = !returnPolicyQuestion && Boolean(
+    orderRef ||
+    orderFollowUp ||
+    rmaMatch ||
+    /\b(?:initiate|start|request|process|submit)\s+(?:a\s+)?(?:return|replacement|refund)\b|\b(?:want|need|request)\s+(?:a\s+)?(?:refund|return|replacement)\b|\b(?:how\s+(?:can|do)\s+i|would\s+like\s+to|want\s+to|need\s+to)\s+(?:return|replace|exchange|refund)\b|\b(?:want|need|would like|request)\s+to\s+cancel\b|\bcancel\s+(?:my|this|the)\b|\breturn\s+(?:my|this|the)\s+(?:item|product|purchase|package)\b|\b(?:my|your)\s+(?:gst\s+)?(?:tax\s+)?(?:invoice|receipt|order\s+history|purchase\s+history)\b|\bwhat\s+(?:did|have)\s+i\s+order(?:ed)?\b/i.test(rawText) ||
+    /\b(?:my|this|that|latest|recent)\s+(?:orders?|delivery|shipment|package|parcel|refund|return)\b|\b(?:where\s+is|when\s+will|check)\s+my\s+(?:order|delivery|shipment|package|parcel|refund)\b|\border\b.{0,40}\b(?:status|details|history|track|tracking|cancel|return|refund|invoice|delivery|placed|arrive|shipped)\b|\b(?:track|cancel|return|replace|refund|invoice)\b.{0,40}\border\b|\b(?:refund\s+status|return\s+status|download\s+(?:my\s+)?invoice|send\s+me\s+(?:my\s+)?invoice)\b|^(?:orders?|tracking|refund\s*status|rma\s*status|cancel|cancellation|return|returns|replace|replacement)$/i.test(rawText)
+  );
+  if (pageContext.channel !== 'telegram' && orderSupportRequest) {
+    return {
+      intent: 'order_support_redirect',
+      toolPlan,
+      extracted: { orderRef: null, email: null, phone: null },
+    };
+  }
+  if (
+    pageContext.channel !== 'telegram' &&
+    (
+      /^(agent|human|support|live\s*agent|executive|supervisor|manager|escalate|helpdesk)$/i.test(text) ||
+      SUPPORT_REQUEST_PATTERN.test(rawText) ||
+      (/\bcustomer\s+support\b/i.test(rawText) && /\b(?:need|want|request|contact|speak|talk|connect)\b/i.test(rawText))
+    )
+  ) {
+    return {
+      intent: 'customer_support_redirect',
+      toolPlan,
+      extracted: { orderRef: null, email: null, phone: null },
+    };
+  }
 
   // 1. Human agent / escalation request
   if (
@@ -411,6 +439,7 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
  */
 function synthesizeDeterministicResponse({
   intent,
+  channel = 'web',
   userMessage,
    message,
   toolResults = [],
@@ -424,6 +453,18 @@ function synthesizeDeterministicResponse({
   const firstName = user?.name ? user.name.split(' ')[0] : '';
   const nameGreeting = firstName ? `${firstName}, ` : '';
   const esc = escalation || escalationInfo;
+
+  if (intent === 'order_support_redirect' || intent === 'customer_support_redirect') {
+    return {
+      reply:
+        `${nameGreeting}I can help with product questions, ingredients, policies, rewards, and website guidance. ` +
+        `For order details, delivery updates, returns, refunds, or changes, please use **Profile → Support** so the customer-care team can securely review your request.`,
+      quickActions: [
+        { label: 'Open Customer Support', prompt: '__OPEN_SUPPORT_CENTER__' },
+        { label: 'Ask a Website Question', prompt: 'I have a question about Bhumivera products or policies.' },
+      ],
+    };
+  }
 
   if (intent === 'human_escalation' && !esc?.followUpRequested) {
     return {
@@ -519,6 +560,21 @@ function synthesizeDeterministicResponse({
     if (couponRes?.coupons?.length) {
       const topCoupon = couponRes.coupons[0];
       accountLine += `\n🎁 **Active Offer:** Use code \`${topCoupon.code}\` at checkout!`;
+    }
+
+    if (channel !== 'telegram') {
+      return {
+        reply:
+          `Hello${firstName ? ` ${firstName}` : ''}! Welcome to **Bhumivera Client Concierge**.\n\n` +
+          `I can help with botanical products and ingredients, skincare routines, website navigation, shipping and return policies, rewards, and personalized skin guidance. ` +
+          `For details or changes relating to a specific order, please use **Profile → Support** so customer care can review it securely.`,
+        quickActions: [
+          { id: 'know_sb_fw', label: 'Sea Buckthorn Face Wash', prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients' },
+          { id: 'ing_niacinamide', label: 'Ingredient: Niacinamide', prompt: 'Tell me about Niacinamide in Sea Buckthorn Face Wash' },
+          { id: 'how_to_join', label: 'Brand Ambassador Program', prompt: 'How do I join the Bhumivera Brand Ambassador Program?' },
+          { id: 'active_coupons', label: 'Available Coupons', prompt: 'Show my available discount coupons' },
+        ],
+      };
     }
 
     return {
@@ -827,9 +883,13 @@ function synthesizeDeterministicResponse({
       ].join('');
 
       const actions = [];
-      if (o.canReturn) {
-        actions.push({ label: `Return Order #${o.orderNumber}`, prompt: `Initiate return for order #${o.orderNumber}` });
-        actions.push({ label: `Replace Order #${o.orderNumber}`, prompt: `Initiate replacement for order #${o.orderNumber}` });
+      const isCancellable = ['pending', 'confirmed', 'placed', 'processing'].includes(String(o.status || '').toLowerCase());
+      if (isCancellable) {
+        actions.push({ label: `Cancel Order #${o.orderNumber}`, prompt: `I want to cancel order #${o.orderNumber}` });
+      } else if (o.status === 'delivered') {
+        actions.push({ label: 'Verify Bottle Serial', prompt: `I want to verify the bottle serial for order #${o.orderNumber}` });
+      } else {
+        actions.push({ label: 'Track Consignment', prompt: `Track order #${o.orderNumber}` });
       }
       actions.push({ label: 'Show All My Orders', prompt: 'Show my recent orders' });
 
@@ -862,35 +922,47 @@ function synthesizeDeterministicResponse({
         .join('\n');
 
       if (intent === 'return_assistance') {
-        const returnable = lookupResult.orderCards.filter(ord => ord.status === 'delivered');
-        const returnHint = returnable.length
-          ? `To start a return or replacement right now, reply with **\`return #${returnable[0].orderNumber}\`** or **\`replace #${returnable[0].orderNumber}\`**.`
-          : `Only delivered orders are eligible for return/replacement. For another order concern, ask me to verify the order and arrange specialist assistance.`;
+        const returnHint =
+          `🌿 **Strict 100% Non-Returnable Policy**:\n` +
+          `All Bhumivera formulations are intimate personal care cosmetics sealed with tamper-evident security. Once shipped or delivered, **all items are 100% non-returnable**.\n\n` +
+          `• **Pre-Dispatch Order Cancellation**: You can cancel an order **only if it has not yet been packed and shipped** (status Pending, Confirmed, or Processing).\n` +
+          `• **Damaged in Transit / Defective Parcel**: If an item arrived damaged or leaking, submit an uncut 360° unboxing video within 48 hours for direct replacement or refund without return shipping.`;
+        const cancellable = lookupResult.orderCards.filter(ord =>
+          ['pending', 'confirmed', 'placed', 'processing'].includes(String(ord.status || '').toLowerCase())
+        );
         return {
           reply: `Here are the orders on your account:\n${historyLines}\n\n${returnHint}`,
           quickActions: [
-            ...(returnable.length
-              ? [{ label: `Return Order #${returnable[0].orderNumber}`, prompt: `Initiate return for order #${returnable[0].orderNumber}` }]
+            ...(cancellable.length
+              ? [{ label: `Cancel Order #${cancellable[0].orderNumber}`, prompt: `I want to cancel order #${cancellable[0].orderNumber}` }]
               : []),
-            { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
+            { label: 'Talk to Human Specialist', prompt: 'Connect me with a human support agent' },
           ],
         };
       }
 
       if (intent === 'cancel_assistance') {
-        const cancelHint = `Cancellation is not completed automatically in chat. Please verify the specific order and explicitly confirm that you want a SuperAdmin to review your request; the support team will check its status and order impacts first.`;
+        const cancellable = lookupResult.orderCards.filter(ord =>
+          ['pending', 'confirmed', 'placed', 'processing'].includes(String(ord.status || '').toLowerCase())
+        );
+        const cancelHint =
+          `Orders can only be cancelled **before they are packed and shipped** from our warehouse. ` +
+          `Once an order enters Packed or Shipped status, courier dispatch is locked and cannot be cancelled or recalled. Delivered items are 100% non-returnable.`;
         return {
           reply: `Here are the orders on your account:\n${historyLines}\n\n${cancelHint}`,
           quickActions: [
-            { label: 'Request Cancellation Review', prompt: 'I want to cancel an order' },
-            { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
+            ...(cancellable.length
+              ? [{ label: `Cancel Order #${cancellable[0].orderNumber}`, prompt: `I want to cancel order #${cancellable[0].orderNumber}` }]
+              : []),
+            { label: 'Talk to Human Specialist', prompt: 'Connect me with a human support agent' },
           ],
         };
       }
 
       const actions = [];
-      if (latest.canReturn) {
-        actions.push({ label: `Return Order #${latest.orderNumber}`, prompt: `Initiate return for order #${latest.orderNumber}` });
+      const latestCancellable = ['pending', 'confirmed', 'placed', 'processing'].includes(String(latest.status || '').toLowerCase());
+      if (latestCancellable) {
+        actions.push({ label: `Cancel Order #${latest.orderNumber}`, prompt: `I want to cancel order #${latest.orderNumber}` });
       }
       actions.push({ label: 'Check Refund Status', prompt: 'Check the status of my refund' });
 
@@ -983,7 +1055,21 @@ function synthesizeDeterministicResponse({
     };
   }
 
-  // Rich, helpful fallback that guides the customer directly into our Product/Ingredient memory or Ambassador/Order support
+  if (channel !== 'telegram') {
+    return {
+      reply:
+        `Welcome to **Bhumivera Client Concierge**. I can help with our products, ingredients, skincare routines, website guidance, rewards, and store policies. ` +
+        `For a specific order, delivery, return, or refund request, please open **Profile → Support** to contact customer care.`,
+      quickActions: [
+        { id: 'know_sb_fw', label: 'Sea Buckthorn Face Wash', prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients' },
+        { id: 'ing_niacinamide', label: 'Ingredient: Niacinamide', prompt: 'Tell me about Niacinamide in Sea Buckthorn Face Wash' },
+        { id: 'how_to_join', label: 'Brand Ambassador Program', prompt: 'How do I join the Bhumivera Brand Ambassador Program?' },
+        { id: 'usage_guide', label: 'How to Use Face Wash', prompt: 'How do I really use Sea Buckthorn Face Wash and what time of day should I use it?' },
+      ],
+    };
+  }
+
+  // Rich fallback for Telegram, which remains connected to its support workflow.
   return {
     reply:
       `Welcome to **Bhumivera Client Concierge**! Here are our most popular guides and instant actions you can explore right now:\n\n` +
@@ -1015,6 +1101,7 @@ async function processSupportTurn({
   pageContext = {},
   attachments = [],
   pool = null,
+  channel = 'web',
   onStreamEvent = null,
   updateOrderStatusFn = null,
 }) {
@@ -1079,7 +1166,7 @@ async function processSupportTurn({
   // Detect intent and plan autonomous tool calls
   const { intent, toolPlan, extracted } = detectIntentAndToolPlan(message, {
     user: resolvedUser,
-    pageContext: mergedPageContext,
+    pageContext: { ...mergedPageContext, channel },
     history,
   });
   const priorSupportRequests = history.filter(
@@ -1307,6 +1394,7 @@ async function processSupportTurn({
   emit('status', { phase: 'synthesizing', label: 'Composing verified response...' });
   const deterministic = synthesizeDeterministicResponse({
     intent,
+    channel,
     userMessage: message,
     toolResults: executedTools,
     knowledgeResult,
@@ -1327,6 +1415,8 @@ async function processSupportTurn({
 
   const mustUseSupportPolicyReply =
     intent === 'human_escalation' ||
+    intent === 'order_support_redirect' ||
+    intent === 'customer_support_redirect' ||
     Boolean(escalationInfo.verificationStep) ||
     Boolean(escalationInfo.escalated);
   const finalReply = mustUseSupportPolicyReply ? deterministic.reply : synthesized.reply;

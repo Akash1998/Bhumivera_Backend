@@ -95,11 +95,59 @@ router.patch("/:id/status", authenticateUser, async (req, res) => {
 });
 
 router.post("/:id/cancel", authenticateUser, async (req, res) => {
-  return res.status(403).json({
-    success: false,
-    code: "CUSTOMER_SELF_CANCEL_DISABLED",
-    message: "Direct self-service order cancellation is disabled. Please use the Bhumivera Client Concierge to verify your Order ID and schedule a specialist callback or email update within 12 hours.",
-  });
+  try {
+    const { id } = req.params;
+    const [orders] = await pool.query(
+      "SELECT id, order_number, user_id, status, payment_mode, payment_status, total FROM orders WHERE id = ? LIMIT 1",
+      [id]
+    );
+    const order = orders?.[0];
+    if (!order) {
+      return res.status(404).json({ success: false, code: "ORDER_NOT_FOUND", message: "Order not found." });
+    }
+
+    const isAdmin = ['admin', 'superadmin'].includes(req.user?.role);
+    if (!isAdmin && Number(order.user_id) !== Number(req.user.id)) {
+      return res.status(403).json({ success: false, code: "FORBIDDEN", message: "You can only cancel your own orders." });
+    }
+
+    const currentStatus = String(order.status || '').toLowerCase();
+    if (currentStatus === 'cancelled') {
+      return res.status(400).json({ success: false, code: "ORDER_ALREADY_CANCELLED", message: "This order is already cancelled." });
+    }
+
+    const nonCancellableStatuses = ['packed', 'shipped', 'out_for_delivery', 'delivered'];
+    if (nonCancellableStatuses.includes(currentStatus)) {
+      const isDelivered = currentStatus === 'delivered';
+      return res.status(400).json({
+        success: false,
+        code: isDelivered ? "ORDER_DELIVERED_NON_RETURNABLE" : "ORDER_ALREADY_PACKED_OR_SHIPPED",
+        message: isDelivered
+          ? `Order #${order.order_number || order.id} is already delivered. All Bhumivera formulations are intimate personal care cosmetics and are 100% non-returnable once delivered.`
+          : `Order #${order.order_number || order.id} is already ${currentStatus.replace(/_/g, ' ')} and cannot be cancelled because it has already been packed and dispatched from our warehouse. Orders can only be cancelled before they are packed and shipped.`,
+      });
+    }
+
+    const cancelResult = await executeAtomicOrderCancellationAndRefund(pool, {
+      orderId: order.id,
+      reason: req.body.reason || "Cancelled by customer before packaging/dispatch",
+      executedByEmail: req.user.email || "customer@bhumivera.com",
+    });
+
+    return res.json({
+      success: true,
+      message: `Order #${order.order_number || order.id} has been cancelled successfully. Full refund has been initiated.`,
+      orderId: cancelResult.orderId,
+      refundSummary: cancelResult.refundSummary,
+    });
+  } catch (error) {
+    console.error("[CUSTOMER_ORDER_CANCEL_ERROR]", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "ORDER_CANCEL_FAILED",
+      message: error.message || "Failed to cancel order.",
+    });
+  }
 });
 
 router.put("/:id/status", authenticateAdmin, async (req, res) => {

@@ -735,17 +735,23 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.match(orderVerificationReply, /order-related follow-up requests require verification/i);
   });
 
-  it('classifies an explicit customer support request as a human follow-up intent', () => {
+  it('redirects website customer-support requests and preserves Telegram escalation routing', () => {
     const result = detectIntentAndToolPlan('I need customer support', { history: [] });
     const shortResult = detectIntentAndToolPlan('I need support', { history: [] });
     const productQuestion = detectIntentAndToolPlan('How does the formula support human skin?', { history: [] });
+    const telegramResult = detectIntentAndToolPlan('I need customer support', {
+      history: [],
+      pageContext: { channel: 'telegram' },
+    });
 
-    assert.equal(result.intent, 'human_escalation');
-    assert.equal(shortResult.intent, 'human_escalation');
-    assert.notEqual(productQuestion.intent, 'human_escalation');
+    assert.equal(result.intent, 'customer_support_redirect');
+    assert.equal(result.toolPlan.length, 0);
+    assert.equal(shortResult.intent, 'customer_support_redirect');
+    assert.notEqual(productQuestion.intent, 'customer_support_redirect');
+    assert.equal(telegramResult.intent, 'human_escalation');
   });
 
-  it('requires repeated support requests and verifies orders only for order-related follow-up', async () => {
+  it('keeps account-specific support requests out of the website assistant conversation', async () => {
     const flowPool = createMockSupportPool();
     const firstOrderRequest = await processSupportTurn({
       message: 'I need customer support for an order.',
@@ -753,31 +759,18 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
       pageContext: { supportCategory: 'order' },
       pool: flowPool,
     });
+    assert.equal(firstOrderRequest.orderCards.length, 0);
     assert.equal(firstOrderRequest.escalation.verificationStep, null);
-    assert.match(firstOrderRequest.reply, /automated assistant/i);
+    assert.match(firstOrderRequest.reply, /Profile → Support/);
 
-    const repeatedOrderRequest = await processSupportTurn({
-      sessionToken: firstOrderRequest.sessionToken,
-      message: 'I still need customer support about this order.',
-      pageContext: { supportCategory: 'order' },
+    const cancellationRequest = await processSupportTurn({
+      message: 'Cancel my order #918273646',
+      guestName: 'Order Support Test',
       pool: flowPool,
     });
-    assert.equal(repeatedOrderRequest.escalation.verificationStep, 'STEP_1_VERIFY_ORDER');
-
-    const firstGeneralRequest = await processSupportTurn({
-      message: 'I need customer support.',
-      guestName: 'General Support Test',
-      pageContext: { supportCategory: 'general' },
-      pool: flowPool,
-    });
-    const repeatedGeneralRequest = await processSupportTurn({
-      sessionToken: firstGeneralRequest.sessionToken,
-      message: 'I still need customer support.',
-      pageContext: { supportCategory: 'general' },
-      pool: flowPool,
-    });
-    assert.equal(repeatedGeneralRequest.escalation.verificationStep, null);
-    assert.match(repeatedGeneralRequest.reply, /noted your request in this conversation/i);
+    assert.equal(cancellationRequest.orderCards.length, 0);
+    assert.equal(cancellationRequest.toolCalls.length, 0);
+    assert.match(cancellationRequest.reply, /Profile → Support/);
   });
 
   it('registers an authenticated HTTPS Telegram webhook', async () => {
@@ -924,24 +917,40 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.equal(mockPool.state.orders[2].status, 'confirmed');
   });
 
-  it('routes generic order-related follow-ups to order lookup and extracts public references', () => {
+  it('redirects website order-specific requests while retaining Telegram order lookup', () => {
     const delayedOrder = detectIntentAndToolPlan('My order is delayed; where is it?', {
       user: { id: 7, email: 'aarav@example.com' },
     });
-    assert.equal(delayedOrder.intent, 'lookup_order');
-    assert.equal(delayedOrder.toolPlan[0].name, 'lookup_order');
+    assert.equal(delayedOrder.intent, 'order_support_redirect');
+    assert.equal(delayedOrder.toolPlan.length, 0);
 
     const publicOrderRef = detectIntentAndToolPlan('Please check BHVM918273645', {
       user: { id: 7, email: 'aarav@example.com' },
     });
-    assert.equal(publicOrderRef.intent, 'lookup_order');
-    assert.equal(publicOrderRef.toolPlan[0].args.order_id, 'BHVM918273645');
+    assert.equal(publicOrderRef.intent, 'order_support_redirect');
+    assert.equal(publicOrderRef.toolPlan.length, 0);
+
+    const returnRequest = detectIntentAndToolPlan('I want to return this product', {
+      user: { id: 7, email: 'aarav@example.com' },
+    });
+    assert.equal(returnRequest.intent, 'order_support_redirect');
+    assert.equal(returnRequest.toolPlan.length, 0);
 
     const orderFollowUp = detectIntentAndToolPlan('Is it delayed?', {
       user: { id: 7, email: 'aarav@example.com' },
       history: [{ sender: 'assistant', content: 'Order #918273645 is confirmed.' }],
     });
-    assert.equal(orderFollowUp.intent, 'lookup_order');
+    assert.equal(orderFollowUp.intent, 'order_support_redirect');
+
+    const telegramOrder = detectIntentAndToolPlan('Please check BHVM918273645', {
+      user: { id: 7, email: 'aarav@example.com' },
+      pageContext: { channel: 'telegram' },
+    });
+    assert.equal(telegramOrder.intent, 'lookup_order');
+    assert.equal(telegramOrder.toolPlan[0].args.order_id, 'BHVM918273645');
+
+    const returnPolicy = detectIntentAndToolPlan('How do returns work?', { history: [] });
+    assert.notEqual(returnPolicy.intent, 'order_support_redirect');
 
     const unrelatedFollowUp = detectIntentAndToolPlan('Tell me about Kumkumadi', {
       user: { id: 7, email: 'aarav@example.com' },
@@ -950,7 +959,7 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.equal(unrelatedFollowUp.intent, 'catalog_or_policy');
   });
 
-  it('5. Autonomous Tool Engine: initiate_return, check_refund_status, and query_inventory_catalog work end-to-end', async () => {
+  it('5. Autonomous Tool Engine: initiate_return enforces strict non-returnable policy; check_refund_status, and query_inventory_catalog work end-to-end', async () => {
     const ret = await initiateReturnTool(
       {
         order_id: '918273646',
@@ -960,17 +969,27 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
       },
       { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
     );
-    assert.equal(ret.success, true);
-    assert.equal(ret.code, 'RETURN_INITIATED');
-    assert.match(ret.rmaNumber, /^RMA-[A-F0-9]{8}$/);
+    assert.equal(ret.success, false);
+    assert.equal(ret.code, 'ITEMS_NON_RETURNABLE');
+
+    mockPool.state.returns.push({
+      id: 301,
+      order_id: 102,
+      user_id: 7,
+      rma_number: 'RMA-A1B2C3D4',
+      status: 'pending_admin_review',
+      refund_type: 'refund',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
 
     const refundCheck = await checkRefundStatusTool(
-      { rma_number: ret.rmaNumber },
+      { rma_number: 'RMA-A1B2C3D4' },
       { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
     );
     assert.equal(refundCheck.success, true);
     assert.equal(refundCheck.code, 'REFUND_STATUS_FOUND');
-    assert.equal(refundCheck.latestRefund.rmaNumber, ret.rmaNumber);
+    assert.equal(refundCheck.latestRefund.rmaNumber, 'RMA-A1B2C3D4');
 
     const cat = await queryInventoryCatalogTool(
       { query: 'Kumkumadi' },
@@ -1019,8 +1038,8 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     });
 
     assert.ok(turn1.sessionToken);
-    assert.equal(turn1.orderCards.length, 1);
-    assert.equal(turn1.orderCards[0].orderNumber, '918273646');
+    assert.equal(turn1.orderCards.length, 0);
+    assert.match(turn1.reply, /Profile → Support/);
 
     const storedUserMsg = mockPool.state.messages.find(
       m => m.session_id === turn1.sessionId && m.sender === 'user'
@@ -1043,23 +1062,30 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
       user: { id: 7, name: "Aarav Sharma", email: "aarav@example.com" },
       pool: mockPool,
     });
-    assert.ok(orderTurn.orderCards.length > 0);
-    assert.match(orderTurn.reply, /918273645|918273646/);
+    assert.equal(orderTurn.orderCards.length, 0);
+    assert.match(orderTurn.reply, /Profile → Support/);
 
     const returnTurn = await processSupportTurn({
       message: "return",
       user: null,
       pool: mockPool,
     });
-    assert.match(returnTurn.reply, /BHVM|return|replacement/i);
+    assert.match(returnTurn.reply, /Profile → Support/);
+
+    const returnPolicyTurn = await processSupportTurn({
+      message: 'How do returns work?',
+      user: null,
+      pool: mockPool,
+    });
+    assert.doesNotMatch(returnPolicyTurn.reply, /Profile → Support/);
 
     const bhvmTurn = await processSupportTurn({
       message: "BHVM918273646",
       user: { id: 7, name: "Aarav Sharma", email: "aarav@example.com" },
       pool: mockPool,
     });
-    assert.equal(bhvmTurn.orderCards[0]?.orderNumber, "918273646");
-    assert.match(bhvmTurn.orderCards[0]?.trackingUrl || "", /order-tracking\?order=918273646/);
+    assert.equal(bhvmTurn.orderCards.length, 0);
+    assert.match(bhvmTurn.reply, /Profile → Support/);
   });
 });
 
@@ -1155,8 +1181,8 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.equal(msgRes.status, 200);
     const msgData = await msgRes.json();
     assert.equal(msgData.success, true);
-    assert.equal(msgData.orderCards.length, 1);
-    assert.equal(msgData.orderCards[0].orderNumber, '918273646');
+    assert.equal(msgData.orderCards.length, 0);
+    assert.match(msgData.reply, /Profile → Support/);
 
     const otherUserToken = jwt.sign(
       { id: 999, email: 'other@example.com', role: 'customer', sessionType: 'user' },
@@ -1169,7 +1195,7 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.equal(forbiddenRes.status, 403);
   });
 
-  it('10. Live HTTP POST /chat/stream streams real-time Server-Sent Events (status, tool_call, token, metadata, done)', async () => {
+  it('10. Live HTTP POST /chat/stream redirects account-specific order requests without tool calls', async () => {
     const streamRes = await fetch(`${baseUrl}/chat/stream`, {
       method: 'POST',
       headers: {
@@ -1186,10 +1212,9 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.match(streamRes.headers.get('content-type') || '', /text\/event-stream/);
     const rawSse = await streamRes.text();
     assert.match(rawSse, /event: status/);
-    assert.match(rawSse, /event: tool_call/);
-    assert.match(rawSse, /"name":"initiate_return"/);
+    assert.doesNotMatch(rawSse, /event: tool_call/);
     assert.match(rawSse, /event: token/);
-    assert.match(rawSse, /RMA-/);
+    assert.match(rawSse, /Profile → Support/);
     assert.match(rawSse, /event: metadata/);
     assert.match(rawSse, /event: done/);
   });
@@ -1485,8 +1510,7 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.equal((await superDeleteRes.json()).deleted, true);
   });
 
-  it('17. Live HTTP 30X Order-Gated Live Agent Rule, Async Message Channel & Two-Way Telegram Webhook (@BhumiveraBot)', async () => {
-    // Visitor without any placed order (user id 888) tries to escalate to a live human agent -> 403 ORDER_REQUIRED_FOR_LIVE_AGENT
+  it('17. Live HTTP routes redirect website assistant support requests and preserve the async channel and Telegram webhook', async () => {
     const noOrderUserToken = jwt.sign(
       { id: 888, name: 'New Visitor', email: 'visitor@example.com', role: 'customer', sessionType: 'user' },
       TEST_JWT_SECRET,
@@ -1494,13 +1518,20 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     );
     const escBlockedRes = await fetch(`${baseUrl}/chat/escalate`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${noOrderUserToken}` },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ reason: 'Want to talk to agent', message: 'Connect me to an agent' }),
     });
-    assert.equal(escBlockedRes.status, 403);
+    assert.equal(escBlockedRes.status, 410);
     const escBlockedData = await escBlockedRes.json();
-    assert.equal(escBlockedData.code, 'ORDER_REQUIRED_FOR_LIVE_AGENT');
-    assert.equal(escBlockedData.showAsyncMessageForm, true);
+    assert.equal(escBlockedData.code, 'USE_CUSTOMER_SUPPORT');
+
+    const verifyEscalationRes = await fetch(`${baseUrl}/chat/verify-escalation`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orderId: '918273646', emailOrPhone: 'aarav@example.com' }),
+    });
+    assert.equal(verifyEscalationRes.status, 410);
+    assert.equal((await verifyEscalationRes.json()).code, 'USE_CUSTOMER_SUPPORT');
 
     // Visitor submits an Async Message instead -> 201 Created
     const asyncRes = await fetch(`${baseUrl}/chat/async-message`, {
@@ -1543,6 +1574,7 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     const hiTurn = await processSupportTurn({
       message: 'Hi',
       user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      channel: 'telegram',
       pool: mockPool,
     });
     assert.match(hiTurn.reply, /Welcome to \*\*Bhumivera Support\*\*/i);
@@ -1551,6 +1583,7 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     const bhvmTurn = await processSupportTurn({
       message: 'BHVM918273646',
       user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      channel: 'telegram',
       pool: mockPool,
     });
     assert.equal(bhvmTurn.orderCards.length, 1);
@@ -1561,6 +1594,7 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     const missingBhvmTurn = await processSupportTurn({
       message: 'BHVM815899599',
       user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      channel: 'telegram',
       pool: mockPool,
     });
     assert.match(missingBhvmTurn.reply, /could not find an order matching reference #BHVM815899599/i);
@@ -1569,13 +1603,15 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     const returnWordTurn = await processSupportTurn({
       message: 'return',
       user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      channel: 'telegram',
       pool: mockPool,
     });
-    assert.match(returnWordTurn.reply, /return #918273646/i);
+    assert.match(returnWordTurn.reply, /Non-Returnable Policy/i);
 
     const orderWordTurn = await processSupportTurn({
       message: 'order',
       user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
+      channel: 'telegram',
       pool: mockPool,
     });
     assert.match(orderWordTurn.reply, /Order #918273645/);

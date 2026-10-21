@@ -392,6 +392,7 @@ async function processIncomingTelegramUpdate(update, { pool } = {}) {
       channel: 'telegram',
       telegramChatId: chatId,
     },
+    channel: 'telegram',
     pool: activePool,
   });
 

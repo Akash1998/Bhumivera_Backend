@@ -101,18 +101,14 @@ router.get('/eligibility', authenticateUser, async (req, res) => {
        ORDER BY o.delivered_at DESC, o.id DESC`,
       [req.user.id]
     );
-    return res.json(orders.map(order => {
-      const window = getWindow(order.delivered_at, days);
-      const now = Date.now();
-      return {
-        ...order,
-        return_window_days: days,
-        return_available_at: window?.availableAt || null,
-        return_expires_at: window?.expiresAt || null,
-        can_request_return: Boolean(window && !Number(order.has_return_request) &&
-          now >= window.availableAt.getTime() && now <= window.expiresAt.getTime()),
-      };
-    }));
+    return res.json(orders.map(order => ({
+      ...order,
+      return_window_days: 0,
+      return_available_at: null,
+      return_expires_at: null,
+      can_request_return: false,
+      non_returnable_reason: 'All Bhumivera personal care products are strictly 100% non-returnable once delivered.',
+    })));
   } catch (error) {
     console.error('[RETURNS_ELIGIBILITY]', error);
     return res.status(500).json({ message: 'Could not check return eligibility.' });
@@ -142,77 +138,10 @@ router.post('/upload-url', authenticateUser, async (req, res) => {
 });
 
 router.post('/', authenticateUser, async (req, res) => {
-  try {
-    const { order_id, reason, description, notes, refund_type, refund_method, items, image_urls } = req.body || {};
-    const orderId = Number(order_id);
-    if (!Number.isSafeInteger(orderId) || orderId < 1) {
-      return res.status(400).json({ code: 'ORDER_NOT_FOUND', message: 'Choose a valid delivered order.' });
-    }
-    const access = await isOwnedDeliveredOrder(orderId, req.user.id);
-    if (access.error) return res.status(access.error.status).json(access.error);
-    if (typeof reason !== 'string' || !reason.trim() || reason.trim().length > 255) {
-      return res.status(400).json({ code: 'RETURN_REASON_REQUIRED', message: 'Select a return reason.' });
-    }
-    if (!Array.isArray(items) || items.length < 1 || items.length > 20) {
-      return res.status(400).json({ code: 'ITEMS_REQUIRED', message: 'Select at least one item from the delivered order.' });
-    }
-    if (!Array.isArray(image_urls || []) || (image_urls || []).length > MAX_RETURN_IMAGES ||
-      (image_urls || []).some(key => typeof key !== 'string' || !new RegExp(`^returns/${req.user.id}/[a-zA-Z0-9/_-]+\\.(jpg|jpeg|png|webp)$`, 'i').test(key))) {
-      return res.status(400).json({ code: 'INVALID_RETURN_IMAGES', message: 'Return requests may include up to five evidence photos uploaded for this account.' });
-    }
-    if (refund_method && !['wallet', 'original', 'replacement'].includes(refund_method)) {
-      return res.status(400).json({ code: 'INVALID_REFUND_METHOD', message: 'Choose a supported refund or replacement option.' });
-    }
-
-    const [purchasedItems] = await pool.query(
-      'SELECT id, product_id, name, sku, price, quantity, image FROM order_items WHERE order_id = ?',
-      [orderId]
-    );
-    const purchaseById = new Map(purchasedItems.map(item => [String(item.id), item]));
-    const seen = new Set();
-    const selectedItems = [];
-    for (const requested of items) {
-      const lineId = String(requested?.order_item_id ?? requested?.id ?? '');
-      const purchased = purchaseById.get(lineId);
-      const quantity = Number(requested?.quantity ?? 1);
-      if (!purchased || seen.has(lineId) || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > purchased.quantity) {
-        return res.status(400).json({ code: 'INVALID_RETURN_ITEM', message: 'Select valid quantities from the items in this order.' });
-      }
-      seen.add(lineId);
-      selectedItems.push({
-        order_item_id: purchased.id,
-        product_id: purchased.product_id,
-        name: purchased.name,
-        sku: purchased.sku,
-        price: Number(purchased.price),
-        quantity,
-        image: purchased.image,
-      });
-    }
-
-    const id = await createReturn({
-      order_id: orderId,
-      user_id: req.user.id,
-      reason: reason.trim(),
-      description: String(description || notes || '').trim().slice(0, 2000),
-      refund_type: refund_type || refund_method || 'refund',
-      refund_method: refund_method || null,
-      items: selectedItems,
-      image_urls: image_urls || [],
-      rma_number: `RMA-${crypto.randomBytes(4).toString('hex').toUpperCase()}`,
-    });
-    return res.status(201).json({
-      id,
-      status: 'pending_admin_review',
-      message: 'Return request sent to our team for review. Your order is not marked as returned while it is being assessed.',
-    });
-  } catch (error) {
-    if (error.status) {
-      return res.status(error.status).json({ code: error.status === 409 ? 'ALREADY_RETURNED' : 'RETURN_REQUEST_REJECTED', message: error.message, return_id: error.returnId });
-    }
-    console.error('[RETURNS_CREATE]', error);
-    return res.status(500).json({ code: 'RETURN_CREATE_FAILED', message: 'Could not submit the return request. Please try again.' });
-  }
+  return res.status(400).json({
+    code: 'ITEMS_NON_RETURNABLE',
+    message: 'All Bhumivera formulations are intimate personal care cosmetics and are strictly 100% non-returnable once delivered. If your parcel arrived damaged, leaking, or with wrong items, please submit an uncut 360° unboxing video to customer support within 48 hours for direct replacement or refund without return shipping.',
+  });
 });
 
 router.get('/admin/all', authenticateAdmin, async (req, res) => {

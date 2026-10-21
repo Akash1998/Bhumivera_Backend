@@ -108,25 +108,9 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
   const status = String(order.status || 'pending').toLowerCase();
   const stepMap = { pending: 0, placed: 0, confirmed: 1, packed: 2, shipped: 3, delivered: 4 };
   const currentStep = stepMap[status] ?? 0;
-  const cancellable = false; // Strict Policy: Only SuperAdmin can execute order cancellations
-
-  let canReturn = false;
-  let returnEligibilityReason = null;
-  if (status === 'delivered' && order.delivered_at) {
-    const deliveredMs = new Date(order.delivered_at).getTime();
-    const now = Date.now();
-    const availableAt = deliveredMs + RETURN_COOLING_DELAY_MS;
-    const expiresAt = deliveredMs + returnPolicyDays * 86400000;
-    if (returnInfo && !['rejected', 'cancelled'].includes(returnInfo.status)) {
-      returnEligibilityReason = `Return ${returnInfo.rma_number || `#${returnInfo.id}`} (${returnInfo.status.replace(/_/g, ' ')})`;
-    } else if (now < availableAt) {
-      returnEligibilityReason = 'Return window opens 30 minutes after delivery';
-    } else if (now > expiresAt) {
-      returnEligibilityReason = `${returnPolicyDays}-day return window has closed`;
-    } else {
-      canReturn = true;
-    }
-  }
+  const cancellable = ['pending', 'placed', 'confirmed', 'processing'].includes(status);
+  const canReturn = false;
+  const returnEligibilityReason = 'All personal care formulations are strictly 100% non-returnable once delivered.';
 
   const addr = parseJsonSafe(order.address_snapshot, {});
   const ordNum = order.order_number || String(order.id).padStart(9, '0');
@@ -381,16 +365,15 @@ async function cancelOrderTool(args = {}, context = {}) {
   }
 
   const targetOrder = lookup.order;
-  const allowedStatuses = ['pending', 'confirmed'];
+  const allowedStatuses = ['pending', 'confirmed', 'placed', 'processing'];
   if (!allowedStatuses.includes(targetOrder.status)) {
+    const isDelivered = targetOrder.status === 'delivered';
     return {
       success: false,
-      code: 'ORDER_NOT_CANCELLABLE',
-      message: `Order #${targetOrder.orderNumber} is already '${targetOrder.status}' and cannot be cancelled directly because fulfillment has progressed. ${
-        targetOrder.status === 'delivered'
-          ? 'However, you can initiate a return or replacement right here in chat!'
-          : 'Once delivered, we can help you initiate a return within the return window.'
-      }`,
+      code: isDelivered ? 'ORDER_DELIVERED_NON_RETURNABLE' : 'ORDER_NOT_CANCELLABLE',
+      message: isDelivered
+        ? `Order #${targetOrder.orderNumber} has already been delivered. All Bhumivera botanical formulations are intimate personal care cosmetics and are 100% non-returnable once delivered. If your item arrived damaged or defective, please submit an uncut 360° unboxing video within 48 hours for direct replacement or refund without return shipping.`
+        : `Order #${targetOrder.orderNumber} is already '${targetOrder.status}' and cannot be cancelled because it has already been packed and dispatched from our warehouse. Orders can only be cancelled before they are packed and shipped. Delivered items are 100% non-returnable.`,
       orderCards: [targetOrder],
     };
   }
@@ -507,148 +490,27 @@ async function cancelOrderTool(args = {}, context = {}) {
 }
 
 /**
- * TOOL 3: Automated Return & Replacement Initiation (`initiate_return`)
+ * TOOL 3: Return Disallowance & Non-Returnable Policy (`initiate_return`)
  */
 async function initiateReturnTool(args = {}, context = {}) {
-  const pool = getPool(context.pool);
-  const { featureConfig = {} } = context;
   const rawOrderRef = stripOrderPrefix(args.order_id || args.order_number || '');
-  const reason = String(args.reason || 'Product issue reported via AI Concierge').trim().slice(0, 255);
-  const description = String(args.description || args.notes || reason).trim().slice(0, 2000);
-  const requestedType = String(args.resolution_type || args.refund_type || 'refund').toLowerCase();
-  const refundType = requestedType === 'exchange' || requestedType === 'replacement' ? 'replacement' : 'refund';
-  const refundMethod = refundType === 'replacement'
-    ? 'replacement'
-    : (['wallet', 'original'].includes(args.refund_method) ? args.refund_method : 'original');
-  const imageUrls = Array.isArray(args.image_urls) ? args.image_urls.slice(0, 5) : [];
-
-  if (featureConfig.ai_auto_return_rma_enabled === false) {
-    return {
-      success: false,
-      code: 'AUTO_RMA_PAUSED_BY_ADMIN',
-      message: 'Automated RMA creation is currently routed through our Supervisor Review queue. I have marked your session as Waiting for Review.',
-    };
-  }
-
-  if (!rawOrderRef) {
-    return {
-      success: false,
-      code: 'ORDER_ID_REQUIRED',
-      message: 'Please provide the Order ID or 9-digit Order Number (e.g., BHVM815899599) for the delivered order you want to return or replace.',
-    };
-  }
-
-  const lookup = await lookupOrderTool(
-    { order_id: rawOrderRef, email: args.email, phone: args.phone },
-    context
-  );
-  if (!lookup.success || !lookup.order) {
-    return lookup;
-  }
-
-  const order = lookup.order;
-  if (order.status !== 'delivered') {
-    return {
-      success: false,
-      code: 'ORDER_NOT_DELIVERED',
-      message: `Only delivered orders can be submitted for a return or replacement. Order #${order.orderNumber} is currently '${order.status}'. ${
-        order.cancellable ? 'Would you like me to cancel this order instead?' : ''
-      }`,
-      orderCards: [order],
-    };
-  }
-
-  const returnDays = await getReturnPolicyDays(pool);
-  if (order.deliveredAt) {
-    const deliveredMs = new Date(order.deliveredAt).getTime();
-    const now = Date.now();
-    if (now < deliveredMs + RETURN_COOLING_DELAY_MS) {
-      return {
-        success: false,
-        code: 'RETURN_WINDOW_NOT_OPEN',
-        message: `The self-service return/replacement window opens 30 minutes after delivery confirmation for Order #${order.orderNumber}.`,
-        orderCards: [order],
-      };
-    }
-    if (now > deliveredMs + returnDays * 86400000) {
-      return {
-        success: false,
-        code: 'RETURN_WINDOW_CLOSED',
-        message: `The ${returnDays}-day return window for Order #${order.orderNumber} has ended. I can connect you with a human support specialist if you need an exception review.`,
-        orderCards: [order],
-      };
+  let lookup = null;
+  if (rawOrderRef) {
+    try {
+      lookup = await lookupOrderTool(
+        { order_id: rawOrderRef, email: args.email, phone: args.phone },
+        context
+      );
+    } catch {
+      // ignore lookup error for non-returnable explanation
     }
   }
-
-  const [existingReturns] = await pool.query(
-    "SELECT id, rma_number, status, refund_type FROM returns WHERE order_id = ? AND status NOT IN ('rejected', 'cancelled') LIMIT 1",
-    [order.id]
-  );
-  if (existingReturns?.length) {
-    const existing = existingReturns[0];
-    return {
-      success: false,
-      code: 'ALREADY_RETURNED',
-      returnId: existing.id,
-      rmaNumber: existing.rma_number,
-      message: `An active ${existing.refund_type || 'return'} request (${existing.rma_number || `#${existing.id}`}) is already in progress for Order #${order.orderNumber} with status '${existing.status.replace(/_/g, ' ')}'.`,
-      orderCards: [order],
-    };
-  }
-
-  const selectedItems = (order.items || []).map(item => ({
-    order_item_id: item.id,
-    product_id: item.productId,
-    name: item.name,
-    sku: item.sku,
-    price: item.price,
-    quantity: item.quantity,
-    image: item.image,
-  }));
-
-  const rmaNumber = `RMA-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-  const [orderUserRow] = await pool.query('SELECT user_id FROM orders WHERE id = ? LIMIT 1', [order.id]);
-  const ownerUserId = orderUserRow?.[0]?.user_id || context.user?.id || 0;
-
-  const [insertRes] = await pool.query(
-    `INSERT INTO returns
-      (order_id, user_id, reason, description, refund_type, refund_method, items, rma_number, image_urls, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_admin_review')`,
-    [
-      order.id,
-      ownerUserId,
-      reason,
-      description,
-      refundType,
-      refundMethod,
-      JSON.stringify(selectedItems),
-      rmaNumber,
-      JSON.stringify(imageUrls),
-    ]
-  );
-
-  const updatedOrderCard = {
-    ...order,
-    canReturn: false,
-    activeReturn: {
-      id: insertRes.insertId,
-      rmaNumber,
-      status: 'pending_admin_review',
-      refundType,
-      refundAmount: order.total,
-    },
-  };
 
   return {
-    success: true,
-    code: 'RETURN_INITIATED',
-    returnId: insertRes.insertId,
-    rmaNumber,
-    resolutionType: refundType,
-    refundMethod,
-    status: 'pending_admin_review',
-    orderCards: [updatedOrderCard],
-    message: `${refundType === 'replacement' ? 'Replacement' : 'Return'} request ${rmaNumber} has been submitted for Order #${order.orderNumber} (${selectedItems.length} item(s)). Our quality assurance team will review it and arrange reverse pickup within 24–48 hours.`,
+    success: false,
+    code: 'ITEMS_NON_RETURNABLE',
+    message: 'All Bhumivera formulations are intimate personal care cosmetics and are 100% non-returnable once delivered. We do not accept returns. If your parcel arrived damaged, leaking, or with an incorrect product, please submit an uncut 360° unboxing video to our concierge team within 48 hours for direct replacement or refund without return shipping.',
+    orderCards: lookup?.order ? [lookup.order] : [],
   };
 }
 
@@ -772,7 +634,9 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
     dispatchCutoffIst: '14:00 IST (2:00 PM)',
     estimatedDeliveryBeforeCutoff: '4–6 calendar days',
     estimatedDeliveryAfterCutoff: '5–7 calendar days',
-    returnWindowDays: 7,
+    returnWindowDays: 0,
+    returnPolicy: '100% Non-Returnable. All personal care formulations are strictly non-returnable once delivered. Pre-dispatch cancellation is available before packing and shipping.',
+    isReturnable: false,
   };
 
   try {
@@ -790,7 +654,9 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
       freeShippingThresholdInr: freeThreshold,
       standardShippingChargeInr: stdCharge,
       expressShippingChargeInr: expCharge,
-      returnWindowDays: retDays,
+      returnWindowDays: 0,
+      returnPolicy: '100% Non-Returnable. All personal care formulations are strictly non-returnable once delivered. Pre-dispatch cancellation is available before packing and shipping.',
+      isReturnable: false,
       sampleStandardBelow500: calculateShippingCost({
         deliveryType: 'standard',
         cartSubtotal: 350,
