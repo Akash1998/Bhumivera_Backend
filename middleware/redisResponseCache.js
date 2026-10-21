@@ -4,6 +4,7 @@ const CACHE_TTL_SECONDS = 60;
 const REDIS_READ_TIMEOUT_MS = 100;
 const MAX_CACHEABLE_RESPONSE_BYTES = 128 * 1024;
 const CACHE_PREFIX = 'bhumivera:response-cache:v2:';
+const EDGE_CACHE_CONTROL = 'public, max-age=0, s-maxage=30, stale-while-revalidate=30';
 const RATE_LIMITED_PUBLIC_PATHS = new Set([
   '/api/affiliate/referral/preview',
   '/api/search',
@@ -80,7 +81,17 @@ const createRedisResponseCache = (client, {
   ttlSeconds = CACHE_TTL_SECONDS,
   logger = console,
 } = {}) => (req, res, next) => {
-  if (!client || !canCacheRequest(req)) return next();
+  if (!canCacheRequest(req)) return next();
+
+  const json = res.json;
+  res.json = function jsonWithPublicCacheHeaders(body) {
+    if (res.statusCode === 200 && !res.hasHeader('Cache-Control')) {
+      res.setHeader('Cache-Control', EDGE_CACHE_CONTROL);
+    }
+    return json.call(this, body);
+  };
+
+  if (!client) return next();
   if (typeof client.isReady === 'boolean' && !client.isReady) return next();
 
   const key = hashRequest(req);

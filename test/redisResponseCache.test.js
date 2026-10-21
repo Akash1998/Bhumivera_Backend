@@ -77,6 +77,8 @@ describe('Redis response cache', () => {
     assert.deepEqual(secondBody, firstBody);
     assert.equal(first.headers.get('x-redis-cache'), 'MISS');
     assert.equal(second.headers.get('x-redis-cache'), 'HIT');
+    assert.equal(first.headers.get('cache-control'), 'public, max-age=0, s-maxage=30, stale-while-revalidate=30');
+    assert.equal(second.headers.get('cache-control'), 'public, max-age=0, s-maxage=30, stale-while-revalidate=30');
   });
 
   it('does not cache responses that vary by a header absent from the cache key', async () => {
@@ -101,6 +103,9 @@ describe('Redis response cache', () => {
     assert.equal(cookieRequest.headers.get('x-redis-cache'), null);
     assert.equal(privateFirst.headers.get('x-redis-cache'), 'MISS');
     assert.equal(privateSecond.headers.get('x-redis-cache'), 'MISS');
+    assert.equal(authenticated.headers.get('cache-control'), null);
+    assert.equal(cookieRequest.headers.get('cache-control'), null);
+    assert.equal(privateFirst.headers.get('cache-control'), 'private, no-store');
     assert.equal(privateRequestCount, 2);
   });
 
