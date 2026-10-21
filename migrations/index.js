@@ -30,6 +30,7 @@ const { initReturnRefundTable } = require('../models/returnRefundModel');
 const { initAiSupportTables } = require('../models/aiSupportModel');
 const { initSuperAdminFortressTables } = require('../models/superAdminVaultModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
+const { seedLuxuryCatalog } = require('../scripts/seedLuxuryCatalog');
 const { generateOrderNumber } = require('../services/orderNumber');
 const {
   DEFAULT_ORDER_SPIN_REWARDS,
@@ -778,6 +779,11 @@ const migrations = [
     version: 65,
     name: 'add terms and conditions to coupons',
     up: () => createCouponTable(),
+  },
+  {
+    version: 66,
+    name: 'purge legacy anritvox artifacts and seed luxury geo catalog',
+    up: () => seedLuxuryCatalog(pool),
   },
 ];
 

@@ -29,16 +29,6 @@ Administrators can send an offer or coupon announcement from Admin > Customers >
 
 The backend runs schema migrations before declaring readiness. Migration 33 adds the nullable customer association to warranty registrations; warranty ownership is saved in the registration transaction, and serial rows are locked to prevent duplicate registrations. Configure the deployment platform to use `/health/live` for liveness and `/health/ready` for readiness. A migration failure leaves the service unready and is retried; inspect the server logs for the failing migration before changing production data.
 
-### Vercel backend migration
-
-The root `server.js` exports the Express app for Vercel. Vercel requests initialize and verify the database before entering API routes; `/health/live` remains independent of database startup. Keep Railway serving production until the Vercel deployment, database connectivity, payment/support webhooks, uploads, and frontend API origin have all been verified.
-
-Vercel cannot reach Railway's private MySQL hostname. A Vercel deployment requires a secure, externally reachable database endpoint and the database environment variables configured as Vercel secrets. Vercel Functions use dynamic outbound IPs by default, so do not expose MySQL publicly without an approved access-control strategy. Set `DB_POOL_SIZE` conservatively to account for concurrent function instances.
-
-The Vercel runtime does not run the backend's 15-second referral-approval loop or startup Telegram webhook registration. Keep a Railway worker running during the transition, or move those tasks to a durable scheduler before retiring Railway; Vercel Hobby cron is limited to once daily and cannot replace the referral schedule. Configure shared Redis for rate limits across function instances. Vercel does not serve the Express `/uploads` static directory or provide persistent local storage; keep uploads in configured object storage such as R2.
-
-The version-66 legacy artifact cleanup and luxury geo catalog seed are deferred because the referenced `scripts/seedLuxuryCatalog.js` implementation and its source data are not present. Do not mark that migration applied or perform the cleanup until the intended implementation and data have been reviewed and committed.
-
 Checkout shows Razorpay first, Wallet second, and COD third. COD remains visible with an explanation, but is selectable only after two of the customer's orders have been recorded as delivered (`delivered_at` set); the order transaction rechecks this rule on the server. Wallet checkout debits the wallet and records its ledger transaction atomically with order creation. Razorpay remains the recommended payment option.
 
 The Orders admin page can compare up to 25 online payments on the visible page with Razorpay. This is a read-only diagnostic: discrepancies and provider lookup failures are reported but never auto-corrected. Normal online checkout captures the payment before creating the order; pending orders also include legitimate COD orders, so do not automatically expire pending orders or release their stock without an approved fulfillment policy.

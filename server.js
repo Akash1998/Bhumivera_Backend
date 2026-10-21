@@ -88,33 +88,14 @@ const supportRoutes = require("./routes/supportRoutes");
 const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
 
 const app = express();
-const isVercel = process.env.VERCEL === "1";
 let databaseReady = false;
 let startupFailure = null;
-let databaseInitializationPromise = null;
 let referralApprovalTimer = null;
 let telegramWebhookTimer = null;
 let telegramWebhookSetupRunning = false;
 let systemDiagnostics = null;
-if (isVercel) app.set("trust proxy", 1);
 app.use(createRequestObservability());
 app.use(clientContextMiddleware());
-if (isVercel) {
-  app.use(async (req, res, next) => {
-    const isApiRequest = req.path === "/api" || req.path.startsWith("/api/");
-    if ((!isApiRequest && req.path !== "/health/ready" && req.path !== "/health") ||
-        databaseReady) return next();
-    const ready = await initializeDatabase();
-    if (!ready) {
-      return res.status(503).json({
-        success: false,
-        message: "The API database is not ready. Retry shortly.",
-        code: startupFailure?.code || "STARTUP_FAILED",
-      });
-    }
-    return next();
-  });
-}
 
 // --- SECURITY & CORS POLICIES ---
 const defaultAllowedOrigins = [
@@ -347,86 +328,75 @@ app.use("/api", (req, res) => {
 app.use(requestErrorHandler);
 
 const PORT = process.env.PORT || 5000;
-const httpServer = isVercel ? null : app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`Access Core Online on Port ${PORT}`);
 });
 
-const initializeDatabase = () => {
-  if (databaseReady) return Promise.resolve(true);
-  if (databaseInitializationPromise) return databaseInitializationPromise;
-
-  databaseInitializationPromise = (async () => {
+const initializeDatabase = async () => {
+  try {
+    await connectRateLimitStore();
     try {
-      await connectRateLimitStore();
-      try {
-        await connectResponseCache();
-      } catch (error) {
-        console.warn('[RESPONSE_CACHE] Redis connection failed; requests will continue without response caching.', error.message);
-      }
-      await pool.query('SELECT 1');
-      await runMigrations(pool, migrations);
-      if (!systemDiagnostics) {
-        systemDiagnostics = createSystemDiagnostics(pool);
-        app.locals.systemDiagnostics = systemDiagnostics;
-      }
-      databaseReady = true;
-      startupFailure = null;
-      if (!isVercel && !referralApprovalTimer) {
-        const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
-          console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
-        });
-        runReferralApprovals();
-        referralApprovalTimer = setInterval(runReferralApprovals, 15000);
-        referralApprovalTimer.unref();
-      }
-      if (!isVercel && !telegramWebhookTimer) {
-        const configureTelegramWebhook = async () => {
-          if (telegramWebhookSetupRunning) return;
-          telegramWebhookSetupRunning = true;
-          try {
-            const featureConfig = await getAiSupportFeatureConfig(pool);
-            const webhookResult = await registerTelegramWebhook({
-              botToken: resolveTelegramBotToken(featureConfig),
-            });
-            if (!webhookResult.ok) {
-              console.error(
-                "[TELEGRAM_WEBHOOK_SETUP]",
-                webhookResult.description || webhookResult.error || "Telegram webhook registration failed."
-              );
-              return;
-            }
-            clearInterval(telegramWebhookTimer);
-            telegramWebhookTimer = null;
-            console.log("[TELEGRAM] Incoming bot webhook registered.");
-          } catch (error) {
-            console.error("[TELEGRAM_WEBHOOK_SETUP]", error.message);
-          } finally {
-            telegramWebhookSetupRunning = false;
-          }
-        };
-        void configureTelegramWebhook();
-        telegramWebhookTimer = setInterval(configureTelegramWebhook, 60000);
-        telegramWebhookTimer.unref();
-      }
-      console.log("[STARTUP] Database initialization complete; API is ready.");
-      return true;
-    } catch (err) {
-      databaseReady = false;
-      startupFailure = err.migration
-        ? { migration: err.migration, code: err.code || "MIGRATION_FAILED" }
-        : { code: err.code || "STARTUP_FAILED" };
-      console.error("[STARTUP] Required database initialization failed; API will retry.", err);
-      if (!isVercel) setTimeout(() => void initializeDatabase(), 15000).unref();
-      return false;
+      await connectResponseCache();
+    } catch (error) {
+      console.warn('[RESPONSE_CACHE] Redis connection failed; requests will continue without response caching.', error.message);
     }
-  })().finally(() => {
-    databaseInitializationPromise = null;
-  });
-
-  return databaseInitializationPromise;
+    await pool.query('SELECT 1');
+    await runMigrations(pool, migrations);
+    if (!systemDiagnostics) {
+      systemDiagnostics = createSystemDiagnostics(pool);
+      app.locals.systemDiagnostics = systemDiagnostics;
+    }
+    databaseReady = true;
+    startupFailure = null;
+    if (!referralApprovalTimer) {
+      const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
+        console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
+      });
+      runReferralApprovals();
+      referralApprovalTimer = setInterval(runReferralApprovals, 15000);
+      referralApprovalTimer.unref();
+    }
+    if (!telegramWebhookTimer) {
+      const configureTelegramWebhook = async () => {
+        if (telegramWebhookSetupRunning) return;
+        telegramWebhookSetupRunning = true;
+        try {
+          const featureConfig = await getAiSupportFeatureConfig(pool);
+          const webhookResult = await registerTelegramWebhook({
+            botToken: resolveTelegramBotToken(featureConfig),
+          });
+          if (!webhookResult.ok) {
+            console.error(
+              "[TELEGRAM_WEBHOOK_SETUP]",
+              webhookResult.description || webhookResult.error || "Telegram webhook registration failed."
+            );
+            return;
+          }
+          clearInterval(telegramWebhookTimer);
+          telegramWebhookTimer = null;
+          console.log("[TELEGRAM] Incoming bot webhook registered.");
+        } catch (error) {
+          console.error("[TELEGRAM_WEBHOOK_SETUP]", error.message);
+        } finally {
+          telegramWebhookSetupRunning = false;
+        }
+      };
+      void configureTelegramWebhook();
+      telegramWebhookTimer = setInterval(configureTelegramWebhook, 60000);
+      telegramWebhookTimer.unref();
+    }
+    console.log("[STARTUP] Database initialization complete; API is ready.");
+  } catch (err) {
+    databaseReady = false;
+    startupFailure = err.migration
+      ? { migration: err.migration, code: err.code || "MIGRATION_FAILED" }
+      : { code: err.code || "STARTUP_FAILED" };
+    console.error("[STARTUP] Required database initialization failed; API will retry.", err);
+    setTimeout(initializeDatabase, 15000).unref();
+  }
 };
 
-if (!isVercel) void initializeDatabase();
+initializeDatabase();
 
 let shutdownStarted = false;
 const shutdown = signal => {
@@ -462,9 +432,7 @@ const shutdown = signal => {
   });
 };
 
-if (httpServer) {
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 module.exports = app;
