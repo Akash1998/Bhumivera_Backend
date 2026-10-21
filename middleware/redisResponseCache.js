@@ -154,10 +154,34 @@ const createRedisResponseCache = (client, {
   });
 };
 
+let responseCacheConnectionPromise;
+
 const connectResponseCache = async () => {
-  if (!redisClient || redisClient.isOpen) return;
-  await redisClient.connect();
-  console.info('[RESPONSE_CACHE] Redis response cache connected.');
+  if (!redisClient || redisClient.isReady) return;
+  if (!responseCacheConnectionPromise) {
+    responseCacheConnectionPromise = (async () => {
+      if (!redisClient.isOpen) {
+        await redisClient.connect();
+      } else {
+        await new Promise((resolve, reject) => {
+          const onReady = () => {
+            redisClient.off('error', onError);
+            resolve();
+          };
+          const onError = error => {
+            redisClient.off('ready', onReady);
+            reject(error);
+          };
+          redisClient.once('ready', onReady);
+          redisClient.once('error', onError);
+        });
+      }
+      console.info('[RESPONSE_CACHE] Redis response cache connected.');
+    })().finally(() => {
+      responseCacheConnectionPromise = null;
+    });
+  }
+  await responseCacheConnectionPromise;
 };
 
 const closeResponseCache = async () => {

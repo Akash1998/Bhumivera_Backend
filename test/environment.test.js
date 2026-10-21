@@ -56,6 +56,15 @@ describe('production environment validation', () => {
     });
   });
 
+  it('rejects unresolved database host placeholders', () => {
+    const env = validProductionEnvironment();
+    env.DB_HOST = '${{MySQL.MYSQLHOST}}';
+    assert.throws(
+      () => validateProductionEnvironment(env),
+      /DB_HOST contains an unresolved environment-variable placeholder/
+    );
+  });
+
   it('does not impose production-only requirements in development', () => {
     assert.deepEqual(validateProductionEnvironment({ NODE_ENV: 'development' }), []);
   });

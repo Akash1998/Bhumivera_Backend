@@ -64,7 +64,7 @@ const getMailConfig = () => {
 
 /**
  * Primary dispatch function utilizing Mailrelay's REST API (Port 443)
- * This guarantees delivery by completely bypassing Railway's strict SMTP firewall.
+ * This uses Mailrelay's HTTPS API so delivery does not depend on SMTP access.
  */
 function sendMail({ to, subject, html, text, from, timeoutMs }) {
   return new Promise((resolve, reject) => {
@@ -72,7 +72,7 @@ function sendMail({ to, subject, html, text, from, timeoutMs }) {
 
     if (!config.apiKey || !config.domain) {
       recordMailAttempt({ accepted: false, recipients: Array.isArray(to) ? to.length : 1, code: 'MAIL_CONFIGURATION_MISSING' });
-      return reject(new Error("FATAL: MAILRELAY_API_KEY or MAILRELAY_DOMAIN missing in Railway variables."));
+      return reject(new Error("MAILRELAY_API_KEY or MAILRELAY_DOMAIN is missing from the deployment environment."));
     }
 
     // Format recipients for Mailrelay v3 API

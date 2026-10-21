@@ -785,6 +785,26 @@ const migrations = [
     name: 'purge legacy anritvox artifacts and seed luxury geo catalog',
     up: () => seedLuxuryCatalog(pool),
   },
+  {
+    version: 67,
+    name: 'initialize product questions schema',
+    up: async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS product_questions (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          product_id INT NOT NULL,
+          user_id INT NULL,
+          user_name VARCHAR(100) DEFAULT 'Customer',
+          question TEXT NOT NULL,
+          answer TEXT NULL,
+          is_approved TINYINT(1) DEFAULT 1,
+          helpful_count INT DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_prod (product_id)
+        )
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

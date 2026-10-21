@@ -4,7 +4,7 @@
   "description": "Bhumivera Backend API - E-commerce Core with AI Integration",
   "main": "server",
   "engines": {
-    "node": ">=18.0.0"
+    "node": "22.x"
   },
   "scripts": {
     "start": "node server",
@@ -58,6 +58,9 @@
     "redis": "^6.3.0",
     "serverless-http": "^4.0.0"
   },
+  "allowScripts": {
+    "onnxruntime-node@1.30.0": true
+  },
   "devDependencies": {
     "nodemon": "^3.1.14"
   },
@@ -67,6 +70,12 @@
     },
     "nodemon": {
       "chokidar": "^4.0.3"
+    },
+    "@otplib/plugin-base32-scure": {
+      "@scure/base": "1.2.6"
+    },
+    "@otplib/plugin-crypto-noble": {
+      "@noble/hashes": "1.8.0"
     }
   }
 }

@@ -63,26 +63,26 @@ async function connectRateLimitStore() {
     rateLimitConnectionPromise = (async () => {
       if (!sharedRedisClient.isOpen) {
         await sharedRedisClient.connect();
-        return;
+      } else {
+        await new Promise((resolve, reject) => {
+          const onReady = () => {
+            sharedRedisClient.off('error', onError);
+            resolve();
+          };
+          const onError = error => {
+            sharedRedisClient.off('ready', onReady);
+            reject(error);
+          };
+          sharedRedisClient.once('ready', onReady);
+          sharedRedisClient.once('error', onError);
+        });
       }
-      await new Promise((resolve, reject) => {
-        const onReady = () => {
-          sharedRedisClient.off('error', onError);
-          resolve();
-        };
-        const onError = error => {
-          sharedRedisClient.off('ready', onReady);
-          reject(error);
-        };
-        sharedRedisClient.once('ready', onReady);
-        sharedRedisClient.once('error', onError);
-      });
+      console.info('[RATE_LIMIT_STORE] Shared Redis rate-limit storage connected.');
     })().finally(() => {
       rateLimitConnectionPromise = null;
     });
   }
   await rateLimitConnectionPromise;
-  console.info('[RATE_LIMIT_STORE] Shared Redis rate-limit storage connected.');
 }
 
 async function closeRateLimitStore() {

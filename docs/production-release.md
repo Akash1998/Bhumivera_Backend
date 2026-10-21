@@ -9,15 +9,17 @@ Set `NODE_ENV=production` and provide:
 - `DB_SSL=true`; provide `DB_SSL_CA` only when the database provider uses a private CA.
 - `FRONTEND_ORIGINS`: recommended comma-separated exact HTTPS origins for the deployed frontend (no paths, wildcards, or preview domains). If omitted, the API allows only `https://www.bhumivera.com` and `https://bhumivera.com`.
 
+For Vercel, set `DB_HOST` to the actual TiDB Cloud hostname; Railway references such as `${{MySQL.MYSQLHOST}}` are not resolved by Vercel.
+
 If the corresponding feature is enabled, configure both Razorpay API credentials. To receive Razorpay events, configure `RAZORPAY_WEBHOOK_SECRET` and point the provider to `POST /api/webhooks/razorpay`, subscribing to `payment.captured`, `payment.failed`, `refund.created`, `refund.processed`, and `refund.failed`. Use the webhook secret from the provider dashboard, which is separate from the API key secret.
 
 Telegram customer support registers its incoming webhook automatically at startup. Set `API_BASE_URL` to the public HTTPS backend origin (or override with `SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL`); Telegram webhook requests are authenticated using `SUPPORT_TELEGRAM_WEBHOOK_SECRET` or a key derived from the bot token. `SUPPORT_TELEGRAM_WEBHOOK_URL` remains the separate outgoing escalation notification URL.
 
 For more than one backend instance, set the same `REDIS_URL` or `RATE_LIMIT_REDIS_URL` on every instance to share rate-limit counters. A single instance can use the built-in in-memory rate-limit store.
 
-Set `REDIS_URL` or `CACHE_REDIS_URL` on each backend instance to enable Redis response caching. The cache is restricted to public product, category, subcategory and active flash-sale GET endpoints; authenticated/cookie requests, explicitly private or no-store responses, and search/referral-preview endpoints are not cached. Entries expire after 60 seconds, and responses larger than 128 KiB are skipped. Redis cache connection or request failures do not prevent API requests from continuing. The cache reduces repeated eligible MySQL reads but does not replace persistent MySQL data or configure Railway's MySQL RAM limit.
+Set `REDIS_URL` or `CACHE_REDIS_URL` on each backend instance to enable Redis response caching. The cache is restricted to public product, category, subcategory and active flash-sale GET endpoints; authenticated/cookie requests, explicitly private or no-store responses, and search/referral-preview endpoints are not cached. Entries expire after 60 seconds, and responses larger than 128 KiB are skipped. Redis cache connection or request failures do not prevent API requests from continuing. The cache reduces repeated eligible TiDB reads but does not replace persistent database records or configure TiDB cluster capacity.
 
-The MySQL client pool defaults to at most 3 connections, 1 idle connection and 100 queued operations (`DB_POOL_SIZE` can override the connection cap). This limits per-connection server overhead while bounding application-side queue growth. Check the Railway MySQL service Metrics tab for actual database RAM; the admin health page reports application pool limits, not Railway's server memory allocation.
+The MySQL-protocol client pool defaults to at most 3 connections, 1 idle connection and 100 queued operations (`DB_POOL_SIZE` can override the connection cap). This limits per-connection server overhead while bounding application-side queue growth. Check TiDB Cloud metrics for actual cluster resource usage; the admin health page reports application pool limits, not database memory allocation.
 
 ### Production system logs
 
@@ -27,7 +29,9 @@ The admin System Logs page stores backend HTTP 5xx and database failures in MySQ
 
 Administrators can send an offer or coupon announcement from Admin > Customers > Email opted-in customers. The audience is limited to active customer accounts with `marketing_email_opt_in = 1`; recipients are counted before composing and consent is checked again when the message is sent. The existing Mailrelay integration (`MAILRELAY_API_KEY`, `MAILRELAY_DOMAIN`, and `EMAIL_FROM`) delivers the campaign. Do not send promotional email to customers who have not opted in or have opted out.
 
-The backend runs schema migrations before declaring readiness. Migration 33 adds the nullable customer association to warranty registrations; warranty ownership is saved in the registration transaction, and serial rows are locked to prevent duplicate registrations. Configure the deployment platform to use `/health/live` for liveness and `/health/ready` for readiness. A migration failure leaves the service unready and is retried; inspect the server logs for the failing migration before changing production data.
+The backend requires Node.js 22.x on Vercel. Its install policy permits the pinned `onnxruntime-node` install script because Transformers.js needs the platform runtime binary for local embeddings. The backend uses the MySQL protocol driver and runs its schema migrations before declaring readiness; TiDB Cloud uses the same `DB_*` variables with TLS enabled. Migration 66 seeds the default product categories and catalog on a fresh database. Configure Vercel with the TiDB Cloud host, port, database username, password, database name, and `DB_SSL=true`. Then check `/health/ready`; it must report `{"status":"ready","databaseReady":true}` before testing catalog or authentication endpoints. A migration failure leaves the service unready and is retried; inspect Vercel runtime logs for the failing migration.
+
+The frontend build must point at the deployed backend origin with `VITE_BASE_URL` (without `/api`). The backend must allow the deployed storefront origin through `FRONTEND_ORIGINS`. Customer email OTP requires `MAILRELAY_API_KEY`; configure it in Vercel along with `MAILRELAY_DOMAIN` and `EMAIL_FROM`. OTP messages are sent by email through Mailrelay; SMS delivery is not configured.
 
 Checkout shows Razorpay first, Wallet second, and COD third. COD remains visible with an explanation, but is selectable only after two of the customer's orders have been recorded as delivered (`delivered_at` set); the order transaction rechecks this rule on the server. Wallet checkout debits the wallet and records its ledger transaction atomically with order creation. Razorpay remains the recommended payment option.
 
@@ -45,11 +49,11 @@ Category create, update, and delete operations are recorded in `category_audit_l
 
 The admin Support inbox brings persisted contact tickets and return requests into one searchable queue. Replies and customer conversations use the support-ticket workflow; return approvals, replacements, and provider refunds remain in the dedicated Returns workspace so those actions keep their specific authorization and payment safeguards.
 
-For better key-compromise isolation, generate an independent `OTP_SECRET` locally with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` and save it directly as a Railway service variable. Never commit or send the generated value in chat. The service remains operational without it by deriving a stable, OTP-specific key from the required strong `JWT_SECRET`.
+For better key-compromise isolation, generate an independent `OTP_SECRET` locally with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` and save it directly as a Vercel environment variable. Never commit or send the generated value in chat. The service remains operational without it by deriving a stable, OTP-specific key from the required strong `JWT_SECRET`.
 
 ## Frontend environment
 
-Set `VITE_BASE_URL` to the backend origin, without the `/api` suffix. If the frontend uses a separately configured Razorpay checkout key, make sure it matches the backend key ID.
+Set `VITE_BASE_URL` to the backend origin, without the `/api` suffix. The current Vercel backend origin is `https://bhumivera-backend.vercel.app`. If the frontend uses a separately configured Razorpay checkout key, make sure it matches the backend key ID.
 
 ## Release smoke test
 
