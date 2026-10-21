@@ -33,6 +33,16 @@ const updateAdminPassword = async (id, newHash) => {
   );
 };
 const initAdminTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      email VARCHAR(150) NOT NULL UNIQUE,
+      password_hash VARCHAR(255) NOT NULL,
+      role VARCHAR(50) NOT NULL DEFAULT 'admin',
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
   const addColIfMissing = async (col, def) => {
     const [cols] = await pool.query(`SHOW COLUMNS FROM admin_users LIKE ?`, [col]);
     if (cols.length === 0) await pool.query(`ALTER TABLE admin_users ADD COLUMN ${def}`);
