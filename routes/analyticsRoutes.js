@@ -16,69 +16,55 @@ const getDashboardData = async (req, res) => {
       ? 'YEAR(created_at), MONTH(created_at)'
       : 'DATE(created_at)';
 
-    // 1. Time-Series Sales Velocity Data
-    // FIXED: Appended DATE_FORMAT to GROUP BY to bypass ER_WRONG_FIELD_WITH_GROUP
-    const [salesData] = await db.execute(`
-      SELECT DATE_FORMAT(created_at, '${dateFormat}') as name,
-        SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) as orders,
-        SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END) as revenue
-      FROM orders
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY ${dateGroup}, DATE_FORMAT(created_at, '${dateFormat}')
-      ORDER BY MIN(created_at) ASC
-    `, [days]);
-
-    // 2. Global KPI Metrics
-    const [totalStats] = await db.execute(`
-      SELECT
-        SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) as totalOrders,
-        SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END) as totalRevenue
-      FROM orders
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-    `, [days]);
-
-    // 3. User Acquisition
-    const [userStats] = await db.execute(`
-      SELECT COUNT(*) as newUsers
-      FROM users
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-    `, [days]);
-
-    // 4. Active Catalog Size
-    const [productStats] = await db.execute(`
-      SELECT COUNT(*) as totalProducts FROM products WHERE status = 'active'
-    `);
-
-    // 5. Fulfillment Pipeline
-    const [pendingOrders] = await db.execute(`
-      SELECT COUNT(*) as pending FROM orders WHERE status = 'pending'
-    `);
-
-    // 6. Real Inventory Movement (Category Level Aggregation)
-    const [categoryData] = await db.execute(`
-      SELECT c.name, SUM(oi.price * oi.quantity) as sales
-      FROM order_items oi
-      JOIN products p ON oi.product_id = p.id
-      JOIN categories c ON p.category_id = c.id
-      JOIN orders o ON oi.order_id = o.id
-      WHERE o.status != 'cancelled' AND o.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY c.name
-      ORDER BY sales DESC
-      LIMIT 5
-    `, [days]);
+    const [salesResult, metricResult, categoryResult] = await Promise.all([
+      db.execute(`
+        SELECT DATE_FORMAT(created_at, '${dateFormat}') as name,
+          SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) as orders,
+          SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END) as revenue
+        FROM orders
+        WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+        GROUP BY ${dateGroup}, DATE_FORMAT(created_at, '${dateFormat}')
+        ORDER BY MIN(created_at) ASC
+      `, [days]),
+      db.execute(`
+        SELECT
+          COALESCE(SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END), 0) as totalOrders,
+          COALESCE(SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END), 0) as totalRevenue,
+          (SELECT COUNT(*) FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)) as newUsers,
+          (SELECT COUNT(*) FROM products WHERE status = 'active') as totalProducts,
+          (SELECT COUNT(*) FROM orders WHERE status = 'pending') as pending
+        FROM orders
+        WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      `, [days, days]),
+      db.execute(`
+        SELECT c.name, SUM(oi.price * oi.quantity) as sales
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        JOIN categories c ON p.category_id = c.id
+        JOIN orders o ON oi.order_id = o.id
+        WHERE o.status != 'cancelled' AND o.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+        GROUP BY c.name
+        ORDER BY sales DESC
+        LIMIT 5
+      `, [days]),
+    ]);
+    const [salesData] = salesResult;
+    const [totalStats] = metricResult;
+    const [categoryData] = categoryResult;
+    const metrics = totalStats[0];
 
     res.json({
       chartData: salesData,
       categoryData: categoryData,
       metrics: {
-        revenue: totalStats[0].totalRevenue || 0,
-        orders: totalStats[0].totalOrders || 0,
-        newCustomers: userStats[0].newUsers || 0,
-        avgOrderValue: totalStats[0].totalOrders > 0
-          ? (totalStats[0].totalRevenue / totalStats[0].totalOrders).toFixed(2)
+        revenue: metrics.totalRevenue || 0,
+        orders: metrics.totalOrders || 0,
+        newCustomers: metrics.newUsers || 0,
+        avgOrderValue: metrics.totalOrders > 0
+          ? (metrics.totalRevenue / metrics.totalOrders).toFixed(2)
           : 0,
-        totalProducts: productStats[0].totalProducts || 0,
-        pendingOrders: pendingOrders[0].pending || 0
+        totalProducts: metrics.totalProducts || 0,
+        pendingOrders: metrics.pending || 0
       }
     });
   } catch (error) {
