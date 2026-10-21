@@ -134,10 +134,12 @@ const getAllReturns = async statusFilter => {
                  rr.provider_refund_id, o.payment_mode, o.payment_status
              FROM returns r LEFT JOIN users u ON r.user_id = u.id
              JOIN orders o ON r.order_id = o.id
-             LEFT JOIN return_refund_requests rr ON rr.id = (
-               SELECT MAX(rr_latest.id) FROM return_refund_requests rr_latest
-               WHERE rr_latest.return_id = r.id
-             )`;
+             LEFT JOIN (
+               SELECT return_id, MAX(id) AS latest_id
+               FROM return_refund_requests
+               GROUP BY return_id
+             ) latest_return_refunds ON latest_return_refunds.return_id = r.id
+             LEFT JOIN return_refund_requests rr ON rr.id = latest_return_refunds.latest_id`;
   const params = [];
   if (statusFilter) {
     sql += ' WHERE r.status = ?';
