@@ -870,10 +870,6 @@ router.post("/refresh", async (req, res) => {
     }
     const sessionType = payload.sessionType;
     if (!sessionType || !await isSessionActive(payload, req)) {
-      console.warn(`[SECURITY ALERT] Invalidated or replayed token refresh attempt for user ${payload.id}. Revoking session family.`);
-      if (sessionType && payload.id) {
-        try { await revokeAllSessions(sessionType, payload.id); } catch (e) {}
-      }
       return res.status(401).json({
         code: 'SESSION_REAUTH_REQUIRED',
         message: 'Your sign-in has expired or was revoked. Please sign in again on this device.',

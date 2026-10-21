@@ -22,6 +22,7 @@ const state = {
   expiryValid: false,
   issued: [],
   revoked: [],
+  revokedAll: [],
 };
 
 const pass = (_req, _res, next) => next();
@@ -72,7 +73,7 @@ const mocks = new Map([
     },
     isSessionActive: async () => state.activeSession,
     revokeSession: async (jti, sessionType) => state.revoked.push({ jti, sessionType }),
-    revokeAllSessions: async () => {},
+    revokeAllSessions: async (sessionType, accountId) => state.revokedAll.push({ sessionType, accountId }),
     consumeOneTimeToken: async () => true,
   }],
   ['../utils/trustedDevice', {
@@ -216,6 +217,7 @@ beforeEach(() => {
   state.sentMail = null;
   state.issued.length = 0;
   state.revoked.length = 0;
+  state.revokedAll.length = 0;
 });
 
 describe('admin OTP and token refresh flows', () => {
@@ -275,7 +277,7 @@ describe('admin OTP and token refresh flows', () => {
     assert.deepEqual(state.revoked, [{ jti: 'old-admin-session', sessionType: 'admin' }]);
   });
 
-  it('rejects refresh when the session has been revoked', async () => {
+  it('rejects refresh for a revoked session without revoking other active sessions', async () => {
     state.activeSession = false;
     const oldToken = jwt.sign({
       id: state.admin.id,
@@ -292,6 +294,7 @@ describe('admin OTP and token refresh flows', () => {
     assert.equal(response.status, 401);
     assert.equal((await response.json()).code, 'SESSION_REAUTH_REQUIRED');
     assert.equal(state.issued.length, 0);
+    assert.deepEqual(state.revokedAll, []);
   });
 
   it('requires customer reauthentication after the maximum session age', async () => {
