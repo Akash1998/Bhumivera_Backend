@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "test": "node --test",
     "smoke": "node scripts/smokeTest",
+    "admin:create-superadmin": "node scripts/createSuperAdmin.js",
     "veo:list": "node scripts/generateConciergeVeoVideos.js --list",
     "veo:dry-run": "node scripts/generateConciergeVeoVideos.js --dry-run --all",
     "veo:generate": "node scripts/generateConciergeVeoVideos.js --all",
