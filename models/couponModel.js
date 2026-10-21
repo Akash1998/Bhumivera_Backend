@@ -61,6 +61,7 @@ const initCouponTables = async () => {
       wallet_per_order_limit DECIMAL(10, 2) DEFAULT NULL,
       campaign_tag VARCHAR(80) DEFAULT NULL,
       description VARCHAR(255) DEFAULT NULL,
+      terms_and_conditions TEXT DEFAULT NULL,
       created_by_role VARCHAR(40) DEFAULT 'admin',
       signature_sha512 VARCHAR(128) DEFAULT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -92,6 +93,7 @@ const initCouponTables = async () => {
       ['wallet_per_order_limit', 'DECIMAL(10, 2) DEFAULT NULL'],
       ['campaign_tag', 'VARCHAR(80) DEFAULT NULL'],
       ['description', 'VARCHAR(255) DEFAULT NULL'],
+      ['terms_and_conditions', 'TEXT DEFAULT NULL'],
       ['created_by_role', "VARCHAR(40) DEFAULT 'admin'"],
       ['signature_sha512', 'VARCHAR(128) DEFAULT NULL'],
     ];

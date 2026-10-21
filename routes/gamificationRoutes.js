@@ -143,7 +143,12 @@ router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
     );
     if (!order) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'This order could not be found.' });
     const [claims] = await pool.query(
-      'SELECT reward_label, coupon_code, reward_index, reward_type, points_awarded FROM order_spin_claims WHERE order_id = ? AND user_id = ?',
+      `SELECT claim.reward_label, claim.coupon_code, claim.reward_index, claim.reward_type, claim.points_awarded,
+              coupon.description, coupon.terms_and_conditions,
+              GREATEST(COALESCE(coupon.min_order_value, 0), COALESCE(coupon.min_order_amount, 0), COALESCE(coupon.minimum_order_amount, 0)) AS minimum_order_amount
+       FROM order_spin_claims claim
+       LEFT JOIN coupons coupon ON coupon.code = claim.coupon_code
+       WHERE claim.order_id = ? AND claim.user_id = ?`,
       [orderId, req.user.id]
     );
     const eligible = !['cancelled', 'returned'].includes(order.status) &&
@@ -165,7 +170,9 @@ router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
       eligible,
       rewards: spinSettings?.rewards.map(reward => ({
         label: reward.label,
+        description: reward.description,
         rewardType: reward.rewardType,
+        minimumOrderAmount: reward.minimumOrderAmount || 0,
       })) || [],
       claim: claims[0] ? {
         reward: claims[0].reward_label,
@@ -173,6 +180,9 @@ router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
         rewardIndex: Number(claims[0].reward_index),
         rewardType: claims[0].reward_type,
         pointsAwarded: Number(claims[0].points_awarded) || 0,
+        rewardDescription: claims[0].description,
+        termsAndConditions: claims[0].terms_and_conditions,
+        minimumOrderAmount: Number(claims[0].minimum_order_amount) || 0,
       } : null,
     });
   } catch (error) {
@@ -211,7 +221,12 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
     }
 
     const [existingClaims] = await connection.query(
-      'SELECT reward_label, coupon_code, reward_index, reward_type, points_awarded FROM order_spin_claims WHERE order_id = ?',
+      `SELECT claim.reward_label, claim.coupon_code, claim.reward_index, claim.reward_type, claim.points_awarded,
+              coupon.description, coupon.terms_and_conditions,
+              GREATEST(COALESCE(coupon.min_order_value, 0), COALESCE(coupon.min_order_amount, 0), COALESCE(coupon.minimum_order_amount, 0)) AS minimum_order_amount
+       FROM order_spin_claims claim
+       LEFT JOIN coupons coupon ON coupon.code = claim.coupon_code
+       WHERE claim.order_id = ?`,
       [orderId]
     );
     if (existingClaims.length) {
@@ -224,6 +239,9 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
         rewardIndex: Number(claim.reward_index),
         rewardType: claim.reward_type,
         pointsAwarded: Number(claim.points_awarded) || 0,
+        rewardDescription: claim.description,
+        termsAndConditions: claim.terms_and_conditions,
+        minimumOrderAmount: Number(claim.minimum_order_amount) || 0,
         alreadyClaimed: true,
       });
     }
@@ -268,12 +286,13 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
       const isFreeShipping = reward.rewardType === 'free_shipping';
       await connection.query(
         `INSERT INTO coupons
-          (code, description, discount_type, discount_value, min_order_amount, max_discount,
+          (code, description, terms_and_conditions, discount_type, discount_value, min_order_amount, max_discount,
            usage_limit, used_count, restricted_user_id, is_active, valid_from, expires_at, reward_type)
-         VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, 1, NOW(), DATE_ADD(NOW(), INTERVAL ? DAY), ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, 1, NOW(), DATE_ADD(NOW(), INTERVAL ? DAY), ?)`,
         [
           couponCode,
-          `order_spin_reward:${orderId}`,
+          reward.description || null,
+          reward.termsAndConditions || null,
           isFreeShipping ? 'fixed' : reward.discountType,
           isFreeShipping ? 0 : reward.discountValue,
           reward.minimumOrderAmount,
@@ -325,6 +344,9 @@ router.post('/order-spin/:orderId', spinLimiter, authenticateUser, async (req, r
       rewardIndex: reward.index,
       rewardType: reward.rewardType,
       pointsAwarded,
+      rewardDescription: reward.description,
+      termsAndConditions: reward.termsAndConditions,
+      minimumOrderAmount: reward.minimumOrderAmount || 0,
       alreadyClaimed: false,
     });
   } catch (error) {

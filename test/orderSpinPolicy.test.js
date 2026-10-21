@@ -7,20 +7,32 @@ const {
 } = require('../services/orderSpinPolicy');
 
 describe('post-order spin policy', () => {
-  it('provides valid weighted rewards totaling 100%', () => {
+  it('provides valid weighted rewards without requiring weights to total 100', () => {
     const result = validateOrderSpinRewards(DEFAULT_ORDER_SPIN_REWARDS);
     assert.equal(result.valid, true);
-    assert.equal(result.rewards.length, 6);
-    assert.equal(result.rewards.reduce((sum, reward) => sum + reward.chance, 0), 100);
+    assert.equal(result.rewards.length, 5);
+    assert.equal(result.rewards.reduce((sum, reward) => sum + reward.chance, 0), 230);
   });
 
-  it('rejects reward configurations with percentages not totaling 100', () => {
+  it('accepts admin-defined reward descriptions and terms', () => {
     const rewards = DEFAULT_ORDER_SPIN_REWARDS.map(reward => ({ ...reward }));
-    rewards[0].chance = 34;
-    assert.deepEqual(validateOrderSpinRewards(rewards), {
-      valid: false,
-      message: 'Spin reward chances must add up to exactly 100%.',
-    });
+    rewards[0].description = 'A discount for your next order';
+    rewards[0].termsAndConditions = 'Valid once per customer';
+    const result = validateOrderSpinRewards(rewards);
+    assert.equal(result.valid, true);
+    assert.equal(result.rewards[0].description, 'A discount for your next order');
+    assert.equal(result.rewards[0].termsAndConditions, 'Valid once per customer');
+  });
+
+  it('rejects reward descriptions and terms that exceed their limits', () => {
+    assert.equal(validateOrderSpinRewards([{
+      ...DEFAULT_ORDER_SPIN_REWARDS[0],
+      description: 'x'.repeat(256),
+    }]).valid, false);
+    assert.equal(validateOrderSpinRewards([{
+      ...DEFAULT_ORDER_SPIN_REWARDS[0],
+      termsAndConditions: 'x'.repeat(2001),
+    }]).valid, false);
   });
 
   it('accepts a configurable number of rewards and caps the list at twelve', () => {
@@ -44,7 +56,7 @@ describe('post-order spin policy', () => {
 
   it('selects a reward using configured weighted ranges', () => {
     assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 0).index, 0);
-    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 35).index, 1);
-    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 99).index, 5);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 80).index, 1);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 229).index, 4);
   });
 });

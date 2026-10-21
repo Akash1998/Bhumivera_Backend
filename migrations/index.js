@@ -774,6 +774,11 @@ const migrations = [
       );
     },
   },
+  {
+    version: 65,
+    name: 'add terms and conditions to coupons',
+    up: () => createCouponTable(),
+  },
 ];
 
 module.exports = migrations;

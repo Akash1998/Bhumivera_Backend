@@ -86,9 +86,10 @@ router.get('/mine', authenticateUser, async (req, res) => {
               GREATEST(COALESCE(min_order_value, 0), COALESCE(min_order_amount, 0), COALESCE(minimum_order_amount, 0)) AS minimum_order_amount,
               GREATEST(COALESCE(min_order_value, 0), COALESCE(min_order_amount, 0), COALESCE(minimum_order_amount, 0)) AS min_order_value,
               max_discount, COALESCE(expiry_date, expires_at) AS expiry_date,
+              COALESCE(expiry_date, expires_at) AS expires_at,
               COALESCE(status, 'active') AS status, reward_type,
               usage_limit, used_count, COALESCE(per_user_limit, 1) AS per_user_limit,
-              wallet_per_order_limit, description, campaign_tag
+              wallet_per_order_limit, description, terms_and_conditions, campaign_tag
        FROM coupons
        WHERE restricted_user_id = ?
          AND COALESCE(status, 'active') = 'active'

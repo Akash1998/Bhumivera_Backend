@@ -33,6 +33,8 @@ const validateOrderSpinRewards = value => {
   const normalized = [];
   for (const [index, reward] of rewards.entries()) {
     const label = typeof reward?.label === 'string' ? reward.label.trim() : '';
+    const description = typeof reward?.description === 'string' ? reward.description.trim() : '';
+    const termsAndConditions = typeof reward?.termsAndConditions === 'string' ? reward.termsAndConditions.trim() : '';
     const rewardType = reward?.rewardType || 'discount';
     const discountType = reward?.discountType;
     const discountValue = Number(reward?.discountValue);
@@ -42,6 +44,7 @@ const validateOrderSpinRewards = value => {
     const chance = Number(reward?.chance);
     const expiryDays = Number(reward?.expiryDays);
     if (!label || label.length > 120 ||
+        description.length > 255 || termsAndConditions.length > 2000 ||
         !['discount', 'free_shipping', 'points'].includes(rewardType) ||
         !Number.isInteger(chance) || chance < 0 || chance > 100000) {
       return { valid: false, message: `Spin reward ${index + 1} has invalid fields.` };
@@ -50,7 +53,7 @@ const validateOrderSpinRewards = value => {
       if (!Number.isInteger(points) || points < 1 || points > 100000) {
         return { valid: false, message: `Spin reward ${index + 1} must award 1–100000 points.` };
       }
-      normalized.push({ label, rewardType, points, chance });
+      normalized.push({ label, description, termsAndConditions, rewardType, points, chance });
       continue;
     }
     if (!Number.isFinite(minimumOrderAmount) || minimumOrderAmount < 0 ||
@@ -65,8 +68,8 @@ const validateOrderSpinRewards = value => {
       return { valid: false, message: `Spin reward ${index + 1} has invalid discount fields.` };
     }
     normalized.push(rewardType === 'free_shipping'
-      ? { label, rewardType, minimumOrderAmount, chance, expiryDays }
-      : { label, rewardType, discountType, discountValue, minimumOrderAmount, maxDiscount, chance, expiryDays });
+      ? { label, description, termsAndConditions, rewardType, minimumOrderAmount, chance, expiryDays }
+      : { label, description, termsAndConditions, rewardType, discountType, discountValue, minimumOrderAmount, maxDiscount, chance, expiryDays });
   }
 
   if (normalized.reduce((sum, reward) => sum + reward.chance, 0) < 1) {
