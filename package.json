@@ -14,8 +14,7 @@
     "smoke": "node scripts/smokeTest",
     "veo:list": "node scripts/generateConciergeVeoVideos.js --list",
     "veo:dry-run": "node scripts/generateConciergeVeoVideos.js --dry-run --all",
-    "veo:generate": "node scripts/generateConciergeVeoVideos.js --all",
-    "seed:luxury": "node scripts/seedLuxuryCatalog.js"
+    "veo:generate": "node scripts/generateConciergeVeoVideos.js --all"
   },
   "keywords": [
     "ecommerce",
