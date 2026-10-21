@@ -57,7 +57,10 @@ function isValidTelegramWebhookSecret(headerValue, botToken = resolveTelegramBot
 }
 
 function getTelegramWebhookUrl(customUrl = null) {
-  const backendUrl = process.env.BACKEND_PUBLIC_URL || process.env.API_BASE_URL;
+  const backendUrl =
+    process.env.BACKEND_PUBLIC_URL ||
+    process.env.API_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL;
   const backendBase = String(backendUrl || '').replace(/\/+$/, '');
   const apiBase = /\/api$/i.test(backendBase) ? backendBase : `${backendBase}/api`;
   const rawUrl =
