@@ -90,12 +90,10 @@ const createSettingsTable = async () => {
     ['experiment_registry', '[]', 'experiments'],
     ['seasonal_countdown_end_at', '', 'gamification'],
   );
-  for (const [key_name, value, group_name] of defaults) {
-    await pool.query(
-      'INSERT IGNORE INTO settings (key_name, value, group_name) VALUES (?, ?, ?)',
-      [key_name, value, group_name]
-    );
-  }
+  await pool.query(
+    'INSERT IGNORE INTO settings (key_name, value, group_name) VALUES ?',
+    [defaults]
+  );
 };
 
 const getAllSettings = async () => {
