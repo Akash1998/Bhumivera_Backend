@@ -130,6 +130,10 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     null;
 
   const historyOrderRef = extractOrderRefFromHistory(history);
+  const orderFollowUp = Boolean(
+    historyOrderRef &&
+    /\b(?:it|that|my order|shipment|package|payment)\b.{0,50}\b(?:delayed|late|lost|paid|charged|refund|total|amount|tracking|courier|delivery|arrive|deliver|ship|status|invoice|address|items?|products?)\b|\b(?:where is it|when will it arrive|any update on it|has it shipped)\b/i.test(rawText)
+  );
 
   const rmaMatch = rawText.match(/\b(RMA-[A-Z0-9]{6,12})\b/i);
   const serialMatch = rawText.match(/\b(BV-[A-Z0-9-]{5,20}|ANR[I]?-[A-Z0-9-]{5,20})\b/i);
@@ -339,6 +343,8 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
   // 9. Order Lookup, Tracking Details & Order History
   if (
     orderRef ||
+    orderFollowUp ||
+    /\borders?\b/i.test(rawText) ||
     /^(order|orders|my\s*orders?|order\s*history|history|track|tracking|shipment|delivery|status|dispatch|package|parcel)$/i.test(text) ||
     /\b(where\s*is\s*my\s*(?:latest\s*)?order|track\s*(?:my\s*)?(?:order|package|shipment)|order\s*(?:status|history|details|update|tracking|list)|delivery\s*(?:status|date|time|estimate|update)|when\s*will\s*(?:my\s*order|it)\s*(?:arrive|deliver|ship)|latest\s*order|recent\s*orders?|past\s*orders?|all\s*(?:my\s*)?orders|my\s*orders?|check\s*order|tracking\s*(?:id|number|details)|show\s*(?:the\s*status\s*of\s*)?my\s*(?:recent|latest)\s*orders?)\b/i.test(rawText) ||
     ((emailMatch || phoneMatch) && historyOrderRef)
@@ -806,11 +812,21 @@ function synthesizeDeterministicResponse({
       const itemsLine = (o.items || [])
         .map(it => `${it.name} × ${it.quantity} (₹${it.price})`)
         .join(', ');
+      const paymentBreakdown = [
+        `Subtotal: ₹${Number(o.subtotal || 0).toLocaleString('en-IN')}`,
+        `discount: ₹${Number(o.discount || 0).toLocaleString('en-IN')}`,
+        Number(o.tierDiscount) > 0 ? `tier discount: ₹${Number(o.tierDiscount).toLocaleString('en-IN')}` : '',
+        Number(o.referralWalletAmount) > 0 ? `wallet applied: ₹${Number(o.referralWalletAmount).toLocaleString('en-IN')}` : '',
+        `shipping: ₹${Number(o.shippingCost || 0).toLocaleString('en-IN')}`,
+      ].filter(Boolean).join(' · ');
+      const rewardLines = [
+        o.couponCode ? `• **Coupon used:** ${o.couponCode}\n` : '',
+        Number(o.loyaltyPointsRedeemed) > 0 ? `• **Loyalty points redeemed:** ${Number(o.loyaltyPointsRedeemed).toLocaleString('en-IN')}\n` : '',
+        Number(o.loyaltyPointsAwarded) > 0 ? `• **Loyalty points earned:** ${Number(o.loyaltyPointsAwarded).toLocaleString('en-IN')}\n` : '',
+        Number(o.impactAmount) > 0 ? `• **Nature-impact pledge:** ₹${Number(o.impactAmount).toLocaleString('en-IN')}\n` : '',
+      ].join('');
 
       const actions = [];
-      if (o.cancellable) {
-        actions.push({ label: `Cancel Order #${o.orderNumber}`, prompt: `Cancel order #${o.orderNumber}` });
-      }
       if (o.canReturn) {
         actions.push({ label: `Return Order #${o.orderNumber}`, prompt: `Initiate return for order #${o.orderNumber}` });
         actions.push({ label: `Replace Order #${o.orderNumber}`, prompt: `Initiate replacement for order #${o.orderNumber}` });
@@ -822,9 +838,13 @@ function synthesizeDeterministicResponse({
           `${nameGreeting}here are the live details for **Order #${o.orderNumber}** (\`BHVM${o.orderNumber}\`):\n` +
           `• **Status:** ${o.status.toUpperCase()}\n` +
           `• **Estimated Delivery:** ${o.deliveryEstimate}\n` +
+          (o.createdAt ? `• **Placed:** ${new Date(o.createdAt).toLocaleString('en-IN')}\n` : '') +
           `• **Shipment:** ${trackingLine}\n` +
           `• **Payment:** ${o.paymentMode} (${o.paymentStatus}) — Total: **₹${o.total}**\n` +
+          (o.paymentId ? `• **Payment Reference:** ${o.paymentId}\n` : '') +
+          `• **Order breakdown:** ${paymentBreakdown}\n` +
           (itemsLine ? `• **Items:** ${itemsLine}\n` : '') +
+          rewardLines +
           `• **Live Tracking Link:** ${o.trackingUrl}`,
         quickActions: actions,
       };
@@ -845,15 +865,12 @@ function synthesizeDeterministicResponse({
         const returnable = lookupResult.orderCards.filter(ord => ord.status === 'delivered');
         const returnHint = returnable.length
           ? `To start a return or replacement right now, reply with **\`return #${returnable[0].orderNumber}\`** or **\`replace #${returnable[0].orderNumber}\`**.`
-          : `Note: Only delivered orders are eligible for return/replacement. If you wish to cancel an unshipped order, reply **\`cancel #${latest.orderNumber}\`**.`;
+          : `Only delivered orders are eligible for return/replacement. For another order concern, ask me to verify the order and arrange specialist assistance.`;
         return {
           reply: `Here are the orders on your account:\n${historyLines}\n\n${returnHint}`,
           quickActions: [
             ...(returnable.length
               ? [{ label: `Return Order #${returnable[0].orderNumber}`, prompt: `Initiate return for order #${returnable[0].orderNumber}` }]
-              : []),
-            ...(latest.cancellable
-              ? [{ label: `Cancel Order #${latest.orderNumber}`, prompt: `Cancel order #${latest.orderNumber}` }]
               : []),
             { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
           ],
@@ -861,25 +878,17 @@ function synthesizeDeterministicResponse({
       }
 
       if (intent === 'cancel_assistance') {
-        const cancellable = lookupResult.orderCards.filter(ord => ord.cancellable);
-        const cancelHint = cancellable.length
-          ? `To cancel your unshipped order immediately, reply **\`cancel #${cancellable[0].orderNumber}\`**.`
-          : `None of your recent orders are in 'pending' or 'confirmed' status for direct cancellation. For delivered orders, you can reply **\`return #${latest.orderNumber}\`**.`;
+        const cancelHint = `Cancellation is not completed automatically in chat. Please verify the specific order and explicitly confirm that you want a SuperAdmin to review your request; the support team will check its status and order impacts first.`;
         return {
           reply: `Here are the orders on your account:\n${historyLines}\n\n${cancelHint}`,
           quickActions: [
-            ...(cancellable.length
-              ? [{ label: `Cancel Order #${cancellable[0].orderNumber}`, prompt: `Cancel order #${cancellable[0].orderNumber}` }]
-              : []),
+            { label: 'Request Cancellation Review', prompt: 'I want to cancel an order' },
             { label: 'Talk to Human Agent', prompt: 'Connect me with a human support agent' },
           ],
         };
       }
 
       const actions = [];
-      if (latest.cancellable) {
-        actions.push({ label: `Cancel Order #${latest.orderNumber}`, prompt: `Cancel order #${latest.orderNumber}` });
-      }
       if (latest.canReturn) {
         actions.push({ label: `Return Order #${latest.orderNumber}`, prompt: `Initiate return for order #${latest.orderNumber}` });
       }

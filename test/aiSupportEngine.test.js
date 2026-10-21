@@ -19,6 +19,7 @@ const {
   lookupAccountWalletLoyaltyTool,
   lookupCouponsAndOffersTool,
   lookupWarrantyAndSerialTool,
+  stripOrderPrefix,
 } = require('../services/aiSupportTools');
 const {
   buildContextualGreeting,
@@ -888,28 +889,65 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.equal(guestAuth.success, true);
     assert.equal(guestAuth.code, 'ORDER_FOUND');
     assert.equal(guestAuth.order.orderNumber, '918273645');
-    assert.equal(guestAuth.order.cancellable, true);
+    assert.equal(guestAuth.order.cancellable, false);
+    assert.equal(guestAuth.order.items.length, 1);
+    assert.equal(guestAuth.order.paymentMode, 'COD');
+
+    const prefixedOrder = await lookupOrderTool(
+      { order_id: 'BHVM-918273645', phone: '9876543210' },
+      { pool: mockPool, user: null, session: {} }
+    );
+    assert.equal(prefixedOrder.code, 'ORDER_FOUND');
+    assert.equal(prefixedOrder.order.orderNumber, '918273645');
+    assert.equal(stripOrderPrefix('Order ID #918273645'), '918273645');
+    assert.equal(stripOrderPrefix('ORD-918273645'), '918273645');
   });
 
-  it('4. Autonomous Tool Engine: cancel_order cancels COD orders & restocks inventory, and safeguards paid online orders', async () => {
+  it('4. Autonomous Tool Engine: customer cancellation requests cannot directly cancel or restock an order', async () => {
     const initialStock = mockPool.state.products[0].quantity;
 
     const cancelCod = await cancelOrderTool(
       { order_id: '918273645', reason: 'Ordered wrong address' },
       { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
     );
-    assert.equal(cancelCod.success, true);
-    assert.equal(cancelCod.code, 'ORDER_CANCELLED');
-    assert.equal(mockPool.state.orders[0].status, 'cancelled');
-    assert.equal(mockPool.state.products[0].quantity, initialStock + 1, 'Should restock product quantity');
+    assert.equal(cancelCod.success, false);
+    assert.equal(cancelCod.code, 'CANCELLATION_REQUIRES_VERIFIED_ESCALATION');
+    assert.equal(mockPool.state.orders[0].status, 'confirmed');
+    assert.equal(mockPool.state.products[0].quantity, initialStock, 'Customer chat must not restock or mutate inventory');
 
     const cancelOnline = await cancelOrderTool(
       { order_id: '918273647', reason: 'Need to change payment method' },
       { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
     );
-    assert.equal(cancelOnline.success, true);
-    assert.equal(cancelOnline.code, 'ONLINE_REFUND_CANCELLATION_QUEUED');
-    assert.ok(cancelOnline.ticketId >= 501);
+    assert.equal(cancelOnline.success, false);
+    assert.equal(cancelOnline.code, 'CANCELLATION_REQUIRES_VERIFIED_ESCALATION');
+    assert.equal(mockPool.state.orders[2].status, 'confirmed');
+  });
+
+  it('routes generic order-related follow-ups to order lookup and extracts public references', () => {
+    const delayedOrder = detectIntentAndToolPlan('My order is delayed; where is it?', {
+      user: { id: 7, email: 'aarav@example.com' },
+    });
+    assert.equal(delayedOrder.intent, 'lookup_order');
+    assert.equal(delayedOrder.toolPlan[0].name, 'lookup_order');
+
+    const publicOrderRef = detectIntentAndToolPlan('Please check BHVM918273645', {
+      user: { id: 7, email: 'aarav@example.com' },
+    });
+    assert.equal(publicOrderRef.intent, 'lookup_order');
+    assert.equal(publicOrderRef.toolPlan[0].args.order_id, 'BHVM918273645');
+
+    const orderFollowUp = detectIntentAndToolPlan('Is it delayed?', {
+      user: { id: 7, email: 'aarav@example.com' },
+      history: [{ sender: 'assistant', content: 'Order #918273645 is confirmed.' }],
+    });
+    assert.equal(orderFollowUp.intent, 'lookup_order');
+
+    const unrelatedFollowUp = detectIntentAndToolPlan('Tell me about Kumkumadi', {
+      user: { id: 7, email: 'aarav@example.com' },
+      history: [{ sender: 'assistant', content: 'Order #918273645 is confirmed.' }],
+    });
+    assert.equal(unrelatedFollowUp.intent, 'catalog_or_policy');
   });
 
   it('5. Autonomous Tool Engine: initiate_return, check_refund_status, and query_inventory_catalog work end-to-end', async () => {

@@ -837,9 +837,12 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
       callbackPhone = '',
       callbackTimeSlot = '', // 'Morning (10 AM–1 PM)' | 'Afternoon (1 PM–5 PM)' | 'Evening (5 PM–8 PM)'
       queryDetails = '',
+      issueCategory = 'order_modification_or_delivery',
+      cancellationConfirmed = false,
     } = req.body || {};
 
-    const cleanOrderRef = String(orderId || '').trim().replace(/^#?(?:BHVM[-_\s]*)?/i, '').trim();
+    const rawOrderRef = String(orderId || '').trim();
+    const cleanOrderRef = require('../services/aiSupportTools').stripOrderPrefix(rawOrderRef);
     const rawContact = String(emailOrPhone || req.user?.email || req.user?.phone || '').trim();
     const isEmailInput = rawContact.includes('@');
     const cleanEmail = isEmailInput ? rawContact.toLowerCase() : (req.user?.email ? String(req.user.email).toLowerCase() : '');
@@ -855,13 +858,17 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
 
     const numericId = /^\d+$/.test(cleanOrderRef) ? Number(cleanOrderRef) : 0;
     const [orderRows] = await pool.query(
-      `SELECT o.id, o.order_number, o.user_id, o.status, o.total, o.payment_mode, o.payment_status, o.address_snapshot,
+      `SELECT o.id, o.order_number, o.user_id, o.status, o.total, o.subtotal, o.discount,
+              o.shipping_cost, o.coupon_code, o.loyalty_points_awarded, o.loyalty_points_redeemed,
+              o.impact_amount, o.payment_mode, o.payment_status, o.address_snapshot,
+              o.tracking_number, o.courier, o.delivery_type, o.created_at, o.delivered_at,
               u.name AS user_name, u.email AS user_email, u.phone AS user_phone
        FROM orders o
        LEFT JOIN users u ON u.id = o.user_id
-       WHERE o.order_number = ? OR o.id = ?
+       LEFT JOIN shipping_labels sl ON sl.order_id = o.id AND sl.direction = 'forward' AND sl.status = 'booked'
+       WHERE o.order_number = ? OR o.id = ? OR o.tracking_number = ? OR sl.tracking_number = ?
        LIMIT 1`,
-      [cleanOrderRef, numericId]
+      [cleanOrderRef, numericId, rawOrderRef, rawOrderRef]
     );
 
     const order = orderRows?.[0];
@@ -889,6 +896,12 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
     }
 
     if (step === 'verify_order') {
+      const [orderItems] = await pool.query(
+        'SELECT name, price, quantity FROM order_items WHERE order_id = ? ORDER BY id ASC',
+        [order.id]
+      );
+      const orderNumber = order.order_number || String(order.id);
+      const { computeDeliveryEstimate } = require('../services/aiSupportTools');
       return res.json({
         success: true,
         verified: true,
@@ -898,6 +911,24 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
           orderNumber: order.order_number || String(order.id),
           status: order.status,
           total: Number(order.total || 0),
+          subtotal: Number(order.subtotal || order.total || 0),
+          discount: Number(order.discount || 0),
+          shippingCost: Number(order.shipping_cost || 0),
+          couponCode: order.coupon_code || null,
+          loyaltyPointsAwarded: Number(order.loyalty_points_awarded || 0),
+          loyaltyPointsRedeemed: Number(order.loyalty_points_redeemed || 0),
+          impactAmount: Number(order.impact_amount || 0),
+          paymentMode: order.payment_mode || '—',
+          paymentStatus: order.payment_status || 'pending',
+          trackingNumber: order.tracking_number || null,
+          courier: order.courier || null,
+          deliveryEstimate: computeDeliveryEstimate(order.created_at, order.status, order.delivered_at),
+          trackingUrl: `https://www.bhumivera.com/order-tracking?order=${encodeURIComponent(orderNumber)}`,
+          items: (orderItems || []).map(item => ({
+            name: item.name || 'Bhumivera formulation',
+            price: Number(item.price || 0),
+            quantity: Number(item.quantity || 1),
+          })),
           verifiedEmail: dbEmail || cleanEmail,
           verifiedPhone: dbPhone || cleanPhone,
         },
@@ -911,6 +942,15 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
         success: false,
         code: 'CONTACT_PREFERENCE_REQUIRED',
         message: 'Please select whether you prefer an update via Email or a Direct Phone Call.',
+      });
+    }
+
+    const cancellationRequest = issueCategory === 'order_cancellation';
+    if (cancellationRequest && cancellationConfirmed !== true) {
+      return res.status(400).json({
+        success: false,
+        code: 'CANCELLATION_CONFIRMATION_REQUIRED',
+        message: 'Please confirm that you still want support to review this cancellation request after reading the order impact.',
       });
     }
 
@@ -941,7 +981,11 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
     });
 
     const ticketReference = `BV-ESC-${order.order_number || order.id}-${Date.now().toString().slice(-4)}`;
-    const summaryDetails = String(queryDetails || `Verified client assistance request for Order #${order.order_number || order.id}`).trim().slice(0, 2000);
+    const rawSummary = String(queryDetails || `Verified client assistance request for Order #${order.order_number || order.id}`).trim();
+    const cancellationMarker = '[CUSTOMER_CONFIRMED_CANCELLATION_REQUEST]';
+    const summaryDetails = cancellationRequest
+      ? `${rawSummary.slice(0, 1800)}\n${cancellationMarker} Customer explicitly asked support to review cancellation after seeing the order impact.`
+      : rawSummary.slice(0, 2000);
     const sig512 = computeQuantumHash512(
       {
         ticketReference,
@@ -950,6 +994,7 @@ router.post('/chat/verify-escalation', supportEscalationLimiter, optionalAuthent
         contactPreference,
         finalPhone,
         callbackTimeSlot,
+        summaryDetails,
       },
       'BHUMIVERA_VERIFIED_ESCALATION_512'
     );
@@ -1494,10 +1539,31 @@ router.post('/sessions/:sessionToken/execute-action', authenticateSupportAgent, 
           message: 'Support staff cannot cancel orders. Order cancellation is restricted exclusively to the SuperAdmin Control Centre.',
         });
       }
+      const cleanOrderRef = require('../services/aiSupportTools').stripOrderPrefix(orderId);
+      const numericOrderRef = /^\d+$/.test(cleanOrderRef) ? Number(cleanOrderRef) : 0;
+      const [orderRows] = await pool.query(
+        'SELECT id FROM orders WHERE id = ? OR order_number = ? LIMIT 1',
+        [numericOrderRef, cleanOrderRef]
+      );
+      const order = orderRows?.[0];
+      if (!order) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'Order not found.' });
+      const [confirmedRequests] = await pool.query(
+        `SELECT id FROM support_escalation_tickets
+         WHERE session_id = ? AND order_id = ?
+           AND query_details LIKE ?
+         ORDER BY id DESC LIMIT 1`,
+        [session.id, order.id, '%[CUSTOMER_CONFIRMED_CANCELLATION_REQUEST]%']
+      );
+      if (!confirmedRequests?.length) {
+        return res.status(409).json({
+          code: 'CUSTOMER_CANCELLATION_CONFIRMATION_REQUIRED',
+          message: 'Cancellation requires a verified order-support request where the customer explicitly confirmed after reviewing the order impact.',
+        });
+      }
       const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
       const { getRazorpayClient } = require('../services/razorpayService');
       const cancelRes = await executeAtomicOrderCancellationAndRefund(pool, {
-        orderId,
+        orderId: order.id,
         reason: reason || `Cancelled by SuperAdmin (${staff.name})`,
         executedByEmail: staff.email || 'adminbhumivera27@gmail.com',
         razorpay: getRazorpayClient(),

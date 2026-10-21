@@ -58,9 +58,16 @@ const normalizePhoneDigits = phone => String(phone || '').replace(/\D/g, '').sli
  * Strips common order prefixes like '#', 'BHVM', 'BHVM-', 'ORD-' to extract the 9-digit order number or ID.
  */
 function stripOrderPrefix(rawRef) {
-  const clean = String(rawRef || '').trim().replace(/^#/, '').trim();
-  const stripped = clean.replace(/^(?:BHVM|ORD|ORDER)[-_\s]*/i, '').trim();
-  return stripped || clean;
+  let normalized = String(rawRef || '').trim();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const next = normalized
+      .replace(/^(?:ORDER(?:\s*(?:ID|NO|NUMBER))?|BHVM|ORD)[-_\s:#]*/i, '')
+      .replace(/^#/, '')
+      .trim();
+    if (next === normalized) break;
+    normalized = next;
+  }
+  return normalized || String(rawRef || '').trim();
 }
 
 /**
@@ -138,6 +145,7 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
     discount: Number(order.discount || 0),
     tierDiscount: Number(order.tier_discount || 0),
     referralWalletAmount: Number(order.referral_wallet_amount || 0),
+    impactAmount: Number(order.impact_amount || 0),
     shippingCost: Number(order.shipping_cost || 0),
     total: Number(order.total || 0),
     couponCode: order.coupon_code || null,
@@ -335,7 +343,7 @@ async function cancelOrderTool(args = {}, context = {}) {
 
   // Strict Order Cancellation Policy: ONLY SuperAdmin can execute order cancellations
   const isSuperAdminCaller = Boolean(user && user.role === 'superadmin');
-  if (!isSuperAdminCaller && typeof context.updateOrderStatusFn !== 'function') {
+  if (!isSuperAdminCaller || typeof context.updateOrderStatusFn !== 'function') {
     return {
       success: false,
       code: 'CANCELLATION_REQUIRES_VERIFIED_ESCALATION',
