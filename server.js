@@ -90,6 +90,8 @@ const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorR
 const app = express();
 let databaseReady = false;
 let startupFailure = null;
+let databaseInitializationPromise = null;
+let databaseRetryAfter = 0;
 let referralApprovalTimer = null;
 let telegramWebhookTimer = null;
 let telegramWebhookSetupRunning = false;
@@ -258,7 +260,13 @@ app.get("/sitemap.xml", async (req, res) => {
   }
 });
 
-app.use((req, res, next) => {
+app.use(async (req, res, next) => {
+  if (databaseReady) return next();
+  if (databaseInitializationPromise) {
+    await databaseInitializationPromise;
+  } else if (Date.now() >= databaseRetryAfter) {
+    await initializeDatabase();
+  }
   if (databaseReady) return next();
   res.setHeader("Retry-After", "15");
   return res.status(503).json({
@@ -332,7 +340,15 @@ const httpServer = app.listen(PORT, () => {
   console.log(`Access Core Online on Port ${PORT}`);
 });
 
-const initializeDatabase = async () => {
+const initializeDatabase = () => {
+  if (databaseInitializationPromise) return databaseInitializationPromise;
+  databaseInitializationPromise = initializeDatabaseOnce().finally(() => {
+    databaseInitializationPromise = null;
+  });
+  return databaseInitializationPromise;
+};
+
+const initializeDatabaseOnce = async () => {
   try {
     await connectRateLimitStore();
     try {
@@ -348,6 +364,7 @@ const initializeDatabase = async () => {
     }
     databaseReady = true;
     startupFailure = null;
+    databaseRetryAfter = 0;
     if (!referralApprovalTimer) {
       const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
         console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
@@ -388,6 +405,7 @@ const initializeDatabase = async () => {
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {
     databaseReady = false;
+    databaseRetryAfter = Date.now() + 15000;
     startupFailure = err.migration
       ? { migration: err.migration, code: err.code || "MIGRATION_FAILED" }
       : { code: err.code || "STARTUP_FAILED" };
