@@ -1,0 +1,181 @@
+const pool = require('../config/db');
+
+async function createAddressTable() {
+  const query = `
+    CREATE TABLE IF NOT EXISTS addresses (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      full_name VARCHAR(100) NOT NULL,
+      phone_number VARCHAR(20) NOT NULL,
+      street_address TEXT NOT NULL,
+      line2 TEXT DEFAULT NULL,
+      city VARCHAR(100) NOT NULL,
+      state VARCHAR(100) NOT NULL,
+      postal_code VARCHAR(20) NOT NULL,
+      country VARCHAR(100) DEFAULT 'India',
+      label VARCHAR(50) DEFAULT 'Home',
+      is_default BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `;
+
+  try {
+    await pool.query(query);
+    const [line2Col] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'line2'`);
+    if (line2Col.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN line2 TEXT DEFAULT NULL AFTER street_address`);
+    }
+    const [labelCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'label'`);
+    if (labelCol.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN label VARCHAR(50) DEFAULT 'Home' AFTER is_default`);
+    }
+    const [latCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'latitude'`);
+    if (latCol.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN latitude DECIMAL(10, 8) DEFAULT NULL AFTER label`);
+    }
+    const [lngCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'longitude'`);
+    if (lngCol.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN longitude DECIMAL(11, 8) DEFAULT NULL AFTER latitude`);
+    }
+    const [mapCol] = await pool.query(`SHOW COLUMNS FROM addresses LIKE 'google_maps_url'`);
+    if (mapCol.length === 0) {
+      await pool.query(`ALTER TABLE addresses ADD COLUMN google_maps_url TEXT DEFAULT NULL AFTER longitude`);
+    }
+    console.log("[DB] Addresses table ready.");
+  } catch (error) {
+    console.error("[DB Error] Error initializing addresses table:", error.message);
+  }
+}
+
+const AddressModel = {
+
+  getAddressesByUser: async (userId) => {
+    try {
+      const [rows] = await pool.query(
+        'SELECT * FROM addresses WHERE user_id = ? ORDER BY is_default DESC, created_at DESC', 
+        [userId]
+      );
+      return rows;
+    } catch (error) {
+      console.error("[Database Error] getAddressesByUser failed:", error.message);
+      throw error;
+    }
+  },
+
+
+  getUserAddresses: async (userId) => {
+    return await AddressModel.getAddressesByUser(userId);
+  },
+
+
+  createAddress: async (userId, data) => {
+    const { 
+      full_name, 
+      phone, phone_number,
+      line1, street_address,
+      line2,
+      city, 
+      state, 
+      pincode, postal_code,
+      country, 
+      is_default,
+      label,
+      latitude,
+      longitude,
+      google_maps_url,
+      maps_url
+    } = data;
+
+    // Mapping inputs to DB columns to prevent crashes regardless of frontend key naming
+    const db_phone = phone_number || phone;
+    const db_street = street_address || line1;
+    const db_postal = postal_code || pincode;
+    const db_lat = latitude !== undefined && latitude !== null && latitude !== '' ? Number(latitude) : null;
+    const db_lng = longitude !== undefined && longitude !== null && longitude !== '' ? Number(longitude) : null;
+    const db_maps_url = google_maps_url || maps_url || (db_lat && db_lng ? `https://www.google.com/maps?q=${db_lat},${db_lng}` : null);
+
+    try {
+      if (is_default) {
+        await pool.query('UPDATE addresses SET is_default = FALSE WHERE user_id = ?', [userId]);
+      }
+
+      const [result] = await pool.query(
+        `INSERT INTO addresses (user_id, full_name, phone_number, street_address, line2, city, state, postal_code, country, is_default, label, latitude, longitude, google_maps_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          userId, 
+          full_name, 
+          db_phone, 
+          db_street, 
+          line2 || null,
+          city, 
+          state, 
+          db_postal, 
+          country || 'India', 
+          is_default ? 1 : 0,
+          label || 'Home',
+          db_lat,
+          db_lng,
+          db_maps_url
+        ]
+      );
+      return result.insertId;
+    } catch (error) {
+      console.error("[AddressModel.createAddress Error]:", error.message);
+      throw error;
+    }
+  },
+
+  getDefaultAddress: async (userId) => {
+    try {
+      const [rows] = await pool.query(
+        'SELECT * FROM addresses WHERE user_id = ? AND is_default = TRUE LIMIT 1', 
+        [userId]
+      );
+      return rows[0] || null;
+    } catch (error) {
+      console.error("[AddressModel.getDefaultAddress Error]:", error.message);
+      throw error;
+    }
+  },
+
+  setAsDefault: async (userId, addressId) => {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query('UPDATE addresses SET is_default = FALSE WHERE user_id = ?', [userId]);
+      const [result] = await connection.query(
+        'UPDATE addresses SET is_default = TRUE WHERE id = ? AND user_id = ?', 
+        [addressId, userId]
+      );
+      await connection.commit();
+      return result.affectedRows > 0;
+    } catch (error) {
+      await connection.rollback();
+      console.error("[AddressModel.setAsDefault Error]:", error.message);
+      throw error;
+    } finally {
+      connection.release();
+    }
+  },
+
+  deleteAddress: async (userId, addressId) => {
+    try {
+      const [result] = await pool.query(
+        'DELETE FROM addresses WHERE id = ? AND user_id = ?', 
+        [addressId, userId]
+      );
+      return result.affectedRows > 0;
+    } catch (error) {
+      console.error("[AddressModel.deleteAddress Error]:", error.message);
+      throw error;
+    }
+  }
+};
+
+module.exports = {
+  createAddressTable,
+  AddressModel
+};
