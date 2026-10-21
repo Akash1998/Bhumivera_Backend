@@ -58,7 +58,9 @@ const generateLlmsFullTxt = () => [
 const findLuxurySkuBySlugOrId = identifier => {
   const normalized = decodeURIComponent(String(identifier || '')).trim().toLowerCase();
   return LUXURY_CATALOG_SKUS.find(product =>
-    product.slug.toLowerCase() === normalized || product.sku.toLowerCase() === normalized
+    product.slug.toLowerCase() === normalized ||
+    product.sku.toLowerCase() === normalized ||
+    product.legacyIds?.some(id => String(id) === normalized)
   ) || null;
 };
 

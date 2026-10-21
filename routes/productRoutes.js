@@ -532,18 +532,26 @@ router.get('/:identifier', async (req, res) => {
       query += ` WHERE p.slug = ? AND p.status = 'active'`;
     }
 
-    const matchedCatalog = !isNumeric ? findLuxurySkuBySlugOrId(identifier) : null;
+    const matchedCatalog = findLuxurySkuBySlugOrId(identifier);
     if (matchedCatalog && !isNumeric) {
       params = [matchedCatalog.slug];
     }
-    const [rows] = await pool.query(query, params);
+    let [rows] = await pool.query(query, params);
+
+    if (rows.length === 0 && isNumeric && matchedCatalog) {
+      const aliasQuery = query.replace('WHERE p.id = ?', 'WHERE p.sku = ?');
+      [rows] = await pool.query(aliasQuery, [matchedCatalog.sku]);
+    }
 
     if (rows.length === 0) {
       if (matchedCatalog) {
+        const unavailableLegacyProduct = isNumeric
+          ? { ...matchedCatalog, id: Number(identifier), quantity: 0, status: 'inactive' }
+          : matchedCatalog;
         return res.json({
           success: true,
-          data: matchedCatalog,
-          schema_markup: buildProductJsonLd(matchedCatalog)
+          data: unavailableLegacyProduct,
+          schema_markup: buildProductJsonLd(unavailableLegacyProduct)
         });
       }
       return res.status(404).json({ success: false, message: 'Product not found' });

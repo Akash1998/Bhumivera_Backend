@@ -1,5 +1,6 @@
 const LUXURY_CATALOG = [
   {
+    legacyIds: [8],
     slug: 'aloe vera face wash',
     sku: 'BV-SBFW-100ML',
     name: 'Seabuckthorn Face wash by Bhumivera',
@@ -60,6 +61,7 @@ const LUXURY_CATALOG = [
     additionalImages: ['/assets/images/aloeveradrop.webp'],
   },
   {
+    legacyIds: [106],
     slug: 'bhumivera-copper-distilled-tulsi-rose-hydrosol',
     sku: 'BV-TRHM-100ML',
     name: 'Bhumivera Copper-Distilled Tulsi & Kannauj Rose Hydrosol Mist',

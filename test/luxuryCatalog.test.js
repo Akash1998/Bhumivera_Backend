@@ -72,6 +72,8 @@ describe('default luxury catalog seeding', () => {
       assert.equal(catalogProduct?.sku, product.sku);
       assert.equal(buildProductJsonLd(catalogProduct)['@type'], 'Product');
     }
+    assert.equal(findLuxurySkuBySlugOrId('8')?.sku, 'BV-SBFW-100ML');
+    assert.equal(findLuxurySkuBySlugOrId('106')?.sku, 'BV-TRHM-100ML');
     assert.match(generateRobotsTxt(), /Sitemap: https:\/\/www\.bhumivera\.com\/sitemap\.xml/);
     assert.match(generateLlmsFullTxt(), /sulfate-free-luxury-herbal-shampoos/);
   });
