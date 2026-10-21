@@ -52,6 +52,9 @@ const validateProductionEnvironment = env => {
   requireSecret('JWT_SECRET');
   requireSecret('OTP_SECRET', { distinctFrom: 'JWT_SECRET', required: false });
   for (const name of ['DB_HOST', 'DB_USER', 'DB_NAME']) requireValue(name);
+  if (env.DB_HOST?.trim() && /\$\{\{[^}]+\}\}|\$\{[^}]+\}/.test(env.DB_HOST)) {
+    errors.push('DB_HOST contains an unresolved environment-variable placeholder; set it to the TiDB Cloud host.');
+  }
   if (!env.DB_PASSWORD?.trim()) errors.push('DB_PASSWORD is required in production.');
   if (env.DB_SSL?.toLowerCase() === 'false') errors.push('DB_SSL cannot be disabled in production.');
   if (env.DB_SSL !== undefined && !['true', 'false'].includes(env.DB_SSL.toLowerCase())) {

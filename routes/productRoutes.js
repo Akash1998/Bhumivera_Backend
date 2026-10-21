@@ -444,22 +444,6 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
 // 13. SMART IDENTIFIER (ID or Slug) (Public)
 // ==========================================
 
-// Table initialization for Product Q&A
-pool.query(`
-  CREATE TABLE IF NOT EXISTS product_questions (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    product_id INT NOT NULL,
-    user_id INT NULL,
-    user_name VARCHAR(100) DEFAULT 'Customer',
-    question TEXT NOT NULL,
-    answer TEXT NULL,
-    is_approved TINYINT(1) DEFAULT 1,
-    helpful_count INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_prod (product_id)
-  )
-`).catch(err => console.warn('[product_questions] Init notice:', err.message));
-
 // GET /api/products/:productId/qa (Public Q&A list)
 router.get('/:productId/qa', async (req, res) => {
   try {
