@@ -134,7 +134,7 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
   );
 
   const rmaMatch = rawText.match(/\b(RMA-[A-Z0-9]{6,12})\b/i);
-  const serialMatch = rawText.match(/\b(BV-[A-Z0-9-]{5,20}|ANR[I]?-[A-Z0-9-]{5,20})\b/i);
+  const serialMatch = rawText.match(/\b(BV-[A-Z0-9-]{5,20}|BHM[V]?-[A-Z0-9-]{5,20})\b/i);
   const emailMatch = rawText.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
   const phoneMatch = rawText.match(/(?:\+?91[\s-]?)?([6-9]\d{9})\b/);
 

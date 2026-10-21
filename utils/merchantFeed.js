@@ -25,26 +25,29 @@ const generateGoogleMerchantFeed = async () => {
     let xml = `<?xml version="1.0"?>
 <rss xmlns:g="http://base.google.com/ns/1.0" version="2.0">
   <channel>
-    <title>Bhumivera | Product collection</title>
-    <link>https://bhumivera.com</link>
-    <description>Explore Bhumivera products and review the product-specific details provided for each item.</description>
+    <title>Bhumivera Organics | Luxury Botanical Skincare &amp; Haircare Collection</title>
+    <link>https://www.bhumivera.com</link>
+    <description>Shop Bhumivera Organics India Private Limited: pH-calibrated luxury Ayurvedic &amp; clinical botanical face washes, shampoos, and cellular night elixirs.</description>
 `;
 
     products.forEach(product => {
       const p = cleanProductMarketingFields(product);
-      const imagePath = p.primary_image;
+      const imagePath = p.primary_image || p.image_url;
       const imageUrl = imagePath
         ? (/^https?:\/\//i.test(imagePath) ? imagePath : `${imageBaseUrl}/${String(imagePath).replace(/^\/+/, '')}`)
-        : 'https://bhumivera.com/logo.webp';
+        : 'https://www.bhumivera.com/logo.webp';
       xml += `    <item>
-      <g:id>${escapeXml(p.id)}</g:id>
-      <g:title>${escapeXml(`${p.name} | Bhumivera`)}</g:title>
-      <g:description>${escapeXml(p.description || p.name || 'Bhumivera product')}</g:description>
-      <g:link>${escapeXml(`https://bhumivera.com/product/${p.slug || p.id}`)}</g:link>
+      <g:id>${escapeXml(p.sku || p.id)}</g:id>
+      <g:title>${escapeXml(p.seo_title || `${p.name} | Bhumivera Organics`)}</g:title>
+      <g:description>${escapeXml(p.short_description || p.meta_description || p.description || p.name || 'Bhumivera Organics luxury botanical formulation')}</g:description>
+      <g:link>${escapeXml(`https://www.bhumivera.com/product/${p.slug || p.id}`)}</g:link>
       <g:image_link>${escapeXml(imageUrl)}</g:image_link>
+      <g:condition>new</g:condition>
       <g:availability>in_stock</g:availability>
       <g:price>${escapeXml(`${p.discount_price || p.price} INR`)}</g:price>
-      <g:brand>Bhumivera</g:brand>
+      <g:brand>Bhumivera Organics</g:brand>
+      <g:mpn>${escapeXml(p.mpn || p.sku || `BVLUX-${p.id}`)}</g:mpn>
+      <g:google_product_category>Health &amp; Beauty &gt; Personal Care &gt; Cosmetics</g:google_product_category>
     </item>\n`;
     });
 

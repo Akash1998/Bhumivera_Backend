@@ -1,6 +1,5 @@
 const UNSUPPORTED_CLAIM_PATTERNS = [
-  /\b(?:100\s*%\s*)?(?:certified\s+)?(?:natural|organic|pure|herbal|ayurvedic|chemical[\s-]*free|toxin[\s-]*free|fragrance[\s-]*free)\b/gi,
-  /\b(?:completely\s+)?free\s+from\s+(?:all\s+)?(?:fragrances?|perfumes?|parabens?|sulphates?|sulfates?|chemicals?)\b/gi,
+  /\b(?:100\s*%\s*guaranteed\s+medical\s+cure|cures\s+cancer|anritvox|car\s+equipment\s+upgrades|android\s+player|network\s+marketing|multi[\s-]*level\s+marketing|mlm\s+scheme|pyramid\s+scheme)\b/gi,
 ];
 
 const cleanProductMarketingText = value => {

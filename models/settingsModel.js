@@ -33,7 +33,7 @@ const createSettingsTable = async () => {
     ['cart_rules_schema_version', '1', 'cart_rules'],
     ['enforce_cart_rule_minimum', '0', 'cart_rules'],
     ['tax_rate', '0', 'tax'],
-    ['order_prefix', 'ANR', 'orders'],
+    ['order_prefix', 'BHM', 'orders'],
     ['return_policy_days', '7', 'policy'],
     ['cart_abandonment_coupon_enabled', '1', 'cart_rules'],
     ['cart_abandonment_coupon_percent', '5', 'cart_rules'],

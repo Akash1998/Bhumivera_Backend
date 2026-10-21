@@ -141,7 +141,7 @@ const COMPLETE_SITE_NAVIGATION_MAP = [
     id: 'ewarranty',
     path: '/ewarranty',
     url: `${PUBLIC_SITE_URL}/ewarranty`,
-    keywords: ['warranty', 'ewarranty', 'serial', 'authentic', 'genuine', 'verify product', 'anri'],
+    keywords: ['warranty', 'ewarranty', 'serial', 'authentic', 'genuine', 'verify product', 'bhmv'],
     description: 'Verify your product serial hash and register your digital E-Warranty certificate.',
     steps: [
       'Locate the serial number on your product seal or packaging.',

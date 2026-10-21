@@ -4,6 +4,7 @@ const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { generateUploadUrl, deleteProductImage } = require('../config/s3Upload');
 const { generateGoogleMerchantFeed } = require('../utils/merchantFeed');
+const { findLuxurySkuBySlugOrId, buildProductJsonLd } = require('../middleware/seoPrerender');
 const {
   cleanProductMarketingFields,
   validateProductMarketingFields,
@@ -512,12 +513,17 @@ router.get('/slug/:slug', async (req, res) => {
       FROM products p
       WHERE p.slug = ? AND p.status = 'active'
     `;
-    const [rows] = await pool.query(query, [slug]);
+    const matchedCatalog = findLuxurySkuBySlugOrId(slug);
+    const canonicalSlug = matchedCatalog ? matchedCatalog.slug : slug;
+    const [rows] = await pool.query(query, [canonicalSlug]);
     if (rows.length === 0) {
+      if (matchedCatalog) {
+        return res.json({ success: true, data: matchedCatalog, schema_markup: buildProductJsonLd(matchedCatalog) });
+      }
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
-    const product = parseImages(rows)[0];
-    res.json({ success: true, data: product });
+    const product = { ...(matchedCatalog || {}), ...parseImages(rows)[0] };
+    res.json({ success: true, data: product, schema_markup: buildProductJsonLd(product) });
   } catch (error) {
     console.error('[PRODUCT_BY_SLUG_ERROR]', error);
     res.status(500).json({ success: false, message: 'Database query failed' });
@@ -542,13 +548,24 @@ router.get('/:identifier', async (req, res) => {
       query += ` WHERE p.slug = ? AND p.status = 'active'`;
     }
 
+    const matchedCatalog = !isNumeric ? findLuxurySkuBySlugOrId(identifier) : null;
+    if (matchedCatalog && !isNumeric) {
+      params = [matchedCatalog.slug];
+    }
     const [rows] = await pool.query(query, params);
 
     if (rows.length === 0) {
+      if (matchedCatalog) {
+        return res.json({
+          success: true,
+          data: matchedCatalog,
+          schema_markup: buildProductJsonLd(matchedCatalog)
+        });
+      }
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
     
-    const product = parseImages(rows)[0];
+    const product = { ...(matchedCatalog || {}), ...parseImages(rows)[0] };
 
     // SEO ENGINE: Compile Google structured JSON-LD data dynamically
     const schemaMarkup = {

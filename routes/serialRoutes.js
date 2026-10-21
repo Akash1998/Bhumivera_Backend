@@ -130,10 +130,10 @@ router.post("/generate", authenticateAdmin, async (req, res) => {
     while (generatedSerials.size < count) {
       let newSerial = "";
       if (format === "legacy") {
-        const pfx = prefix ? prefix.toUpperCase().slice(0, 3) : "ANR";
+        const pfx = prefix ? prefix.toUpperCase().slice(0, 3) : "BHM";
         newSerial = `${pfx}${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
       } else {
-        const pfx = prefix ? prefix.toUpperCase().slice(0, 4).padEnd(4, 'X') : "ANRI";
+        const pfx = prefix ? prefix.toUpperCase().slice(0, 4).padEnd(4, 'X') : "BHMV";
         const date = new Date();
         const yy = String(date.getFullYear()).slice(-2);
         const mm = String(date.getMonth() + 1).padStart(2, '0');

@@ -28,6 +28,15 @@ const {
   resolveTelegramBotToken,
 } = require("./services/telegramSupportService");
 const { getAiSupportFeatureConfig } = require("./models/aiSupportModel");
+const {
+  SITE_URL,
+  LUXURY_CATALOG_SKUS,
+  PILLAR_GUIDES,
+  generateRobotsTxt,
+  generateLlmsTxt,
+  generateLlmsFullTxt,
+  seoPrerenderMiddleware,
+} = require("./middleware/seoPrerender");
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 if (JWT_SECRET === 'fallback_secret') {
@@ -150,12 +159,104 @@ app.use((req, res, next) => {
     "Permissions-Policy",
     "camera=(self), microphone=(), geolocation=(self), browsing-topics=()"
   );
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-Robots-Tag", "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1");
 
   if (req.method === "OPTIONS") return res.status(204).end();
   next();
 });
 
+// --- SEO, BRAVE SEARCH & GEO STATIC/DYNAMIC ENDPOINTS (Always Available) ---
+app.get("/robots.txt", (req, res) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.status(200).send(generateRobotsTxt());
+});
+
+app.get("/llms.txt", (req, res) => {
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.status(200).send(generateLlmsTxt());
+});
+
+app.get("/llms-full.txt", (req, res) => {
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.status(200).send(generateLlmsFullTxt());
+});
+
+app.get("/bhumivera-indexnow-2026.txt", (req, res) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.status(200).send("bhumivera-indexnow-2026");
+});
+
+// Mount SSR Prerender Middleware for Search & AI Crawlers
+app.use(seoPrerenderMiddleware());
+
 app.use("/health", createHealthRouter(() => ({ databaseReady, failure: startupFailure })));
+
+// --- SEO: DYNAMIC XML SITEMAP GENERATOR (Google, Brave Search, Bing & AI Crawlers) ---
+app.get("/sitemap.xml", async (req, res) => {
+  try {
+    let dbProducts = [];
+    if (databaseReady) {
+      try {
+        const [rows] = await pool.query("SELECT slug, name, updated_at FROM products WHERE status = 'active'");
+        dbProducts = Array.isArray(rows) ? rows : [];
+      } catch (dbErr) {
+        console.warn("[SITEMAP_DB_FALLBACK]:", dbErr.message);
+      }
+    }
+
+    const today = new Date().toISOString().split("T")[0];
+    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`;
+
+    const staticRoutes = [
+      { loc: `${SITE_URL}/`, changefreq: "daily", priority: "1.0" },
+      { loc: `${SITE_URL}/shop`, changefreq: "daily", priority: "0.95" },
+      { loc: `${SITE_URL}/products`, changefreq: "daily", priority: "0.90" },
+      { loc: `${SITE_URL}/guides`, changefreq: "weekly", priority: "0.90" },
+      { loc: `${SITE_URL}/guides/ultimate-guide-luxury-organic-face-wash-india`, changefreq: "weekly", priority: "0.95" },
+      { loc: `${SITE_URL}/guides/science-of-sulfate-free-luxury-herbal-shampoos`, changefreq: "weekly", priority: "0.95" },
+      { loc: `${SITE_URL}/science`, changefreq: "weekly", priority: "0.90" },
+      { loc: `${SITE_URL}/provenance-engine`, changefreq: "weekly", priority: "0.85" },
+      { loc: `${SITE_URL}/somatic-registry`, changefreq: "weekly", priority: "0.85" },
+      { loc: `${SITE_URL}/verify`, changefreq: "monthly", priority: "0.80" },
+      { loc: `${SITE_URL}/impact`, changefreq: "weekly", priority: "0.80" },
+      { loc: `${SITE_URL}/about`, changefreq: "monthly", priority: "0.75" },
+      { loc: `${SITE_URL}/contact`, changefreq: "monthly", priority: "0.70" },
+      { loc: `${SITE_URL}/purchase-protection`, changefreq: "monthly", priority: "0.65" },
+      { loc: `${SITE_URL}/legal`, changefreq: "monthly", priority: "0.50" },
+      { loc: `${SITE_URL}/llms.txt`, changefreq: "weekly", priority: "0.80" },
+      { loc: `${SITE_URL}/llms-full.txt`, changefreq: "weekly", priority: "0.80" },
+    ];
+
+    for (const r of staticRoutes) {
+      xml += `\n  <url>\n    <loc>${r.loc}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>${r.changefreq}</changefreq>\n    <priority>${r.priority}</priority>\n  </url>`;
+    }
+
+    const seenSlugs = new Set();
+    for (const sku of LUXURY_CATALOG_SKUS) {
+      seenSlugs.add(sku.slug);
+      const imgLoc = sku.image_url.startsWith("http") ? sku.image_url : `${SITE_URL}${sku.image_url}`;
+      xml += `\n  <url>\n    <loc>${SITE_URL}/product/${sku.slug}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>0.95</priority>\n    <image:image>\n      <image:loc>${imgLoc}</image:loc>\n      <image:title>${sku.name.replace(/&/g, "&amp;")}</image:title>\n    </image:image>\n  </url>`;
+    }
+
+    for (const p of dbProducts) {
+      if (!p.slug || seenSlugs.has(p.slug)) continue;
+      seenSlugs.add(p.slug);
+      const lastModDate = p.updated_at ? new Date(p.updated_at).toISOString().split("T")[0] : today;
+      xml += `\n  <url>\n    <loc>${SITE_URL}/product/${p.slug}</loc>\n    <lastmod>${lastModDate}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.85</priority>\n  </url>`;
+    }
+
+    xml += `\n</urlset>`;
+    res.header("Content-Type", "application/xml; charset=utf-8");
+    res.send(xml);
+  } catch (err) {
+    console.error("[SITEMAP ERROR]:", err);
+    res.status(500).end();
+  }
+});
 
 app.use((req, res, next) => {
   if (databaseReady) return next();
@@ -216,35 +317,6 @@ app.use("/api/returns", createModuleAvailabilityMiddleware('returns'), returnRou
 app.use("/api/inventory", createModuleAvailabilityMiddleware('inventory'), inventoryRoutes);
 app.use("/api/warehouse", createModuleAvailabilityMiddleware('warehouse'), warehouseRoutes);
 app.use("/api/gst", createModuleAvailabilityMiddleware('gst'), gstRoutes);
-
-// --- SEO: DYNAMIC XML SITEMAP GENERATOR ---
-app.get("/sitemap.xml", async (req, res) => {
-  try {
-    const [products] = await pool.query("SELECT slug, updated_at FROM products WHERE status = 'active'");
-    
-    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`;
-    
-    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/</loc>\n    <priority>1.0</priority>\n  </url>`;
-    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/products</loc>\n    <priority>0.95</priority>\n  </url>`;
-    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/shop</loc>\n    <priority>0.9</priority>\n  </url>`;
-    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/about</loc>\n    <priority>0.7</priority>\n  </url>`;
-    xml += `\n  <url>\n    <loc>https://www.bhumivera.com/contact</loc>\n    <priority>0.7</priority>\n  </url>`;
-
-    for (const p of products) {
-      if (!p.slug) continue;
-      const lastModDate = p.updated_at ? new Date(p.updated_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-      xml += `\n  <url>\n    <loc>https://www.bhumivera.com/product/${p.slug}</loc>\n    <lastmod>${lastModDate}</lastmod>\n    <priority>0.8</priority>\n  </url>`;
-    }
-    
-    xml += `\n</urlset>`;
-    
-    res.header('Content-Type', 'application/xml');
-    res.send(xml);
-  } catch (err) {
-    console.error("[SITEMAP ERROR]:", err);
-    res.status(500).end();
-  }
-});
 
 app.get("/", (req, res) => res.json({ status: "ok", message: "Bhumivera Maison Core API running!" }));
 
@@ -314,11 +386,6 @@ const initializeDatabase = async () => {
       telegramWebhookTimer.unref();
     }
     console.log("[STARTUP] Database initialization complete; API is ready.");
-    try {
-      // Static photography mode active; video auto-provisioning disabled.
-    } catch (veoErr) {
-      console.warn("[STARTUP] Veo video auto-provisioning could not be scheduled:", veoErr.message);
-    }
   } catch (err) {
     databaseReady = false;
     startupFailure = err.migration
@@ -347,12 +414,12 @@ const shutdown = signal => {
   httpServer.close(async error => {
     clearTimeout(forceCloseTimer);
     const shutdownTasks = [
-        Promise.resolve().then(() => clearInterval(referralApprovalTimer)),
-        Promise.resolve().then(() => clearInterval(telegramWebhookTimer)),
+      Promise.resolve().then(() => clearInterval(referralApprovalTimer)),
+      Promise.resolve().then(() => clearInterval(telegramWebhookTimer)),
       Promise.resolve().then(() => systemDiagnostics?.close()),
       pool.end(),
       closeRateLimitStore(),
-    closeResponseCache(),
+      closeResponseCache(),
     ];
     const results = await Promise.allSettled(shutdownTasks);
     const failure = error || results.find(result => result.status === 'rejected')?.reason;
