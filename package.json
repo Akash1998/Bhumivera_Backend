@@ -67,6 +67,9 @@
     },
     "nodemon": {
       "chokidar": "^4.0.3"
+    },
+    "@otplib/plugin-base32-scure": {
+      "@scure/base": "1.2.6"
     }
   }
 }
