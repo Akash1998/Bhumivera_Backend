@@ -55,6 +55,19 @@ function readSecret(prompt) {
 
 async function main() {
   try {
+    const requiredDatabaseSettings = ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
+    const missingDatabaseSettings = requiredDatabaseSettings.filter(
+      (key) => !process.env[key]?.trim()
+    );
+    if (process.env.DB_SSL?.trim().toLowerCase() !== 'true') {
+      missingDatabaseSettings.push('DB_SSL=true');
+    }
+    if (missingDatabaseSettings.length) {
+      throw new Error(
+        `Set the TiDB connection settings in your local .env file first: ${missingDatabaseSettings.join(', ')}.`
+      );
+    }
+
     await pool.query('SELECT 1');
     const [existing] = await pool.query(
       'SELECT id FROM admin_users WHERE email = ? LIMIT 1',
