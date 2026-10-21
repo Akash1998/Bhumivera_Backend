@@ -1,6 +1,7 @@
 access_modules/
 uploads/
 .env
+.env.migration.local
 .vscode/
 !.vscode/
 .vscode/*
