@@ -44,4 +44,37 @@ describe('health routes', () => {
     assert.equal(ready.status, 200);
     assert.deepEqual(await ready.json(), { status: 'ready', databaseReady: true });
   });
+
+  it('initializes on readiness checks but not on liveness checks when configured', async () => {
+    let databaseReady = false;
+    let initializationCount = 0;
+    const app = express();
+    app.use('/health', createHealthRouter(
+      () => ({ databaseReady }),
+      async () => {
+        initializationCount += 1;
+        databaseReady = true;
+      }
+    ));
+    const readinessServer = await new Promise((resolve, reject) => {
+      const nextServer = app.listen(0, '127.0.0.1', () => resolve(nextServer));
+      nextServer.once('error', reject);
+    });
+    const readinessUrl = `http://127.0.0.1:${readinessServer.address().port}/health`;
+
+    try {
+      const live = await fetch(`${readinessUrl}/live`);
+      assert.equal(live.status, 200);
+      assert.equal(initializationCount, 0);
+
+      const ready = await fetch(`${readinessUrl}/ready`);
+      assert.equal(ready.status, 200);
+      assert.deepEqual(await ready.json(), { status: 'ready', databaseReady: true });
+      assert.equal(initializationCount, 1);
+    } finally {
+      await new Promise((resolve, reject) => {
+        readinessServer.close(error => error ? reject(error) : resolve());
+      });
+    }
+  });
 });

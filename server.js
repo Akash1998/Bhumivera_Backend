@@ -88,6 +88,7 @@ const supportRoutes = require("./routes/supportRoutes");
 const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
 
 const app = express();
+const isVercelRuntime = process.env.VERCEL === "1";
 let databaseReady = false;
 let startupFailure = null;
 let databaseInitializationPromise = null;
@@ -195,7 +196,10 @@ app.get("/bhumivera-indexnow-2026.txt", (req, res) => {
 // Mount SSR Prerender Middleware for Search & AI Crawlers
 app.use(seoPrerenderMiddleware());
 
-app.use("/health", createHealthRouter(() => ({ databaseReady, failure: startupFailure })));
+app.use("/health", createHealthRouter(
+  () => ({ databaseReady, failure: startupFailure }),
+  isVercelRuntime ? () => initializeDatabase() : null
+));
 
 // --- SEO: DYNAMIC XML SITEMAP GENERATOR (Google, Brave Search, Bing & AI Crawlers) ---
 app.get("/sitemap.xml", async (req, res) => {
@@ -336,9 +340,11 @@ app.use("/api", (req, res) => {
 app.use(requestErrorHandler);
 
 const PORT = process.env.PORT || 5000;
-const httpServer = app.listen(PORT, () => {
-  console.log(`Access Core Online on Port ${PORT}`);
-});
+const httpServer = isVercelRuntime
+  ? null
+  : app.listen(PORT, () => {
+      console.log(`Access Core Online on Port ${PORT}`);
+    });
 
 const initializeDatabase = () => {
   if (databaseInitializationPromise) return databaseInitializationPromise;
@@ -414,11 +420,11 @@ const initializeDatabaseOnce = async () => {
   }
 };
 
-initializeDatabase();
+if (!isVercelRuntime) initializeDatabase();
 
 let shutdownStarted = false;
 const shutdown = signal => {
-  if (shutdownStarted) return;
+  if (shutdownStarted || !httpServer) return;
   shutdownStarted = true;
   databaseReady = false;
   console.info(`[SHUTDOWN] Received ${signal}; draining HTTP connections.`);
@@ -450,7 +456,9 @@ const shutdown = signal => {
   });
 };
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+if (httpServer) {
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
 
 module.exports = app;

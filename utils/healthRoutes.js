@@ -1,14 +1,19 @@
 const express = require('express');
 
-const createHealthRouter = getReadiness => {
+const createHealthRouter = (getReadiness, ensureReady = null) => {
   const router = express.Router();
   router.get('/live', (req, res) => {
     res.status(200).json({ status: 'live' });
   });
 
-  const sendReadiness = (req, res) => {
+  const sendReadiness = async (req, res, next) => {
+    try {
+      if (ensureReady) await ensureReady();
+    } catch (error) {
+      return next(error);
+    }
     const readiness = getReadiness();
-    res.status(readiness.databaseReady ? 200 : 503).json({
+    return res.status(readiness.databaseReady ? 200 : 503).json({
       status: readiness.databaseReady ? 'ready' : 'starting',
       databaseReady: readiness.databaseReady,
       ...(readiness.failure ? { failure: readiness.failure } : {}),
