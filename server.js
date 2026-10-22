@@ -169,6 +169,12 @@ app.use((req, res, next) => {
   next();
 });
 
+// Account data must never be served from a browser/CDN cache so edits sync across devices.
+app.use(["/api/users", "/api/addresses", "/api/auth/profile"], (req, res, next) => {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("Vary", "Authorization");
+  next();
+});
 // --- SEO, BRAVE SEARCH & GEO STATIC/DYNAMIC ENDPOINTS (Always Available) ---
 app.get("/robots.txt", (req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
