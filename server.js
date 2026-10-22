@@ -7,6 +7,7 @@ if (process.env.NODE_ENV === "production" && !process.env.OTP_SECRET?.trim()) {
 const express = require("express");
 const cors = require("cors");
 const pool = require("./config/db");
+const isVercelRuntime = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
 const path = require("path");
 const { connectRateLimitStore, closeRateLimitStore } = require("./middleware/rateLimiter");
 const {
@@ -19,9 +20,7 @@ const { createSystemDiagnostics } = require("./utils/systemDiagnostics");
 const { clientContextMiddleware, ALLOWED_NATIVE_ORIGINS } = require("./middleware/clientContext");
 const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
 const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
-const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
-const migrations = require("./migrations");
 const { approveDueReferralClaims } = require("./models/referralModel");
 const {
   registerTelegramWebhook,
@@ -260,6 +259,21 @@ app.get("/sitemap.xml", async (req, res) => {
   }
 });
 
+app.get("/api/ping", async (req, res) => {
+  try {
+    const start = Date.now();
+    await pool.query("SELECT 1");
+    res.set("Cache-Control", "no-store");
+    return res.status(200).json({
+      status: "ok",
+      region: process.env.VERCEL_REGION || process.env.VERCEL_Region || process.env.AWS_REGION || "local",
+      dbLatencyMs: Date.now() - start
+    });
+  } catch (error) {
+    return res.status(500).json({ status: "error", message: error.message });
+  }
+});
+
 app.use(async (req, res, next) => {
   if (databaseReady) return next();
   if (databaseInitializationPromise) {
@@ -335,10 +349,7 @@ app.use("/api", (req, res) => {
 
 app.use(requestErrorHandler);
 
-const PORT = process.env.PORT || 5000;
-const httpServer = app.listen(PORT, () => {
-  console.log(`Access Core Online on Port ${PORT}`);
-});
+let httpServer = null;
 
 const initializeDatabase = () => {
   if (databaseInitializationPromise) return databaseInitializationPromise;
@@ -357,7 +368,6 @@ const initializeDatabaseOnce = async () => {
       console.warn('[RESPONSE_CACHE] Redis connection failed; requests will continue without response caching.', error.message);
     }
     await pool.query('SELECT 1');
-    await runMigrations(pool, migrations);
     if (!systemDiagnostics) {
       systemDiagnostics = createSystemDiagnostics(pool);
       app.locals.systemDiagnostics = systemDiagnostics;
@@ -414,11 +424,10 @@ const initializeDatabaseOnce = async () => {
   }
 };
 
-initializeDatabase();
-
 let shutdownStarted = false;
 const shutdown = signal => {
   if (shutdownStarted) return;
+  if (!httpServer) return;
   shutdownStarted = true;
   databaseReady = false;
   console.info(`[SHUTDOWN] Received ${signal}; draining HTTP connections.`);
@@ -450,7 +459,31 @@ const shutdown = signal => {
   });
 };
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+async function startLocalOrDedicatedServer() {
+  try {
+    if (!isVercelRuntime && process.env.RUN_MIGRATIONS_ON_BOOT === "true") {
+      const { runMigrations } = require("./utils/migrationRunner");
+      const migrations = require("./migrations");
+      await runMigrations(pool, migrations);
+    }
+
+    const PORT = process.env.PORT || 5000;
+    httpServer = app.listen(PORT, () => {
+      console.log(`[Bhumivera Backend] Server running on port ${PORT}`);
+    });
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
+    initializeDatabase();
+  } catch (err) {
+    console.error("[Bhumivera Backend] Startup error:", err);
+    process.exit(1);
+  }
+}
+
+if (!isVercelRuntime && require.main === module) {
+  startLocalOrDedicatedServer();
+} else if (isVercelRuntime) {
+  initializeDatabase();
+}
 
 module.exports = app;
