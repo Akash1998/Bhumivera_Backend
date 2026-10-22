@@ -355,6 +355,9 @@ router.put('/profile', authenticateUser, async (req, res) => {
       profile_image_url: profileImageUrl,
     } = req.body;
     if (!name) return res.status(400).json({ message: 'Name is required' });
+    if (phone !== undefined && phone !== null && phone !== '' && !/^\+?[0-9]{10,15}$/.test(String(phone).replace(/[\s-]/g, ''))) {
+      return res.status(400).json({ message: 'Enter a valid mobile number (10 to 15 digits).' });
+    }
     if (
       profileImageUrl !== undefined &&
       profileImageUrl !== null &&
