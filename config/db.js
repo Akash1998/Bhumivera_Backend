@@ -14,11 +14,25 @@ if (!Number.isInteger(databasePort) || databasePort < 1 || databasePort > 65535)
 }
 
 const sslDisabled = process.env.DB_SSL?.toLowerCase() === "false";
+const loadSslCa = () => {
+  if (process.env.DB_SSL_CA_BASE64) {
+    return Buffer.from(process.env.DB_SSL_CA_BASE64, "base64").toString("utf8");
+  }
+  if (process.env.DB_SSL_CA_FILE) {
+    return require("fs").readFileSync(require("path").resolve(process.env.DB_SSL_CA_FILE), "utf8");
+  }
+  if (process.env.DB_SSL_CA) {
+    return process.env.DB_SSL_CA.replace(/\\n/g, "\n");
+  }
+  return undefined;
+};
+const sslCa = sslDisabled ? undefined : loadSslCa();
 const ssl = sslDisabled
   ? undefined
   : {
       rejectUnauthorized: true,
-      ...(process.env.DB_SSL_CA ? { ca: process.env.DB_SSL_CA.replace(/\\n/g, "\n") } : {})
+      // A custom `ca` replaces Node's defaults, so keep the bundled roots alongside it.
+      ca: [...require("tls").rootCertificates, ...(sslCa ? [sslCa] : [])]
     };
 
 const maxIdle = Math.min(connectionLimit, 1);
