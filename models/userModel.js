@@ -389,7 +389,7 @@ const getUserByEmail = async (email) => {
 const getUserById = async (id) => {
   const [rows] = await pool.query(
     `SELECT id, name, email, phone, role, is_active, wallet_balance, loyalty_points, loyalty_lifetime_points,
-      two_factor_enabled, security_question, marketing_email_opt_in, marketing_email_consent_at,
+      two_factor_enabled, security_question, profile_image_url, marketing_email_opt_in, marketing_email_consent_at,
       ad_personalization_opt_in, ad_personalization_consent_at, ad_personalization_consent_version,
       created_at
      FROM users WHERE id = ?`,
@@ -512,7 +512,13 @@ const deleteUser = async id => {
   }
 };
 
-const updateUser = async (id, { name, phone, marketingEmailOptIn }) => {
+const updateUser = async (id, { name, phone, marketingEmailOptIn, profileImageUrl }) => {
+  if (profileImageUrl !== undefined) {
+    await pool.query(
+      `UPDATE users SET profile_image_url = ? WHERE id = ?`,
+      [profileImageUrl, id]
+    );
+  }
   if (typeof marketingEmailOptIn === 'boolean') {
     await pool.query(
       `UPDATE users

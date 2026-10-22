@@ -805,6 +805,16 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 68,
+    name: 'add customer profile image',
+    up: async () => {
+      const [columns] = await pool.query("SHOW COLUMNS FROM users LIKE 'profile_image_url'");
+      if (columns.length === 0) {
+        await pool.query('ALTER TABLE users ADD COLUMN profile_image_url VARCHAR(512) DEFAULT NULL');
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

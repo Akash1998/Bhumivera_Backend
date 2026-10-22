@@ -23,6 +23,7 @@ const { issueToken } = require('../utils/sessionStore');
 const { isTrustedDevice, sendDeviceChallenge, issueTrustedDevice } = require('../utils/trustedDevice');
 const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
 const pool = require('../config/db');
+const { generateUploadUrl } = require('../config/s3Upload');
 const {
   listLoyaltyTiers,
   getLoyaltyConfig,
@@ -188,7 +189,7 @@ router.get('/profile', authenticateUser, async (req, res) => {
   try {
     let user = await getUserById(req.user.id);
     if (!user) {
-      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, loyalty_points, loyalty_lifetime_points, marketing_email_opt_in FROM users WHERE id = ?', [req.user.id]);
+      const [rows] = await pool.query('SELECT id, name, email, phone, role, is_active, profile_image_url, loyalty_points, loyalty_lifetime_points, marketing_email_opt_in FROM users WHERE id = ?', [req.user.id]);
       if (rows && rows.length > 0) {
         user = rows[0];
       }
@@ -201,6 +202,35 @@ router.get('/profile', authenticateUser, async (req, res) => {
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ message: 'Failed to fetch user' });
+  }
+});
+
+router.post('/profile/image-upload-url', authenticateUser, async (req, res) => {
+  try {
+    const { filename, fileType, size } = req.body || {};
+    const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+    const imageSize = Number(size);
+    if (
+      typeof filename !== 'string' || !filename.trim() || filename.length > 180 ||
+      !imageTypes.has(fileType) ||
+      !Number.isSafeInteger(imageSize) || imageSize < 1 || imageSize > 8 * 1024 * 1024
+    ) {
+      return res.status(400).json({ message: 'Choose a JPEG, PNG, or WebP profile photo up to 8 MB.' });
+    }
+    const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[fileType];
+    const safeFilename = /\.(jpe?g|png|webp)$/i.test(filename.trim())
+      ? filename.trim()
+      : `${filename.trim()}.${extension}`;
+    const upload = await generateUploadUrl(
+      safeFilename,
+      fileType,
+      `profile-images/${req.user.id}`,
+      imageSize
+    );
+    return res.json(upload);
+  } catch (error) {
+    console.error('[PROFILE_IMAGE_UPLOAD_URL]', error);
+    return res.status(500).json({ message: 'Could not prepare your profile photo upload.' });
   }
 });
 
@@ -318,8 +348,21 @@ router.patch('/profile/ad-personalization-preference', authenticateUser, async (
 
 router.put('/profile', authenticateUser, async (req, res) => {
   try {
-    const { name, phone, marketing_email_opt_in: marketingEmailOptIn } = req.body;
+    const {
+      name,
+      phone,
+      marketing_email_opt_in: marketingEmailOptIn,
+      profile_image_url: profileImageUrl,
+    } = req.body;
     if (!name) return res.status(400).json({ message: 'Name is required' });
+    if (
+      profileImageUrl !== undefined &&
+      profileImageUrl !== null &&
+      (typeof profileImageUrl !== 'string' ||
+        !new RegExp(`^profile-images/${req.user.id}/[a-zA-Z0-9._-]+$`).test(profileImageUrl))
+    ) {
+      return res.status(400).json({ message: 'Choose a valid profile photo upload.' });
+    }
     const hasMarketingPreference = Object.prototype.hasOwnProperty.call(req.body || {}, 'marketing_email_opt_in');
     if (hasMarketingPreference && typeof marketingEmailOptIn !== 'boolean') {
       return res.status(400).json({ message: 'Email marketing preference must be true or false.' });
@@ -330,6 +373,7 @@ router.put('/profile', authenticateUser, async (req, res) => {
     await updateUser(req.user.id, {
       name,
       phone,
+      ...(profileImageUrl !== undefined ? { profileImageUrl } : {}),
       ...(hasMarketingPreference ? { marketingEmailOptIn } : {})
     });
     let user = await getUserById(req.user.id);
