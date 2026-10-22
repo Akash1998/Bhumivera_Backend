@@ -35,7 +35,9 @@ const {
   generateRobotsTxt,
   generateLlmsTxt,
   generateLlmsFullTxt,
+  createSeoPrerenderMiddleware,
   seoPrerenderMiddleware,
+  sitemapController,
 } = require("./middleware/seoPrerender");
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
@@ -200,7 +202,10 @@ app.get("/bhumivera-indexnow-2026.txt", (req, res) => {
 });
 
 // Mount SSR Prerender Middleware for Search & AI Crawlers
-app.use(seoPrerenderMiddleware());
+app.use(createSeoPrerenderMiddleware({
+  db: pool,
+  distIndexHtmlPath: path.join(__dirname, "..", "client", "dist", "index.html"),
+}));
 
 app.use("/health", createHealthRouter(
   () => ({ databaseReady, failure: startupFailure }),
@@ -208,7 +213,7 @@ app.use("/health", createHealthRouter(
 ));
 
 // --- SEO: DYNAMIC XML SITEMAP GENERATOR (Google, Brave Search, Bing & AI Crawlers) ---
-app.get("/sitemap.xml", async (req, res) => {
+app.get(["/sitemap.xml", "/api/sitemap.xml"], async (req, res) => {
   try {
     let dbProducts = [];
     if (databaseReady) {
@@ -251,7 +256,9 @@ app.get("/sitemap.xml", async (req, res) => {
     for (const sku of LUXURY_CATALOG_SKUS) {
       seenSlugs.add(sku.slug);
       const imgLoc = sku.image_url.startsWith("http") ? sku.image_url : `${SITE_URL}${sku.image_url}`;
-      xml += `\n  <url>\n    <loc>${SITE_URL}/product/${sku.slug}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>0.95</priority>\n    <image:image>\n      <image:loc>${imgLoc}</image:loc>\n      <image:title>${sku.name.replace(/&/g, "&amp;")}</image:title>\n    </image:image>\n  </url>`;
+      for (const prefix of ["/products/", "/product/"]) {
+        xml += `\n  <url>\n    <loc>${SITE_URL}${prefix}${sku.slug}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>0.95</priority>\n    <image:image>\n      <image:loc>${imgLoc}</image:loc>\n      <image:title>${sku.name.replace(/&/g, "&amp;")}</image:title>\n    </image:image>\n  </url>`;
+      }
     }
 
     for (const p of dbProducts) {

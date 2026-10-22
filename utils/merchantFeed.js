@@ -27,7 +27,7 @@ const generateGoogleMerchantFeed = async () => {
   <channel>
     <title>Bhumivera Organics | Luxury Botanical Skincare &amp; Haircare Collection</title>
     <link>https://www.bhumivera.com</link>
-    <description>Shop Bhumivera Organics India Private Limited: pH-calibrated luxury Ayurvedic &amp; clinical botanical face washes, shampoos, and cellular night elixirs.</description>
+    <description>Shop Bhumivera Organics India Private Limited: pH-balanced luxury Ayurvedic-inspired &amp; botanical face washes, 2-in-1 shampoo, handmade soaps, and 7-Tulsi drops with 100% label-disclosed active concentrations.</description>
 `;
 
     products.forEach(product => {

@@ -167,7 +167,7 @@ const COMPLETE_SITE_NAVIGATION_MAP = [
     path: '/science',
     url: `${PUBLIC_SITE_URL}/science`,
     keywords: ['science', 'research', 'formulation', 'ayurveda', 'clinical'],
-    description: 'Learn how Bhumivera combines traditional botanical wisdom with modern dermatological science.',
+    description: 'Learn how Bhumivera combines traditional botanical wisdom with modern cosmetic science science.',
     steps: [
       'Open /science to read detailed breakdowns of active botanical compounds.',
     ],
