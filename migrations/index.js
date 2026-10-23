@@ -782,7 +782,7 @@ const migrations = [
   },
   {
     version: 66,
-    name: 'purge legacy anritvox artifacts and seed luxury geo catalog',
+    name: 'purge legacy diluted catalog artifacts and seed luxury geo catalog',
     up: () => seedLuxuryCatalog(pool),
   },
   {

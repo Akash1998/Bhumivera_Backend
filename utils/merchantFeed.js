@@ -25,9 +25,9 @@ const generateGoogleMerchantFeed = async () => {
     let xml = `<?xml version="1.0"?>
 <rss xmlns:g="http://base.google.com/ns/1.0" version="2.0">
   <channel>
-    <title>Bhumivera Organics | Luxury Botanical Skincare &amp; Haircare Collection</title>
+    <title>Bhumivera Organics | The Synchronized Gut-Skin Biotic Protocol &amp; Postbiotic Cellular Skincare</title>
     <link>https://www.bhumivera.com</link>
-    <description>Shop Bhumivera Organics India Private Limited: pH-balanced luxury Ayurvedic-inspired &amp; botanical face washes, 2-in-1 shampoo, handmade soaps, and 7-Tulsi drops with 100% label-disclosed active concentrations.</description>
+    <description>Shop Bhumivera Organics India Private Limited: India's pioneering Synchronized Inside-Out Gut-Skin Biotic Protocol uniting 90% Kalpvriksh Satva 7-Tulsi Cellular Reset Drops with 4% Himalayan Sea Buckthorn &amp; 3% Activated Charcoal Postbiotic Cellular Emulsions at pH 5.3–5.5.</description>
 `;
 
     products.forEach(product => {

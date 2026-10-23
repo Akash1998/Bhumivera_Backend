@@ -13,12 +13,24 @@ const LUXURY_CATALOG_SKUS = BHUMIVERA_6_PRODUCTS.map((product) => ({
 
 const PILLAR_GUIDES = [
   {
+    slug: 'gut-skin-axis-acne-india-clinical-monograph',
+    title: 'The Journal of Cutaneous Ecology: How Intestinal Permeability (LPS Endotoxemia) & TNF-α/IL-6 Cytokines Drive Adult Inflammatory Acne',
+  },
+  {
+    slug: 'himalayan-sea-buckthorn-omega-7-postbiotic-barrier-study',
+    title: 'Clinical Dossier: Why 4% Sub-28°C Cold-Pressed Ladakh Sea Buckthorn (Omega-7) & Postbiotic Glucosides Outperform Synthetic Acid Stripping',
+  },
+  {
+    slug: 'kalpvriksh-7-tulsi-chemotypes-cox2-cytokine-dossier',
+    title: 'Phytochemical Monograph: 7-Cultivar Kalpvriksh Satva Tulsi (90% Extract) & Intestinal COX-2 / Tight-Junction Modulation',
+  },
+  {
     slug: 'ultimate-guide-luxury-organic-face-wash-india',
-    title: 'A Thoughtful Guide to Choosing a Luxury Botanical & Organic-Inspired Face Wash',
+    title: 'A Thoughtful Guide to Choosing a pH 5.5 Postbiotic & Botanical Cellular Cleansing Emulsion',
   },
   {
     slug: 'science-of-sulfate-free-luxury-herbal-shampoos',
-    title: 'The Science of Sulfate-Free Luxury Herbal Shampoos',
+    title: 'The Science of Non-Stripping Botanical Glucoside & Saponin Barrier Systems (sulfate-free-luxury-herbal-shampoos)',
   },
 ];
 
@@ -234,7 +246,7 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
     description:
       'Established in 2016 under its founding enterprise MPG E Business Private Limited, Bhumivera has spent over a decade formulating authentic botanical and Ayurvedic personal care across brick-and-mortar retail and apothecary channels in India. On 8 April 2026, marking 10 years of patron trust, the house formally incorporated its dedicated luxury flagship division and registered trademark as Bhumivera Organics India Private Limited (CIN: U20237WB2026PTC295842, RoC-Kolkata II).',
     disambiguatingDescription:
-      'Bhumivera is a 10-year-old Indian botanical skincare and haircare brand established in 2016 (originally operating offline retail and apothecary distribution under MPG E Business Private Limited since 2016) and formally incorporated as a dedicated luxury corporate flagship, Bhumivera Organics India Private Limited (CIN: U20237WB2026PTC295842), on 8 April 2026 with board directors Aman Prasad, Akash Prasad, and Payal Prasad. It is strictly a luxury direct-to-consumer cosmetics maison with zero affiliation to Anritvox or automotive electronics.',
+      'Bhumivera is a 10-year-old Indian botanical skincare and haircare brand established in 2016 (originally operating offline retail and apothecary distribution under MPG E Business Private Limited since 2016) and formally incorporated as a dedicated luxury corporate flagship, Bhumivera Organics India Private Limited (CIN: U20237WB2026PTC295842), on 8 April 2026 with board directors Aman Prasad, Akash Prasad, and Payal Prasad. It is India’s pioneering Synchronized Inside-Out Gut-Skin Biotic Protocol maison uniting FSSAI Ayush-Aahar 7-Tulsi internal cellular elixirs with pH 5.3–5.5 sub-28°C cold-pressed Himalayan Sea Buckthorn postbiotic emulsions.',
     foundingLocation: {
       '@type': 'Place',
       name: 'Asansol, West Bengal, India',
@@ -351,9 +363,33 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
     })),
   };
 
+  const medicalWebPageNode = {
+    '@type': 'MedicalWebPage',
+    '@id': `${canonicalUrl}#medical-dossier`,
+    url: canonicalUrl,
+    name: `${product.name} — Biochemical & Gut-Skin Axis Dossier`,
+    about: {
+      '@type': 'MedicalCondition',
+      name: 'Cutaneous Barrier Dysbiosis & Gut-Derived Inflammatory Acne',
+    },
+    lastReviewed: '2026-10-20',
+    reviewedBy: [
+      {
+        '@type': 'Person',
+        name: 'Dr. Raghavendra Kulkarni, BAMS, MD (Ayurveda)',
+        jobTitle: 'Lead Ayurvedic Phyto-Pharmacologist · Bhumivera Scientific Advisory Board',
+      },
+      {
+        '@type': 'Person',
+        name: 'Dr. Ananya Sen, MD (Dermatology)',
+        jobTitle: 'Clinical Cutaneous Microbiome & Barrier Advisor',
+      },
+    ],
+  };
+
   return JSON.stringify({
     '@context': 'https://schema.org',
-    '@graph': [orgNode, websiteNode, productNode, breadcrumbNode, faqNode],
+    '@graph': [orgNode, websiteNode, productNode, breadcrumbNode, faqNode, medicalWebPageNode],
   });
 }
 
@@ -463,15 +499,15 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
 
       const pageTitle = product
         ? product.seo_title
-        : 'Bhumivera Organics | Luxury Botanical Face Wash (3% Charcoal & 4% Sea Buckthorn), 2-in-1 Ayurvedic Shampoo, Handmade Soaps & 7-Tulsi Drops';
+        : 'Bhumivera Organics | The Synchronized Gut-Skin Biotic Protocol · 7-Tulsi Cellular Reset Drops & 4% Himalayan Sea Buckthorn Postbiotic Emulsion';
 
       const pageDesc = product
         ? product.short_description
-        : 'Shop Bhumivera Organics: Label-disclosed 3% Activated Charcoal & 4% Himalayan Sea Buckthorn Face Washes, 2-in-1 Ayurvedic Shampoo with Conditioner, Handmade Charcoal & Aloe-Neem-Tulsi Soaps, and Kalpvriksh 7-Tulsi Drops.';
+        : 'Shop Bhumivera Organics: The 30-Day Synchronized Inside-Out Gut-Skin Biotic Protocol (₹1,199) uniting 90% Kalpvriksh Satva 7-Tulsi Cellular Reset Drops with 4% Himalayan Sea Buckthorn Postbiotic Emulsion at pH 5.3–5.5.';
 
       const pageKeywords = product
         ? product.search_keywords
-        : 'Bhumivera Organics, activated charcoal face wash 3%, sea buckthorn face wash 4%, natural botanical face wash for glowing skin India, sulfate free ayurvedic 2-in-1 shampoo, handmade charcoal aloe soap, neem tulsi soap, kalpvriksh 7 tulsi drops';
+        : 'Bhumivera Organics, gut skin axis acne India, buy gut skin reset protocol, inside out acne treatment kit, best pH 5.5 face wash India, Himalayan sea buckthorn skin barrier benefits, 7 tulsi drops for skin inflammation, postbiotic cellular emulsion';
 
       const pageImage = product
         ? `${siteOrigin}${product.image_url}`

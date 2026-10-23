@@ -1,6 +1,11 @@
 'use strict';
 
-const { GoogleGenAI } = require('@google/genai');
+let GoogleGenAI = null;
+try {
+  ({ GoogleGenAI } = require('@google/genai'));
+} catch (_) {
+  GoogleGenAI = null;
+}
 
 const DEFAULT_MODEL = 'gemini-2.0-flash';
 
