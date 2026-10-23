@@ -411,7 +411,7 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
     }
 
     // Only intercept if index.html is available OR if explicitly called via /api/seo-prerender
-    if (!activeHtmlPath && !req.path.startsWith('/api/seo-prerender')) {
+    if (!activeHtmlPath && !product && !req.path.startsWith('/api/seo-prerender')) {
       return next();
     }
 

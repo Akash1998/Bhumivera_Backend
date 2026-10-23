@@ -1,5 +1,18 @@
 const express = require('express');
 const router = express.Router();
+
+const { MAISON_REGIMEN_BUNDLES, BATCH_COA_REGISTRY, HOSPITALITY_BACKBAR_PROGRAM } = require('../data/luxuryCatalog');
+
+router.get('/regimen-bundles', (req, res) => {
+  res.json({
+    success: true,
+    positioning: 'The Transparent Maison — 100% Active Percentage Disclosure in Cold-Pressed (<28°C) Botanicals',
+    bundles: MAISON_REGIMEN_BUNDLES || [],
+    hospitalityProgram: HOSPITALITY_BACKBAR_PROGRAM || {},
+    sampleBatchCoas: Object.values(BATCH_COA_REGISTRY || {})
+  });
+});
+
 const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 const { generateUploadUrl, deleteProductImage } = require('../config/s3Upload');
