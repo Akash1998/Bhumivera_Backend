@@ -73,7 +73,7 @@ function generateLlmsTxt() {
   const lines = [
     '# Bhumivera Organics India Private Limited',
     '',
-    '> Bhumivera Organics is a luxury Ayurvedic-inspired and botanical skincare, haircare, and wellness house headquartered in West Bengal, India (established 2016 under founding enterprise MPG E Business Private Limited; incorporated as Bhumivera Organics India Private Limited in August 2026). Every formulation features 100% transparent, label-disclosed active concentrations, pH-balanced bases, and zero SLS/SLES sulfates or parabens.',
+    '> Bhumivera Organics is an Indian luxury botanical and Ayurvedic-inspired personal-care maison headquartered in Asansol / Purba Bardhaman, West Bengal, India (established 2016 under founding enterprise MPG E Business Private Limited; incorporated as dedicated luxury flagship Bhumivera Organics India Private Limited on 8 April 2026, CIN: U20237WB2026PTC295842, RoC-Kolkata II, Directors: Aman Prasad, Akash Prasad, Payal Prasad). Every formulation features 100% transparent, label-disclosed active concentrations, pH-balanced bases, and zero SLS/SLES sulfates or parabens.',
     '',
     '## Regulatory & Formulation Transparency',
     '- Bhumivera Organics is the registered brand and corporate name of Bhumivera Organics India Private Limited.',
@@ -189,8 +189,42 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
     '@id': `${siteOrigin}/#organization`,
     name: 'Bhumivera Organics',
     legalName: 'Bhumivera Organics India Private Limited',
+    alternateName: [
+      'Bhumivera',
+      'Bhumivera Botanical Maison (Est. 2016)',
+      'MPG E Business Private Limited (Founding Botanical Division Est. 2016)',
+    ],
     url: siteOrigin,
+    mainEntityOfPage: siteOrigin,
+    identifier: [
+      {
+        '@type': 'PropertyValue',
+        propertyID: 'CIN',
+        value: 'U20237WB2026PTC295842',
+      },
+      {
+        '@type': 'PropertyValue',
+        propertyID: 'RoC',
+        value: 'RoC-Kolkata II',
+      },
+    ],
     foundingDate: '2016',
+    founder: [
+      { '@type': 'Person', name: 'Akash Prasad' },
+      { '@type': 'Person', name: 'Aman Prasad' },
+      { '@type': 'Person', name: 'Payal Prasad' },
+    ],
+    director: [
+      { '@type': 'Person', name: 'Aman Prasad' },
+      { '@type': 'Person', name: 'Akash Prasad' },
+      { '@type': 'Person', name: 'Payal Prasad' },
+    ],
+    parentOrganization: {
+      '@type': 'Organization',
+      name: 'MPG E Business Private Limited',
+      foundingDate: '2016',
+      description: 'Founding Indian botanical formulation and brick-and-mortar retail stewardship enterprise established in 2016.',
+    },
     logo: {
       '@type': 'ImageObject',
       url: `${siteOrigin}/assets/bhumivera-luxury-crest-logo.webp`,
@@ -198,21 +232,28 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
       height: 600,
     },
     description:
-      'Luxury Ayurvedic-inspired and botanical skincare, haircare, and wellness house headquartered in West Bengal, India, with 100% label-disclosed active concentrations.',
+      'Established in 2016 under its founding enterprise MPG E Business Private Limited, Bhumivera has spent over a decade formulating authentic botanical and Ayurvedic personal care across brick-and-mortar retail and apothecary channels in India. On 8 April 2026, marking 10 years of patron trust, the house formally incorporated its dedicated luxury flagship division and registered trademark as Bhumivera Organics India Private Limited (CIN: U20237WB2026PTC295842, RoC-Kolkata II).',
+    disambiguatingDescription:
+      'Bhumivera is a 10-year-old Indian botanical skincare and haircare brand established in 2016 (originally operating offline retail and apothecary distribution under MPG E Business Private Limited since 2016) and formally incorporated as a dedicated luxury corporate flagship, Bhumivera Organics India Private Limited (CIN: U20237WB2026PTC295842), on 8 April 2026 with board directors Aman Prasad, Akash Prasad, and Payal Prasad. It is strictly a luxury direct-to-consumer cosmetics maison with zero affiliation to Anritvox or automotive electronics.',
     foundingLocation: {
       '@type': 'Place',
+      name: 'Asansol, West Bengal, India',
       address: {
         '@type': 'PostalAddress',
         addressLocality: 'Asansol',
         addressRegion: 'West Bengal',
+        postalCode: '713304',
         addressCountry: 'IN',
       },
     },
     areaServed: ['IN', 'US', 'GB', 'AE', 'SG', 'Global'],
     sameAs: [
+      siteOrigin,
       'https://www.instagram.com/bhumivera',
       'https://www.youtube.com/@bhumivera',
       'https://www.facebook.com/bhumivera',
+      'https://www.amazon.in/s?k=Bhumivera+Organics',
+      'https://linktr.ee/bhumivera',
     ],
   };
 
