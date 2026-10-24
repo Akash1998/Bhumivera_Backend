@@ -13,6 +13,80 @@ const {
 } = require('../models/cartRulesModel');
 const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { listLoyaltyTiers } = require('../models/loyaltyTierModel');
+const {
+  getAdminConfig: getScarcitySimulatorConfig,
+  getPublicSnapshots: getScarcitySimulatorSnapshots,
+  getTodaysBestsellers,
+  saveAdminConfig: saveScarcitySimulatorConfig,
+} = require('../services/scarcitySimulatorService');
+const { validateSimulatorConfig } = require('../utils/scarcitySimulator');
+
+router.get('/scarcity-simulator/public', async (req, res) => {
+  try {
+    const ids = req.query.ids ? String(req.query.ids).split(',') : [];
+    const snapshots = await getScarcitySimulatorSnapshots(ids);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(snapshots);
+  } catch (err) {
+    if (err.status === 400) {
+      return res.status(400).json({ code: 'INVALID_SIMULATOR_PRODUCT_IDS', message: err.message });
+    }
+    console.error('[SCARCITY_SIMULATOR_PUBLIC]', err);
+    res.status(500).json({ code: 'SIMULATOR_LOAD_FAILED', message: 'Could not load illustrative availability.' });
+  }
+});
+
+router.get('/scarcity-simulator/popular-today', async (req, res) => {
+  try {
+    const products = await getTodaysBestsellers();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ products, source: 'verified_orders' });
+  } catch (err) {
+    console.error('[SCARCITY_SIMULATOR_POPULAR_TODAY]', err);
+    res.status(500).json({ code: 'POPULAR_PRODUCTS_LOAD_FAILED', message: 'Could not load today’s most ordered products.' });
+  }
+});
+
+router.get('/scarcity-simulator', authenticateAdmin, async (req, res) => {
+  try {
+    res.json({ config: await getScarcitySimulatorConfig() });
+  } catch (err) {
+    console.error('[SCARCITY_SIMULATOR_ADMIN_LOAD]', err);
+    res.status(500).json({ code: 'SIMULATOR_CONFIG_LOAD_FAILED', message: 'Could not load simulator settings.' });
+  }
+});
+
+router.put('/scarcity-simulator', authenticateAdmin, async (req, res) => {
+  const validationError = validateSimulatorConfig(req.body);
+  if (validationError) {
+    return res.status(400).json({ code: 'INVALID_SIMULATOR_CONFIG', message: validationError });
+  }
+  const allowedKeys = new Set(['enabled', 'sampleActivityEnabled', 'products']);
+  if (Object.keys(req.body).some(key => !allowedKeys.has(key))) {
+    return res.status(400).json({ code: 'INVALID_SIMULATOR_CONFIG', message: 'Unsupported simulator settings were supplied.' });
+  }
+  const allowedProductKeys = new Set([
+    'enabled',
+    'paused',
+    'outOfStock',
+    'dailyCap',
+    'minDailySold',
+    'maxDailySold',
+    'lifetimeSold',
+  ]);
+  if (Object.values(req.body.products).some(product =>
+    Object.keys(product).some(key => !allowedProductKeys.has(key))
+  )) {
+    return res.status(400).json({ code: 'INVALID_SIMULATOR_CONFIG', message: 'Unsupported per-product simulator settings were supplied.' });
+  }
+  try {
+    const config = await saveScarcitySimulatorConfig(req.body);
+    res.json({ message: 'Simulator settings saved. Actual inventory and orders are unchanged.', config });
+  } catch (err) {
+    console.error('[SCARCITY_SIMULATOR_ADMIN_SAVE]', err);
+    res.status(500).json({ code: 'SIMULATOR_CONFIG_SAVE_FAILED', message: 'Could not save simulator settings.' });
+  }
+});
 
 // GET /api/settings/public - public: get non-sensitive settings (store info, SEO, social)
 router.get('/public', async (req, res) => {
