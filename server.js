@@ -91,6 +91,7 @@ let startupFailure = null;
 let databaseInitializationPromise = null;
 let databaseRetryAfter = 0;
 let referralApprovalTimer = null;
+let referralApprovalRunning = false;
 let systemDiagnostics = null;
 app.use(createRequestObservability());
 app.use(clientContextMiddleware());
@@ -379,9 +380,17 @@ const initializeDatabaseOnce = async () => {
     startupFailure = null;
     databaseRetryAfter = 0;
     if (!referralApprovalTimer) {
-      const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
-        console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
-      });
+      const runReferralApprovals = async () => {
+        if (referralApprovalRunning) return;
+        referralApprovalRunning = true;
+        try {
+          await approveDueReferralClaims();
+        } catch (error) {
+          console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
+        } finally {
+          referralApprovalRunning = false;
+        }
+      };
       runReferralApprovals();
       referralApprovalTimer = setInterval(runReferralApprovals, 15000);
       referralApprovalTimer.unref();

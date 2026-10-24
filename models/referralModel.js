@@ -616,11 +616,20 @@ const notifyReferralDecision = async notification => {
 };
 
 const approveDueReferralClaims = async () => {
-  const [dueClaims] = await pool.query(
-    `SELECT id FROM referral_claims
-     WHERE status = 'pending' AND auto_approve_at <= NOW()
-     ORDER BY auto_approve_at ASC LIMIT 100`
-  );
+  let dueClaims;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      [dueClaims] = await pool.query(
+        `SELECT id FROM referral_claims
+         WHERE status = 'pending' AND auto_approve_at <= NOW()
+         ORDER BY auto_approve_at ASC LIMIT 100`
+      );
+      break;
+    } catch (error) {
+      if (error.code !== 'ETIMEDOUT' || attempt >= 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
   for (const claim of dueClaims) {
     try {
       await decideReferralClaim(claim.id, 'approved', null, null, true);
