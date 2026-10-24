@@ -126,6 +126,8 @@ describe('runMigrations', () => {
       error => error.code === 'MIGRATION_NAME_MISMATCH'
         && error.migrationPhase === 'validate_history'
         && error.migrationHistoryVersion === 1
+        && error.migrationHistoryNames.recorded === 'old migration name'
+        && error.migrationHistoryNames.expected === migrations[0].name
     );
   });
 

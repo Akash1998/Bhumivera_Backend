@@ -79,6 +79,7 @@ async function runMigrations(pool, migrations, { logger = console } = {}) {
         const error = new Error(`Migration ${version} name mismatch: database has "${name}", application has "${migration.name}".`);
         error.code = 'MIGRATION_NAME_MISMATCH';
         error.migrationHistoryVersion = version;
+        error.migrationHistoryNames = { recorded: name, expected: migration.name };
         throw error;
       }
       expectedAppliedVersion += 1;

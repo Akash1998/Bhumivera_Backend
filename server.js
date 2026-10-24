@@ -444,12 +444,14 @@ const initializeDatabaseOnce = async () => {
         step: err.migrationPhase,
         migration: err.migration,
         migrationHistoryVersion: err.migrationHistoryVersion,
+        migrationHistoryNames: err.migrationHistoryNames,
         code: err.code || "MIGRATION_FAILED",
       }
       : {
         phase: startupPhase,
         step: err.migrationPhase,
         migrationHistoryVersion: err.migrationHistoryVersion,
+        migrationHistoryNames: err.migrationHistoryNames,
         code: err.code || "STARTUP_FAILED",
       };
     console.error(`[STARTUP] Required initialization failed during ${startupPhase}; API will retry.`, err);
