@@ -11,12 +11,30 @@ const { LUXURY_CATALOG } = require('../data/luxuryCatalog');
 
 const STORE_FILE_PATH = path.join(__dirname, '../data/reviewsDatabaseStore.json');
 
+const LEGACY_BOT_SNIPPETS = [
+  'premium feel, thoughtful formulation',
+  'gentle on my sensitive skin and absorbs quickly',
+  'noticed a more even tone and less oiliness through the day',
+  'lovely texture and a subtle natural scent. no tightness after washing',
+  'my skin feels calmer and clearer after a few weeks of regular use'
+];
+
+const isLegacyBotReview = r => {
+  if (!r) return false;
+  const body = String(r.body || r.comment || '').toLowerCase();
+  return LEGACY_BOT_SNIPPETS.some(s => body.includes(s));
+};
+
 function loadPersistedStore() {
   try {
     if (fs.existsSync(STORE_FILE_PATH)) {
       const raw = fs.readFileSync(STORE_FILE_PATH, 'utf8');
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length >= 1000) {
+      if (
+        Array.isArray(parsed) &&
+        parsed.length >= 1000 &&
+        !parsed.some(isLegacyBotReview)
+      ) {
         return parsed;
       }
     }
@@ -35,19 +53,6 @@ function savePersistedStore(reviews) {
 }
 
 let memoryReviewsStore = loadPersistedStore();
-const LEGACY_BOT_SNIPPETS = [
-  'premium feel, thoughtful formulation',
-  'gentle on my sensitive skin and absorbs quickly',
-  'noticed a more even tone and less oiliness through the day',
-  'lovely texture and a subtle natural scent. no tightness after washing'
-];
-
-const isLegacyBotReview = r => {
-  if (!r) return false;
-  const body = String(r.body || r.comment || '').toLowerCase();
-  return LEGACY_BOT_SNIPPETS.some(s => body.includes(s));
-};
-
 
 const parseJsonArray = val => {
   if (Array.isArray(val)) return val;
@@ -84,8 +89,9 @@ const parseReview = review => {
   };
 };
 
-const createReviewTable = async () => {
-  await pool.query(`
+const createReviewTable = async (customPool = null) => {
+  const db = customPool || pool;
+  await db.query(`
     CREATE TABLE IF NOT EXISTS reviews (
       id INT AUTO_INCREMENT PRIMARY KEY,
       product_id INT NOT NULL,
@@ -125,17 +131,18 @@ const createReviewTable = async () => {
 
   for (const [col, def] of extraCols) {
     try {
-      const [exists] = await pool.query(`SHOW COLUMNS FROM reviews LIKE '${col}'`);
+      const [exists] = await db.query(`SHOW COLUMNS FROM reviews LIKE '${col}'`);
       if (!exists.length) {
-        await pool.query(`ALTER TABLE reviews ADD COLUMN ${col} ${def}`);
+        await db.query(`ALTER TABLE reviews ADD COLUMN ${col} ${def}`);
       }
     } catch (_) {}
   }
 };
 
-const syncProductStats = async (productId) => {
+const syncProductStats = async (productId, customPool = null) => {
+  const db = customPool || pool;
   try {
-    await pool.query(`
+    await db.query(`
       UPDATE products p
       SET rating = (SELECT IFNULL(ROUND(AVG(rating), 2), 4.6) FROM reviews WHERE product_id = p.id AND is_approved = 1),
           review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = p.id AND is_approved = 1)
@@ -146,93 +153,79 @@ const syncProductStats = async (productId) => {
 
 /**
  * Automatically seeds all 1,080 classified customer reviews (2020–2026) into MySQL database
- * and updates product ratings and review counts.
+ * idempotently and updates product ratings and review counts.
  */
 const seedAllCustomerReviews = async (customPool = null) => {
   const db = customPool || pool;
-  try {
-    await createReviewTable();
-    // Purge any legacy bot-generated reviews from MySQL table first
-    try {
-      await db.query(`
-        DELETE FROM reviews
-        WHERE body LIKE '%Premium feel, thoughtful formulation%'
-           OR body LIKE '%Gentle on my sensitive skin and absorbs quickly%'
-           OR body LIKE '%Noticed a more even tone and less oiliness%'
-           OR body LIKE '%Lovely texture and a subtle natural scent%'
-           OR reviewer_location IS NULL
-           OR reviewer_location = 'India'
-      `);
-    } catch (_) {}
+  await createReviewTable(db);
 
-    const [countRows] = await db.query("SELECT COUNT(*) AS cnt FROM reviews WHERE reviewer_location IS NOT NULL AND reviewer_location != 'India'");
-    const currentCount = Number(countRows?.[0]?.cnt || 0);
-    if (currentCount >= 1000) {
-      return currentCount;
-    }
-
-    // Ensure a default patron user exists if foreign key constraints are active on legacy tables
-    let defaultUserId = null;
-    try {
-      const [uRows] = await db.query('SELECT id FROM users ORDER BY id LIMIT 1');
-      if (uRows?.[0]?.id) {
-        defaultUserId = uRows[0].id;
-      }
-    } catch (_) {}
-
-    // Map product slugs to actual DB product IDs if seeded
-    const productSlugToDbId = new Map();
-    try {
-      const [pRows] = await db.query('SELECT id, slug FROM products');
-      for (const row of (pRows || [])) {
-        if (row.slug) productSlugToDbId.set(row.slug, row.id);
-      }
-    } catch (_) {}
-
-    for (const r of INITIAL_REVIEWS_SEED) {
-      const targetProdId = productSlugToDbId.get(r.product_slug) || r.product_id;
-      const mysqlDate = new Date(r.created_at).toISOString().slice(0, 19).replace('T', ' ');
-      try {
-        await db.query(
-          `REPLACE INTO reviews
-            (id, product_id, user_id, order_id, order_number, reviewer_name, reviewer_location,
-             category_tag, is_combo_review, combo_name, rating, title, body, images, videos,
-             helpful_count, public_story_consent, is_approved, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            r.id,
-            targetProdId,
-            defaultUserId,
-            null,
-            r.order_number,
-            r.reviewer_name || r.user_name,
-            r.reviewer_location || 'India',
-            r.category_tag || 'Quick & Everyday Impressions',
-            r.is_combo_review ? 1 : 0,
-            r.combo_name || null,
-            r.rating,
-            r.title,
-            r.body,
-            JSON.stringify(r.images || []),
-            JSON.stringify(r.videos || []),
-            r.helpful_count || 5,
-            r.public_story_consent ? 1 : 0,
-            1,
-            mysqlDate,
-            mysqlDate
-          ]
-        );
-      } catch (_) {}
-    }
-
-    for (const pid of [1, 2, 3, 4, 5, 6]) {
-      await syncProductStats(pid);
-    }
-    return INITIAL_REVIEWS_SEED.length;
-  } catch (err) {
-    console.warn('[SEED_REVIEWS_DB_INFO]', err.message);
-    return memoryReviewsStore.length;
+  // Map product slugs to actual DB product IDs if seeded
+  const productSlugToDbId = new Map();
+  const [pRows] = await db.query('SELECT id, slug FROM products');
+  for (const row of (pRows || [])) {
+    if (row.slug) productSlugToDbId.set(row.slug, row.id);
   }
+
+  // Ensure a default patron user exists if foreign key constraints are active on legacy tables
+  let defaultUserId = null;
+  const [uRows] = await db.query('SELECT id FROM users ORDER BY id LIMIT 1');
+  if (uRows?.[0]?.id) {
+    defaultUserId = uRows[0].id;
+  }
+
+  // Check which order_numbers are already seeded in the database
+  const allOrderNumbers = INITIAL_REVIEWS_SEED.map(r => r.order_number);
+  const placeholders = allOrderNumbers.map(() => '?').join(', ');
+  const [existingRows] = await db.query(
+    `SELECT order_number FROM reviews WHERE order_number IN (${placeholders})`,
+    allOrderNumbers
+  );
+  const existingOrderNumbers = new Set((existingRows || []).map(r => r.order_number));
+
+  let insertedCount = 0;
+  for (const r of INITIAL_REVIEWS_SEED) {
+    if (existingOrderNumbers.has(r.order_number)) continue;
+    const targetProdId = productSlugToDbId.get(r.product_slug) || r.product_id;
+    const mysqlDate = new Date(r.created_at).toISOString().slice(0, 19).replace('T', ' ');
+    await db.query(
+      `INSERT IGNORE INTO reviews
+        (product_id, user_id, order_id, order_number, reviewer_name, reviewer_location,
+         category_tag, is_combo_review, combo_name, rating, title, body, images, videos,
+         helpful_count, public_story_consent, is_approved, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        targetProdId,
+        defaultUserId,
+        null,
+        r.order_number,
+        r.reviewer_name || r.user_name,
+        r.reviewer_location || 'India',
+        r.category_tag || 'Quick & Everyday Impressions',
+        r.is_combo_review ? 1 : 0,
+        r.combo_name || null,
+        r.rating,
+        r.title,
+        r.body,
+        JSON.stringify(r.images || []),
+        JSON.stringify(r.videos || []),
+        r.helpful_count || 5,
+        r.public_story_consent ? 1 : 0,
+        1,
+        mysqlDate,
+        mysqlDate
+      ]
+    );
+    insertedCount += 1;
+  }
+
+  const productIdsToSync = productSlugToDbId.size > 0
+    ? [...new Set(INITIAL_REVIEWS_SEED.map(r => productSlugToDbId.get(r.product_slug) || r.product_id))]
+    : [1, 2, 3, 4, 5, 6];
+
+  for (const pid of productIdsToSync) {
+    await syncProductStats(pid, db);
+  }
+  return insertedCount;
 };
 
 const createReview = async (data) => {

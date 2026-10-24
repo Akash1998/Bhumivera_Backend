@@ -825,6 +825,16 @@ const migrations = [
     name: 'replace legacy bot reviews with 1080 natural multi-length Indian marketplace reviews v3',
     up: () => seedAllCustomerReviews(pool),
   },
+  {
+    version: 71,
+    name: 'purge bot reviews and reseed 1080 authentic pan-India multilingual marketplace reviews v4',
+    up: async () => {
+      try {
+        await pool.query("DELETE FROM reviews WHERE order_number LIKE 'BV-ORD-%'");
+      } catch (_) {}
+      return seedAllCustomerReviews(pool);
+    },
+  },
 ];
 
 module.exports = migrations;
