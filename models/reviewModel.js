@@ -1,10 +1,8 @@
 let pool;
 try { pool = require('../config/db'); } catch (_) { pool = { query: async () => [[]] }; }
-const { INITIAL_REVIEWS_SEED } = require('../data/bhumiveraReviewsData');
 const { LUXURY_CATALOG } = require('../data/luxuryCatalog');
 
-// Mutable runtime store initialized with the 330 unique customer reviews
-let memoryReviewsStore = INITIAL_REVIEWS_SEED.map(r => ({ ...r }));
+let memoryReviewsStore = [];
 
 const parseReview = review => {
   if (!review) return review;
