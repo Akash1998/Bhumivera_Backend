@@ -52,20 +52,32 @@ async function runMigrations(pool, migrations, { logger = console } = {}) {
     const [appliedRows] = await pool.query(
       'SELECT version, name FROM schema_migrations ORDER BY version'
     );
+    migrationPhase = 'validate_history';
+    if (!Array.isArray(appliedRows)) {
+      const error = new Error('Schema migration history query returned an invalid result.');
+      error.code = 'MIGRATION_HISTORY_INVALID_RESULT';
+      throw error;
+    }
     const applied = new Map(appliedRows.map(row => [Number(row.version), row.name]));
     const pendingVersions = new Set(migrations.map(migration => migration.version));
     let expectedAppliedVersion = 1;
 
     for (const [version, name] of applied) {
       if (version !== expectedAppliedVersion) {
-        throw new Error(`Database migration history is not contiguous at version ${expectedAppliedVersion}.`);
+        const error = new Error(`Database migration history is not contiguous at version ${expectedAppliedVersion}.`);
+        error.code = 'MIGRATION_HISTORY_NOT_CONTIGUOUS';
+        throw error;
       }
       if (!pendingVersions.has(version)) {
-        throw new Error(`Database has migration ${version} (${name}) which this application does not know about.`);
+        const error = new Error(`Database has migration ${version} (${name}) which this application does not know about.`);
+        error.code = 'MIGRATION_UNKNOWN_VERSION';
+        throw error;
       }
       const migration = migrations.find(candidate => candidate.version === version);
       if (migration.name !== name) {
-        throw new Error(`Migration ${version} name mismatch: database has "${name}", application has "${migration.name}".`);
+        const error = new Error(`Migration ${version} name mismatch: database has "${name}", application has "${migration.name}".`);
+        error.code = 'MIGRATION_NAME_MISMATCH';
+        throw error;
       }
       expectedAppliedVersion += 1;
     }

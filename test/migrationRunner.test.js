@@ -82,6 +82,28 @@ describe('runMigrations', () => {
     assert.equal(released, true);
   });
 
+  it('identifies non-contiguous database migration history', async () => {
+    const historyPool = {
+      async getConnection() {
+        return {
+          async query() {
+            return [[{ lock_acquired: 1 }]];
+          },
+          release() {},
+        };
+      },
+      async query(sql) {
+        if (sql.includes('CREATE TABLE IF NOT EXISTS schema_migrations')) return [[], []];
+        return [[{ version: 2, name: migrations[1].name }], []];
+      },
+    };
+
+    await assert.rejects(
+      runMigrations(historyPool, migrations, { logger }),
+      error => error.code === 'MIGRATION_HISTORY_NOT_CONTIGUOUS' && error.migrationPhase === 'validate_history'
+    );
+  });
+
   it('expands the customer reset OTP column to hold its hash', async () => {
     const migration = migrations.find(candidate => candidate.name === 'expand customer password reset OTP hashes');
     const originalQuery = pool.query;
