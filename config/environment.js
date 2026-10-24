@@ -6,6 +6,20 @@ const PLACEHOLDER_SECRETS = new Set([
   'change_me',
 ]);
 
+const resolveDatabaseConfig = (env = process.env) => {
+  const railway = Boolean(env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID);
+  const host = railway ? env.MYSQLHOST : env.DB_HOST;
+  return {
+    railway,
+    host,
+    user: railway ? env.MYSQLUSER : env.DB_USER,
+    password: railway ? env.MYSQLPASSWORD : env.DB_PASSWORD,
+    database: railway ? env.MYSQLDATABASE : env.DB_NAME,
+    port: railway ? env.MYSQLPORT : env.DB_PORT,
+    privateRailwayHost: railway && typeof host === 'string' && /\.railway\.internal$/i.test(host.trim()),
+  };
+};
+
 const parseOrigins = (value, fallbackOrigins, nodeEnv = process.env.NODE_ENV) => {
   const origins = (value || fallbackOrigins.join(','))
     .split(',')
@@ -34,9 +48,7 @@ const validateProductionEnvironment = env => {
   if (env.NODE_ENV !== 'production') return [];
 
   const errors = [];
-  const requireValue = name => {
-    if (!env[name]?.trim()) errors.push(`${name} is required in production.`);
-  };
+  const database = resolveDatabaseConfig(env);
   const requireSecret = (name, { distinctFrom, required = true } = {}) => {
     const value = env[name]?.trim();
     if (!value) {
@@ -51,19 +63,27 @@ const validateProductionEnvironment = env => {
 
   requireSecret('JWT_SECRET');
   requireSecret('OTP_SECRET', { distinctFrom: 'JWT_SECRET', required: false });
-  for (const name of ['DB_HOST', 'DB_USER', 'DB_NAME']) requireValue(name);
-  if (env.DB_HOST?.trim() && /\$\{\{[^}]+\}\}|\$\{[^}]+\}/.test(env.DB_HOST)) {
-    errors.push('DB_HOST contains an unresolved environment-variable placeholder; set it to the TiDB Cloud host.');
+  const databaseVariables = database.railway
+    ? [['MYSQLHOST', database.host], ['MYSQLUSER', database.user], ['MYSQLDATABASE', database.database]]
+    : [['DB_HOST', database.host], ['DB_USER', database.user], ['DB_NAME', database.database]];
+  for (const [name, value] of databaseVariables) {
+    if (!value?.trim()) errors.push(`${name} is required in production.`);
   }
-  if (!env.DB_PASSWORD?.trim()) errors.push('DB_PASSWORD is required in production.');
-  if (env.DB_SSL?.toLowerCase() === 'false') errors.push('DB_SSL cannot be disabled in production.');
+  const passwordVariable = database.railway ? 'MYSQLPASSWORD' : 'DB_PASSWORD';
+  if (!database.password?.trim()) errors.push(`${passwordVariable} is required in production.`);
+  if (database.host?.trim() && /\$\{\{[^}]+\}\}|\$\{[^}]+\}/.test(database.host)) {
+    errors.push(`${database.railway ? 'MYSQLHOST' : 'DB_HOST'} contains an unresolved environment-variable placeholder.`);
+  }
+  if (env.DB_SSL?.toLowerCase() === 'false' && !database.privateRailwayHost) {
+    errors.push('DB_SSL cannot be disabled in production except for a Railway private database host.');
+  }
   if (env.DB_SSL !== undefined && !['true', 'false'].includes(env.DB_SSL.toLowerCase())) {
     errors.push('DB_SSL must be set to true or false.');
   }
 
-  for (const name of ['PORT', 'DB_PORT']) {
-    if (env[name] !== undefined && env[name] !== '') {
-      const port = Number(env[name]);
+  for (const [name, value] of [['PORT', env.PORT], [database.railway ? 'MYSQLPORT' : 'DB_PORT', database.port]]) {
+    if (value !== undefined && value !== '') {
+      const port = Number(value);
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
         errors.push(`${name} must be an integer between 1 and 65535.`);
       }
@@ -89,4 +109,4 @@ const validateProductionEnvironment = env => {
   return [];
 };
 
-module.exports = { parseOrigins, validateProductionEnvironment };
+module.exports = { parseOrigins, resolveDatabaseConfig, validateProductionEnvironment };

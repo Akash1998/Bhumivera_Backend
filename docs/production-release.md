@@ -9,6 +9,8 @@ Set `NODE_ENV=production` and provide:
 - `DB_SSL=true`; provide `DB_SSL_CA` only when the database provider uses a private CA.
 - `FRONTEND_ORIGINS`: recommended comma-separated exact HTTPS origins for the deployed frontend (no paths, wildcards, or preview domains). If omitted, the API allows only `https://www.bhumivera.com` and `https://bhumivera.com`.
 
+On Railway, link the backend service to the Railway MySQL service by setting `MYSQLHOST`, `MYSQLPORT`, `MYSQLUSER`, `MYSQLPASSWORD`, and `MYSQLDATABASE` as Railway variable references. The backend uses these variables instead of `DB_*` whenever it runs on Railway; it will not silently connect to a TiDB host from stale `DB_*` values. Railway's private `*.railway.internal` database connection uses the private network without TLS. Ensure the Railway database already contains the application data before deploying; switching connection settings does not copy data from TiDB.
+
 On Railway, remove the deprecated `NPM_CONFIG_PRODUCTION` variable to avoid npm's install warning. If production installs should omit development dependencies, use `NPM_CONFIG_OMIT=dev` instead.
 
 For Vercel, set `DB_HOST` to the actual TiDB Cloud hostname; Railway references such as `${{MySQL.MYSQLHOST}}` are not resolved by Vercel.
