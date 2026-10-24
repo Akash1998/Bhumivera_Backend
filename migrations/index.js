@@ -815,6 +815,45 @@ const migrations = [
       }
     },
   },
+  {
+    version: 69,
+    name: 'remove Telegram support configuration and session links',
+    up: async () => {
+      const botToken = (
+        process.env.SUPPORT_TELEGRAM_BOT_TOKEN ||
+        process.env.TELEGRAM_BOT_TOKEN ||
+        ''
+      ).trim();
+      if (botToken) {
+        try {
+          const response = await fetch(`https://api.telegram.org/bot${botToken}/deleteWebhook`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ drop_pending_updates: false }),
+            signal: AbortSignal.timeout(5000),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            console.error('[TELEGRAM_WEBHOOK_CLEANUP] Telegram did not confirm webhook removal.');
+          }
+        } catch (error) {
+          console.error('[TELEGRAM_WEBHOOK_CLEANUP] Could not remove the Telegram webhook.', error.message);
+        }
+      } else {
+        console.warn('[TELEGRAM_WEBHOOK_CLEANUP] Bot token unavailable; remove the webhook through Telegram Bot API.');
+      }
+      await pool.query("DELETE FROM settings WHERE LOWER(key_name) LIKE '%telegram%'");
+      await pool.query(`
+        UPDATE ai_support_sessions
+        SET page_context = JSON_REMOVE(page_context, '$.telegramChatId', '$.channel')
+        WHERE page_context IS NOT NULL
+          AND (
+            JSON_UNQUOTE(JSON_EXTRACT(page_context, '$.channel')) = 'telegram'
+            OR JSON_EXTRACT(page_context, '$.telegramChatId') IS NOT NULL
+          )
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

@@ -61,6 +61,32 @@ describe('runMigrations', () => {
     );
   });
 
+  it('removes saved Telegram settings and legacy support-session links', async () => {
+    const migration = migrations.find(candidate => candidate.version === 69);
+    const originalQuery = pool.query;
+    const telegramBotToken = process.env.SUPPORT_TELEGRAM_BOT_TOKEN;
+    const legacyTelegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+    const statements = [];
+    delete process.env.SUPPORT_TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    pool.query = async sql => {
+      statements.push(sql);
+      return [{}, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+      if (telegramBotToken !== undefined) process.env.SUPPORT_TELEGRAM_BOT_TOKEN = telegramBotToken;
+      if (legacyTelegramBotToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = legacyTelegramBotToken;
+    }
+
+    assert.match(statements[0], /DELETE FROM settings WHERE LOWER\(key_name\) LIKE '%telegram%'/);
+    assert.match(statements[1], /UPDATE ai_support_sessions/);
+    assert.match(statements[1], /JSON_REMOVE\(page_context, '\$\.telegramChatId', '\$\.channel'\)/);
+  });
+
   it('expands the customer reset OTP column to hold its hash', async () => {
     const migration = migrations.find(candidate => candidate.name === 'expand customer password reset OTP hashes');
     const originalQuery = pool.query;

@@ -226,7 +226,7 @@ function analyzeSentiment(rawMessage, history = [], pageContext = {}) {
 }
 
 /**
- * Helper to dispatch JSON HTTPS POST requests with timeout for Telegram / WhatsApp webhooks.
+ * Helper to dispatch JSON HTTPS POST requests with timeout for WhatsApp webhooks.
  */
 function postJsonWebhook(targetUrl, payload, headers = {}, timeoutMs = 4500) {
   return new Promise((resolve, reject) => {
@@ -271,7 +271,7 @@ function postJsonWebhook(targetUrl, payload, headers = {}, timeoutMs = 4500) {
  * Executes instant escalation loop:
  * 1. Creates or links a human `support_tickets` record for `/support` portal visibility.
  * 2. Logs an admin notification in `notifications`.
- * 3. Fires parallel webhooks to Telegram, WhatsApp, and Admin Email.
+ * 3. Fires configured WhatsApp webhook and Admin Email notifications.
  * 4. Persists the audit record in `ai_support_escalations`.
  */
 async function triggerInstantEscalation({
@@ -348,38 +348,9 @@ async function triggerInstantEscalation({
     console.error('[AI_SUPPORT_ESCALATION_NOTIF_ERR]', notifErr.message);
   }
 
-  // 3. Dispatch multi-channel webhooks (Telegram, WhatsApp, Email)
+  // 3. Dispatch multi-channel webhooks (WhatsApp, Email)
   const channelsNotified = [];
-  const alertText =
-    `🚨 *Bhumivera AI Support Escalation* [${priority}]\n` +
-    `• *Ticket:* ${ticketId ? `#${ticketId}` : 'Pending'}\n` +
-    `• *Customer:* ${maskPII(customerName)} (${customerEmail})\n` +
-    `• *Reason:* ${maskPII(escalationReason)}\n` +
-    `• *Frustration:* ${sentiment?.frustrationScore ?? 0}/100 (Sentiment: ${sentiment?.score ?? 0})\n` +
-    `• *Message:* "${maskPII(latestMessage).slice(0, 300)}"`;
-
-  // 3a. Telegram Bot / Webhook
-  const telegramWebhookUrl = process.env.SUPPORT_TELEGRAM_WEBHOOK_URL ||
-    (process.env.SUPPORT_TELEGRAM_BOT_TOKEN && process.env.SUPPORT_TELEGRAM_CHAT_ID
-      ? `https://api.telegram.org/bot${process.env.SUPPORT_TELEGRAM_BOT_TOKEN}/sendMessage`
-      : null);
-
-  if (telegramWebhookUrl) {
-    try {
-      await httpPostFn(telegramWebhookUrl, {
-        chat_id: process.env.SUPPORT_TELEGRAM_CHAT_ID || undefined,
-        text: alertText,
-        parse_mode: 'Markdown',
-      });
-      channelsNotified.push({ channel: 'telegram', status: 'sent', timestamp: new Date().toISOString() });
-    } catch (tgErr) {
-      channelsNotified.push({ channel: 'telegram', status: 'failed', error: tgErr.message });
-    }
-  } else {
-    channelsNotified.push({ channel: 'telegram', status: 'queued_local_no_webhook_env' });
-  }
-
-  // 3b. WhatsApp Business Cloud / Webhook
+  // 3a. WhatsApp Business Cloud / Webhook
   const whatsappWebhookUrl = process.env.SUPPORT_WHATSAPP_WEBHOOK_URL;
   if (whatsappWebhookUrl) {
     try {
@@ -405,7 +376,7 @@ async function triggerInstantEscalation({
     channelsNotified.push({ channel: 'whatsapp', status: 'queued_local_no_webhook_env' });
   }
 
-  // 3c. Admin Email Alert via Mailrelay (`utils/mail.js`)
+  // 3b. Admin Email Alert via Mailrelay (`utils/mail.js`)
   const escalationEmail = process.env.SUPPORT_ESCALATION_EMAIL || 'support@bhumivera.com';
   if (typeof mailSender === 'function') {
     try {
