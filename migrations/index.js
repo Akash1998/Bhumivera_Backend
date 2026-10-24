@@ -782,7 +782,7 @@ const migrations = [
   },
   {
     version: 66,
-    name: 'purge legacy anritvox artifacts and seed luxury geo catalog',
+    name: 'purge legacy catalog artifacts and seed luxury geo catalog',
     up: () => seedLuxuryCatalog(pool),
   },
   {
@@ -817,12 +817,12 @@ const migrations = [
   },
   {
     version: 69,
-    name: 'remove Telegram support configuration and session links',
+    name: 'seed 1080 classified customer reviews (2020-2026) and sync product ratings',
     up: () => seedAllCustomerReviews(pool),
   },
   {
     version: 70,
-    name: 'reconcile database-backed customer reviews and product ratings',
+    name: 'replace legacy bot reviews with 1080 natural multi-length Indian marketplace reviews v3',
     up: () => seedAllCustomerReviews(pool),
   },
 ];

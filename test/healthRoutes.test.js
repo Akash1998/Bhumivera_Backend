@@ -10,7 +10,7 @@ describe('health routes', () => {
 
   before(async () => {
     const app = express();
-    readiness = { databaseReady: false, phase: 'migrations', failure: { code: 'MIGRATION_FAILED' } };
+    readiness = { databaseReady: false, failure: { code: 'MIGRATION_FAILED' } };
     app.use('/health', createHealthRouter(() => readiness));
     await new Promise(resolve => {
       server = app.listen(0, '127.0.0.1', resolve);
@@ -34,7 +34,6 @@ describe('health routes', () => {
     assert.deepEqual(await ready.json(), {
       status: 'starting',
       databaseReady: false,
-      phase: 'migrations',
       failure: { code: 'MIGRATION_FAILED' },
     });
   });
