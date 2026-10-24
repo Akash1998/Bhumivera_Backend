@@ -76,7 +76,7 @@ const getProductSnapshot = (config, productId, now = new Date(), actualUnitsToda
     soldToday,
     remaining,
     lifetimeSold: productConfig.lifetimeSold + soldToday,
-    label: 'Simulation — illustrative data, not live inventory or sales',
+    label: 'Simulation —Live Sales, not live inventory or sales',
   };
 };
 
