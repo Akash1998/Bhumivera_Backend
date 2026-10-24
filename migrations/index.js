@@ -819,7 +819,10 @@ const migrations = [
   {
     version: 69,
     name: 'retired synthetic customer review seed',
-    previousNames: ['seed 1080 classified customer reviews (2020-2026) and sync product ratings'],
+    previousNames: [
+      'seed 1080 classified customer reviews (2020-2026) and sync product ratings',
+      'remove Telegram support configuration and session links',
+    ],
     up: async () => {},
   },
   {

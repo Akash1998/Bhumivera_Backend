@@ -159,6 +159,25 @@ describe('runMigrations', () => {
     assert.equal(pool.applied.get(71), historicalNames.get(71));
   });
 
+  it('accepts the historical Telegram cleanup name recorded in production', async () => {
+    const pool = createPool();
+    for (const migration of migrations) {
+      pool.applied.set(
+        migration.version,
+        migration.version === 69
+          ? 'remove Telegram support configuration and session links'
+          : migration.name
+      );
+    }
+
+    await runMigrations(pool, migrations, { logger });
+
+    assert.equal(
+      pool.applied.get(69),
+      'remove Telegram support configuration and session links'
+    );
+  });
+
   it('seeds default post-order spin rewards without replacing existing admin settings', async () => {
     const migration = migrations.find(candidate => candidate.name === 'seed default post-order spin rewards');
     const originalQuery = pool.query;
