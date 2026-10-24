@@ -439,8 +439,17 @@ const initializeDatabaseOnce = async () => {
     databaseReady = false;
     databaseRetryAfter = Date.now() + 15000;
     startupFailure = err.migration
-      ? { phase: startupPhase, migration: err.migration, code: err.code || "MIGRATION_FAILED" }
-      : { phase: startupPhase, code: err.code || "STARTUP_FAILED" };
+      ? {
+        phase: startupPhase,
+        step: err.migrationPhase,
+        migration: err.migration,
+        code: err.code || "MIGRATION_FAILED",
+      }
+      : {
+        phase: startupPhase,
+        step: err.migrationPhase,
+        code: err.code || "STARTUP_FAILED",
+      };
     console.error(`[STARTUP] Required initialization failed during ${startupPhase}; API will retry.`, err);
     setTimeout(initializeDatabase, 15000).unref();
   }

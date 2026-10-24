@@ -23,18 +23,24 @@ const validateMigrations = migrations => {
 
 async function runMigrations(pool, migrations, { logger = console } = {}) {
   validateMigrations(migrations);
-  const lockConnection = await pool.getConnection();
+  let lockConnection;
   let lockAcquired = false;
+  let migrationPhase = 'acquire_connection';
   try {
+    lockConnection = await pool.getConnection();
+    migrationPhase = 'acquire_lock';
     const [lockRows] = await lockConnection.query(
       'SELECT GET_LOCK(?, ?) AS lock_acquired',
       [MIGRATION_LOCK_NAME, MIGRATION_LOCK_TIMEOUT_SECONDS]
     );
     lockAcquired = Number(lockRows?.[0]?.lock_acquired) === 1;
     if (!lockAcquired) {
-      throw new Error(`Could not acquire the schema migration lock within ${MIGRATION_LOCK_TIMEOUT_SECONDS} seconds.`);
+      const error = new Error(`Could not acquire the schema migration lock within ${MIGRATION_LOCK_TIMEOUT_SECONDS} seconds.`);
+      error.code = 'MIGRATION_LOCK_FAILED';
+      throw error;
     }
 
+    migrationPhase = 'prepare_history';
     await pool.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version INT NOT NULL PRIMARY KEY,
@@ -42,6 +48,7 @@ async function runMigrations(pool, migrations, { logger = console } = {}) {
         applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       ) ENGINE=InnoDB
     `);
+    migrationPhase = 'read_history';
     const [appliedRows] = await pool.query(
       'SELECT version, name FROM schema_migrations ORDER BY version'
     );
@@ -66,8 +73,10 @@ async function runMigrations(pool, migrations, { logger = console } = {}) {
     for (const migration of migrations) {
       if (applied.has(migration.version)) continue;
       logger.info(`[MIGRATION] Starting ${migration.version}: ${migration.name}`);
+      migrationPhase = 'apply_migration';
       try {
         await migration.up();
+        migrationPhase = 'record_migration';
         await pool.query(
           'INSERT INTO schema_migrations (version, name) VALUES (?, ?)',
           [migration.version, migration.name]
@@ -79,17 +88,22 @@ async function runMigrations(pool, migrations, { logger = console } = {}) {
         throw migrationError;
       }
       logger.info(`[MIGRATION] Applied ${migration.version}: ${migration.name}`);
+      migrationPhase = 'read_history';
     }
     return migrations.map(({ version, name }) => ({ version, name }));
+  } catch (error) {
+    const migrationError = error instanceof Error ? error : new Error(String(error));
+    migrationError.migrationPhase = migrationPhase;
+    throw migrationError;
   } finally {
-    if (lockAcquired) {
+    if (lockAcquired && lockConnection) {
       try {
         await lockConnection.query('SELECT RELEASE_LOCK(?)', [MIGRATION_LOCK_NAME]);
       } catch (error) {
         logger.error('[MIGRATION] Failed to release schema migration lock.', error);
       }
     }
-    lockConnection.release();
+    lockConnection?.release();
   }
 }
 

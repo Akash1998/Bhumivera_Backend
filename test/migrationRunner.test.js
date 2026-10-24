@@ -57,6 +57,31 @@ describe('runMigrations', () => {
     });
   });
 
+  it('identifies schema lock acquisition failures and releases the connection', async () => {
+    let released = false;
+    const lockPool = {
+      async getConnection() {
+        return {
+          async query() {
+            return [[{ lock_acquired: 0 }]];
+          },
+          release() {
+            released = true;
+          },
+        };
+      },
+      async query() {
+        throw new Error('Schema history should not be queried without the lock.');
+      },
+    };
+
+    await assert.rejects(
+      runMigrations(lockPool, [], { logger }),
+      error => error.code === 'MIGRATION_LOCK_FAILED' && error.migrationPhase === 'acquire_lock'
+    );
+    assert.equal(released, true);
+  });
+
   it('expands the customer reset OTP column to hold its hash', async () => {
     const migration = migrations.find(candidate => candidate.name === 'expand customer password reset OTP hashes');
     const originalQuery = pool.query;
