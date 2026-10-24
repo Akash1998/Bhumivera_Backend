@@ -98,7 +98,7 @@ router.get('/health', authenticateAdmin, async (_req, res) => {
       responseCache: {
         ...responseCache,
         note: responseCache.status === 'connected'
-          ? 'Public JSON responses are cached in Redis for up to 60 seconds; responses over 128 KiB are not cached.'
+          ? 'Public JSON responses are cached in Redis for up to 60 seconds; responses over 1 MiB are not cached.'
           : responseCache.status === 'not_configured'
             ? 'Redis response caching is disabled; the API reads directly from MySQL.'
             : 'Redis is configured but not ready; cache reads are skipped and the API reads directly from MySQL.',

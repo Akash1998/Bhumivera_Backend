@@ -2,7 +2,7 @@ const crypto = require('node:crypto');
 
 const CACHE_TTL_SECONDS = 60;
 const REDIS_READ_TIMEOUT_MS = 100;
-const MAX_CACHEABLE_RESPONSE_BYTES = 128 * 1024;
+const MAX_CACHEABLE_RESPONSE_BYTES = 2048 * 2048;
 const CACHE_PREFIX = 'bhumivera:response-cache:v2:';
 const EDGE_CACHE_CONTROL = 'public, max-age=0, s-maxage=30, stale-while-revalidate=30';
 const RATE_LIMITED_PUBLIC_PATHS = new Set([
@@ -52,7 +52,8 @@ const canCacheRequest = req => {
   return req.method === 'GET' &&
     path.startsWith('/api/') &&
     (CACHEABLE_PUBLIC_PATHS.some(prefix => path === prefix || path.startsWith(`${prefix}/`)) ||
-      path.startsWith('/api/products/slug/')) &&
+      path.startsWith('/api/products/slug/') ||
+      /^\/api\/products\/\d+$/.test(path)) &&
     !RATE_LIMITED_PUBLIC_PATHS.has(path) &&
     !req.get('authorization') &&
     !req.get('cookie') &&

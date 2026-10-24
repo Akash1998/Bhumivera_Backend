@@ -21,6 +21,7 @@ class MemoryRedis {
 const redis = new MemoryRedis();
 const app = express();
 let publicRequestCount = 0;
+let productDetailRequestCount = 0;
 let privateRequestCount = 0;
 let server;
 let baseUrl;
@@ -40,7 +41,11 @@ app.get('/api/products/active/unkeyed-vary-response', (_req, res) => {
   res.set('Vary', 'x-test-variant').json({ request: true });
 });
 app.get('/api/products/active/large-response', (_req, res) => {
-  res.json({ payload: 'x'.repeat(128 * 1024) });
+  res.json({ payload: 'x'.repeat(1024 * 1024) });
+});
+app.get('/api/products/:id', (req, res) => {
+  productDetailRequestCount += 1;
+  res.json({ id: req.params.id, request: productDetailRequestCount });
 });
 app.get('/api/search', (_req, res) => {
   publicRequestCount += 1;
@@ -79,6 +84,16 @@ describe('Redis response cache', () => {
     assert.equal(second.headers.get('x-redis-cache'), 'HIT');
     assert.equal(first.headers.get('cache-control'), 'public, max-age=0, s-maxage=30, stale-while-revalidate=30');
     assert.equal(second.headers.get('cache-control'), 'public, max-age=0, s-maxage=30, stale-while-revalidate=30');
+  });
+
+  it('caches individual public product details by numeric ID', async () => {
+    const first = await fetch(`${baseUrl}/api/products/123`);
+    const firstBody = await first.json();
+    const second = await fetch(`${baseUrl}/api/products/123`);
+
+    assert.deepEqual(await second.json(), firstBody);
+    assert.equal(first.headers.get('x-redis-cache'), 'MISS');
+    assert.equal(second.headers.get('x-redis-cache'), 'HIT');
   });
 
   it('does not cache responses that vary by a header absent from the cache key', async () => {
@@ -125,7 +140,7 @@ describe('Redis response cache', () => {
     const response = await fetch(`${baseUrl}/api/products/active/large-response`);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('x-redis-cache'), 'MISS');
-    assert.equal(redis.entries.size, 1);
+    assert.equal(redis.entries.size, 2);
   });
 
   it('continues serving requests when Redis reads fail', async () => {

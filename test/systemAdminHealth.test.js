@@ -42,7 +42,7 @@ const mocks = new Map([
     status: 'connected',
     configured: true,
     ttlSeconds: 60,
-    maxCacheableResponseBytes: 128 * 1024,
+    maxCacheableResponseBytes: 1024 * 1024,
     metrics: { hits: 4, misses: 5, writes: 5, readErrors: 0, writeErrors: 0 },
   }) }],
   ['../utils/providerDiagnostics', {
