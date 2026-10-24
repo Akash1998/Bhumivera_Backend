@@ -1,4 +1,5 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SIMULATION_WINDOW_MS = 12 * 60 * 60 * 1000;
 const IST_OFFSET_MS = 330 * 60 * 1000;
 const DEFAULT_DAILY_CAP = 250;
 const MAX_CONFIGURED_PRODUCTS = 300;
@@ -22,20 +23,18 @@ const getIstDayInfo = (now = new Date()) => {
   ) - IST_OFFSET_MS;
   return {
     dayKey,
-    progress: Math.min(1, Math.max(0, (now.getTime() - startUtc) / DAY_MS)),
+    progress: Math.min(1, Math.max(0, (now.getTime() - startUtc) / SIMULATION_WINDOW_MS)),
   };
 };
 
-const createDefaultProduct = productId => {
-  const lifetimeSold = 16000 + (hashString(`lifetime:${productId}`) % 14001);
+const createDefaultProduct = () => {
   return {
     enabled: true,
     paused: false,
     outOfStock: false,
     dailyCap: DEFAULT_DAILY_CAP,
-    minDailySold: 200,
+    minDailySold: 0,
     maxDailySold: DEFAULT_DAILY_CAP,
-    lifetimeSold,
   };
 };
 
@@ -49,21 +48,110 @@ const createDefaultConfig = (now = new Date()) => ({
 
 const getDailyTarget = (dayKey, productId, productConfig) => {
   const minimum = Math.min(productConfig.minDailySold, productConfig.dailyCap);
-  const maximum = Math.min(productConfig.maxDailySold, productConfig.dailyCap);
+  const maximum = Math.max(minimum, Math.min(productConfig.maxDailySold, productConfig.dailyCap));
   const range = Math.max(0, maximum - minimum) + 1;
-  return minimum + (hashString(`${dayKey}:${productId}`) % range);
+  const candidate = minimum + (hashString(`${dayKey}:${productId}:target`) % range);
+  if (range === 1) return candidate;
+
+  const previousDayKey = new Date(Date.parse(`${dayKey}T00:00:00Z`) - DAY_MS)
+    .toISOString()
+    .slice(0, 10);
+  const previousTarget = minimum + (hashString(`${previousDayKey}:${productId}:target`) % range);
+  return candidate === previousTarget
+    ? minimum + ((candidate - minimum + 1) % range)
+    : candidate;
 };
 
-const getProductSnapshot = (config, productId, now = new Date(), actualUnitsToday = 0) => {
+const getRandom = seed => {
+  let state = hashString(seed);
+  return () => {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const getHourlyWeights = (dayKey, productId, activityProfile) => {
+  const history = Array.isArray(activityProfile) ? activityProfile.slice(0, 12) : [];
+  const historyTotal = history.reduce((total, value) => total + Math.max(0, Number(value) || 0), 0);
+  if (historyTotal > 0) return history.map(value => Math.max(0, Number(value) || 0) + historyTotal * 0.005 / 12);
+
+  const random = getRandom(`${dayKey}:${productId}:hourly-pattern`);
+  return Array.from({ length: 12 }, () => 0.25 + random());
+};
+
+const getSalesProgress = (dayProgress, hourlyWeights) => {
+  const elapsedMinutes = dayProgress * 12 * 60;
+  if (elapsedMinutes <= 0) return 0;
+  if (elapsedMinutes >= 12 * 60) return 1;
+
+  const totalWeight = hourlyWeights.reduce((total, value) => total + value, 0);
+  if (totalWeight <= 0) return dayProgress;
+
+  const completeHours = Math.floor(elapsedMinutes / 60);
+  const partialHour = (elapsedMinutes - completeHours * 60) / 60;
+  const elapsedWeight = hourlyWeights
+    .slice(0, completeHours)
+    .reduce((total, value) => total + value, 0) +
+    hourlyWeights[completeHours] * partialHour;
+  return elapsedWeight / totalWeight;
+};
+
+const getSampleActivity = (dayKey, productId, simulatedSoldToday, dayProgress, hourlyWeights) => {
+  const eventCount = Math.min(3, simulatedSoldToday);
+  if (eventCount < 1) return [];
+
+  const cities = ['Kolkata', 'Asansol', 'Delhi'];
+  const elapsedMinutes = Math.floor(dayProgress * 12 * 60);
+  if (elapsedMinutes < 1) return [];
+  const dayStart = Date.parse(`${dayKey}T00:00:00+05:30`);
+  const random = getRandom(`${dayKey}:${productId}:sample-activity`);
+  const eligibleHours = Math.min(12, Math.ceil(elapsedMinutes / 60));
+  const weights = hourlyWeights.slice(0, eligibleHours).map((weight, hour) =>
+    hour === eligibleHours - 1 && elapsedMinutes % 60
+      ? weight * (elapsedMinutes % 60) / 60
+      : weight
+  );
+  const totalWeight = weights.reduce((total, value) => total + value, 0);
+
+  return Array.from({ length: eventCount }, (_, index) => {
+    const seed = hashString(`${dayKey}:${productId}:sample:${index}`);
+    let selectedWeight = random() * totalWeight;
+    let hour = 0;
+    for (; hour < weights.length - 1; hour += 1) {
+      selectedWeight -= weights[hour];
+      if (selectedWeight < 0) break;
+    }
+    const hourStartMinute = hour * 60;
+    const hourEndMinute = Math.min(elapsedMinutes, hourStartMinute + 60);
+    const minute = hourStartMinute + Math.floor(random() * Math.max(1, hourEndMinute - hourStartMinute));
+    const time = new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(dayStart + minute * 60_000));
+
+    return {
+      buyer: `Sample shopper #${String(seed % 900 + 100)}`,
+      city: cities[seed % cities.length],
+      time,
+    };
+  });
+};
+
+const getProductSnapshot = (config, productId, now = new Date(), activityProfile = []) => {
   const productConfig = config.products[String(productId)] || createDefaultProduct(productId);
-  const { dayKey, progress } = getIstDayInfo(now);
+  const { dayKey, progress: dayProgress } = getIstDayInfo(now);
+  const hourlyWeights = getHourlyWeights(dayKey, productId, activityProfile);
+  const progress = getSalesProgress(dayProgress, hourlyWeights);
   const dailyTarget = getDailyTarget(dayKey, productId, productConfig);
-  const soldToday = config.enabled && productConfig.enabled && !productConfig.paused && !productConfig.outOfStock
-    ? Math.min(
-        productConfig.dailyCap,
-        Math.round(dailyTarget * progress) + Math.max(0, Number(actualUnitsToday) || 0)
-      )
+  const simulationActive = config.enabled && productConfig.enabled && !productConfig.paused && !productConfig.outOfStock;
+  const simulatedSoldToday = simulationActive
+    ? Math.min(productConfig.dailyCap, Math.round(dailyTarget * progress))
     : 0;
+  const soldToday = simulatedSoldToday;
   const remaining = productConfig.outOfStock
     ? 0
     : Math.max(0, productConfig.dailyCap - soldToday);
@@ -74,8 +162,11 @@ const getProductSnapshot = (config, productId, now = new Date(), actualUnitsToda
     outOfStock: Boolean(productConfig.outOfStock),
     dailyCap: productConfig.dailyCap,
     soldToday,
+    simulatedSoldToday,
     remaining,
-    lifetimeSold: productConfig.lifetimeSold + soldToday,
+    sampleActivity: config.sampleActivityEnabled
+      ? getSampleActivity(dayKey, productId, simulatedSoldToday, dayProgress, hourlyWeights)
+      : [],
     label: 'Simulation — illustrative data, not live inventory or sales',
   };
 };
@@ -107,8 +198,11 @@ const normalizeStoredConfig = (value, now = new Date()) => {
       const dailyCap = Number.isSafeInteger(item.dailyCap) && item.dailyCap >= 0 && item.dailyCap <= DEFAULT_DAILY_CAP
         ? item.dailyCap
         : defaults.dailyCap;
+      const isLegacyDefaultRange = item.minDailySold === 200 &&
+        item.maxDailySold === DEFAULT_DAILY_CAP &&
+        dailyCap === DEFAULT_DAILY_CAP;
       const minDailySold = Number.isSafeInteger(item.minDailySold) && item.minDailySold >= 0
-        ? Math.max(Math.min(200, dailyCap), Math.min(item.minDailySold, dailyCap))
+        ? (isLegacyDefaultRange ? defaults.minDailySold : Math.min(item.minDailySold, dailyCap))
         : Math.min(defaults.minDailySold, dailyCap);
       const maxDailySold = Number.isSafeInteger(item.maxDailySold) && item.maxDailySold >= minDailySold
         ? Math.min(item.maxDailySold, dailyCap)
@@ -120,9 +214,6 @@ const normalizeStoredConfig = (value, now = new Date()) => {
         dailyCap,
         minDailySold,
         maxDailySold,
-        lifetimeSold: Number.isSafeInteger(item.lifetimeSold) && item.lifetimeSold >= 0
-          ? item.lifetimeSold
-          : defaults.lifetimeSold,
       };
     }
   }
@@ -155,11 +246,8 @@ const validateSimulatorConfig = value => {
       !Number.isSafeInteger(product.minDailySold) ||
       !Number.isSafeInteger(product.maxDailySold) ||
       product.minDailySold < 0 ||
-      product.minDailySold < Math.min(200, product.dailyCap) ||
       product.maxDailySold < product.minDailySold ||
-      product.maxDailySold > product.dailyCap ||
-      !Number.isSafeInteger(product.lifetimeSold) ||
-      product.lifetimeSold < 0
+      product.maxDailySold > product.dailyCap
     ) {
       return `Invalid simulator settings for product ${productId}.`;
     }
@@ -167,19 +255,9 @@ const validateSimulatorConfig = value => {
   return null;
 };
 
-const rotateConfigDay = (config, now = new Date(), actualUnitsByProduct = {}) => {
+const rotateConfigDay = (config, now = new Date()) => {
   const currentDayKey = getIstDayInfo(now).dayKey;
   if (config.dayKey === currentDayKey) return false;
-  for (const [productId, product] of Object.entries(config.products)) {
-    if (config.enabled && product.enabled && !product.paused && !product.outOfStock) {
-      const simulatedTarget = getDailyTarget(config.dayKey, productId, product);
-      const combinedSold = Math.min(
-        product.dailyCap,
-        simulatedTarget + Math.max(0, Number(actualUnitsByProduct[productId]) || 0)
-      );
-      product.lifetimeSold += combinedSold;
-    }
-  }
   config.dayKey = currentDayKey;
   return true;
 };

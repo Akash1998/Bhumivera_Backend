@@ -72,7 +72,6 @@ router.put('/scarcity-simulator', authenticateAdmin, async (req, res) => {
     'dailyCap',
     'minDailySold',
     'maxDailySold',
-    'lifetimeSold',
   ]);
   if (Object.values(req.body.products).some(product =>
     Object.keys(product).some(key => !allowedProductKeys.has(key))

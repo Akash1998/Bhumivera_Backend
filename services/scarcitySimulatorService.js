@@ -2,8 +2,6 @@ const pool = require('../config/db');
 const {
   createDefaultConfig,
   createDefaultProduct,
-  getIstDayInfo,
-  getIstDayRangeForDayKey,
   getIstDayRange,
   getProductSnapshot,
   normalizeStoredConfig,
@@ -13,8 +11,10 @@ const {
 const SETTINGS_KEY = 'scarcity_simulator_config';
 const SETTINGS_GROUP = 'scarcity_simulator';
 const MAX_PUBLIC_PRODUCT_IDS = 100;
+const RECENT_ACTIVITY_CACHE_MS = 5 * 60 * 1000;
 const PURCHASE_STATUS_SQL = `o.status NOT IN ('cancelled', 'returned', 'archived')
   AND (o.payment_status = 'paid' OR o.payment_mode = 'COD')`;
+const recentActivityCache = new Map();
 
 const parseProductIds = value => {
   if (!Array.isArray(value)) return [];
@@ -30,23 +30,42 @@ const parseProductIds = value => {
   return ids;
 };
 
-const getActualUnitsByProduct = async (productIds, range, queryConnection = pool) => {
+const getRecentActivityProfiles = async productIds => {
   if (!productIds.length) return {};
+  const key = productIds.slice().sort().join(',');
+  const cached = recentActivityCache.get(key);
+  if (cached?.expiresAt > Date.now()) return cached.profiles;
+
   const placeholders = productIds.map(() => '?').join(', ');
-  const [rows] = await queryConnection.query(
-    `SELECT oi.product_id, SUM(oi.quantity) AS units_ordered
+  const [rows] = await pool.query(
+    `SELECT oi.product_id,
+            HOUR(CONVERT_TZ(o.created_at, @@session.time_zone, '+05:30')) AS order_hour,
+            SUM(oi.quantity) AS units_ordered
      FROM orders o
      JOIN order_items oi ON oi.order_id = o.id
      WHERE oi.product_id IN (${placeholders})
-       AND o.created_at >= FROM_UNIXTIME(?) AND o.created_at < FROM_UNIXTIME(?)
+       AND o.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
        AND ${PURCHASE_STATUS_SQL}
-     GROUP BY oi.product_id`,
-    [...productIds, range.startEpochSeconds, range.endEpochSeconds]
+     GROUP BY oi.product_id, order_hour`,
+    productIds
   );
-  return Object.fromEntries(rows.map(row => [
-    String(row.product_id),
-    Number(row.units_ordered) || 0,
-  ]));
+  const profiles = {};
+  for (const row of rows) {
+    const id = String(row.product_id);
+    const hour = Number(row.order_hour);
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) continue;
+    if (!profiles[id]) profiles[id] = Array(24).fill(0);
+    profiles[id][hour] = Number(row.units_ordered) || 0;
+  }
+  const now = Date.now();
+  for (const [cachedKey, entry] of recentActivityCache) {
+    if (entry.expiresAt <= now) recentActivityCache.delete(cachedKey);
+  }
+  recentActivityCache.set(key, { expiresAt: now + RECENT_ACTIVITY_CACHE_MS, profiles });
+  if (recentActivityCache.size > 50) {
+    recentActivityCache.delete(recentActivityCache.keys().next().value);
+  }
+  return profiles;
 };
 
 const withConfig = async mutate => {
@@ -63,16 +82,7 @@ const withConfig = async mutate => {
       [SETTINGS_KEY]
     );
     const config = normalizeStoredConfig(row?.value);
-    const previousDay = config.dayKey;
-    const currentDay = getIstDayInfo().dayKey;
-    const previousActualUnits = previousDay !== currentDay
-      ? await getActualUnitsByProduct(
-          Object.keys(config.products),
-          getIstDayRangeForDayKey(previousDay),
-          connection
-        )
-      : {};
-    const dayChanged = rotateConfigDay(config, new Date(), previousActualUnits);
+    const dayChanged = rotateConfigDay(config, new Date());
     const configChanged = mutate(config) === true;
     const changed = dayChanged || configChanged;
     if (changed) {
@@ -129,10 +139,7 @@ const getPublicSnapshots = async productIds => {
     }
     return changed;
   });
-  const actualUnits = await getActualUnitsByProduct(
-    ids,
-    getIstDayRange()
-  );
+  const activityProfiles = await getRecentActivityProfiles(ids);
   return {
     enabled: config.enabled,
     sampleActivityEnabled: config.sampleActivityEnabled,
@@ -140,7 +147,7 @@ const getPublicSnapshots = async productIds => {
     label: 'Simulation — illustrative data, not live inventory or sales',
     products: Object.fromEntries(ids.map(id => [
       id,
-      getProductSnapshot(config, id, new Date(), actualUnits[id] || 0),
+      getProductSnapshot(config, id, new Date(), activityProfiles[id] || []),
     ])),
   };
 };
