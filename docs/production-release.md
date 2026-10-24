@@ -9,13 +9,13 @@ Set `NODE_ENV=production` and provide:
 - `DB_SSL=true`; provide `DB_SSL_CA` only when the database provider uses a private CA.
 - `FRONTEND_ORIGINS`: recommended comma-separated exact HTTPS origins for the deployed frontend (no paths, wildcards, or preview domains). If omitted, the API allows only `https://www.bhumivera.com` and `https://bhumivera.com`.
 
+On Railway, remove the deprecated `NPM_CONFIG_PRODUCTION` variable to avoid npm's install warning. If production installs should omit development dependencies, use `NPM_CONFIG_OMIT=dev` instead.
+
 For Vercel, set `DB_HOST` to the actual TiDB Cloud hostname; Railway references such as `${{MySQL.MYSQLHOST}}` are not resolved by Vercel.
 If startup logs show `ECONNREFUSED` or `ETIMEDOUT` for the database, verify the configured host, port, provider firewall/IP allowlist, and that the database endpoint is reachable from the backend runtime. A private-network address is not reachable from Vercel unless the deployment has an explicit network path to that private network. Keep `/health/ready` unready until connectivity is restored; the backend retries database initialization automatically.
 Review seed/purge migrations 69–71 are retained only as no-op history markers; they no longer insert or delete review rows. Migration 72 creates image-free regimen bundle products; bundle orders reserve stock from every included catalog product. The admin review archive action hides a review from customers while retaining its database row and media.
 
 If the corresponding feature is enabled, configure both Razorpay API credentials. To receive Razorpay events, configure `RAZORPAY_WEBHOOK_SECRET` and point the provider to `POST /api/webhooks/razorpay`, subscribing to `payment.captured`, `payment.failed`, `refund.created`, `refund.processed`, and `refund.failed`. Use the webhook secret from the provider dashboard, which is separate from the API key secret.
-
-Telegram customer support registers its incoming webhook automatically at startup. Set `API_BASE_URL` to the public HTTPS backend origin (or override with `SUPPORT_TELEGRAM_INCOMING_WEBHOOK_URL`); Telegram webhook requests are authenticated using `SUPPORT_TELEGRAM_WEBHOOK_SECRET` or a key derived from the bot token. `SUPPORT_TELEGRAM_WEBHOOK_URL` remains the separate outgoing escalation notification URL.
 
 For more than one backend instance, set the same `REDIS_URL` or `RATE_LIMIT_REDIS_URL` on every instance to share rate-limit counters. A single instance can use the built-in in-memory rate-limit store.
 

@@ -1,6 +1,6 @@
 const pool = require('../config/db');
 const { getBundleAvailableStock } = require('../utils/bundleInventory');
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const CLOUDFRONT_BASE_URL = process.env.CLOUDFRONT_BASE_URL || 'https://pub-70fdb5d94df347c4bed417c28b066c02.r2.dev/bhumivera';
 
 const addColIfMissing = async (table, column, definition) => {

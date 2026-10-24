@@ -1,5 +1,5 @@
 const pool = require("../config/db");
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 const CLOUDFRONT_BASE_URL = process.env.CLOUDFRONT_BASE_URL || "";
 

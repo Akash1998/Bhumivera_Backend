@@ -27,18 +27,10 @@ const {
   processSupportTurn,
   synthesizeDeterministicResponse,
 } = require('../services/aiSupportOrchestrator');
-const {
-  getTelegramWebhookSecret,
-  getTelegramWebhookUrl,
-  isValidTelegramWebhookSecret,
-  registerTelegramWebhook,
-} = require('../services/telegramSupportService');
 const supportRoutes = require('../routes/supportRoutes');
 
 const TEST_JWT_SECRET = 'ai-support-live-test-secret-with-more-than-32-chars';
 process.env.JWT_SECRET = TEST_JWT_SECRET;
-process.env.SUPPORT_TELEGRAM_BOT_TOKEN = 'test-telegram-bot-token-12345';
-process.env.API_BASE_URL = 'https://service.bhumivera.com';
 
 /**
  * In-memory MySQL Pool Mock for deterministic end-to-end verification of
@@ -737,20 +729,15 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.match(orderVerificationReply, /order-related follow-up requests require verification/i);
   });
 
-  it('redirects website customer-support requests and preserves Telegram escalation routing', () => {
+  it('redirects website customer-support requests', () => {
     const result = detectIntentAndToolPlan('I need customer support', { history: [] });
     const shortResult = detectIntentAndToolPlan('I need support', { history: [] });
     const productQuestion = detectIntentAndToolPlan('How does the formula support human skin?', { history: [] });
-    const telegramResult = detectIntentAndToolPlan('I need customer support', {
-      history: [],
-      pageContext: { channel: 'telegram' },
-    });
 
     assert.equal(result.intent, 'customer_support_redirect');
     assert.equal(result.toolPlan.length, 0);
     assert.equal(shortResult.intent, 'customer_support_redirect');
     assert.notEqual(productQuestion.intent, 'customer_support_redirect');
-    assert.equal(telegramResult.intent, 'human_escalation');
   });
 
   it('keeps account-specific support requests out of the website assistant conversation', async () => {
@@ -773,25 +760,6 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.equal(cancellationRequest.orderCards.length, 0);
     assert.equal(cancellationRequest.toolCalls.length, 0);
     assert.match(cancellationRequest.reply, /Profile → Support/);
-  });
-
-  it('registers an authenticated HTTPS Telegram webhook', async () => {
-    let request;
-    const result = await registerTelegramWebhook({
-      botToken: 'test-bot-token',
-      httpCallFn: async (method, payload, token) => {
-        request = { method, payload, token };
-        return { ok: true };
-      },
-    });
-
-    assert.equal(result.ok, true);
-    assert.equal(request.method, 'setWebhook');
-    assert.equal(request.payload.url, getTelegramWebhookUrl());
-    assert.equal(request.payload.secret_token, getTelegramWebhookSecret('test-bot-token'));
-    assert.equal(request.token, 'test-bot-token');
-    assert.equal(isValidTelegramWebhookSecret(request.payload.secret_token, 'test-bot-token'), true);
-    assert.equal(isValidTelegramWebhookSecret('invalid', 'test-bot-token'), false);
   });
 
   it('1. PII Masker redacts payment cards, CVVs, passwords, OTPs, and JWTs while preserving 9-digit Order IDs', () => {
@@ -838,7 +806,6 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
 
     const webhookCalls = [];
     const mailCalls = [];
-    process.env.SUPPORT_TELEGRAM_WEBHOOK_URL = 'https://api.telegram.org/botTEST/sendMessage';
     process.env.SUPPORT_WHATSAPP_WEBHOOK_URL = 'https://graph.facebook.com/v19.0/test/messages';
 
     const escResult = await triggerInstantEscalation({
@@ -862,10 +829,9 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.equal(escResult.escalated, true);
     assert.equal(escResult.priority, 'Critical');
     assert.ok(escResult.ticketId >= 501, 'Should create human support ticket in support_tickets');
-    assert.equal(webhookCalls.length, 2, 'Should fire Telegram and WhatsApp webhooks');
+    assert.equal(webhookCalls.length, 1, 'Should fire the configured WhatsApp webhook');
     assert.equal(mailCalls.length, 1, 'Should send Admin escalation email');
 
-    delete process.env.SUPPORT_TELEGRAM_WEBHOOK_URL;
     delete process.env.SUPPORT_WHATSAPP_WEBHOOK_URL;
   });
 
@@ -919,7 +885,7 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
     assert.equal(mockPool.state.orders[2].status, 'confirmed');
   });
 
-  it('redirects website order-specific requests while retaining Telegram order lookup', () => {
+  it('redirects website order-specific requests', () => {
     const delayedOrder = detectIntentAndToolPlan('My order is delayed; where is it?', {
       user: { id: 7, email: 'aarav@example.com' },
     });
@@ -943,13 +909,6 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
       history: [{ sender: 'assistant', content: 'Order #918273645 is confirmed.' }],
     });
     assert.equal(orderFollowUp.intent, 'order_support_redirect');
-
-    const telegramOrder = detectIntentAndToolPlan('Please check BHVM918273645', {
-      user: { id: 7, email: 'aarav@example.com' },
-      pageContext: { channel: 'telegram' },
-    });
-    assert.equal(telegramOrder.intent, 'lookup_order');
-    assert.equal(telegramOrder.toolPlan[0].args.order_id, 'BHVM918273645');
 
     const returnPolicy = detectIntentAndToolPlan('How do returns work?', { history: [] });
     assert.notEqual(returnPolicy.intent, 'order_support_redirect');
@@ -1162,10 +1121,6 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.equal(sessionData.success, true);
     assert.ok(sessionData.sessionToken);
     assert.match(sessionData.greeting, /2:00 PM IST/);
-    assert.equal(
-      sessionData.telegramBotUrl,
-      `https://web.telegram.org/k/#@BhumiveraBot?start=${sessionData.sessionToken}`
-    );
   });
 
   it('9. Live HTTP POST /chat/message & GET /chat/history/:token execute order lookup and enforce session ownership', async () => {
@@ -1512,7 +1467,7 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.equal((await superDeleteRes.json()).deleted, true);
   });
 
-  it('17. Live HTTP routes redirect website assistant support requests and preserve the async channel and Telegram webhook', async () => {
+  it('17. Live HTTP routes redirect website assistant support requests and preserve the async channel', async () => {
     const noOrderUserToken = jwt.sign(
       { id: 888, name: 'New Visitor', email: 'visitor@example.com', role: 'customer', sessionType: 'user' },
       TEST_JWT_SECRET,
@@ -1549,82 +1504,6 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     assert.equal(asyncData.success, true);
     assert.ok(asyncData.sessionToken);
 
-    // Telegram Webhook (/telegram/webhook) links customer Telegram chat_id to session
-    const tgRes = await fetch(`${baseUrl}/telegram/webhook`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-telegram-bot-api-secret-token': getTelegramWebhookSecret(),
-      },
-      body: JSON.stringify({
-        update_id: 9001,
-        message: {
-          message_id: 1,
-          from: { id: 777111, first_name: 'Akash', username: 'akash_bv' },
-          chat: { id: 777111, type: 'private' },
-          text: `/start ${asyncData.sessionToken}`,
-        },
-      }),
-    });
-    assert.equal(tgRes.status, 200);
-    const tgData = await tgRes.json();
-    assert.equal(tgData.ok, true);
-    assert.equal(tgData.handled, true);
-  });
-
-  it('18. Telegram & Web A-to-Z Conversational Queries: BHVM Order IDs, Greetings, Single-Word Return/Order, and Share Links', async () => {
-    const hiTurn = await processSupportTurn({
-      message: 'Hi',
-      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
-      channel: 'telegram',
-      pool: mockPool,
-    });
-    assert.match(hiTurn.reply, /Welcome to \*\*Bhumivera Support\*\*/i);
-    assert.match(hiTurn.reply, /BHVM918273645/);
-
-    const bhvmTurn = await processSupportTurn({
-      message: 'BHVM918273646',
-      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
-      channel: 'telegram',
-      pool: mockPool,
-    });
-    assert.equal(bhvmTurn.orderCards.length, 1);
-    assert.equal(bhvmTurn.orderCards[0].orderNumber, '918273646');
-    assert.match(bhvmTurn.reply, /DLV99881122/);
-    assert.match(bhvmTurn.reply, /bhumivera\.com\/order-tracking\?order=918273646/);
-
-    const missingBhvmTurn = await processSupportTurn({
-      message: 'BHVM815899599',
-      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
-      channel: 'telegram',
-      pool: mockPool,
-    });
-    assert.match(missingBhvmTurn.reply, /could not find an order matching reference #BHVM815899599/i);
-    assert.doesNotMatch(missingBhvmTurn.reply, /What would you like to sort out/i);
-
-    const returnWordTurn = await processSupportTurn({
-      message: 'return',
-      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
-      channel: 'telegram',
-      pool: mockPool,
-    });
-    assert.match(returnWordTurn.reply, /Non-Returnable Policy/i);
-
-    const orderWordTurn = await processSupportTurn({
-      message: 'order',
-      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
-      channel: 'telegram',
-      pool: mockPool,
-    });
-    assert.match(orderWordTurn.reply, /Order #918273645/);
-
-    const shareLinkTurn = await processSupportTurn({
-      message: 'share link',
-      user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com', phone: '9876543210' },
-      pool: mockPool,
-    });
-    assert.match(shareLinkTurn.reply, /https:\/\/www\.bhumivera\.com\/shop/);
-    assert.match(shareLinkTurn.reply, /https:\/\/www\.bhumivera\.com\/product\/kumkumadi-night-elixir/);
   });
 
   it('19. AI Concierge Upgrade: Answers Brand Ambassador Program, Chained Product -> Ingredient -> 2+1 Suggestions (Sea Buckthorn Face Wash -> Niacinamide -> Usage & Timing) & 200+ Q&A Use Cases', async () => {

@@ -1,4 +1,4 @@
-try { require('dotenv').config(); } catch (_) {}
+try { require('dotenv').config({ quiet: true }); } catch (_) {}
 const { BHUMIVERA_6_PRODUCTS, LUXURY_CATALOG, MAISON_REGIMEN_BUNDLES } = require('../data/bhumiveraCatalog');
 
 /**

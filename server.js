@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ quiet: true });
 const { parseOrigins, validateProductionEnvironment } = require("./config/environment");
 validateProductionEnvironment(process.env);
 if (process.env.NODE_ENV === "production" && !process.env.OTP_SECRET?.trim()) {
@@ -23,11 +23,6 @@ const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
 const migrations = require("./migrations");
 const { approveDueReferralClaims } = require("./models/referralModel");
-const {
-  registerTelegramWebhook,
-  resolveTelegramBotToken,
-} = require("./services/telegramSupportService");
-const { getAiSupportFeatureConfig } = require("./models/aiSupportModel");
 const {
   SITE_URL,
   LUXURY_CATALOG_SKUS,
@@ -96,8 +91,6 @@ let startupFailure = null;
 let databaseInitializationPromise = null;
 let databaseRetryAfter = 0;
 let referralApprovalTimer = null;
-let telegramWebhookTimer = null;
-let telegramWebhookSetupRunning = false;
 let systemDiagnostics = null;
 app.use(createRequestObservability());
 app.use(clientContextMiddleware());
@@ -392,35 +385,6 @@ const initializeDatabaseOnce = async () => {
       referralApprovalTimer = setInterval(runReferralApprovals, 15000);
       referralApprovalTimer.unref();
     }
-    if (!telegramWebhookTimer) {
-      const configureTelegramWebhook = async () => {
-        if (telegramWebhookSetupRunning) return;
-        telegramWebhookSetupRunning = true;
-        try {
-          const featureConfig = await getAiSupportFeatureConfig(pool);
-          const webhookResult = await registerTelegramWebhook({
-            botToken: resolveTelegramBotToken(featureConfig),
-          });
-          if (!webhookResult.ok) {
-            console.error(
-              "[TELEGRAM_WEBHOOK_SETUP]",
-              webhookResult.description || webhookResult.error || "Telegram webhook registration failed."
-            );
-            return;
-          }
-          clearInterval(telegramWebhookTimer);
-          telegramWebhookTimer = null;
-          console.log("[TELEGRAM] Incoming bot webhook registered.");
-        } catch (error) {
-          console.error("[TELEGRAM_WEBHOOK_SETUP]", error.message);
-        } finally {
-          telegramWebhookSetupRunning = false;
-        }
-      };
-      void configureTelegramWebhook();
-      telegramWebhookTimer = setInterval(configureTelegramWebhook, 60000);
-      telegramWebhookTimer.unref();
-    }
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {
     databaseReady = false;
@@ -452,7 +416,6 @@ const shutdown = signal => {
     clearTimeout(forceCloseTimer);
     const shutdownTasks = [
       Promise.resolve().then(() => clearInterval(referralApprovalTimer)),
-      Promise.resolve().then(() => clearInterval(telegramWebhookTimer)),
       Promise.resolve().then(() => systemDiagnostics?.close()),
       pool.end(),
       closeRateLimitStore(),

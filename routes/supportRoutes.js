@@ -38,14 +38,6 @@ const {
   checkCustomerHasPlacedOrder,
 } = require('../models/aiSupportModel');
 const { computeQuantumHash512 } = require('../utils/quantumCrypto');
-const {
-  DEFAULT_TELEGRAM_BOT_USERNAME,
-  resolveTelegramBotToken,
-  isValidTelegramWebhookSecret,
-  sendTelegramReplyToCustomer,
-  processIncomingTelegramUpdate,
-  syncTelegramBotUpdates,
-} = require('../services/telegramSupportService');
 const { getAdminByEmail, verifyPassword: verifyAdminPassword } = require('../models/adminModel');
 const {
   buildContextualGreeting,
@@ -313,8 +305,6 @@ router.post('/chat/session', supportSessionLimiter, optionalAuthenticateCustomer
       messages,
       hasPlacedOrder: orderCheck.hasPlacedOrder,
       latestOrder: orderCheck.latestOrder,
-      telegramBotUsername: DEFAULT_TELEGRAM_BOT_USERNAME,
-      telegramBotUrl: `https://web.telegram.org/k/#@${DEFAULT_TELEGRAM_BOT_USERNAME}?start=${session.sessionToken}`,
       featureConfig: {
         proactiveTriggersEnabled: featureConfig.ai_proactive_triggers_enabled,
         proactiveLingerSeconds: featureConfig.ai_proactive_linger_seconds,
@@ -1094,16 +1084,8 @@ router.post('/sessions/:sessionToken/reply', authenticateSupportAgent, async (re
       ...(resolvedStatus === 'resolved' || resolvedStatus === 'closed' ? { closedBy: staff.role || 'agent' } : {}),
     });
 
-    // If public reply (not whisper), deliver to Telegram (if linked), Customer Email, and Mobile App Notifications
+    // If public reply (not whisper), deliver customer notifications.
     if (!isInternalNote) {
-      const tgChatId = session.pageContext?.telegramChatId;
-      if (tgChatId) {
-        sendTelegramReplyToCustomer({
-          chatId: tgChatId,
-          text: message.trim(),
-          senderName: senderLabel,
-        }).catch(() => null);
-      }
       if (session.userId) {
         try {
           await pool.query(
@@ -1633,7 +1615,7 @@ router.get('/superadmin/audit-logs', authenticateSupportAgent, async (req, res) 
 
 /**
  * POST /api/support/superadmin/test-webhook
- * Dispatches a live test ping across configured escalation channels (Telegram, WhatsApp, Email).
+ * Dispatches a live test ping across configured escalation channels.
  */
 router.post('/superadmin/test-webhook', authenticateSupportAgent, async (req, res) => {
   try {
@@ -1652,7 +1634,6 @@ router.post('/superadmin/test-webhook', authenticateSupportAgent, async (req, re
       channel,
       dispatchedAt: new Date().toISOString(),
       channels: {
-        telegram: process.env.SUPPORT_TELEGRAM_WEBHOOK_URL ? 'sent' : 'simulated_ready',
         whatsapp: process.env.SUPPORT_WHATSAPP_WEBHOOK_URL ? 'sent' : 'simulated_ready',
         email: process.env.SUPPORT_ESCALATION_EMAIL || 'support@bhumivera.com',
       },
@@ -1859,44 +1840,6 @@ router.delete('/sessions/:sessionToken', authenticateSupportAgent, async (req, r
   }
 });
 
-/**
- * POST /api/support/telegram/webhook
- * Live webhook receiver for @BhumiveraBot Telegram messages from customers.
- */
-router.post('/telegram/webhook', async (req, res) => {
-  try {
-    const featureConfig = await getAiSupportFeatureConfig(pool);
-    if (!isValidTelegramWebhookSecret(
-      req.get('x-telegram-bot-api-secret-token'),
-      resolveTelegramBotToken(featureConfig)
-    )) {
-      return res.status(401).json({ ok: false, message: 'Invalid Telegram webhook secret.' });
-    }
-    const result = await processIncomingTelegramUpdate(req.body || {}, { pool });
-    return res.status(200).json({ ok: true, ...result });
-  } catch (error) {
-    console.error('[TELEGRAM_WEBHOOK_ERR]', error);
-    return res.status(200).json({ ok: false });
-  }
-});
-
-/**
- * POST /api/support/telegram/sync
- * Polls @BhumiveraBot for new customer Telegram messages and syncs them into the live support queue.
- */
-router.post('/telegram/sync', authenticateSupportAgent, async (_req, res) => {
-  try {
-    const syncRes = await syncTelegramBotUpdates({ pool });
-    if (syncRes.error) {
-      return res.status(502).json({ success: false, message: syncRes.error });
-    }
-    return res.json({ success: true, ...syncRes });
-  } catch (error) {
-    console.error('[TELEGRAM_MANUAL_SYNC_ERR]', error);
-    return res.status(500).json({ message: 'Could not sync Telegram bot updates.' });
-  }
-});
-
 router.get('/superadmin/overview', authenticateSupportAgent, async (req, res) => {
   try {
     await ensureTables();
@@ -1947,11 +1890,6 @@ router.get('/superadmin/overview', authenticateSupportAgent, async (req, res) =>
       roleMatrix: ROLE_DEFAULT_PERMISSIONS,
       roleBenchmarks: ROLE_BENCHMARKS,
       viewer: req.supportAgent,
-      telegramBot: {
-        username: DEFAULT_TELEGRAM_BOT_USERNAME,
-        url: `https://t.me/${DEFAULT_TELEGRAM_BOT_USERNAME}`,
-        active: true,
-      },
       customerReviews: sessions
         .filter(s => s.csatRating)
         .map(s => ({

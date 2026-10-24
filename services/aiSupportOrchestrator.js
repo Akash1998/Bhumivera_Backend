@@ -107,7 +107,7 @@ function extractOrderRefFromHistory(history = []) {
 
 /**
  * Intent classifier & deterministic tool-call planner.
- * Handles Website, Mobile App, and Telegram (@BhumiveraBot) queries A-to-Z.
+ * Handles Website and Mobile App queries A-to-Z.
  */
 function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, history = [] } = {}) {
   const rawText = String(message || '').trim();
@@ -152,7 +152,7 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     /\b(?:initiate|start|request|process|submit)\s+(?:a\s+)?(?:return|replacement|refund)\b|\b(?:want|need|request)\s+(?:a\s+)?(?:refund|return|replacement)\b|\b(?:how\s+(?:can|do)\s+i|would\s+like\s+to|want\s+to|need\s+to)\s+(?:return|replace|exchange|refund)\b|\b(?:want|need|would like|request)\s+to\s+cancel\b|\bcancel\s+(?:my|this|the)\b|\breturn\s+(?:my|this|the)\s+(?:item|product|purchase|package)\b|\b(?:my|your)\s+(?:gst\s+)?(?:tax\s+)?(?:invoice|receipt|order\s+history|purchase\s+history)\b|\bwhat\s+(?:did|have)\s+i\s+order(?:ed)?\b/i.test(rawText) ||
     /\b(?:my|this|that|latest|recent)\s+(?:orders?|delivery|shipment|package|parcel|refund|return)\b|\b(?:where\s+is|when\s+will|check)\s+my\s+(?:order|delivery|shipment|package|parcel|refund)\b|\border\b.{0,40}\b(?:status|details|history|track|tracking|cancel|return|refund|invoice|delivery|placed|arrive|shipped)\b|\b(?:track|cancel|return|replace|refund|invoice)\b.{0,40}\border\b|\b(?:refund\s+status|return\s+status|download\s+(?:my\s+)?invoice|send\s+me\s+(?:my\s+)?invoice)\b|^(?:orders?|tracking|refund\s*status|rma\s*status|cancel|cancellation|return|returns|replace|replacement)$/i.test(rawText)
   );
-  if (pageContext.channel !== 'telegram' && orderSupportRequest) {
+  if (orderSupportRequest) {
     return {
       intent: 'order_support_redirect',
       toolPlan,
@@ -160,7 +160,6 @@ function detectIntentAndToolPlan(message = '', { user = null, pageContext = {}, 
     };
   }
   if (
-    pageContext.channel !== 'telegram' &&
     (
       /^(agent|human|support|live\s*agent|executive|supervisor|manager|escalate|helpdesk)$/i.test(text) ||
       SUPPORT_REQUEST_PATTERN.test(rawText) ||
@@ -562,35 +561,17 @@ function synthesizeDeterministicResponse({
       accountLine += `\n🎁 **Active Offer:** Use code \`${topCoupon.code}\` at checkout!`;
     }
 
-    if (channel !== 'telegram') {
-      return {
-        reply:
-          `Hello${firstName ? ` ${firstName}` : ''}! Welcome to **Bhumivera Client Concierge**.\n\n` +
-          `I can help with botanical products and ingredients, skincare routines, website navigation, shipping and return policies, rewards, and personalized skin guidance. ` +
-          `For details or changes relating to a specific order, please use **Profile → Support** so customer care can review it securely.`,
-        quickActions: [
-          { id: 'know_sb_fw', label: 'Sea Buckthorn Face Wash', prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients' },
-          { id: 'ing_niacinamide', label: 'Ingredient: Niacinamide', prompt: 'Tell me about Niacinamide in Sea Buckthorn Face Wash' },
-          { id: 'how_to_join', label: 'Brand Ambassador Program', prompt: 'How do I join the Bhumivera Brand Ambassador Program?' },
-          { id: 'active_coupons', label: 'Available Coupons', prompt: 'Show my available discount coupons' },
-        ],
-      };
-    }
-
     return {
       reply:
-        `Hello${firstName ? ` ${firstName}` : ''}! Welcome to **Bhumivera Support** (**Bhumivera Client Concierge**).\n\n` +
-        `Here is everything I can help you with right here in chat or on Telegram (@BhumiveraBot):\n` +
-        `• **Botanical Products & Ingredients:** Click **Sea Buckthorn Face Wash**, **Charcoal Face Wash**, **Niacinamide**, or **Hyaluronic Acid** to explore listed ingredients, synergies, and AM/PM usage timing\n` +
-        `• **Brand Ambassador Program:** Ask how to join and share your personal referral link\n` +
-        `• **Track Any Order:** Send your 9-digit Order Number or BHVM ID (e.g., \`BHVM815899599\` or \`#918273646\`)\n` +
-        `• **Returns & Replacements:** Type \`return #<OrderNumber>\` or \`replace #<OrderNumber>\` for instant RMA pickup\n` +
-        `• **Coupons & Wallet:** Type \`my coupons\` or \`my wallet\` to check live balances & promo codes` +
+        `Hello${firstName ? ` ${firstName}` : ''}! Welcome to **Bhumivera Client Concierge**.\n\n` +
+        `I can help with botanical products and ingredients, skincare routines, website navigation, shipping and return policies, rewards, and personalized skin guidance. ` +
+        `For details or changes relating to a specific order, please use **Profile → Support** so customer care can review it securely.` +
         accountLine,
       quickActions: [
-        { id: 'know_sb_fw', label: 'Know More: Sea Buckthorn Face Wash', prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients' },
+        { id: 'know_sb_fw', label: 'Sea Buckthorn Face Wash', prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients' },
         { id: 'ing_niacinamide', label: 'Ingredient: Niacinamide', prompt: 'Tell me about Niacinamide in Sea Buckthorn Face Wash' },
         { id: 'how_to_join', label: 'Brand Ambassador Program', prompt: 'How do I join the Bhumivera Brand Ambassador Program?' },
+        { id: 'active_coupons', label: 'Available Coupons', prompt: 'Show my available discount coupons' },
         { id: 'my_orders', label: 'My Orders & Tracking', prompt: 'Show my recent orders' },
       ],
     };
@@ -686,7 +667,6 @@ function synthesizeDeterministicResponse({
         `• **Live Order Tracking:** https://www.bhumivera.com/order-tracking\n` +
         `• **Customer Profile & Ambassador Program:** https://www.bhumivera.com/profile\n` +
         `• **E-Warranty & Serial Check:** https://www.bhumivera.com/e-warranty\n` +
-        `• **Telegram Support Bot:** https://t.me/BhumiveraBot` +
         referralLine +
         (productLinks ? `\n\n**Featured Product Share Links:**\n${productLinks}` : ''),
       quickActions: [
@@ -1055,21 +1035,6 @@ function synthesizeDeterministicResponse({
     };
   }
 
-  if (channel !== 'telegram') {
-    return {
-      reply:
-        `Welcome to **Bhumivera Client Concierge**. I can help with our products, ingredients, skincare routines, website guidance, rewards, and store policies. ` +
-        `For a specific order, delivery, return, or refund request, please open **Profile → Support** to contact customer care.`,
-      quickActions: [
-        { id: 'know_sb_fw', label: 'Sea Buckthorn Face Wash', prompt: 'Tell me about Sea Buckthorn Face Wash and its key ingredients' },
-        { id: 'ing_niacinamide', label: 'Ingredient: Niacinamide', prompt: 'Tell me about Niacinamide in Sea Buckthorn Face Wash' },
-        { id: 'how_to_join', label: 'Brand Ambassador Program', prompt: 'How do I join the Bhumivera Brand Ambassador Program?' },
-        { id: 'usage_guide', label: 'How to Use Face Wash', prompt: 'How do I really use Sea Buckthorn Face Wash and what time of day should I use it?' },
-      ],
-    };
-  }
-
-  // Rich fallback for Telegram, which remains connected to its support workflow.
   return {
     reply:
       `Welcome to **Bhumivera Client Concierge**! Here are our most popular guides and instant actions you can explore right now:\n\n` +

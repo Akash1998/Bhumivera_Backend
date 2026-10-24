@@ -828,7 +828,10 @@ const migrations = [
   {
     version: 70,
     name: 'retired synthetic customer review replacement',
-    previousNames: ['replace legacy bot reviews with 1080 natural multi-length Indian marketplace reviews v3'],
+    previousNames: [
+      'replace legacy bot reviews with 1080 natural multi-length Indian marketplace reviews v3',
+      'reconcile database-backed customer reviews and product ratings',
+    ],
     up: async () => {},
   },
   {

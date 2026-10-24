@@ -159,14 +159,16 @@ describe('runMigrations', () => {
     assert.equal(pool.applied.get(71), historicalNames.get(71));
   });
 
-  it('accepts the historical Telegram cleanup name recorded in production', async () => {
+  it('accepts historical production names for retired review migrations', async () => {
     const pool = createPool();
+    const historicalNames = new Map([
+      [69, 'remove Telegram support configuration and session links'],
+      [70, 'reconcile database-backed customer reviews and product ratings'],
+    ]);
     for (const migration of migrations) {
       pool.applied.set(
         migration.version,
-        migration.version === 69
-          ? 'remove Telegram support configuration and session links'
-          : migration.name
+        historicalNames.get(migration.version) || migration.name
       );
     }
 
@@ -175,6 +177,10 @@ describe('runMigrations', () => {
     assert.equal(
       pool.applied.get(69),
       'remove Telegram support configuration and session links'
+    );
+    assert.equal(
+      pool.applied.get(70),
+      'reconcile database-backed customer reviews and product ratings'
     );
   });
 

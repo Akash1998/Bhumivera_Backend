@@ -1,6 +1,6 @@
 // backend/models/wishlistModel.js
 const pool = require('../config/db');
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const CLOUDFRONT_BASE_URL = (process.env.CLOUDFRONT_BASE_URL || 'https://pub-70fdb5d94df347c4bed417c28b066c02.r2.dev/bhumivera').replace(/\/$/, '');
 
 const createWishlistTable = async () => {
