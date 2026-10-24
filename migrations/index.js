@@ -9,7 +9,7 @@ const { initReturnsTable } = require('../models/returnModel');
 const { initContactTable } = require('../models/contactModel');
 const { initAdminTable } = require('../models/adminModel');
 const { createUsersTable, initAuthTables } = require('../models/userModel');
-const { createReviewTable, seedAllCustomerReviews } = require('../models/reviewModel');
+const { createReviewTable } = require('../models/reviewModel');
 const { createNotificationTable } = require('../models/notificationModel');
 const { createClientErrorTable } = require('../models/clientErrorModel');
 const { createSettingsTable } = require('../models/settingsModel');
@@ -783,6 +783,7 @@ const migrations = [
   {
     version: 66,
     name: 'purge legacy catalog artifacts and seed luxury geo catalog',
+    previousNames: ['purge legacy anritvox artifacts and seed luxury geo catalog'],
     up: () => seedLuxuryCatalog(pool),
   },
   {
@@ -817,23 +818,21 @@ const migrations = [
   },
   {
     version: 69,
-    name: 'seed 1080 classified customer reviews (2020-2026) and sync product ratings',
-    up: () => seedAllCustomerReviews(pool),
+    name: 'retired synthetic customer review seed',
+    previousNames: ['seed 1080 classified customer reviews (2020-2026) and sync product ratings'],
+    up: async () => {},
   },
   {
     version: 70,
-    name: 'replace legacy bot reviews with 1080 natural multi-length Indian marketplace reviews v3',
-    up: () => seedAllCustomerReviews(pool),
+    name: 'retired synthetic customer review replacement',
+    previousNames: ['replace legacy bot reviews with 1080 natural multi-length Indian marketplace reviews v3'],
+    up: async () => {},
   },
   {
     version: 71,
-    name: 'purge bot reviews and reseed 1080 authentic pan-India multilingual marketplace reviews v4',
-    up: async () => {
-      try {
-        await pool.query("DELETE FROM reviews WHERE order_number LIKE 'BV-ORD-%'");
-      } catch (_) {}
-      return seedAllCustomerReviews(pool);
-    },
+    name: 'retired destructive customer review purge',
+    previousNames: ['purge bot reviews and reseed 1080 authentic pan-India multilingual marketplace reviews v4'],
+    up: async () => {},
   },
 ];
 

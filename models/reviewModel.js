@@ -6,42 +6,21 @@ try {
 } catch (_) {
   pool = { query: async () => [[]] };
 }
-const { INITIAL_REVIEWS_SEED } = require('../data/bhumiveraReviewsData');
 const { LUXURY_CATALOG } = require('../data/luxuryCatalog');
 
 const STORE_FILE_PATH = path.join(__dirname, '../data/reviewsDatabaseStore.json');
-
-const LEGACY_BOT_SNIPPETS = [
-  'premium feel, thoughtful formulation',
-  'gentle on my sensitive skin and absorbs quickly',
-  'noticed a more even tone and less oiliness through the day',
-  'lovely texture and a subtle natural scent. no tightness after washing',
-  'my skin feels calmer and clearer after a few weeks of regular use'
-];
-
-const isLegacyBotReview = r => {
-  if (!r) return false;
-  const body = String(r.body || r.comment || '').toLowerCase();
-  return LEGACY_BOT_SNIPPETS.some(s => body.includes(s));
-};
 
 function loadPersistedStore() {
   try {
     if (fs.existsSync(STORE_FILE_PATH)) {
       const raw = fs.readFileSync(STORE_FILE_PATH, 'utf8');
       const parsed = JSON.parse(raw);
-      if (
-        Array.isArray(parsed) &&
-        parsed.length >= 1000 &&
-        !parsed.some(isLegacyBotReview)
-      ) {
-        return parsed;
-      }
+      if (Array.isArray(parsed)) return parsed;
     }
   } catch (err) {
     console.warn('[REVIEWS_STORE_LOAD_WARN]', err.message);
   }
-  return INITIAL_REVIEWS_SEED.map(r => ({ ...r }));
+  return [];
 }
 
 function savePersistedStore(reviews) {
@@ -149,83 +128,6 @@ const syncProductStats = async (productId, customPool = null) => {
       WHERE p.id = ?
     `, [productId]);
   } catch (_) {}
-};
-
-/**
- * Automatically seeds all 1,080 classified customer reviews (2020–2026) into MySQL database
- * idempotently and updates product ratings and review counts.
- */
-const seedAllCustomerReviews = async (customPool = null) => {
-  const db = customPool || pool;
-  await createReviewTable(db);
-
-  // Map product slugs to actual DB product IDs if seeded
-  const productSlugToDbId = new Map();
-  const [pRows] = await db.query('SELECT id, slug FROM products');
-  for (const row of (pRows || [])) {
-    if (row.slug) productSlugToDbId.set(row.slug, row.id);
-  }
-
-  // Ensure a default patron user exists if foreign key constraints are active on legacy tables
-  let defaultUserId = null;
-  const [uRows] = await db.query('SELECT id FROM users ORDER BY id LIMIT 1');
-  if (uRows?.[0]?.id) {
-    defaultUserId = uRows[0].id;
-  }
-
-  // Check which order_numbers are already seeded in the database
-  const allOrderNumbers = INITIAL_REVIEWS_SEED.map(r => r.order_number);
-  const placeholders = allOrderNumbers.map(() => '?').join(', ');
-  const [existingRows] = await db.query(
-    `SELECT order_number FROM reviews WHERE order_number IN (${placeholders})`,
-    allOrderNumbers
-  );
-  const existingOrderNumbers = new Set((existingRows || []).map(r => r.order_number));
-
-  let insertedCount = 0;
-  for (const r of INITIAL_REVIEWS_SEED) {
-    if (existingOrderNumbers.has(r.order_number)) continue;
-    const targetProdId = productSlugToDbId.get(r.product_slug) || r.product_id;
-    const mysqlDate = new Date(r.created_at).toISOString().slice(0, 19).replace('T', ' ');
-    await db.query(
-      `INSERT IGNORE INTO reviews
-        (product_id, user_id, order_id, order_number, reviewer_name, reviewer_location,
-         category_tag, is_combo_review, combo_name, rating, title, body, images, videos,
-         helpful_count, public_story_consent, is_approved, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        targetProdId,
-        defaultUserId,
-        null,
-        r.order_number,
-        r.reviewer_name || r.user_name,
-        r.reviewer_location || 'India',
-        r.category_tag || 'Quick & Everyday Impressions',
-        r.is_combo_review ? 1 : 0,
-        r.combo_name || null,
-        r.rating,
-        r.title,
-        r.body,
-        JSON.stringify(r.images || []),
-        JSON.stringify(r.videos || []),
-        r.helpful_count || 5,
-        r.public_story_consent ? 1 : 0,
-        1,
-        mysqlDate,
-        mysqlDate
-      ]
-    );
-    insertedCount += 1;
-  }
-
-  const productIdsToSync = productSlugToDbId.size > 0
-    ? [...new Set(INITIAL_REVIEWS_SEED.map(r => productSlugToDbId.get(r.product_slug) || r.product_id))]
-    : [1, 2, 3, 4, 5, 6];
-
-  for (const pid of productIdsToSync) {
-    await syncProductStats(pid, db);
-  }
-  return insertedCount;
 };
 
 const createReview = async (data) => {
@@ -582,18 +484,23 @@ const approveReview = async (id) => {
   return true;
 };
 
-const rejectReview = async (id) => {
+const archiveReview = async (id) => {
+  const [rows] = await pool.query('SELECT id, product_id FROM reviews WHERE id = ?', [id]);
+  if (!rows?.[0]) return false;
+
+  await pool.query('UPDATE reviews SET is_approved = 0 WHERE id = ?', [id]);
   const memIdx = memoryReviewsStore.findIndex(r => String(r.id) === String(id));
-  let removed = null;
   if (memIdx !== -1) {
-    removed = memoryReviewsStore.splice(memIdx, 1)[0];
+    memoryReviewsStore[memIdx] = {
+      ...memoryReviewsStore[memIdx],
+      is_approved: 0,
+      status: 'pending',
+      updated_at: new Date().toISOString(),
+    };
     savePersistedStore(memoryReviewsStore);
   }
-  try {
-    await pool.query('DELETE FROM reviews WHERE id = ?', [id]);
-  } catch (_) {}
-  if (!removed) return [];
-  return (removed.images || []).filter(image => typeof image === 'string' && image.startsWith('reviews/'));
+  await syncProductStats(rows[0].product_id);
+  return true;
 };
 
 const getUserReviews = async (userId) => {
@@ -609,17 +516,16 @@ const getUserReviews = async (userId) => {
   return memoryReviewsStore.filter(r => Number(r.user_id) === Number(userId)).map(parseReview);
 };
 
-module.exports = { 
-  createReviewTable, 
-  seedAllCustomerReviews,
+module.exports = {
+  createReviewTable,
   createReview,
   createReviewAsAdmin,
-  getReviewsByProduct, 
+  getReviewsByProduct,
   getPublicCustomerStories,
-  getProductRatingSummary, 
-  getAllReviews, 
-  approveReview, 
-  rejectReview, 
+  getProductRatingSummary,
+  getAllReviews,
+  approveReview,
+  archiveReview,
   getUserReviews,
   updateReviewAsAdmin,
   syncProductStats

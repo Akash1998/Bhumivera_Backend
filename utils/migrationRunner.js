@@ -7,7 +7,10 @@ const validateMigrations = migrations => {
   for (const migration of migrations) {
     if (!Number.isSafeInteger(migration.version) || migration.version < 1 ||
         typeof migration.name !== 'string' || !migration.name.trim() ||
-        typeof migration.up !== 'function') {
+        typeof migration.up !== 'function' ||
+        (migration.previousNames !== undefined &&
+          (!Array.isArray(migration.previousNames) ||
+            migration.previousNames.some(name => typeof name !== 'string' || !name.trim())))) {
       throw new Error('Each migration requires a positive integer version, name, and up function.');
     }
     if (versions.has(migration.version) || migration.version <= previousVersion) {
@@ -57,7 +60,7 @@ async function runMigrations(pool, migrations, { logger = console } = {}) {
         throw new Error(`Database has migration ${version} (${name}) which this application does not know about.`);
       }
       const migration = migrations.find(candidate => candidate.version === version);
-      if (migration.name !== name) {
+      if (migration.name !== name && !migration.previousNames?.includes(name)) {
         throw new Error(`Migration ${version} name mismatch: database has "${name}", application has "${migration.name}".`);
       }
       expectedAppliedVersion += 1;

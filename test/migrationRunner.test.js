@@ -123,6 +123,42 @@ describe('runMigrations', () => {
     assert.match(statements.at(-1), /DELETE FROM user_product_views/);
   });
 
+  it('keeps retired review-seed migrations as no-op history markers', async () => {
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      return [{}, []];
+    };
+
+    try {
+      for (const migration of migrations.filter(({ version }) => version >= 69 && version <= 71)) {
+        await migration.up();
+      }
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.deepEqual(statements, []);
+  });
+
+  it('accepts already-recorded names for retired review migrations', async () => {
+    const pool = createPool();
+    const historicalNames = new Map([
+      [69, 'seed 1080 classified customer reviews (2020-2026) and sync product ratings'],
+      [70, 'replace legacy bot reviews with 1080 natural multi-length Indian marketplace reviews v3'],
+      [71, 'purge bot reviews and reseed 1080 authentic pan-India multilingual marketplace reviews v4'],
+    ]);
+    for (const migration of migrations) {
+      pool.applied.set(migration.version, historicalNames.get(migration.version) || migration.name);
+    }
+
+    await runMigrations(pool, migrations, { logger });
+
+    assert.equal(pool.applied.size, migrations.length);
+    assert.equal(pool.applied.get(71), historicalNames.get(71));
+  });
+
   it('seeds default post-order spin rewards without replacing existing admin settings', async () => {
     const migration = migrations.find(candidate => candidate.name === 'seed default post-order spin rewards');
     const originalQuery = pool.query;
@@ -192,6 +228,37 @@ describe('runMigrations', () => {
 
     assert.equal(executionCount, 2);
     assert.deepEqual([...pool.applied], [[1, 'first schema change'], [2, 'second schema change']]);
+  });
+
+  it('accepts a known historical migration name without rerunning the migration', async () => {
+    const pool = createPool();
+    const historicalName = 'purge legacy anritvox artifacts and seed luxury geo catalog';
+    for (const migration of migrations) {
+      pool.applied.set(
+        migration.version,
+        migration.version === 66 ? historicalName : migration.name
+      );
+    }
+
+    await runMigrations(pool, migrations, { logger });
+
+    assert.equal(pool.applied.get(66), historicalName);
+    assert.equal(pool.applied.size, migrations.length);
+  });
+
+  it('still rejects unknown historical migration names', async () => {
+    const pool = createPool();
+    pool.applied.set(1, 'unexpected migration name');
+
+    await assert.rejects(
+      runMigrations(pool, [{
+        version: 1,
+        name: 'current migration name',
+        previousNames: ['known historical name'],
+        up: async () => {},
+      }], { logger }),
+      /Migration 1 name mismatch/
+    );
   });
 
   it('does not record failures and can retry the failed migration', async () => {

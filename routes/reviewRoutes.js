@@ -17,7 +17,7 @@ const {
   getPublicCustomerStories,
   getAllReviews,
   approveReview,
-  rejectReview,
+  archiveReview,
   getUserReviews,
   updateReviewAsAdmin,
   syncProductStats
@@ -346,16 +346,12 @@ router.put('/:id/approve', authenticateAdmin, async (req, res) => {
   }
 });
 
-// DELETE /api/reviews/:id - admin: delete review
+// DELETE /api/reviews/:id - admin: hide a review without removing its database record
 router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
-    const images = await rejectReview(req.params.id);
-    if (!images) return res.status(404).json({ message: 'Review not found.' });
-    const orphanedImages = await cleanupReviewImages(images);
-    res.json({
-      message: 'Review deleted',
-      ...(orphanedImages.length ? { warning: 'Review was deleted, but some photos could not be removed from storage.' } : {})
-    });
+    const archived = await archiveReview(req.params.id);
+    if (!archived) return res.status(404).json({ message: 'Review not found.' });
+    res.json({ message: 'Review hidden from customers and retained in the database.' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to delete review' });

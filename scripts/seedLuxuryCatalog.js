@@ -1,6 +1,5 @@
 try { require('dotenv').config(); } catch (_) {}
 const { BHUMIVERA_6_PRODUCTS, LUXURY_CATALOG } = require('../data/bhumiveraCatalog');
-const { seedAllCustomerReviews } = require('../models/reviewModel');
 
 /**
  * Idempotent catalog seeder used by migrations & unit tests (pool.query)
@@ -153,12 +152,6 @@ async function seedAll6Products(existingConnection = null) {
     console.log('✅ Upserted:', p.name);
   }
 
-  try {
-    const seededReviews = await seedAllCustomerReviews(connection);
-    console.log(`✅ Seeded ${seededReviews} classified customer reviews (2020–2026) into MySQL!`);
-  } catch (e) {
-    console.warn('[REVIEWS_SEED_WARN]', e.message);
-  }
   if (!existingConnection) {
     await connection.end();
   }
