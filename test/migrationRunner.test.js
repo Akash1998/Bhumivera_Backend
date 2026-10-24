@@ -100,7 +100,32 @@ describe('runMigrations', () => {
 
     await assert.rejects(
       runMigrations(historyPool, migrations, { logger }),
-      error => error.code === 'MIGRATION_HISTORY_NOT_CONTIGUOUS' && error.migrationPhase === 'validate_history'
+      error => error.code === 'MIGRATION_HISTORY_NOT_CONTIGUOUS'
+        && error.migrationPhase === 'validate_history'
+    );
+  });
+
+  it('identifies the version of a migration name mismatch', async () => {
+    const historyPool = {
+      async getConnection() {
+        return {
+          async query() {
+            return [[{ lock_acquired: 1 }]];
+          },
+          release() {},
+        };
+      },
+      async query(sql) {
+        if (sql.includes('CREATE TABLE IF NOT EXISTS schema_migrations')) return [[], []];
+        return [[{ version: 1, name: 'old migration name' }], []];
+      },
+    };
+
+    await assert.rejects(
+      runMigrations(historyPool, migrations, { logger }),
+      error => error.code === 'MIGRATION_NAME_MISMATCH'
+        && error.migrationPhase === 'validate_history'
+        && error.migrationHistoryVersion === 1
     );
   });
 

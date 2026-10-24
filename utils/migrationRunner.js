@@ -71,12 +71,14 @@ async function runMigrations(pool, migrations, { logger = console } = {}) {
       if (!pendingVersions.has(version)) {
         const error = new Error(`Database has migration ${version} (${name}) which this application does not know about.`);
         error.code = 'MIGRATION_UNKNOWN_VERSION';
+        error.migrationHistoryVersion = version;
         throw error;
       }
       const migration = migrations.find(candidate => candidate.version === version);
       if (migration.name !== name) {
         const error = new Error(`Migration ${version} name mismatch: database has "${name}", application has "${migration.name}".`);
         error.code = 'MIGRATION_NAME_MISMATCH';
+        error.migrationHistoryVersion = version;
         throw error;
       }
       expectedAppliedVersion += 1;
