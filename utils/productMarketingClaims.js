@@ -1,5 +1,5 @@
 const UNSUPPORTED_CLAIM_PATTERNS = [
-  /\b(?:100\s*%\s*guaranteed\s+medical\s+cure|cures\s+cancer|network\s+marketing|multi[\s-]*level\s+marketing|mlm\s+scheme|pyramid\s+scheme)\b/gi,
+  /\b(?:100\s*%\s*guaranteed\s+medical\s+cure|cures\s+cancer|car\s+equipment\s+upgrades|android\s+player|network\s+marketing|multi[\s-]*level\s+marketing|mlm\s+scheme|pyramid\s+scheme)\b/gi,
 ];
 
 const cleanProductMarketingText = value => {

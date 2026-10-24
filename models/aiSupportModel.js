@@ -63,7 +63,7 @@ const ROLE_BENCHMARKS = Object.freeze({
     dailyCreditCapInr: 50000,
     canDeleteResolvedChats: true,
     canIssueUnlimitedCoupons: true,
-    summary: 'Full executive authority: Can delete resolved/closed chats, issue multiple coupons without per-customer limits, and override credit caps.',
+    summary: 'Full executive authority: Can delete resolved/closed chats, issue multiple coupons without per-customer limits, override credit caps, and govern all security & Telegram settings.',
   }),
 });
 
@@ -158,6 +158,7 @@ const DEFAULT_AI_SUPPORT_FEATURES = Object.freeze({
   support_sla_critical_minutes: 15,
   support_sla_high_minutes: 30,
   support_sla_medium_minutes: 120,
+  telegram_alerts_enabled: true,
   whatsapp_alerts_enabled: true,
   email_alerts_enabled: true,
   allow_customer_status_change: false,

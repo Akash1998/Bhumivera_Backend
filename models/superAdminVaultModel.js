@@ -154,6 +154,7 @@ const PLATFORM_MODULES_CATALOG = Object.freeze([
   { key: 'concierge.escalation_tickets', title: 'Verified 12-Hour Callback & Email Escalation Queue', category: 'Bhumivera Client Concierge', portal: 'support', adminTab: 'support', apiPrefixes: ['/api/support/tickets', '/api/superadmin/controlcentre/escalations'] },
   { key: 'concierge.universal_order_lookup', title: 'Support Desk Order, AWB, Email & Phone Verification', category: 'Bhumivera Client Concierge', portal: 'support', adminTab: 'support', apiPrefixes: ['/api/support/universal-search'] },
   { key: 'concierge.courtesy_benefit_guard', title: 'One-Time Courtesy Coupon & Goodwill Cap Guard', category: 'Bhumivera Client Concierge', portal: 'superadminsupport', adminTab: 'support', apiPrefixes: ['/api/support/sessions'] },
+  { key: 'concierge.telegram_bridge', title: 'Omnichannel Telegram (@BhumiveraBot) Sync', category: 'Bhumivera Client Concierge', portal: 'superadminsupport', adminTab: 'support', apiPrefixes: ['/api/support/telegram'] },
   { key: 'concierge.canned_response_macros', title: 'Luxury Concierge Response Macros & SLA Timers', category: 'Bhumivera Client Concierge', portal: 'superadminsupport', adminTab: 'support', apiPrefixes: ['/api/support/superadmin/features'] },
   { key: 'concierge.csat_quality_board', title: 'Client Satisfaction (CSAT) Reviews & Transcript Purge', category: 'Bhumivera Client Concierge', portal: 'superadminsupport', adminTab: 'support', apiPrefixes: ['/api/support/superadmin/overview'] },
 

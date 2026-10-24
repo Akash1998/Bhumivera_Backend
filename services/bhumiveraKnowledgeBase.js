@@ -139,20 +139,6 @@ const INGREDIENT_MEMORY_GRAPH = Object.freeze({
     summary: 'The gold standard of botanical radiance (Crocus sativus). Rich in crocin and safranal, it stimulates cellular micro-renewal, accelerates the fading of stubborn post-inflammatory hyperpigmentation, and imparts an incomparable golden warmth and luminosity to the complexion.',
     relatedIngredients: ['kumkumadi', 'haridra'],
   },
-  postbiotic_lactobacillus: {
-    id: 'postbiotic_lactobacillus',
-    name: 'Postbiotic Lactobacillus Ferment',
-    aliases: ['postbiotic', 'lactobacillus ferment', 'postbiotics'],
-    summary: 'Bio-fermented lactic acid and antimicrobial bacteriocin metabolites calibrated at 1.0%–1.5% in Bhumivera Postbiotic Cellular Emulsions. Reinforces epidermal tight-junction claudin-1 expression and stabilizes the facial acid mantle at pH 5.3–5.5 to inhibit virulent Cutibacterium acnes IA1 without stripping.',
-    relatedIngredients: ['sea_buckthorn', 'niacinamide'],
-  },
-  prebiotic_gos: {
-    id: 'prebiotic_gos',
-    name: 'Prebiotic Galactooligosaccharides (GOS)',
-    aliases: ['galactooligosaccharides', 'prebiotic gos', 'prebiotic'],
-    summary: 'Enzymatic plant oligosaccharide complex (2.0%) that selectively feeds protective commensal Staphylococcus epidermidis on the skin barrier while starving inflammatory pathogens.',
-    relatedIngredients: ['postbiotic_lactobacillus', 'sea_buckthorn'],
-  },
 });
 
 const PRODUCT_INGREDIENT_GRAPH = Object.freeze({
@@ -206,32 +192,6 @@ const PRODUCT_INGREDIENT_GRAPH = Object.freeze({
       '4. **5.0% Botanical Glycerin & Hyaluronic Acid:** Cushions the deep cleanse with multi-layer humectants, ensuring zero tightness, rebound oiliness, or moisture barrier damage.',
       '5. **Skin-Identical pH 5.5 Calibration:** Maintains your natural protective acid mantle while removing daily urban grime, making it ideal for daily evening detox.',
       '\n**Directions for Visible Results:** Massage gently over damp face for 30–45 seconds, focusing on congested zones (nose, chin, forehead), then rinse clean with lukewarm water.',
-    ].join('\n'),
-  },
-  gut_skin_protocol: {
-    id: 'gut_skin_protocol',
-    name: 'The Biotic Cellular Reset: 30-Day 2-Step Gut-Skin Protocol',
-    aliases: ['gut skin protocol', 'biotic cellular reset', '30 day gut skin protocol', 'kalpvriksh satva', '7 tulsi drops'],
-    subtitle: 'Step 1 Internal 90% 7-Tulsi Cellular Reset Drops + Step 2 External 4% Sea Buckthorn Postbiotic Emulsion (pH 5.42)',
-    keyActives: [
-      { id: 'tulsi', name: '7-Cultivar Kalpvriksh Satva Tulsi', concentration: '9.0 ml per 10 ml (90% Potency)' },
-      { id: 'sea_buckthorn', name: 'Wild Himalayan Sea Buckthorn', concentration: '4.0% Sub-28°C Cold-Extracted (Omega-7)' },
-      { id: 'postbiotic_lactobacillus', name: 'Postbiotic Lactobacillus Ferment', concentration: '1.5% Acid-Mantle Buffer' },
-      { id: 'glycerin', name: 'Botanical Glycerin', concentration: '5.0%' },
-      { id: 'niacinamide', name: 'Niacinamide (Vitamin B3)', concentration: '0.1%' },
-      { id: 'hyaluronic_acid', name: 'Hyaluronic Acid', concentration: '0.1%' },
-    ],
-    usage: 'Step 1 Internal: Blend 4 concentrated drops of Kalpvriksh Satva 7-Tulsi Drops in 100 ml lukewarm water every morning on an empty stomach. Step 2 External: Massage 2 pumps of Himalayan Sea Buckthorn Postbiotic Emulsion onto damp skin for 30 to 45 seconds morning and night.',
-    convincingBreakdown: [
-      '**The Biotic Cellular Reset: 30-Day 2-Step Synchronized Gut-Skin Protocol (₹1,199)**',
-      '*“Step 1 Internal 90% 7-Tulsi Cellular Reset + Step 2 External 4% Sea Buckthorn Postbiotic Emulsion”*',
-      'Here is how our category-defining Inside-Out Biotic Protocol resolves chronic skin inflammation at the root:\n',
-      '1. **Step 1 Internal — Sealing the Gut Mucosal Barrier (9.0 ml / 10 ml 7-Tulsi Extract):** Unites Van, Sweet, Marua, Bisva, Kala, Rama, and Lemon Tulsi rich in Eugenol, Rosmarinic Acid, and Ursolic Acid to downregulate intestinal COX-2 and seal ZO-1/occludin tight junctions.',
-      '2. **Suppressing Systemic Cytokines (TNF-α, IL-6 & IL-17):** By halting intestinal lipopolysaccharide (LPS) endotoxemia, Step 1 stops systemic inflammatory cytokines from triggering sebaceous gland hyperplasia and oxidized sebum.',
-      '3. **Step 2 External — 4.0% Sub-28°C Ladakh Sea Buckthorn (Omega-7):** Wildcrafted above 11,000 ft in Ladakh & Spiti, supplying rare Omega-7 palmitoleic acid and native bio-ferulic acid to rebuild the stratum corneum lipid matrix.',
-      '4. **1.5% Postbiotic Lactobacillus Ferment at pH 5.3–5.5:** Protects the acid mantle and commensal flora against virulent Cutibacterium acnes without harsh synthetic acid or sulfate stripping.',
-      '5. **Biophotonic UV Glass & Dual Statutory Compliance:** Packaged in ultraviolet-filtering biophotonic glass under FSSAI Ayush-Aahar (Step 1), Cosmetics Rules 2020 (Step 2), and Legal Metrology Rules 2011.',
-      '\n**Best Time to Use:** Consume 4 drops of Step 1 in 100 ml warm water every morning on an empty stomach, and cleanse for 30 to 45 seconds morning and evening with Step 2.',
     ].join('\n'),
   },
   kumkumadi_night_elixir: {

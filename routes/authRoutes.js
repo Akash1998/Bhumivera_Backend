@@ -193,39 +193,6 @@ async function adminPasswordLogin(req, res) {
 router.post('/admin/login', adminStrictLimiter, loginIpLimiter, loginLimiter, adminPasswordLogin);
 
 // --- CORE UNIVERSAL LOGIN ---
-
-// --- INSTANT PATRON DEMO SESSION (Works with or without live DB) ---
-router.post('/demo-patron-login', async (req, res) => {
-  try {
-    const email = (typeof req.body?.email === 'string' && req.body.email.trim())
-      ? req.body.email.trim().toLowerCase()
-      : 'patron@bhumivera.com';
-    const name = (typeof req.body?.name === 'string' && req.body.name.trim())
-      ? req.body.name.trim()
-      : 'Aarav Sen (Verified Patron)';
-    const role = 'customer';
-    const token = jwt.sign(
-      { id: 108, email, name, role },
-      process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: '7d', jwtid: crypto.randomUUID() }
-    );
-    return res.json({
-      token,
-      user: {
-        id: 108,
-        name,
-        email,
-        phone: '+919876543210',
-        role,
-        ad_personalization_opt_in: 1,
-        ad_personalization_consent_version: AD_PERSONALIZATION_CONSENT_VERSION,
-      },
-    });
-  } catch (err) {
-    return res.status(500).json({ message: 'Could not initialize demo session.' });
-  }
-});
-
 router.post('/account-exists', emailAccountLookupLimiter, async (req, res) => {
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {

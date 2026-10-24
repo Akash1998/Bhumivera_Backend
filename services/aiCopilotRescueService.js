@@ -255,9 +255,10 @@ const COMPLETE_SITE_NAVIGATION_MAP = [
     path: '/support-center',
     url: `${PUBLIC_SITE_URL}/support-center`,
     keywords: ['help', 'support center', 'faq', 'ticket', 'contact support', 'customer care'],
-    description: 'Browse FAQs, open a support ticket, or chat live with the Bhumivera AI Concierge.',
+    description: 'Browse FAQs, open a support ticket, or chat live with the Bhumivera AI Concierge and Telegram bot.',
     steps: [
       'Visit /support-center or click the bottom-right AI Concierge button on any page.',
+      'You can also continue your conversation on Telegram via @BhumiveraBot.',
     ],
   },
   {
@@ -305,7 +306,7 @@ const COMPLETE_SITE_NAVIGATION_MAP = [
     keywords: ['staff support', 'agent portal', 'support login', 'order verification'],
     description: 'Dedicated portal for Support Executives (L1), Supervisors (L2), and Managers (L3).',
     steps: [
-      'Support staff sign in at /support to verify orders, reply to live chats, and handle tickets.',
+      'Support staff sign in at /support to verify orders, reply to live Web/Telegram chats, and handle tickets.',
     ],
   },
   {

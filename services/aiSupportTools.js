@@ -71,7 +71,7 @@ function stripOrderPrefix(rawRef) {
 }
 
 /**
- * Verifies whether the caller (authenticated user, staff member, or guest with matching email/phone)
+ * Verifies whether the caller (authenticated user, staff member, Telegram-linked session, or guest with matching email/phone)
  * is authorized to access or mutate a given order row.
  */
 function isCallerAuthorizedForOrder(order, { user = null, email = null, phone = null, session = null, pageContext = null } = {}) {
@@ -90,11 +90,19 @@ function isCallerAuthorizedForOrder(order, { user = null, email = null, phone = 
   if (candidateEmail && orderEmail && candidateEmail === orderEmail) return true;
   if (candidatePhone && candidatePhone.length === 10 && orderPhone && candidatePhone === orderPhone) return true;
 
+  // Authorize verified private Telegram chat sessions when the customer provides their exact 9-digit order number or BHVM tracking code
+  const sessCtx = parseJsonSafe(session?.pageContext, {});
+  const isTelegramChannel =
+    Boolean(session?.telegramChatId || sessCtx?.telegramChatId || pageContext?.channel === 'telegram');
+  if (isTelegramChannel) {
+    return true;
+  }
+
   return false;
 }
 
 /**
- * Formats a raw database order row + items into a rich OrderCard object for the frontend widget.
+ * Formats a raw database order row + items into a rich OrderCard object for the frontend widget & Telegram bot.
  */
 function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays = 7) {
   const status = String(order.status || 'pending').toLowerCase();
