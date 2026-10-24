@@ -164,9 +164,7 @@ const getProductSnapshot = (config, productId, now = new Date(), activityProfile
     soldToday,
     simulatedSoldToday,
     remaining,
-    sampleActivity: config.sampleActivityEnabled
-      ? getSampleActivity(dayKey, productId, simulatedSoldToday, dayProgress, hourlyWeights)
-      : [],
+    lifetimeSold: productConfig.lifetimeSold + soldToday,
     label: 'Simulation — illustrative data, not live inventory or sales',
   };
 };

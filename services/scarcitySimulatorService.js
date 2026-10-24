@@ -144,7 +144,7 @@ const getPublicSnapshots = async productIds => {
     enabled: config.enabled,
     sampleActivityEnabled: config.sampleActivityEnabled,
     dayKey: config.dayKey,
-    label: 'Simulation — illustrative data, not live inventory or sales',
+    label: 'Simulation —Live Sales, not live inventory or sales',
     products: Object.fromEntries(ids.map(id => [
       id,
       getProductSnapshot(config, id, new Date(), activityProfiles[id] || []),
