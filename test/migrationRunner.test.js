@@ -55,6 +55,10 @@ describe('runMigrations', () => {
       assert.ok(migration.name.trim());
       assert.equal(typeof migration.up, 'function');
     });
+    assert.equal(
+      migrations[65].name,
+      'purge legacy anritvox artifacts and seed luxury geo catalog'
+    );
   });
 
   it('expands the customer reset OTP column to hold its hash', async () => {
