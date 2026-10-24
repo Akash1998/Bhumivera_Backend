@@ -104,6 +104,7 @@ app.use(clientContextMiddleware());
 
 // --- SECURITY & CORS POLICIES ---
 const defaultAllowedOrigins = [
+  "https://bhumivera-frontend.vercel.app",
   "https://www.bhumivera.com",
   "https://bhumivera.com",
   "http://localhost:5173",

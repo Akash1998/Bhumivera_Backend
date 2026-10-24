@@ -7,7 +7,7 @@ Set `NODE_ENV=production` and provide:
 - `JWT_SECRET`: a random value with at least 32 characters. `OTP_SECRET` is recommended as a separate random value with at least 32 characters; if omitted, OTP HMAC uses a stable HKDF-derived key from `JWT_SECRET`.
 - `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `DB_PORT`
 - `DB_SSL=true`; provide `DB_SSL_CA` only when the database provider uses a private CA.
-- `FRONTEND_ORIGINS`: recommended comma-separated exact HTTPS origins for the deployed frontend (no paths, wildcards, or preview domains). If omitted, the API allows only `https://www.bhumivera.com` and `https://bhumivera.com`.
+- `FRONTEND_ORIGINS`: recommended comma-separated exact HTTPS origins for the deployed frontend (no paths, wildcards, or preview domains). Include `https://bhumivera-frontend.vercel.app` when using that Vercel deployment. If omitted, the API allows `https://bhumivera-frontend.vercel.app`, `https://www.bhumivera.com`, and `https://bhumivera.com`.
 
 For Vercel, set `DB_HOST` to the actual TiDB Cloud hostname; Railway references such as `${{MySQL.MYSQLHOST}}` are not resolved by Vercel.
 
@@ -33,7 +33,7 @@ The backend requires Node.js 22.x on Vercel. Its install policy permits the pinn
 
 On Vercel, `/health/live` is intentionally a lightweight process-liveness check and does not connect to TiDB or run migrations. `/health/ready` and normal API requests initialize the database on demand. Vercel function instances are ephemeral: a scheduled request every four minutes, or deploying the same app from multiple accounts, cannot guarantee that a particular instance stays warm or eliminate cold starts. Use an always-on backend runtime if a strict no-cold-start response time is required; keep-alive requests should not be treated as a substitute for that capacity.
 
-The frontend build must point at the deployed backend origin with `VITE_BASE_URL` (without `/api`). The backend must allow the deployed storefront origin through `FRONTEND_ORIGINS`. Customer email OTP requires `MAILRELAY_API_KEY`; configure it in Vercel along with `MAILRELAY_DOMAIN` and `EMAIL_FROM`. OTP messages are sent by email through Mailrelay; SMS delivery is not configured.
+The frontend build must point at the deployed backend origin with `VITE_BASE_URL` (without `/api`). If `FRONTEND_ORIGINS` is set on Railway, include the deployed storefront origin in that comma-separated list; an explicit value replaces the defaults. Customer email OTP requires `MAILRELAY_API_KEY`; configure it in Vercel along with `MAILRELAY_DOMAIN` and `EMAIL_FROM`. OTP messages are sent by email through Mailrelay; SMS delivery is not configured.
 
 Checkout shows Razorpay first, Wallet second, and COD third. COD remains visible with an explanation, but is selectable only after two of the customer's orders have been recorded as delivered (`delivered_at` set); the order transaction rechecks this rule on the server. Wallet checkout debits the wallet and records its ledger transaction atomically with order creation. Razorpay remains the recommended payment option.
 
