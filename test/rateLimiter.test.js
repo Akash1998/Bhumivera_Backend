@@ -4,6 +4,7 @@ const express = require('express');
 const {
   accountNetworkKey,
   createLimiter,
+  createFailoverRateLimitStore,
   createRedisCommand,
   getLoginIpKey,
   loginLimiter,
@@ -41,6 +42,53 @@ const post = (url, body) => fetch(url, {
 });
 
 describe('authentication rate limiting', () => {
+  it('falls back to process-local rate limits when Redis is unavailable', async () => {
+    const redisStore = {
+      init() {},
+      async increment() {
+        throw new Error('Redis unavailable');
+      },
+      async decrement() {},
+      async resetKey() {},
+    };
+    let connectionAttempts = 0;
+    const store = createFailoverRateLimitStore(
+      redisStore,
+      async () => {
+        connectionAttempts += 1;
+        throw new Error('Redis unavailable');
+      },
+      () => {}
+    );
+    const instance = express();
+    instance.use(express.json());
+    instance.post('/failover', createLimiter('redis-failover-test', {
+      windowMs: 60_000,
+      max: 1,
+      keyGenerator: req => accountNetworkKey(req),
+      code: 'FAILOVER_LIMIT',
+      message: 'Request throttled.',
+      store,
+    }), (_req, res) => res.status(401).end());
+    const failoverServer = await new Promise(resolve => {
+      const listeningServer = instance.listen(0, '127.0.0.1', () => resolve(listeningServer));
+    });
+
+    try {
+      const url = `http://127.0.0.1:${failoverServer.address().port}/failover`;
+      const email = `failover-${Date.now()}@example.com`;
+      assert.equal((await post(url, { email })).status, 401);
+      const blocked = await post(url, { email });
+      assert.equal(blocked.status, 429);
+      assert.equal((await blocked.json()).code, 'FAILOVER_LIMIT');
+      assert.equal(connectionAttempts, 1);
+    } finally {
+      await new Promise((resolve, reject) =>
+        failoverServer.close(error => error ? reject(error) : resolve())
+      );
+    }
+  });
+
   it('connects Redis before issuing commands from rate-limit store initialization', async () => {
     let isReady = false;
     const client = {

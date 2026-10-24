@@ -48,6 +48,8 @@ const sharedRedisClient = rateLimitRedisUrl
   ? require('redis').createClient({ url: rateLimitRedisUrl })
   : null;
 let rateLimitConnectionPromise;
+let rateLimitRedisUnavailable = false;
+let rateLimitFallbackLogged = false;
 
 if (sharedRedisClient) {
   sharedRedisClient.on('error', error => {
@@ -58,7 +60,7 @@ if (sharedRedisClient) {
 }
 
 async function connectRateLimitStore() {
-  if (!sharedRedisClient || sharedRedisClient.isReady) return;
+  if (!sharedRedisClient || sharedRedisClient.isReady || rateLimitRedisUnavailable) return;
   if (!rateLimitConnectionPromise) {
     rateLimitConnectionPromise = (async () => {
       if (!sharedRedisClient.isOpen) {
@@ -85,6 +87,18 @@ async function connectRateLimitStore() {
   await rateLimitConnectionPromise;
 }
 
+function markRateLimitStoreUnavailable(error) {
+  if (!sharedRedisClient) return;
+  rateLimitRedisUnavailable = true;
+  if (!rateLimitFallbackLogged) {
+    rateLimitFallbackLogged = true;
+    console.warn(
+      '[RATE_LIMIT_STORE] Shared Redis is unavailable; using process-local rate limits.',
+      error?.message || 'Redis connection failed.'
+    );
+  }
+}
+
 async function closeRateLimitStore() {
   if (sharedRedisClient?.isOpen) await sharedRedisClient.quit();
 }
@@ -92,11 +106,65 @@ async function closeRateLimitStore() {
 const createRedisCommand = (client, ensureConnected) => (...args) =>
   Promise.resolve().then(ensureConnected).then(() => client.sendCommand(args));
 
+function createFailoverRateLimitStore(primaryStore, ensurePrimaryStore, onFailure = markRateLimitStoreUnavailable) {
+  const localStore = new rateLimit.MemoryStore();
+  let usePrimaryStore = !rateLimitRedisUnavailable;
+
+  const fallBack = error => {
+    usePrimaryStore = false;
+    onFailure(error);
+  };
+
+  return {
+    init(options) {
+      primaryStore.init?.(options);
+      localStore.init(options);
+    },
+    async increment(key) {
+      if (usePrimaryStore && !rateLimitRedisUnavailable) {
+        try {
+          await ensurePrimaryStore();
+          return await primaryStore.increment(key);
+        } catch (error) {
+          fallBack(error);
+        }
+      }
+      return localStore.increment(key);
+    },
+    async decrement(key) {
+      if (usePrimaryStore && !rateLimitRedisUnavailable) {
+        try {
+          return await primaryStore.decrement(key);
+        } catch (error) {
+          fallBack(error);
+        }
+      }
+      return localStore.decrement(key);
+    },
+    async resetKey(key) {
+      if (usePrimaryStore && !rateLimitRedisUnavailable) {
+        try {
+          return await primaryStore.resetKey(key);
+        } catch (error) {
+          fallBack(error);
+        }
+      }
+      return localStore.resetKey(key);
+    },
+    async shutdown() {
+      await localStore.shutdown();
+      if (usePrimaryStore) await primaryStore.shutdown?.();
+    },
+  };
+}
+
 function getRateLimitStoreStatus() {
   return {
-    status: !sharedRedisClient ? 'process_local' : sharedRedisClient.isReady ? 'connected' : 'configured_but_disconnected',
+    status: !sharedRedisClient || rateLimitRedisUnavailable
+      ? 'process_local'
+      : sharedRedisClient.isReady ? 'connected' : 'configured_but_disconnected',
     configured: Boolean(sharedRedisClient),
-    sharedAcrossInstances: Boolean(sharedRedisClient),
+    sharedAcrossInstances: Boolean(sharedRedisClient && !rateLimitRedisUnavailable),
   };
 }
 
@@ -129,10 +197,13 @@ function createLimiter(name, {
     options.store = store;
   } else if (sharedRedisClient) {
     const { RedisStore } = require('rate-limit-redis');
-    options.store = new RedisStore({
-      prefix: `bhumivera:rate-limit:${name}:`,
-      sendCommand: createRedisCommand(sharedRedisClient, connectRateLimitStore),
-    });
+    options.store = createFailoverRateLimitStore(
+      new RedisStore({
+        prefix: `bhumivera:rate-limit:${name}:`,
+        sendCommand: createRedisCommand(sharedRedisClient, connectRateLimitStore),
+      }),
+      connectRateLimitStore
+    );
   }
   return rateLimit(options);
 }
@@ -384,9 +455,11 @@ module.exports = {
   supportDuplicateMessageLimiter,
   supportEscalationLimiter,
   connectRateLimitStore,
+  markRateLimitStoreUnavailable,
   closeRateLimitStore,
   getRateLimitStoreStatus,
   createLimiter,
+  createFailoverRateLimitStore,
   createRedisCommand,
   getLoginIpKey,
   accountNetworkKey,

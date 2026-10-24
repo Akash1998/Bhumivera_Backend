@@ -8,7 +8,11 @@ const express = require("express");
 const cors = require("cors");
 const pool = require("./config/db");
 const path = require("path");
-const { connectRateLimitStore, closeRateLimitStore } = require("./middleware/rateLimiter");
+const {
+  connectRateLimitStore,
+  markRateLimitStoreUnavailable,
+  closeRateLimitStore,
+} = require("./middleware/rateLimiter");
 const {
   redisResponseCache,
   connectResponseCache,
@@ -93,6 +97,7 @@ const app = express();
 const isVercelRuntime = process.env.VERCEL === "1";
 let databaseReady = false;
 let startupFailure = null;
+let startupPhase = "rate_limit_store";
 let databaseInitializationPromise = null;
 let databaseRetryAfter = 0;
 let referralApprovalTimer = null;
@@ -208,7 +213,7 @@ app.use(createSeoPrerenderMiddleware({
 }));
 
 app.use("/health", createHealthRouter(
-  () => ({ databaseReady, failure: startupFailure }),
+  () => ({ databaseReady, failure: startupFailure, phase: startupPhase }),
   isVercelRuntime ? () => initializeDatabase() : null
 ));
 
@@ -369,13 +374,20 @@ const initializeDatabase = () => {
 
 const initializeDatabaseOnce = async () => {
   try {
-    await connectRateLimitStore();
+    startupPhase = "rate_limit_store";
+    try {
+      await connectRateLimitStore();
+    } catch (error) {
+      markRateLimitStoreUnavailable(error);
+    }
     try {
       await connectResponseCache();
     } catch (error) {
       console.warn('[RESPONSE_CACHE] Redis connection failed; requests will continue without response caching.', error.message);
     }
+    startupPhase = "database_connection";
     await pool.query('SELECT 1');
+    startupPhase = "migrations";
     await runMigrations(pool, migrations);
     if (!systemDiagnostics) {
       systemDiagnostics = createSystemDiagnostics(pool);
@@ -384,6 +396,7 @@ const initializeDatabaseOnce = async () => {
     databaseReady = true;
     startupFailure = null;
     databaseRetryAfter = 0;
+    startupPhase = "ready";
     if (!referralApprovalTimer) {
       const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
         console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
@@ -426,9 +439,9 @@ const initializeDatabaseOnce = async () => {
     databaseReady = false;
     databaseRetryAfter = Date.now() + 15000;
     startupFailure = err.migration
-      ? { migration: err.migration, code: err.code || "MIGRATION_FAILED" }
-      : { code: err.code || "STARTUP_FAILED" };
-    console.error("[STARTUP] Required database initialization failed; API will retry.", err);
+      ? { phase: startupPhase, migration: err.migration, code: err.code || "MIGRATION_FAILED" }
+      : { phase: startupPhase, code: err.code || "STARTUP_FAILED" };
+    console.error(`[STARTUP] Required initialization failed during ${startupPhase}; API will retry.`, err);
     setTimeout(initializeDatabase, 15000).unref();
   }
 };

@@ -820,6 +820,11 @@ const migrations = [
     name: 'seed 1080 classified customer reviews (2020-2026) and sync product ratings',
     up: () => seedAllCustomerReviews(pool),
   },
+  {
+    version: 70,
+    name: 'reconcile database-backed customer reviews and product ratings',
+    up: () => seedAllCustomerReviews(pool),
+  },
 ];
 
 module.exports = migrations;

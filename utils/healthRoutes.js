@@ -16,6 +16,7 @@ const createHealthRouter = (getReadiness, ensureReady = null) => {
     return res.status(readiness.databaseReady ? 200 : 503).json({
       status: readiness.databaseReady ? 'ready' : 'starting',
       databaseReady: readiness.databaseReady,
+      ...(readiness.phase ? { phase: readiness.phase } : {}),
       ...(readiness.failure ? { failure: readiness.failure } : {}),
     });
   };
