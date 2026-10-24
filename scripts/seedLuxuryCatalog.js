@@ -1,5 +1,5 @@
 try { require('dotenv').config(); } catch (_) {}
-const { BHUMIVERA_6_PRODUCTS, LUXURY_CATALOG } = require('../data/bhumiveraCatalog');
+const { BHUMIVERA_6_PRODUCTS, LUXURY_CATALOG, MAISON_REGIMEN_BUNDLES } = require('../data/bhumiveraCatalog');
 
 /**
  * Idempotent catalog seeder used by migrations & unit tests (pool.query)
@@ -60,6 +60,57 @@ const seedLuxuryCatalog = async (pool) => {
   }
 
   return LUXURY_CATALOG.length;
+};
+
+const seedMaisonRegimenBundles = async (pool) => {
+  for (const bundle of MAISON_REGIMEN_BUNDLES) {
+    const components = bundle.items.map(item => {
+      const catalogProduct = BHUMIVERA_6_PRODUCTS.find(product => Number(product.id) === Number(item.id));
+      if (!catalogProduct?.slug) {
+        throw new Error(`Could not resolve catalog product for bundle ${bundle.sku}.`);
+      }
+      return { slug: catalogProduct.slug };
+    });
+    const placeholders = components.map(() => '?').join(', ');
+    const [componentRows] = await pool.query(
+      `SELECT slug, quantity FROM products WHERE slug IN (${placeholders})`,
+      components.map(component => component.slug)
+    );
+    const componentStocks = new Map(componentRows.map(row => [row.slug, Number(row.quantity)]));
+    if (components.some(component => !componentStocks.has(component.slug))) {
+      throw new Error(`Bundle ${bundle.sku} references a product that is not in the catalog.`);
+    }
+    const availableSets = Math.min(...components.map(component => componentStocks.get(component.slug)));
+    const specifications = JSON.stringify({
+      product_type: 'bundle',
+      bundle_id: bundle.id,
+      components,
+    });
+
+    await pool.query(
+      `INSERT INTO products
+        (name, slug, sku, brand, description, price, discount_price, quantity, status,
+         is_featured, rating, review_count, specifications)
+       VALUES (?, ?, ?, 'Bhumivera', ?, ?, ?, ?, 'active', 1, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         name = VALUES(name), description = VALUES(description), price = VALUES(price),
+         discount_price = VALUES(discount_price), rating = VALUES(rating),
+         review_count = VALUES(review_count), specifications = VALUES(specifications)`,
+      [
+        bundle.name,
+        bundle.id,
+        bundle.sku,
+        bundle.tagline,
+        bundle.mrpTotal,
+        bundle.bundlePrice,
+        availableSets,
+        bundle.rating,
+        bundle.review_count,
+        specifications,
+      ]
+    );
+  }
+  return MAISON_REGIMEN_BUNDLES.length;
 };
 
 /**
@@ -165,4 +216,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { seedLuxuryCatalog, seedAll6Products };
+module.exports = { seedLuxuryCatalog, seedMaisonRegimenBundles, seedAll6Products };

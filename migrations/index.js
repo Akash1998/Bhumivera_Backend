@@ -30,7 +30,7 @@ const { initReturnRefundTable } = require('../models/returnRefundModel');
 const { initAiSupportTables } = require('../models/aiSupportModel');
 const { initSuperAdminFortressTables } = require('../models/superAdminVaultModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
-const { seedLuxuryCatalog } = require('../scripts/seedLuxuryCatalog');
+const { seedLuxuryCatalog, seedMaisonRegimenBundles } = require('../scripts/seedLuxuryCatalog');
 const { generateOrderNumber } = require('../services/orderNumber');
 const {
   DEFAULT_ORDER_SPIN_REWARDS,
@@ -833,6 +833,11 @@ const migrations = [
     name: 'retired destructive customer review purge',
     previousNames: ['purge bot reviews and reseed 1080 authentic pan-India multilingual marketplace reviews v4'],
     up: async () => {},
+  },
+  {
+    version: 72,
+    name: 'add reservable maison regimen bundle products',
+    up: () => seedMaisonRegimenBundles(pool),
   },
 ];
 

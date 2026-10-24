@@ -11,7 +11,7 @@ Set `NODE_ENV=production` and provide:
 
 For Vercel, set `DB_HOST` to the actual TiDB Cloud hostname; Railway references such as `${{MySQL.MYSQLHOST}}` are not resolved by Vercel.
 If startup logs show `ECONNREFUSED` or `ETIMEDOUT` for the database, verify the configured host, port, provider firewall/IP allowlist, and that the database endpoint is reachable from the backend runtime. A private-network address is not reachable from Vercel unless the deployment has an explicit network path to that private network. Keep `/health/ready` unready until connectivity is restored; the backend retries database initialization automatically.
-Review seed/purge migrations 69–71 are retained only as no-op history markers; they no longer insert or delete review rows. The admin review archive action hides a review from customers while retaining its database row and media.
+Review seed/purge migrations 69–71 are retained only as no-op history markers; they no longer insert or delete review rows. Migration 72 creates image-free regimen bundle products; bundle orders reserve stock from every included catalog product. The admin review archive action hides a review from customers while retaining its database row and media.
 
 If the corresponding feature is enabled, configure both Razorpay API credentials. To receive Razorpay events, configure `RAZORPAY_WEBHOOK_SECRET` and point the provider to `POST /api/webhooks/razorpay`, subscribing to `payment.captured`, `payment.failed`, `refund.created`, `refund.processed`, and `refund.failed`. Use the webhook secret from the provider dashboard, which is separate from the API key secret.
 

@@ -302,7 +302,7 @@ const getReviewsByProduct = async (productIdOrSlug, approvedOnly = true) => {
        ORDER BY r.created_at DESC`,
       [productIdOrSlug]
     );
-    dbRows = (rows || []).filter(r => !isLegacyBotReview(r)).map(parseReview);
+    dbRows = (rows || []).map(parseReview);
   } catch (_) {}
 
   const memRows = memoryReviewsStore
@@ -319,6 +319,20 @@ const getReviewsByProduct = async (productIdOrSlug, approvedOnly = true) => {
     seenIds.add(String(r.id));
     return true;
   }).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+};
+
+const getReviewsByComboName = async comboName => {
+  const [rows] = await pool.query(
+    `SELECT r.*, COALESCE(r.reviewer_name, u.name, 'Verified Patron') as user_name,
+            p.name as product_name
+     FROM reviews r
+     LEFT JOIN users u ON r.user_id = u.id
+     LEFT JOIN products p ON r.product_id = p.id
+     WHERE r.combo_name = ? AND r.is_approved = 1
+     ORDER BY r.created_at DESC`,
+    [comboName]
+  );
+  return (rows || []).map(parseReview);
 };
 
 const getProductRatingSummary = async (productIdOrSlug) => {
@@ -369,7 +383,7 @@ const getAllReviews = async (approved = null) => {
     if (approved !== null) { query += ' WHERE r.is_approved = ?'; params.push(approved); }
     query += ' ORDER BY r.created_at DESC';
     const [rows] = await pool.query(query, params);
-    dbRows = (rows || []).filter(r => !isLegacyBotReview(r)).map(parseReview);
+    dbRows = (rows || []).map(parseReview);
   } catch (_) {}
 
   const memRows = memoryReviewsStore
@@ -521,6 +535,7 @@ module.exports = {
   createReview,
   createReviewAsAdmin,
   getReviewsByProduct,
+  getReviewsByComboName,
   getPublicCustomerStories,
   getProductRatingSummary,
   getAllReviews,

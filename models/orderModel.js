@@ -14,6 +14,7 @@ const {
   updateShoppingWalletRewardReversal,
 } = require('./shoppingWalletRewardModel');
 const { computeQuantumHash512 } = require('../utils/quantumCrypto');
+const { BHUMIVERA_6_PRODUCTS, MAISON_REGIMEN_BUNDLES } = require('../data/luxuryCatalog');
 
 const getDeliveredOrderCount = async userId => {
   const [[result]] = await pool.query(
@@ -256,7 +257,7 @@ const createOrder = async ({
     for (const item of orderItems) {
       const productId = item.product_id || item.id;
       const [dbProducts] = await conn.query(
-        'SELECT name, sku, price, discount_price, quantity, gst_hsn_code, gst_rate FROM products WHERE id = ? FOR UPDATE',
+        'SELECT id, name, sku, price, discount_price, quantity, gst_hsn_code, gst_rate, specifications FROM products WHERE id = ? FOR UPDATE',
         [productId]
       );
       const dbProduct = dbProducts[0];
@@ -264,7 +265,23 @@ const createOrder = async ({
       if (!dbProduct) throw new Error(`Product ID ${productId} not found.`);
 
       const requestedQty = parseInt(item.quantity || 1, 10);
-      if (dbProduct.quantity < requestedQty) {
+      let specifications = dbProduct.specifications;
+      if (typeof specifications === 'string') {
+        try {
+          specifications = JSON.parse(specifications);
+        } catch {
+          specifications = null;
+        }
+      }
+      const bundle = specifications?.product_type === 'bundle'
+        ? MAISON_REGIMEN_BUNDLES.find(candidate => candidate.id === specifications.bundle_id)
+        : null;
+
+      if (specifications?.product_type === 'bundle' && !bundle) {
+        throw new Error(`Bundle configuration for ${dbProduct.sku} is invalid.`);
+      }
+
+      if (!bundle && dbProduct.quantity < requestedQty) {
         throw new Error(`Insufficient stock for ${dbProduct.name}. Only ${dbProduct.quantity} left.`);
       }
 
@@ -272,23 +289,86 @@ const createOrder = async ({
       const unitPrice = isGift ? 0 : (dbProduct.discount_price && dbProduct.discount_price > 0) ? dbProduct.discount_price : dbProduct.price;
       backendSubtotal += (unitPrice * requestedQty);
 
-      // Step 2: Deduct Inventory
-      await conn.query('UPDATE products SET quantity = quantity - ? WHERE id = ?', [requestedQty, productId]);
-
-      // Handle image
-      let itemImage = item.image || (Array.isArray(item.images) ? item.images[0] : null);
-
-      processedItems.push({
-        product_id: productId,
-        name: dbProduct.name,
-        sku: dbProduct.sku,
-        gst_hsn_code: dbProduct.gst_hsn_code,
-        gst_rate: dbProduct.gst_rate,
-        price: unitPrice,
-        quantity: requestedQty,
-        image: itemImage,
-        is_gift: isGift ? 1 : 0
-      });
+      if (bundle) {
+        const bundleComponents = specifications.components;
+        if (!Array.isArray(bundleComponents) || bundleComponents.length !== bundle.items.length) {
+          throw new Error(`Bundle components for ${dbProduct.sku} are invalid.`);
+        }
+        const expectedComponentSlugs = bundle.items.map(item =>
+          BHUMIVERA_6_PRODUCTS.find(product => Number(product.id) === Number(item.id))?.slug
+        ).sort();
+        if (bundleComponents.map(component => component.slug).sort().some(
+          (slug, index) => slug !== expectedComponentSlugs[index]
+        )) {
+          throw new Error(`Bundle components for ${dbProduct.sku} do not match the catalog.`);
+        }
+        const lockedComponents = [];
+        for (const component of [...bundleComponents].sort((left, right) => left.slug.localeCompare(right.slug))) {
+          const [componentRows] = await conn.query(
+            'SELECT id, slug, name, sku, price, discount_price, quantity, gst_hsn_code, gst_rate FROM products WHERE slug = ? AND status = ? FOR UPDATE',
+            [component.slug, 'active']
+          );
+          if (!componentRows[0]) throw new Error(`A product in ${dbProduct.name} is unavailable.`);
+          if (Number(componentRows[0].quantity) < requestedQty) {
+            throw new Error(`Insufficient stock for ${componentRows[0].name}. Only ${componentRows[0].quantity} left.`);
+          }
+          lockedComponents.push(componentRows[0]);
+        }
+        const componentBySlug = new Map(lockedComponents.map(component => [component.slug, component]));
+        const pricedComponents = bundleComponents.map(component => {
+          const product = componentBySlug.get(component.slug);
+          if (!product) throw new Error(`A product in ${dbProduct.name} is unavailable.`);
+          return {
+            ...product,
+            weight: Number(product.discount_price) > 0 ? Number(product.discount_price) : Number(product.price),
+          };
+        });
+        const componentValue = pricedComponents.reduce((total, component) => total + component.weight, 0);
+        if (componentValue <= 0) {
+          throw new Error(`Bundle pricing for ${dbProduct.sku} is invalid.`);
+        }
+        let remainingBundleCents = Math.round(Number(unitPrice) * 100);
+        for (const [index, component] of pricedComponents.entries()) {
+          const allocatedCents = index === pricedComponents.length - 1
+            ? remainingBundleCents
+            : Math.round(Number(unitPrice) * 100 * component.weight / componentValue);
+          remainingBundleCents -= allocatedCents;
+          await conn.query('UPDATE products SET quantity = quantity - ? WHERE id = ?', [requestedQty, component.id]);
+          processedItems.push({
+            product_id: component.id,
+            name: `${dbProduct.name} — ${component.name}`,
+            sku: component.sku,
+            gst_hsn_code: component.gst_hsn_code,
+            gst_rate: component.gst_rate,
+            price: allocatedCents / 100,
+            quantity: requestedQty,
+            image: null,
+            is_gift: isGift ? 1 : 0,
+          });
+        }
+        const remainingStocks = await Promise.all(bundleComponents.map(async component => {
+          const [[stock]] = await conn.query('SELECT quantity FROM products WHERE slug = ?', [component.slug]);
+          return Number(stock?.quantity) || 0;
+        }));
+        await conn.query('UPDATE products SET quantity = ? WHERE id = ?', [
+          Math.min(...remainingStocks),
+          productId,
+        ]);
+      } else {
+        await conn.query('UPDATE products SET quantity = quantity - ? WHERE id = ?', [requestedQty, productId]);
+        const itemImage = item.image || (Array.isArray(item.images) ? item.images[0] : null);
+        processedItems.push({
+          product_id: productId,
+          name: dbProduct.name,
+          sku: dbProduct.sku,
+          gst_hsn_code: dbProduct.gst_hsn_code,
+          gst_rate: dbProduct.gst_rate,
+          price: unitPrice,
+          quantity: requestedQty,
+          image: itemImage,
+          is_gift: isGift ? 1 : 0
+        });
+      }
     }
 
     // Step 3: Finalize Totals

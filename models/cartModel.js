@@ -1,5 +1,6 @@
 // backend/models/cartModel.js
 const pool = require('../config/db');
+const { getBundleAvailableStock, getBundleComponents } = require('../utils/bundleInventory');
 require('dotenv').config();
 const IMAGE_BASE_URL = process.env.CLOUDFRONT_BASE_URL || 'https://pub-70fdb5d94df347c4bed417c28b066c02.r2.dev/bhumivera';
 
@@ -48,7 +49,7 @@ const getCartByUser = async (userId) => {
       `SELECT ci.id, ci.quantity, ci.product_id, ci.created_at, ci.updated_at,
               p.name, p.price, p.discount_price, p.quantity AS stock,
               p.rating, p.review_count,
-              p.status, p.sku, p.brand,
+              p.status, p.sku, p.brand, p.specifications,
               (SELECT file_path FROM product_images
                WHERE product_id = p.id AND (media_type = 'image' OR media_type IS NULL)
                ORDER BY sort_order ASC, id ASC LIMIT 1) AS image
@@ -58,18 +59,21 @@ const getCartByUser = async (userId) => {
       [userId]
     );
 
-    return rows.map((r) => {
+    return Promise.all(rows.map(async (r) => {
       const activePrice = (r.discount_price !== null && r.discount_price !== "") ? r.discount_price : r.price;
       const imageUrl = typeof r.image === 'string' && r.image
         ? (/^https?:\/\//i.test(r.image) ? r.image : `${IMAGE_BASE_URL.replace(/\/$/, '')}/${r.image.replace(/^\/+/, '')}`)
         : null;
+      const bundleStock = await getBundleAvailableStock(pool, r.specifications);
       return {
         ...r,
+        stock: bundleStock ?? r.stock,
+        specifications: undefined,
         image_url: imageUrl,
         unit_price: parseFloat(activePrice),
         subtotal: parseFloat(activePrice) * r.quantity,
       };
-    });
+    }));
   } catch (err) {
     console.error("getCartByUser Error:", err);
     throw err;
@@ -79,7 +83,7 @@ const getCartByUser = async (userId) => {
 const upsertCartItem = async (userId, productId, quantity) => {
   try {
     const [products] = await pool.query(
-      "SELECT id, quantity, status FROM products WHERE id = ?",
+      "SELECT id, quantity, status, specifications FROM products WHERE id = ?",
       [productId]
     );
     
@@ -95,10 +99,14 @@ const upsertCartItem = async (userId, productId, quantity) => {
     const currentQtyInCart = existing.length > 0 ? existing[0].quantity : 0;
     const totalRequested = currentQtyInCart + quantity;
 
-    if (products[0].quantity < totalRequested) {
-      throw { 
-        status: 400, 
-        message: `Stock limit reached. You have ${currentQtyInCart} in cart and tried to add ${quantity}. Only ${products[0].quantity} available.` 
+    const bundleComponents = getBundleComponents(products[0].specifications);
+    const availableStock = bundleComponents
+      ? await getBundleAvailableStock(pool, products[0].specifications)
+      : Number(products[0].quantity);
+    if (availableStock < totalRequested) {
+      throw {
+        status: 400,
+        message: `Stock limit reached. You have ${currentQtyInCart} in cart and tried to add ${quantity}. Only ${availableStock} available.`
       };
     }
 
@@ -125,7 +133,7 @@ const updateCartItemQuantity = async (userId, productId, quantity) => {
   if (quantity < 1) return removeCartItem(userId, productId);
   
   const [products] = await pool.query(
-    "SELECT id, quantity, status FROM products WHERE id = ?",
+    "SELECT id, quantity, status, specifications FROM products WHERE id = ?",
     [productId]
   );
   
@@ -133,8 +141,12 @@ const updateCartItemQuantity = async (userId, productId, quantity) => {
     throw { status: 400, message: 'Product is no longer available.' };
   }
 
-  if (products[0].quantity < quantity) {
-    throw { status: 400, message: `Only ${products[0].quantity} item(s) available.` };
+  const bundleComponents = getBundleComponents(products[0].specifications);
+  const availableStock = bundleComponents
+    ? await getBundleAvailableStock(pool, products[0].specifications)
+    : Number(products[0].quantity);
+  if (availableStock < quantity) {
+    throw { status: 400, message: `Only ${availableStock} item(s) available.` };
   }
 
   await pool.query(

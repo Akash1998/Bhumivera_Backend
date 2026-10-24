@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { getBundleAvailableStock } = require('../utils/bundleInventory');
 require('dotenv').config();
 const CLOUDFRONT_BASE_URL = process.env.CLOUDFRONT_BASE_URL || 'https://pub-70fdb5d94df347c4bed417c28b066c02.r2.dev/bhumivera';
 
@@ -146,6 +147,8 @@ const getProductById = async (id) => {
   );
   if (!product) return null;
   const [images] = await attachImages([product]);
+  const bundleStock = await getBundleAvailableStock(pool, images[0].specifications);
+  if (bundleStock !== null) images[0].quantity = bundleStock;
   return images[0];
 };
 

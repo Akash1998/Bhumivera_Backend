@@ -13,6 +13,7 @@ const {
   createReview,
   createReviewAsAdmin,
   getReviewsByProduct,
+  getReviewsByComboName,
   getProductRatingSummary,
   getPublicCustomerStories,
   getAllReviews,
@@ -27,6 +28,7 @@ const MAX_REVIEW_IMAGES = 5;
 const MAX_REVIEW_VIDEOS = 3;
 const MAX_REVIEW_MEDIA_BYTES = 25 * 1024 * 1024;
 const REVIEW_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm']);
+const { MAISON_REGIMEN_BUNDLES } = require('../data/luxuryCatalog');
 
 const isValidMediaItem = item =>
   typeof item === 'string' &&
@@ -106,6 +108,22 @@ router.get('/product/:productId', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to get reviews' });
+  }
+});
+
+router.get('/combo/:bundleId', async (req, res) => {
+  const bundle = MAISON_REGIMEN_BUNDLES.find(item => item.id === req.params.bundleId);
+  if (!bundle) return res.status(404).json({ message: 'Regimen not found.' });
+  try {
+    const reviews = await getReviewsByComboName(bundle.name);
+    const average = reviews.length
+      ? Number((reviews.reduce((sum, review) => sum + (Number(review.rating) || 0), 0) / reviews.length).toFixed(2))
+      : 0;
+    res.set('Cache-Control', 'no-store');
+    return res.json({ reviews, summary: { total: reviews.length, average } });
+  } catch (error) {
+    console.error('[COMBO_REVIEWS_LOAD]', error);
+    return res.status(500).json({ message: 'Could not load regimen reviews.' });
   }
 });
 
