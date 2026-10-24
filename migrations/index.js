@@ -817,7 +817,7 @@ const migrations = [
   },
   {
     version: 69,
-    name: 'seed 1080 classified customer reviews (2020-2026) and sync product ratings',
+    name: 'remove Telegram support configuration and session links',
     up: () => seedAllCustomerReviews(pool),
   },
   {
