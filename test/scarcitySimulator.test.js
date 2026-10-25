@@ -21,7 +21,7 @@ test('daily simulation day follows the Asia/Kolkata midnight boundary', () => {
   assert.equal(getIstDayRange(new Date('2026-10-24T18:30:00.000Z')).start, '2026-10-24 18:30:00');
 });
 
-test('simulated stock decreases from midnight and reaches its daily target by noon IST', () => {
+test('simulated stock decreases from 01:00 AM and reaches its daily target by 23:45 PM IST', () => {
   const config = createDefaultConfig(new Date('2026-10-25T00:00:00.000Z'));
   config.products['42'] = {
     ...createDefaultProduct(42),
@@ -29,20 +29,21 @@ test('simulated stock decreases from midnight and reaches its daily target by no
     minDailySold: 200,
     maxDailySold: 250,
   };
-  const midnight = new Date('2026-10-24T18:30:00.000Z');
-  const morning = new Date('2026-10-25T00:30:00.000Z');
-  const noon = new Date('2026-10-25T06:30:00.000Z');
-  const evening = new Date('2026-10-25T12:30:00.000Z');
-  const start = getProductSnapshot(config, 42, midnight);
-  const beforeNoon = getProductSnapshot(config, 42, morning);
-  const atNoon = getProductSnapshot(config, 42, noon);
-  const afterNoon = getProductSnapshot(config, 42, evening);
+  const beforeStart = new Date('2026-10-24T19:00:00.000Z'); // 00:30 AM IST (before 01:00 AM)
+  const midDay = new Date('2026-10-25T06:30:00.000Z'); // 12:00 PM Noon IST (mid decrease)
+  const atTargetTime = new Date('2026-10-25T18:15:00.000Z'); // 23:45 PM IST (target reached)
+  const afterTargetTime = new Date('2026-10-25T18:25:00.000Z'); // 23:55 PM IST (steady holding)
+
+  const start = getProductSnapshot(config, 42, beforeStart);
+  const midSnapshot = getProductSnapshot(config, 42, midDay);
+  const atTarget = getProductSnapshot(config, 42, atTargetTime);
+  const afterTarget = getProductSnapshot(config, 42, afterTargetTime);
 
   assert.equal(start.soldToday, 0);
-  assert.ok(beforeNoon.soldToday > start.soldToday);
-  assert.ok(atNoon.remaining < beforeNoon.remaining);
-  assert.equal(atNoon.simulatedSoldToday, getDailyTarget(config.dayKey, 42, config.products['42']));
-  assert.deepEqual(afterNoon, atNoon);
+  assert.ok(midSnapshot.soldToday > start.soldToday);
+  assert.ok(atTarget.remaining < midSnapshot.remaining);
+  assert.equal(atTarget.simulatedSoldToday, getDailyTarget(config.dayKey, 42, config.products['42']));
+  assert.deepEqual(afterTarget, atTarget);
 });
 
 test('daily target changes on consecutive days and snapshots omit lifetime counters', () => {
@@ -73,18 +74,19 @@ test('sales progression follows anonymized hourly patterns from recent orders', 
     minDailySold: 250,
     maxDailySold: 250,
   };
-  const earlySalesPattern = [100, ...Array(11).fill(0)];
-  const lateSalesPattern = [...Array(11).fill(0), 100];
+  const earlySalesPattern = [0, 50, 50, 50, ...Array(20).fill(0)];
+  const lateSalesPattern = [...Array(20).fill(0), 50, 50, 50, 0];
+  const testTime = new Date('2026-10-25T04:30:00.000Z'); // 10:00 AM IST
   const earlyWeighted = getProductSnapshot(
     config,
     42,
-    new Date('2026-10-24T19:30:00.000Z'),
+    testTime,
     earlySalesPattern
   );
   const lateWeighted = getProductSnapshot(
     config,
     42,
-    new Date('2026-10-24T19:30:00.000Z'),
+    testTime,
     lateSalesPattern
   );
 

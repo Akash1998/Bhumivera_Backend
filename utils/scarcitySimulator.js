@@ -1,6 +1,10 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
-const SIMULATION_WINDOW_MS = 12 * 60 * 60 * 1000;
 const IST_OFFSET_MS = 330 * 60 * 1000;
+const WINDOW_START_MINUTES = 60; // 01:00 AM Asia/Kolkata
+const WINDOW_END_MINUTES = 23 * 60 + 45; // 23:45 PM Asia/Kolkata (1425 minutes)
+const WINDOW_DURATION_MINUTES = WINDOW_END_MINUTES - WINDOW_START_MINUTES; // 1365 minutes (22 hours 45 mins)
+const WINDOW_START_MS = WINDOW_START_MINUTES * 60 * 1000;
+const WINDOW_DURATION_MS = WINDOW_DURATION_MINUTES * 60 * 1000;
 const DEFAULT_DAILY_CAP = 250;
 const MAX_CONFIGURED_PRODUCTS = 300;
 
@@ -21,9 +25,15 @@ const getIstDayInfo = (now = new Date()) => {
     shifted.getUTCMonth(),
     shifted.getUTCDate()
   ) - IST_OFFSET_MS;
+  const elapsedSinceMidnight = now.getTime() - startUtc;
+  const elapsedInWindow = elapsedSinceMidnight - WINDOW_START_MS;
+  const progress = Math.min(1, Math.max(0, elapsedInWindow / WINDOW_DURATION_MS));
   return {
     dayKey,
-    progress: Math.min(1, Math.max(0, (now.getTime() - startUtc) / SIMULATION_WINDOW_MS)),
+    progress,
+    elapsedSinceMidnight,
+    windowStartMinutes: WINDOW_START_MINUTES,
+    windowEndMinutes: WINDOW_END_MINUTES,
   };
 };
 
@@ -42,6 +52,8 @@ const createDefaultConfig = (now = new Date()) => ({
   enabled: true,
   sampleActivityEnabled: false,
   resetTime: '00:00',
+  windowStart: '01:00',
+  windowEnd: '23:45',
   dayKey: getIstDayInfo(now).dayKey,
   products: {},
 });
@@ -74,29 +86,36 @@ const getRandom = seed => {
 };
 
 const getHourlyWeights = (dayKey, productId, activityProfile) => {
-  const history = Array.isArray(activityProfile) ? activityProfile.slice(0, 12) : [];
+  const history = Array.isArray(activityProfile) ? activityProfile.slice(0, 24) : [];
   const historyTotal = history.reduce((total, value) => total + Math.max(0, Number(value) || 0), 0);
-  if (historyTotal > 0) return history.map(value => Math.max(0, Number(value) || 0) + historyTotal * 0.005 / 12);
+  if (historyTotal > 0) return history.map(value => Math.max(0, Number(value) || 0) + historyTotal * 0.005 / 24);
 
   const random = getRandom(`${dayKey}:${productId}:hourly-pattern`);
-  return Array.from({ length: 12 }, () => 0.25 + random());
+  return Array.from({ length: 24 }, () => 0.25 + random());
 };
 
 const getSalesProgress = (dayProgress, hourlyWeights) => {
-  const elapsedMinutes = dayProgress * 12 * 60;
-  if (elapsedMinutes <= 0) return 0;
-  if (elapsedMinutes >= 12 * 60) return 1;
+  if (dayProgress <= 0) return 0;
+  if (dayProgress >= 1) return 1;
 
   const totalWeight = hourlyWeights.reduce((total, value) => total + value, 0);
   if (totalWeight <= 0) return dayProgress;
 
-  const completeHours = Math.floor(elapsedMinutes / 60);
-  const partialHour = (elapsedMinutes - completeHours * 60) / 60;
-  const elapsedWeight = hourlyWeights
-    .slice(0, completeHours)
-    .reduce((total, value) => total + value, 0) +
-    hourlyWeights[completeHours] * partialHour;
-  return elapsedWeight / totalWeight;
+  const elapsedMinutes = dayProgress * WINDOW_DURATION_MINUTES;
+  const currentMinuteOfDay = WINDOW_START_MINUTES + elapsedMinutes;
+  const currentHour = Math.min(23, Math.floor(currentMinuteOfDay / 60));
+  const partialHour = (currentMinuteOfDay - currentHour * 60) / 60;
+
+  const windowStartHour = 1;
+  const startWeight = hourlyWeights.slice(0, windowStartHour).reduce((total, value) => total + value, 0);
+  const endWeight = hourlyWeights.slice(0, 23).reduce((total, value) => total + value, 0) + (hourlyWeights[23] || 0) * (45 / 60);
+  const activeWindowTotal = Math.max(0.0001, endWeight - startWeight);
+
+  const accumulatedWeight = hourlyWeights.slice(0, currentHour).reduce((total, value) => total + value, 0)
+    + (hourlyWeights[currentHour] || 0) * partialHour;
+
+  const progressInWindow = Math.max(0, Math.min(activeWindowTotal, accumulatedWeight - startWeight));
+  return progressInWindow / activeWindowTotal;
 };
 
 const getSampleActivity = (dayKey, productId, simulatedSoldToday, dayProgress, hourlyWeights) => {
@@ -104,12 +123,12 @@ const getSampleActivity = (dayKey, productId, simulatedSoldToday, dayProgress, h
   if (eventCount < 1) return [];
 
   const cities = ['Kolkata', 'Asansol', 'Delhi'];
-  const elapsedMinutes = Math.floor(dayProgress * 12 * 60);
+  const elapsedMinutes = Math.floor(dayProgress * WINDOW_DURATION_MINUTES);
   if (elapsedMinutes < 1) return [];
-  const dayStart = Date.parse(`${dayKey}T00:00:00+05:30`);
+  const dayStart = Date.parse(`${dayKey}T00:00:00+05:30`) + WINDOW_START_MS;
   const random = getRandom(`${dayKey}:${productId}:sample-activity`);
-  const eligibleHours = Math.min(12, Math.ceil(elapsedMinutes / 60));
-  const weights = hourlyWeights.slice(0, eligibleHours).map((weight, hour) =>
+  const eligibleHours = Math.min(23, Math.ceil(elapsedMinutes / 60));
+  const weights = (hourlyWeights.slice(1, 1 + eligibleHours) || []).map((weight, hour) =>
     hour === eligibleHours - 1 && elapsedMinutes % 60
       ? weight * (elapsedMinutes % 60) / 60
       : weight
@@ -292,4 +311,7 @@ module.exports = {
   normalizeStoredConfig,
   rotateConfigDay,
   validateSimulatorConfig,
+  WINDOW_START_MINUTES,
+  WINDOW_END_MINUTES,
+  WINDOW_DURATION_MINUTES,
 };
