@@ -18,6 +18,7 @@ const { createRequestObservability } = require("./middleware/requestObservabilit
 const { createSystemDiagnostics } = require("./utils/systemDiagnostics");
 const { clientContextMiddleware, ALLOWED_NATIVE_ORIGINS } = require("./middleware/clientContext");
 const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
+const { nightSleepManager } = require("./middleware/nightSleepManager");
 const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
 const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
@@ -270,6 +271,30 @@ app.get(["/sitemap.xml", "/api/sitemap.xml"], async (req, res) => {
   }
 });
 
+// --- POWER SAVING & NIGHT SLEEP CONTROL ENDPOINTS (Zero-DB) ---
+app.get("/api/system/sleep-status", (req, res) => {
+  res.json({ success: true, ...nightSleepManager.getStatus() });
+});
+
+app.post("/api/system/wake", (req, res) => {
+  const durationMinutes = Number(req.body?.minutes) || 15;
+  const result = nightSleepManager.wake(durationMinutes * 60 * 1000, "api_call");
+  res.json({ success: true, ...result });
+});
+
+app.post("/api/system/sleep", (req, res) => {
+  const result = nightSleepManager.sleep(8 * 60 * 60 * 1000, "api_call");
+  res.json({ success: true, ...result });
+});
+
+app.post("/api/system/reset-schedule", (req, res) => {
+  const result = nightSleepManager.resetSchedule();
+  res.json({ success: true, ...result });
+});
+
+// Intercept requests during night sleep (10 PM to 6 AM IST) before database check
+app.use(nightSleepManager.middleware());
+
 app.use(async (req, res, next) => {
   if (databaseReady) return next();
   if (databaseInitializationPromise) {
@@ -369,7 +394,9 @@ const initializeDatabaseOnce = async () => {
       console.warn('[RESPONSE_CACHE] Redis connection failed; requests will continue without response caching.', error.message);
     }
     await pool.query('SELECT 1');
-    await runMigrations(pool, migrations);
+    if (process.env.SKIP_MIGRATIONS !== 'true') {
+      await runMigrations(pool, migrations);
+    }
     if (!systemDiagnostics) {
       systemDiagnostics = createSystemDiagnostics(pool);
       app.locals.systemDiagnostics = systemDiagnostics;
@@ -377,13 +404,19 @@ const initializeDatabaseOnce = async () => {
     databaseReady = true;
     startupFailure = null;
     databaseRetryAfter = 0;
-    if (!referralApprovalTimer) {
+    // In serverless / app-sleeping environments, interval polling resets cloud inactivity timers
+    // and keeps the database container continuously active 24/7.
+    // Claims are approved lazily on user visits or admin actions.
+    if (process.env.ENABLE_REFERRAL_POLL_INTERVAL === 'true' && !referralApprovalTimer) {
+      const pollIntervalMs = Number(process.env.REFERRAL_POLL_INTERVAL_MS) || 300000;
       const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
         console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
       });
-      runReferralApprovals();
-      referralApprovalTimer = setInterval(runReferralApprovals, 15000);
+      referralApprovalTimer = setInterval(runReferralApprovals, pollIntervalMs);
       referralApprovalTimer.unref();
+    } else {
+      // Single on-demand pass on startup without continuous background timer
+      approveDueReferralClaims().catch(() => {});
     }
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {

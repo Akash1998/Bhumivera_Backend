@@ -37,8 +37,15 @@ const ssl = sslDisabled
       ca: [...require("tls").rootCertificates, ...(sslCa ? [sslCa] : [])]
     };
 
-const maxIdle = Math.min(connectionLimit, 1);
+// Default to 0 idle connections in serverless/sleeping environments so sockets close when inactive.
+const maxIdle = process.env.DB_MAX_IDLE !== undefined
+  ? Math.max(0, Number(process.env.DB_MAX_IDLE))
+  : 0;
 const queueLimit = 100;
+const idleTimeout = Number(process.env.DB_IDLE_TIMEOUT) || 10000;
+// KeepAlive packets reset cloud provider inactivity timers; keep disabled for serverless/app-sleeping.
+const enableKeepAlive = process.env.DB_ENABLE_KEEP_ALIVE === "true";
+
 const pool = mysql
   .createPool({
     host: database.host || "localhost",
@@ -52,12 +59,12 @@ const pool = mysql
     queueLimit,
     connectTimeout: 10000,
     ssl,
-    idleTimeout: 60000,
-    enableKeepAlive: true,
+    idleTimeout,
+    enableKeepAlive,
     keepAliveInitialDelay: 0
   })
   .promise();
 
-pool.appConfig = { connectionLimit, maxIdle, queueLimit };
+pool.appConfig = { connectionLimit, maxIdle, queueLimit, idleTimeout, enableKeepAlive };
 
 module.exports = pool;
