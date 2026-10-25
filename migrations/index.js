@@ -845,6 +845,14 @@ const migrations = [
     name: 'add reservable maison regimen bundle products',
     up: () => seedMaisonRegimenBundles(pool),
   },
+  {
+    version: 73,
+    name: 'reseed 1080 authentic multilingual Indian marketplace reviews v5',
+    up: async () => {
+      const { seed1080AuthenticReviews } = require('../models/reviewModel');
+      return seed1080AuthenticReviews(pool);
+    },
+  },
 ];
 
 module.exports = migrations;

@@ -7,6 +7,37 @@ try {
   pool = { query: async () => [[]] };
 }
 const { LUXURY_CATALOG } = require('../data/luxuryCatalog');
+const { INITIAL_REVIEWS_SEED } = require('../data/bhumiveraReviewsData');
+
+const PRODUCT_SLUGS = {
+  1: 'activated-charcoal-luxury-face-wash',
+  2: 'himalayan-seabuckthorn-luxury-face-wash',
+  3: 'luxury-2-in-1-botanical-shampoo-conditioner',
+  4: 'artisanal-charcoal-handmade-soap',
+  5: 'artisanal-aloe-vera-handmade-soap',
+  6: 'kalpvriksh-satva-tulsi-7-tulsi-extract',
+  10: 'activated-charcoal-luxury-face-wash',
+  11: 'himalayan-seabuckthorn-luxury-face-wash',
+  12: 'luxury-2-in-1-botanical-shampoo-conditioner',
+  13: 'artisanal-charcoal-handmade-soap',
+  14: 'artisanal-aloe-vera-handmade-soap',
+  15: 'kalpvriksh-satva-tulsi-7-tulsi-extract',
+};
+
+const PRODUCT_NAMES = {
+  1: 'Bhumivera Activated Charcoal Purifying Luxury Face Wash',
+  2: 'Bhumivera Himalayan Sea Buckthorn Cellular Radiance Face Wash',
+  3: 'Bhumivera Royal Botanical 2-in-1 Luxury Shampoo with Conditioner',
+  4: 'Bhumivera Charcoal Deep Cleansing Bar (Handmade Ayurvedic Luxury Soap)',
+  5: 'Bhumivera Soothing Bar (Aloe Vera, Neem & Tulsi Handmade Ayurvedic Soap)',
+  6: 'Bhumivera Kalpvriksh Satva Tulsi (Liquid Extract of 7 Types of Tulsi)',
+  10: 'Bhumivera Activated Charcoal Purifying Luxury Face Wash',
+  11: 'Bhumivera Himalayan Sea Buckthorn Cellular Radiance Face Wash',
+  12: 'Bhumivera Royal Botanical 2-in-1 Luxury Shampoo with Conditioner',
+  13: 'Bhumivera Charcoal Deep Cleansing Bar (Handmade Ayurvedic Luxury Soap)',
+  14: 'Bhumivera Soothing Bar (Aloe Vera, Neem & Tulsi Handmade Ayurvedic Soap)',
+  15: 'Bhumivera Kalpvriksh Satva Tulsi (Liquid Extract of 7 Types of Tulsi)',
+};
 
 const STORE_FILE_PATH = path.join(__dirname, '../data/reviewsDatabaseStore.json');
 
@@ -15,12 +46,12 @@ function loadPersistedStore() {
     if (fs.existsSync(STORE_FILE_PATH)) {
       const raw = fs.readFileSync(STORE_FILE_PATH, 'utf8');
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed) && parsed.length >= 1000) return parsed;
     }
   } catch (err) {
     console.warn('[REVIEWS_STORE_LOAD_WARN]', err.message);
   }
-  return [];
+  return (INITIAL_REVIEWS_SEED || []).map(r => ({ ...r }));
 }
 
 function savePersistedStore(reviews) {
@@ -51,8 +82,14 @@ const parseReview = review => {
   const images = parseJsonArray(review.images);
   const videos = parseJsonArray(review.videos);
   const name = review.reviewer_name || review.user_name || 'Verified Patron';
+  const pid = Number(review.product_id) || 10;
+  const prodSlug = review.product_slug || PRODUCT_SLUGS[pid] || '';
+  const prodName = review.product_name || PRODUCT_NAMES[pid] || 'Bhumivera Product';
   return {
     ...review,
+    product_id: pid,
+    product_slug: prodSlug,
+    product_name: prodName,
     user_name: name,
     reviewer_name: name,
     reviewer_location: review.reviewer_location || 'India',
@@ -106,6 +143,8 @@ const createReviewTable = async (customPool = null) => {
     ['combo_name', 'VARCHAR(255) DEFAULT NULL'],
     ['order_number', 'VARCHAR(64) DEFAULT NULL'],
     ['helpful_count', 'INT DEFAULT 0'],
+    ['product_slug', 'VARCHAR(255) DEFAULT NULL'],
+    ['product_name', 'VARCHAR(255) DEFAULT NULL'],
   ];
 
   for (const [col, def] of extraCols) {
@@ -208,8 +247,10 @@ const createReview = async (data) => {
 
 const createReviewAsAdmin = async (data) => {
   const newId = Math.max(3000, ...memoryReviewsStore.map(r => Number(r.id) || 0)) + 1;
-  const productId = Number(data.product_id) || 2;
-  const prod = LUXURY_CATALOG.find(p => Number(p.id) === productId) || {};
+  const productId = Number(data.product_id) || 10;
+  const prodSlug = data.product_slug || PRODUCT_SLUGS[productId] || '';
+  const prod = LUXURY_CATALOG.find(p => Number(p.id) === productId || p.slug === prodSlug) || {};
+  const prodName = data.product_name || PRODUCT_NAMES[productId] || prod.name || `Product #${productId}`;
   const createdAt = data.created_at ? new Date(data.created_at).toISOString() : new Date().toISOString();
   const categoryTag = data.category_tag || (Number(data.rating) === 1 ? 'Shipping & Packaging Feedback' : 'Quick & Everyday Impressions');
   const isCombo = Boolean(data.is_combo_review || categoryTag === 'Combo Pack Ritual');
@@ -217,8 +258,8 @@ const createReviewAsAdmin = async (data) => {
   const newReview = {
     id: newId,
     product_id: productId,
-    product_slug: prod.slug || '',
-    product_name: data.product_name || prod.name || `Product #${productId}`,
+    product_slug: prodSlug || prod.slug || '',
+    product_name: prodName,
     user_id: 5000 + newId,
     user_name: (data.user_name || data.reviewer_name || 'Verified Patron').trim(),
     reviewer_name: (data.user_name || data.reviewer_name || 'Verified Patron').trim(),
@@ -251,12 +292,14 @@ const createReviewAsAdmin = async (data) => {
     const mysqlDate = createdAt.slice(0, 19).replace('T', ' ');
     await pool.query(
       `INSERT INTO reviews
-        (id, product_id, reviewer_name, reviewer_location, category_tag, is_combo_review, combo_name,
+        (id, product_id, product_slug, product_name, reviewer_name, reviewer_location, category_tag, is_combo_review, combo_name,
          order_number, rating, title, body, images, videos, helpful_count, public_story_consent, is_approved, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         newReview.id,
         newReview.product_id,
+        newReview.product_slug,
+        newReview.product_name,
         newReview.reviewer_name,
         newReview.reviewer_location,
         newReview.category_tag,
@@ -294,20 +337,37 @@ const getReviewsByProduct = async (productIdOrSlug, approvedOnly = true) => {
   let dbRows = [];
   try {
     const whereClause = approvedOnly ? 'AND r.is_approved = 1' : '';
+    let resolvedSlug = '';
+    let resolvedId = null;
+
+    if (typeof productIdOrSlug === 'string' && !/^\d+$/.test(productIdOrSlug)) {
+      resolvedSlug = productIdOrSlug;
+    } else {
+      const num = Number(productIdOrSlug);
+      resolvedId = num;
+      resolvedSlug = PRODUCT_SLUGS[num] || '';
+    }
+
     const [rows] = await pool.query(
-      `SELECT r.*, COALESCE(r.reviewer_name, u.name, 'Verified Patron') as user_name
+      `SELECT r.*,
+              COALESCE(r.product_slug, p.slug) AS product_slug,
+              COALESCE(r.product_name, p.name) AS product_name,
+              COALESCE(r.reviewer_name, u.name, 'Verified Patron') AS user_name
        FROM reviews r
        LEFT JOIN users u ON r.user_id = u.id
-       WHERE r.product_id = ? ${whereClause}
+       LEFT JOIN products p ON r.product_id = p.id
+       WHERE (r.product_id = ? OR r.product_slug = ? OR p.slug = ?) ${whereClause}
        ORDER BY r.created_at DESC`,
-      [productIdOrSlug]
+      [resolvedId || -1, resolvedSlug || '', resolvedSlug || '']
     );
     dbRows = (rows || []).map(parseReview);
   } catch (_) {}
 
   const memRows = memoryReviewsStore
     .filter(r =>
-      (String(r.product_id) === String(productIdOrSlug) || String(r.product_slug) === String(productIdOrSlug)) &&
+      (String(r.product_id) === String(productIdOrSlug) ||
+       String(r.product_slug) === String(productIdOrSlug) ||
+       PRODUCT_SLUGS[r.product_id] === String(productIdOrSlug)) &&
       (!approvedOnly || Number(r.is_approved) === 1)
     )
     .map(parseReview);
@@ -373,8 +433,12 @@ const getProductRatingSummary = async (productIdOrSlug) => {
 const getAllReviews = async (approved = null) => {
   let dbRows = [];
   try {
-    let query = `SELECT r.*, COALESCE(r.reviewer_name, u.name, 'Verified Patron') as user_name,
-      u.email as user_email, p.name as product_name, COALESCE(r.order_number, o.id) as order_number
+    let query = `SELECT r.*,
+      COALESCE(r.product_slug, p.slug) AS product_slug,
+      COALESCE(r.product_name, p.name) AS product_name,
+      COALESCE(r.reviewer_name, u.name, 'Verified Patron') AS user_name,
+      u.email AS user_email,
+      COALESCE(r.order_number, o.id) AS order_number
       FROM reviews r
       LEFT JOIN users u ON r.user_id = u.id
       LEFT JOIN products p ON r.product_id = p.id
@@ -404,11 +468,14 @@ const updateReviewAsAdmin = async (id, data) => {
   let updatedRecord = null;
   let removedImages = [];
 
+  const nextProductId = data.product_id !== undefined ? Number(data.product_id) : undefined;
+  const prodSlug = nextProductId ? (PRODUCT_SLUGS[nextProductId] || '') : undefined;
+  const prodName = nextProductId ? (PRODUCT_NAMES[nextProductId] || '') : undefined;
+
   if (memIdx !== -1) {
     const existing = memoryReviewsStore[memIdx];
     const previousImages = Array.isArray(existing.images) ? existing.images : [];
-    const nextProductId = data.product_id !== undefined ? Number(data.product_id) : existing.product_id;
-    const prod = LUXURY_CATALOG.find(p => Number(p.id) === Number(nextProductId));
+    const targetProdId = nextProductId !== undefined ? nextProductId : existing.product_id;
     const nextCat = data.category_tag !== undefined ? data.category_tag : existing.category_tag;
     updatedRecord = {
       ...existing,
@@ -423,10 +490,10 @@ const updateReviewAsAdmin = async (id, data) => {
       } : {}),
       ...(data.is_combo_review !== undefined ? { is_combo_review: Boolean(data.is_combo_review) } : {}),
       ...(data.created_at !== undefined ? { created_at: new Date(data.created_at).toISOString() } : {}),
-      ...(data.product_id !== undefined ? {
-        product_id: nextProductId,
-        product_name: prod?.name || existing.product_name,
-        product_slug: prod?.slug || existing.product_slug
+      ...(nextProductId !== undefined ? {
+        product_id: targetProdId,
+        product_name: prodName || existing.product_name,
+        product_slug: prodSlug || existing.product_slug
       } : {}),
       ...(data.images !== undefined ? { images: data.images } : {}),
       ...(data.videos !== undefined ? { videos: data.videos } : {}),
@@ -453,7 +520,9 @@ const updateReviewAsAdmin = async (id, data) => {
       reviewer_location: data.reviewer_location,
       category_tag: data.category_tag,
       is_approved: data.is_approved !== undefined ? (data.is_approved ? 1 : 0) : undefined,
-      product_id: data.product_id !== undefined ? Number(data.product_id) : undefined,
+      product_id: nextProductId,
+      product_slug: prodSlug,
+      product_name: prodName,
       created_at: data.created_at ? new Date(data.created_at).toISOString().slice(0, 19).replace('T', ' ') : undefined,
     };
     for (const [k, v] of Object.entries(mapFields)) {
@@ -475,7 +544,15 @@ const updateReviewAsAdmin = async (id, data) => {
       await pool.query(`UPDATE reviews SET ${fields.join(', ')} WHERE id = ?`, values);
     }
     if (updatedRecord?.product_id) await syncProductStats(updatedRecord.product_id);
+    else if (nextProductId) await syncProductStats(nextProductId);
   } catch (_) {}
+
+  if (!updatedRecord) {
+    try {
+      const [rows] = await pool.query('SELECT * FROM reviews WHERE id = ?', [id]);
+      if (rows?.[0]) updatedRecord = parseReview(rows[0]);
+    } catch (_) {}
+  }
 
   if (!updatedRecord) return false;
   return { review: updatedRecord, removedImages };
@@ -530,6 +607,140 @@ const getUserReviews = async (userId) => {
   return memoryReviewsStore.filter(r => Number(r.user_id) === Number(userId)).map(parseReview);
 };
 
+const deleteReviewPermanently = async (id) => {
+  let targetProductId = null;
+  try {
+    const [rows] = await pool.query('SELECT id, product_id FROM reviews WHERE id = ?', [id]);
+    if (rows?.[0]) {
+      targetProductId = rows[0].product_id;
+    }
+    await pool.query('DELETE FROM reviews WHERE id = ?', [id]);
+  } catch (_) {}
+
+  const memIdx = memoryReviewsStore.findIndex(r => String(r.id) === String(id));
+  if (memIdx !== -1) {
+    if (!targetProductId) targetProductId = memoryReviewsStore[memIdx].product_id;
+    memoryReviewsStore.splice(memIdx, 1);
+    savePersistedStore(memoryReviewsStore);
+  }
+
+  if (targetProductId) {
+    await syncProductStats(targetProductId);
+  }
+  return true;
+};
+
+const seed1080AuthenticReviews = async (customPool = null) => {
+  const db = customPool || pool;
+  await createReviewTable(db);
+
+  // Map product slugs to actual DB product IDs
+  const productSlugToDbId = new Map();
+  try {
+    const [pRows] = await db.query('SELECT id, slug FROM products');
+    for (const row of (pRows || [])) {
+      if (row.slug) productSlugToDbId.set(row.slug, row.id);
+    }
+  } catch (_) {}
+
+  // Delete legacy/dummy bot reviews
+  try {
+    await db.query("DELETE FROM reviews WHERE order_number LIKE 'BV-ORD-%' OR id <= 2500");
+  } catch (_) {}
+
+  // Find a default user_id if users table exists
+  let defaultUserId = null;
+  try {
+    const [uRows] = await db.query('SELECT id FROM users ORDER BY id LIMIT 1');
+    if (uRows?.[0]?.id) defaultUserId = uRows[0].id;
+  } catch (_) {}
+
+  // Insert all 1,080 reviews
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < INITIAL_REVIEWS_SEED.length; i += BATCH_SIZE) {
+    const batch = INITIAL_REVIEWS_SEED.slice(i, i + BATCH_SIZE);
+    const valuePlaceholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const params = [];
+
+    for (const r of batch) {
+      const targetProdId = productSlugToDbId.get(r.product_slug) || r.product_id;
+      const targetProdName = r.product_name || PRODUCT_NAMES[targetProdId] || 'Bhumivera Product';
+      const mysqlDate = new Date(r.created_at).toISOString().slice(0, 19).replace('T', ' ');
+      params.push(
+        r.id,
+        targetProdId,
+        r.product_slug,
+        targetProdName,
+        defaultUserId,
+        null, // order_id
+        r.order_number,
+        r.reviewer_name || r.user_name || 'Verified Patron',
+        r.reviewer_location || 'India',
+        r.category_tag || 'Quick & Everyday Impressions',
+        r.is_combo_review ? 1 : 0,
+        r.combo_name || null,
+        r.rating,
+        r.title || '',
+        r.body || r.comment || '',
+        JSON.stringify(r.images || []),
+        JSON.stringify(r.videos || []),
+        r.helpful_count || 5,
+        r.public_story_consent ? 1 : 0,
+        1, // is_approved
+        mysqlDate
+      );
+    }
+
+    await db.query(
+      `INSERT INTO reviews
+        (id, product_id, product_slug, product_name, user_id, order_id, order_number, reviewer_name, reviewer_location,
+         category_tag, is_combo_review, combo_name, rating, title, body, images, videos,
+         helpful_count, public_story_consent, is_approved, created_at)
+       VALUES ${valuePlaceholders}
+       ON DUPLICATE KEY UPDATE
+         product_id = VALUES(product_id),
+         product_slug = VALUES(product_slug),
+         product_name = VALUES(product_name),
+         reviewer_name = VALUES(reviewer_name),
+         reviewer_location = VALUES(reviewer_location),
+         category_tag = VALUES(category_tag),
+         is_combo_review = VALUES(is_combo_review),
+         combo_name = VALUES(combo_name),
+         rating = VALUES(rating),
+         title = VALUES(title),
+         body = VALUES(body),
+         images = VALUES(images),
+         videos = VALUES(videos),
+         helpful_count = VALUES(helpful_count),
+         is_approved = VALUES(is_approved),
+         created_at = VALUES(created_at)`,
+      params
+    );
+  }
+
+  // Update memoryReviewsStore
+  memoryReviewsStore = INITIAL_REVIEWS_SEED.map(r => {
+    const targetProdId = productSlugToDbId.get(r.product_slug) || r.product_id;
+    return {
+      ...r,
+      product_id: targetProdId,
+      product_name: r.product_name || PRODUCT_NAMES[targetProdId] || 'Bhumivera Product'
+    };
+  });
+  savePersistedStore(memoryReviewsStore);
+
+  // Sync stats for all products
+  const productIdsToSync = productSlugToDbId.size > 0
+    ? [...new Set([...productSlugToDbId.values(), 1, 2, 3, 4, 5, 6])]
+    : [1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15];
+
+  for (const pid of productIdsToSync) {
+    await syncProductStats(pid, db);
+  }
+
+  return INITIAL_REVIEWS_SEED.length;
+};
+
 module.exports = {
   createReviewTable,
   createReview,
@@ -541,7 +752,11 @@ module.exports = {
   getAllReviews,
   approveReview,
   archiveReview,
+  deleteReviewPermanently,
   getUserReviews,
   updateReviewAsAdmin,
-  syncProductStats
+  syncProductStats,
+  seed1080AuthenticReviews,
+  PRODUCT_SLUGS,
+  PRODUCT_NAMES,
 };

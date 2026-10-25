@@ -19,6 +19,7 @@ const {
   getAllReviews,
   approveReview,
   archiveReview,
+  deleteReviewPermanently,
   getUserReviews,
   updateReviewAsAdmin,
   syncProductStats
@@ -364,12 +365,35 @@ router.put('/:id/approve', authenticateAdmin, async (req, res) => {
   }
 });
 
-// DELETE /api/reviews/:id - admin: hide a review without removing its database record
-router.delete('/:id', authenticateAdmin, async (req, res) => {
+// DELETE /api/reviews/admin/:id - admin: delete or archive review
+router.delete('/admin/:id', authenticateAdmin, async (req, res) => {
   try {
+    const isPermanent = req.query.permanent !== 'false';
+    if (isPermanent) {
+      await deleteReviewPermanently(req.params.id);
+      return res.json({ message: 'Review permanently deleted from database.', deleted: true });
+    }
     const archived = await archiveReview(req.params.id);
     if (!archived) return res.status(404).json({ message: 'Review not found.' });
-    res.json({ message: 'Review hidden from customers and retained in the database.' });
+    return res.json({ message: 'Review hidden from customers and retained in the database.', archived: true });
+  } catch (err) {
+    console.error('[ADMIN_REVIEW_DELETE]', err);
+    res.status(500).json({ message: 'Failed to delete review.' });
+  }
+});
+
+// DELETE /api/reviews/:id - admin: hide or delete review
+router.delete('/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const isPermanent = req.query.permanent === 'true' || req.query.hard === 'true';
+    if (isPermanent) {
+      const deleted = await deleteReviewPermanently(req.params.id);
+      if (!deleted) return res.status(404).json({ message: 'Review not found.' });
+      return res.json({ message: 'Review permanently deleted from database.', deleted: true });
+    }
+    const archived = await archiveReview(req.params.id);
+    if (!archived) return res.status(404).json({ message: 'Review not found.' });
+    return res.json({ message: 'Review hidden from customers and retained in the database.', archived: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to delete review' });
