@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 const { initContactTable, ContactModel } = require('../models/contactModel');
-const { authenticateUser, authenticateAdmin } = require('../middleware/authMiddleware');
+const { authenticateUser, authenticateAdmin, optionalAuth } = require('../middleware/authMiddleware');
 const { sendMail } = require('../utils/mail');
 const { createOrResumeSession, appendMessage, updateSessionTelemetry } = require('../models/aiSupportModel');
 
@@ -40,13 +40,13 @@ const attachMessages = async tickets => {
 const validateMessage = value =>
   typeof value === 'string' && value.trim().length > 0 && value.trim().length <= MAX_MESSAGE_LENGTH;
 
-router.post('/', contactLimiter, authenticateUser, async (req, res) => {
+router.post('/', contactLimiter, optionalAuth, async (req, res) => {
   try {
     const { name, email, subject, message, order_id, product_id } = req.body;
     const ticketName = typeof name === 'string' && name.trim()
       ? name.trim()
-      : (req.user.name || req.user.email?.split('@')[0] || '').trim();
-    const ticketEmail = req.user.email || email;
+      : (req.user?.name || req.user?.email?.split('@')[0] || '').trim();
+    const ticketEmail = req.user?.email || (typeof email === 'string' ? email.trim() : '');
     if (
       !ticketName || ticketName.length > 100 ||
       typeof ticketEmail !== 'string' || !validEmail(ticketEmail.trim()) || ticketEmail.trim().length > 150 ||
@@ -59,6 +59,7 @@ router.post('/', contactLimiter, authenticateUser, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Enter a valid name, email, subject, and message.' });
     }
     if (order_id) {
+      if (!req.user) return res.status(401).json({ success: false, message: 'Sign in to associate an inquiry with an order.' });
       const params = [order_id, req.user.id];
       const productClause = product_id ? 'AND oi.product_id = ?' : '';
       if (product_id) params.push(product_id);
