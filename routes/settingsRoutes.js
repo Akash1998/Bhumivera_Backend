@@ -32,7 +32,7 @@ router.get('/scarcity-simulator/public', async (req, res) => {
       return res.status(400).json({ code: 'INVALID_SIMULATOR_PRODUCT_IDS', message: err.message });
     }
     console.error('[SCARCITY_SIMULATOR_PUBLIC]', err);
-    res.status(500).json({ code: 'SIMULATOR_LOAD_FAILED', message: 'Could not load illustrative availability.' });
+    res.status(500).json({ code: 'SIMULATOR_LOAD_FAILED', message: 'Could not load Live availability.' });
   }
 });
 

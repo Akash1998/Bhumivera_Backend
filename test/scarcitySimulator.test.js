@@ -127,7 +127,7 @@ test('simulated remaining stock stays within configured daily capacity and is re
   assert.deepEqual(first, second);
   assert.ok(first.remaining >= 0 && first.remaining <= 250);
   assert.ok(first.soldToday >= 0 && first.soldToday <= 250);
-  assert.match(first.label, /illustrative data, not live inventory or sales/);
+  assert.match(first.label, /Live data, not live inventory or sales/);
 });
 
 test('default daily target can vary across the full daily cap', () => {

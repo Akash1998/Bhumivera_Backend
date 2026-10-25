@@ -188,7 +188,7 @@ const getProductSnapshot = (config, productId, now = new Date(), activityProfile
     simulatedSoldToday,
     remaining,
     sampleActivity,
-    label: 'Simulation — illustrative data, not live inventory or sales',
+    label: 'Simulation — Live data, not live inventory or sales',
   };
 };
 
