@@ -6,7 +6,7 @@ try {
 } catch (_) {
   pool = { query: async () => [[]] };
 }
-const { LUXURY_CATALOG } = require('../data/luxuryCatalog');
+const { LUXURY_CATALOG, MAISON_REGIMEN_BUNDLES } = require('../data/luxuryCatalog');
 const { INITIAL_REVIEWS_SEED } = require('../data/bhumiveraReviewsData');
 
 const PRODUCT_SLUGS = {
@@ -16,12 +16,18 @@ const PRODUCT_SLUGS = {
   4: 'artisanal-charcoal-handmade-soap',
   5: 'artisanal-aloe-vera-handmade-soap',
   6: 'kalpvriksh-satva-tulsi-7-tulsi-extract',
+  7: 'bundle-daily-regimen',
+  8: 'bundle-inside-out-ritual',
+  9: 'bundle-grand-maison-vault',
   10: 'activated-charcoal-luxury-face-wash',
   11: 'himalayan-seabuckthorn-luxury-face-wash',
   12: 'luxury-2-in-1-botanical-shampoo-conditioner',
   13: 'artisanal-charcoal-handmade-soap',
   14: 'artisanal-aloe-vera-handmade-soap',
   15: 'kalpvriksh-satva-tulsi-7-tulsi-extract',
+  16: 'bundle-daily-regimen',
+  17: 'bundle-inside-out-ritual',
+  18: 'bundle-grand-maison-vault',
 };
 
 const PRODUCT_NAMES = {
@@ -31,12 +37,66 @@ const PRODUCT_NAMES = {
   4: 'Bhumivera Charcoal Deep Cleansing Bar (Handmade Ayurvedic Luxury Soap)',
   5: 'Bhumivera Soothing Bar (Aloe Vera, Neem & Tulsi Handmade Ayurvedic Soap)',
   6: 'Bhumivera Kalpvriksh Satva Tulsi (Liquid Extract of 7 Types of Tulsi)',
+  7: 'The Complete Botanical Daily Regimen',
+  8: 'The Inside-Out Skin-Clearing & Cortisol Ritual',
+  9: 'The Grand Maison 6-Piece Apothecary Vault',
   10: 'Bhumivera Activated Charcoal Purifying Luxury Face Wash',
   11: 'Bhumivera Himalayan Sea Buckthorn Cellular Radiance Face Wash',
   12: 'Bhumivera Royal Botanical 2-in-1 Luxury Shampoo with Conditioner',
   13: 'Bhumivera Charcoal Deep Cleansing Bar (Handmade Ayurvedic Luxury Soap)',
   14: 'Bhumivera Soothing Bar (Aloe Vera, Neem & Tulsi Handmade Ayurvedic Soap)',
   15: 'Bhumivera Kalpvriksh Satva Tulsi (Liquid Extract of 7 Types of Tulsi)',
+  16: 'The Complete Botanical Daily Regimen',
+  17: 'The Inside-Out Skin-Clearing & Cortisol Ritual',
+  18: 'The Grand Maison 6-Piece Apothecary Vault',
+};
+
+const COMBO_BY_KEY = {
+  'bundle-daily-regimen': {
+    id: 'bundle-daily-regimen',
+    sku: 'BV-BND-DAILY-01',
+    name: 'The Complete Botanical Daily Regimen',
+  },
+  'BV-BND-DAILY-01': {
+    id: 'bundle-daily-regimen',
+    sku: 'BV-BND-DAILY-01',
+    name: 'The Complete Botanical Daily Regimen',
+  },
+  'The Complete Botanical Daily Regimen': {
+    id: 'bundle-daily-regimen',
+    sku: 'BV-BND-DAILY-01',
+    name: 'The Complete Botanical Daily Regimen',
+  },
+  'bundle-inside-out-ritual': {
+    id: 'bundle-inside-out-ritual',
+    sku: 'BV-BND-INSIDEOUT-02',
+    name: 'The Inside-Out Skin-Clearing & Cortisol Ritual',
+  },
+  'BV-BND-INSIDEOUT-02': {
+    id: 'bundle-inside-out-ritual',
+    sku: 'BV-BND-INSIDEOUT-02',
+    name: 'The Inside-Out Skin-Clearing & Cortisol Ritual',
+  },
+  'The Inside-Out Skin-Clearing & Cortisol Ritual': {
+    id: 'bundle-inside-out-ritual',
+    sku: 'BV-BND-INSIDEOUT-02',
+    name: 'The Inside-Out Skin-Clearing & Cortisol Ritual',
+  },
+  'bundle-grand-maison-vault': {
+    id: 'bundle-grand-maison-vault',
+    sku: 'BV-BND-VAULT-06',
+    name: 'The Grand Maison 6-Piece Apothecary Vault',
+  },
+  'BV-BND-VAULT-06': {
+    id: 'bundle-grand-maison-vault',
+    sku: 'BV-BND-VAULT-06',
+    name: 'The Grand Maison 6-Piece Apothecary Vault',
+  },
+  'The Grand Maison 6-Piece Apothecary Vault': {
+    id: 'bundle-grand-maison-vault',
+    sku: 'BV-BND-VAULT-06',
+    name: 'The Grand Maison 6-Piece Apothecary Vault',
+  },
 };
 
 const STORE_FILE_PATH = path.join(__dirname, '../data/reviewsDatabaseStore.json');
@@ -46,7 +106,7 @@ function loadPersistedStore() {
     if (fs.existsSync(STORE_FILE_PATH)) {
       const raw = fs.readFileSync(STORE_FILE_PATH, 'utf8');
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length >= 1000) return parsed;
+      if (Array.isArray(parsed) && parsed.length >= 1500) return parsed;
     }
   } catch (err) {
     console.warn('[REVIEWS_STORE_LOAD_WARN]', err.message);
@@ -82,9 +142,10 @@ const parseReview = review => {
   const images = parseJsonArray(review.images);
   const videos = parseJsonArray(review.videos);
   const name = review.reviewer_name || review.user_name || 'Verified Patron';
-  const pid = Number(review.product_id) || 10;
+  const pid = Number(review.product_id) || 1;
   const prodSlug = review.product_slug || PRODUCT_SLUGS[pid] || '';
   const prodName = review.product_name || PRODUCT_NAMES[pid] || 'Bhumivera Product';
+  const comboMatch = review.combo_name ? COMBO_BY_KEY[review.combo_name] : (review.combo_slug ? COMBO_BY_KEY[review.combo_slug] : null);
   return {
     ...review,
     product_id: pid,
@@ -94,7 +155,10 @@ const parseReview = review => {
     reviewer_name: name,
     reviewer_location: review.reviewer_location || 'India',
     category_tag: review.category_tag || 'Quick & Everyday Impressions',
-    is_combo_review: Boolean(review.is_combo_review || review.category_tag === 'Combo Pack Ritual'),
+    is_combo_review: Boolean(review.is_combo_review || review.combo_name || review.category_tag === 'Combo Pack Ritual'),
+    combo_name: comboMatch?.name || review.combo_name || null,
+    combo_slug: comboMatch?.id || review.combo_slug || null,
+    combo_sku: comboMatch?.sku || review.combo_sku || null,
     body: review.body || review.comment || '',
     comment: review.comment || review.body || '',
     images,
@@ -111,6 +175,8 @@ const createReviewTable = async (customPool = null) => {
     CREATE TABLE IF NOT EXISTS reviews (
       id INT AUTO_INCREMENT PRIMARY KEY,
       product_id INT NOT NULL,
+      product_slug VARCHAR(255) DEFAULT NULL,
+      product_name VARCHAR(255) DEFAULT NULL,
       user_id INT DEFAULT NULL,
       order_id INT DEFAULT NULL,
       order_number VARCHAR(64) DEFAULT NULL,
@@ -162,8 +228,8 @@ const syncProductStats = async (productId, customPool = null) => {
   try {
     await db.query(`
       UPDATE products p
-      SET rating = (SELECT IFNULL(ROUND(AVG(rating), 2), 4.6) FROM reviews WHERE product_id = p.id AND is_approved = 1),
-          review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = p.id AND is_approved = 1)
+      SET rating = (SELECT IFNULL(ROUND(AVG(rating), 2), 4.65) FROM reviews WHERE (product_id = p.id OR product_slug = p.slug OR combo_name = p.name) AND is_approved = 1),
+          review_count = (SELECT COUNT(*) FROM reviews WHERE (product_id = p.id OR product_slug = p.slug OR combo_name = p.name) AND is_approved = 1)
       WHERE p.id = ?
     `, [productId]);
   } catch (_) {}
@@ -182,33 +248,39 @@ const createReview = async (data) => {
     category_tag = 'Quick & Everyday Impressions',
     user_name = 'Verified Patron',
     reviewer_location = 'India',
+    combo_name = null,
     public_story_consent = false
   } = data;
 
   const newId = Math.max(3000, ...memoryReviewsStore.map(r => Number(r.id) || 0)) + 1;
   const prod = LUXURY_CATALOG.find(p => Number(p.id) === Number(product_id)) || {};
   const nowIso = data.created_at ? new Date(data.created_at).toISOString() : new Date().toISOString();
+  const comboMatch = combo_name ? COMBO_BY_KEY[combo_name] : null;
+  const isCombo = Boolean(data.is_combo_review || comboMatch || category_tag === 'Combo Pack Ritual');
 
   const newRecord = {
     id: newId,
-    product_id: Number(product_id),
-    product_slug: prod.slug || '',
-    product_name: prod.name || `Product #${product_id}`,
+    product_id: Number(product_id) || 1,
+    product_slug: prod.slug || PRODUCT_SLUGS[Number(product_id)] || '',
+    product_name: prod.name || PRODUCT_NAMES[Number(product_id)] || `Product #${product_id}`,
     user_id: Number(user_id) || 5000 + newId,
     user_name,
     reviewer_name: user_name,
     reviewer_location,
     order_id: order_id || (80000 + newId),
-    order_number: `BV-${nowIso.slice(0, 4)}-${80000 + newId}`,
+    order_number: data.order_number || `BV-${nowIso.slice(0, 4)}-${80000 + newId}`,
     rating: Number(rating),
     category_tag,
-    is_combo_review: category_tag === 'Combo Pack Ritual',
+    is_combo_review: isCombo,
+    combo_name: isCombo ? (comboMatch?.name || combo_name || 'The Complete Botanical Daily Regimen') : null,
+    combo_slug: isCombo ? (comboMatch?.id || null) : null,
+    combo_sku: isCombo ? (comboMatch?.sku || null) : null,
     title: title || null,
     body: body || null,
     comment: body || null,
     images: Array.isArray(images) ? images : [],
     videos: Array.isArray(videos) ? videos : [],
-    helpful_count: 1,
+    helpful_count: Number(data.helpful_count) || 1,
     public_story_consent: public_story_consent && (images.length > 0 || videos.length > 0) ? 1 : 0,
     is_approved: 1,
     verified_purchase: true,
@@ -222,14 +294,19 @@ const createReview = async (data) => {
 
   try {
     const [result] = await pool.query(
-      'INSERT INTO reviews (product_id, user_id, order_id, reviewer_name, reviewer_location, category_tag, rating, title, body, images, videos, public_story_consent, is_approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)',
+      'INSERT INTO reviews (product_id, product_slug, product_name, user_id, order_id, order_number, reviewer_name, reviewer_location, category_tag, is_combo_review, combo_name, rating, title, body, images, videos, public_story_consent, is_approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)',
       [
-        product_id,
+        newRecord.product_id,
+        newRecord.product_slug,
+        newRecord.product_name,
         user_id || null,
         order_id || null,
+        newRecord.order_number,
         user_name,
         reviewer_location,
         category_tag,
+        newRecord.is_combo_review ? 1 : 0,
+        newRecord.combo_name,
         rating,
         title || null,
         body || null,
@@ -253,7 +330,11 @@ const createReviewAsAdmin = async (data) => {
   const prodName = data.product_name || PRODUCT_NAMES[productId] || prod.name || `Product #${productId}`;
   const createdAt = data.created_at ? new Date(data.created_at).toISOString() : new Date().toISOString();
   const categoryTag = data.category_tag || (Number(data.rating) === 1 ? 'Shipping & Packaging Feedback' : 'Quick & Everyday Impressions');
-  const isCombo = Boolean(data.is_combo_review || categoryTag === 'Combo Pack Ritual');
+  const comboMatch = data.combo_name ? COMBO_BY_KEY[data.combo_name] : (data.combo_slug ? COMBO_BY_KEY[data.combo_slug] : (COMBO_BY_KEY[prodSlug] || null));
+  const isCombo = Boolean(data.is_combo_review || comboMatch || categoryTag === 'Combo Pack Ritual');
+  const resolvedComboName = isCombo
+    ? (comboMatch?.name || data.combo_name || 'The Complete Botanical Daily Regimen')
+    : null;
 
   const newReview = {
     id: newId,
@@ -270,13 +351,15 @@ const createReviewAsAdmin = async (data) => {
     rating: Number(data.rating) || 5,
     category_tag: categoryTag,
     is_combo_review: isCombo,
-    combo_name: isCombo ? (data.combo_name || 'The Complete Botanical Daily Regimen (Combo Pack)') : null,
+    combo_name: resolvedComboName,
+    combo_slug: isCombo ? (comboMatch?.id || data.combo_slug || 'bundle-daily-regimen') : null,
+    combo_sku: isCombo ? (comboMatch?.sku || data.combo_sku || 'BV-BND-DAILY-01') : null,
     title: (data.title || '').trim(),
     body: (data.body || data.comment || '').trim(),
     comment: (data.body || data.comment || '').trim(),
     images: Array.isArray(data.images) ? data.images : [],
     videos: Array.isArray(data.videos) ? data.videos : [],
-    helpful_count: Number(data.helpful_count) || 8,
+    helpful_count: data.helpful_count !== undefined ? Number(data.helpful_count) : 8,
     public_story_consent: (Array.isArray(data.images) && data.images.length > 0) || (Array.isArray(data.videos) && data.videos.length > 0) ? 1 : 0,
     is_approved: data.is_approved !== undefined ? (data.is_approved ? 1 : 0) : 1,
     verified_purchase: data.verified_purchase !== false,
@@ -335,6 +418,10 @@ const getPublicCustomerStories = async () => {
 
 const getReviewsByProduct = async (productIdOrSlug, approvedOnly = true) => {
   let dbRows = [];
+  const comboMatch = COMBO_BY_KEY[String(productIdOrSlug)] ||
+    (PRODUCT_SLUGS[Number(productIdOrSlug)] && COMBO_BY_KEY[PRODUCT_SLUGS[Number(productIdOrSlug)]]) ||
+    null;
+
   try {
     const whereClause = approvedOnly ? 'AND r.is_approved = 1' : '';
     let resolvedSlug = '';
@@ -356,20 +443,27 @@ const getReviewsByProduct = async (productIdOrSlug, approvedOnly = true) => {
        FROM reviews r
        LEFT JOIN users u ON r.user_id = u.id
        LEFT JOIN products p ON r.product_id = p.id
-       WHERE (r.product_id = ? OR r.product_slug = ? OR p.slug = ?) ${whereClause}
+       WHERE (r.product_id = ? OR r.product_slug = ? OR p.slug = ? OR (? <> '' AND r.combo_name = ?)) ${whereClause}
        ORDER BY r.created_at DESC`,
-      [resolvedId || -1, resolvedSlug || '', resolvedSlug || '']
+      [resolvedId || -1, resolvedSlug || '', resolvedSlug || '', comboMatch?.name || '', comboMatch?.name || '']
     );
     dbRows = (rows || []).map(parseReview);
   } catch (_) {}
 
   const memRows = memoryReviewsStore
-    .filter(r =>
-      (String(r.product_id) === String(productIdOrSlug) ||
-       String(r.product_slug) === String(productIdOrSlug) ||
-       PRODUCT_SLUGS[r.product_id] === String(productIdOrSlug)) &&
-      (!approvedOnly || Number(r.is_approved) === 1)
-    )
+    .filter(r => {
+      if (approvedOnly && Number(r.is_approved) !== 1) return false;
+      if (comboMatch && (r.combo_name === comboMatch.name || r.combo_slug === comboMatch.id || r.combo_sku === comboMatch.sku)) {
+        return true;
+      }
+      return (
+        String(r.product_id) === String(productIdOrSlug) ||
+        String(r.product_slug) === String(productIdOrSlug) ||
+        String(r.product_sku) === String(productIdOrSlug) ||
+        PRODUCT_SLUGS[r.product_id] === String(productIdOrSlug) ||
+        (PRODUCT_SLUGS[Number(productIdOrSlug)] && r.product_slug === PRODUCT_SLUGS[Number(productIdOrSlug)])
+      );
+    })
     .map(parseReview);
 
   const combined = [...dbRows, ...memRows];
@@ -382,17 +476,31 @@ const getReviewsByProduct = async (productIdOrSlug, approvedOnly = true) => {
 };
 
 const getReviewsByComboName = async comboName => {
-  const [rows] = await pool.query(
-    `SELECT r.*, COALESCE(r.reviewer_name, u.name, 'Verified Patron') as user_name,
-            p.name as product_name
-     FROM reviews r
-     LEFT JOIN users u ON r.user_id = u.id
-     LEFT JOIN products p ON r.product_id = p.id
-     WHERE r.combo_name = ? AND r.is_approved = 1
-     ORDER BY r.created_at DESC`,
-    [comboName]
-  );
-  return (rows || []).map(parseReview);
+  try {
+    const [rows] = await pool.query(
+      `SELECT r.*, COALESCE(r.reviewer_name, u.name, 'Verified Patron') as user_name,
+              p.name as product_name
+       FROM reviews r
+       LEFT JOIN users u ON r.user_id = u.id
+       LEFT JOIN products p ON r.product_id = p.id
+       WHERE r.combo_name = ? AND r.is_approved = 1
+       ORDER BY r.created_at DESC`,
+      [comboName]
+    );
+    if (Array.isArray(rows) && rows.length > 0) {
+      return rows.map(parseReview);
+    }
+  } catch (_) {}
+
+  const comboMatch = COMBO_BY_KEY[comboName] || null;
+  return memoryReviewsStore
+    .filter(r =>
+      Number(r.is_approved) === 1 &&
+      (r.combo_name === comboName ||
+       (comboMatch && (r.combo_name === comboMatch.name || r.combo_slug === comboMatch.id || r.combo_sku === comboMatch.sku)))
+    )
+    .map(parseReview)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 };
 
 const getProductRatingSummary = async (productIdOrSlug) => {
@@ -406,7 +514,7 @@ const getProductRatingSummary = async (productIdOrSlug) => {
   const comboMatches = reviews.filter(r => r.is_combo_review || r.category_tag === 'Combo Pack Ritual');
   const comboAverage = comboMatches.length > 0
     ? Number((comboMatches.reduce((a, r) => a + (Number(r.rating) || 5), 0) / comboMatches.length).toFixed(2))
-    : 4.88;
+    : 4.80;
 
   const categories = {};
   for (const r of reviews) {
@@ -469,14 +577,25 @@ const updateReviewAsAdmin = async (id, data) => {
   let removedImages = [];
 
   const nextProductId = data.product_id !== undefined ? Number(data.product_id) : undefined;
-  const prodSlug = nextProductId ? (PRODUCT_SLUGS[nextProductId] || '') : undefined;
-  const prodName = nextProductId ? (PRODUCT_NAMES[nextProductId] || '') : undefined;
+  const prodSlug = data.product_slug || (nextProductId ? (PRODUCT_SLUGS[nextProductId] || '') : undefined);
+  const prodName = data.product_name || (nextProductId ? (PRODUCT_NAMES[nextProductId] || '') : undefined);
+
+  const comboKeyInput = data.combo_name !== undefined ? data.combo_name : data.combo_slug;
+  const comboMatch = comboKeyInput ? COMBO_BY_KEY[comboKeyInput] : null;
 
   if (memIdx !== -1) {
     const existing = memoryReviewsStore[memIdx];
     const previousImages = Array.isArray(existing.images) ? existing.images : [];
     const targetProdId = nextProductId !== undefined ? nextProductId : existing.product_id;
     const nextCat = data.category_tag !== undefined ? data.category_tag : existing.category_tag;
+    const nextIsCombo = data.is_combo_review !== undefined
+      ? Boolean(data.is_combo_review)
+      : (data.combo_name !== undefined ? Boolean(data.combo_name) : (nextCat === 'Combo Pack Ritual' || existing.is_combo_review));
+    const nextComboName = nextIsCombo
+      ? (comboMatch?.name || data.combo_name || existing.combo_name || 'The Complete Botanical Daily Regimen')
+      : null;
+    const nextComboInfo = nextComboName ? COMBO_BY_KEY[nextComboName] : null;
+
     updatedRecord = {
       ...existing,
       ...(data.rating !== undefined ? { rating: Number(data.rating) } : {}),
@@ -484,11 +603,13 @@ const updateReviewAsAdmin = async (id, data) => {
       ...(data.body !== undefined ? { body: data.body, comment: data.body } : {}),
       ...(data.user_name !== undefined ? { user_name: data.user_name, reviewer_name: data.user_name } : {}),
       ...(data.reviewer_location !== undefined ? { reviewer_location: data.reviewer_location } : {}),
-      ...(data.category_tag !== undefined ? {
-        category_tag: nextCat,
-        is_combo_review: Boolean(data.is_combo_review ?? (nextCat === 'Combo Pack Ritual'))
-      } : {}),
-      ...(data.is_combo_review !== undefined ? { is_combo_review: Boolean(data.is_combo_review) } : {}),
+      ...(data.order_number !== undefined ? { order_number: data.order_number } : {}),
+      ...(data.helpful_count !== undefined ? { helpful_count: Number(data.helpful_count) || 0 } : {}),
+      category_tag: nextCat,
+      is_combo_review: nextIsCombo,
+      combo_name: nextComboName,
+      combo_slug: nextComboInfo?.id || (nextIsCombo ? existing.combo_slug : null),
+      combo_sku: nextComboInfo?.sku || (nextIsCombo ? existing.combo_sku : null),
       ...(data.created_at !== undefined ? { created_at: new Date(data.created_at).toISOString() } : {}),
       ...(nextProductId !== undefined ? {
         product_id: targetProdId,
@@ -519,6 +640,10 @@ const updateReviewAsAdmin = async (id, data) => {
       reviewer_name: data.user_name,
       reviewer_location: data.reviewer_location,
       category_tag: data.category_tag,
+      is_combo_review: data.is_combo_review !== undefined ? (data.is_combo_review ? 1 : 0) : undefined,
+      combo_name: data.combo_name !== undefined ? (data.combo_name || null) : undefined,
+      order_number: data.order_number,
+      helpful_count: data.helpful_count !== undefined ? Number(data.helpful_count) : undefined,
       is_approved: data.is_approved !== undefined ? (data.is_approved ? 1 : 0) : undefined,
       product_id: nextProductId,
       product_slug: prodSlug,
@@ -630,32 +755,31 @@ const deleteReviewPermanently = async (id) => {
   return true;
 };
 
-const seed1080AuthenticReviews = async (customPool = null) => {
+const seed1500AuthenticReviews = async (customPool = null) => {
   const db = customPool || pool;
   await createReviewTable(db);
 
-  // Map product slugs to actual DB product IDs
+  // Map product slugs and SKUs to actual DB product IDs
   const productSlugToDbId = new Map();
   try {
-    const [pRows] = await db.query('SELECT id, slug FROM products');
+    const [pRows] = await db.query('SELECT id, slug, sku, name FROM products');
     for (const row of (pRows || [])) {
       if (row.slug) productSlugToDbId.set(row.slug, row.id);
+      if (row.sku) productSlugToDbId.set(row.sku, row.id);
     }
   } catch (_) {}
 
-  // Delete legacy/dummy bot reviews
+  // Remove old repetitive/synthetic reviews so exact 1,500 authentic reviews are seeded cleanly
   try {
     await db.query("DELETE FROM reviews WHERE order_number LIKE 'BV-ORD-%' OR id <= 2500");
   } catch (_) {}
 
-  // Find a default user_id if users table exists
   let defaultUserId = null;
   try {
     const [uRows] = await db.query('SELECT id FROM users ORDER BY id LIMIT 1');
     if (uRows?.[0]?.id) defaultUserId = uRows[0].id;
   } catch (_) {}
 
-  // Insert all 1,080 reviews
   const BATCH_SIZE = 100;
   for (let i = 0; i < INITIAL_REVIEWS_SEED.length; i += BATCH_SIZE) {
     const batch = INITIAL_REVIEWS_SEED.slice(i, i + BATCH_SIZE);
@@ -663,7 +787,7 @@ const seed1080AuthenticReviews = async (customPool = null) => {
     const params = [];
 
     for (const r of batch) {
-      const targetProdId = productSlugToDbId.get(r.product_slug) || r.product_id;
+      const targetProdId = productSlugToDbId.get(r.product_slug) || productSlugToDbId.get(r.product_sku) || r.product_id;
       const targetProdName = r.product_name || PRODUCT_NAMES[targetProdId] || 'Bhumivera Product';
       const mysqlDate = new Date(r.created_at).toISOString().slice(0, 19).replace('T', ' ');
       params.push(
@@ -672,7 +796,7 @@ const seed1080AuthenticReviews = async (customPool = null) => {
         r.product_slug,
         targetProdName,
         defaultUserId,
-        null, // order_id
+        null,
         r.order_number,
         r.reviewer_name || r.user_name || 'Verified Patron',
         r.reviewer_location || 'India',
@@ -686,7 +810,7 @@ const seed1080AuthenticReviews = async (customPool = null) => {
         JSON.stringify(r.videos || []),
         r.helpful_count || 5,
         r.public_story_consent ? 1 : 0,
-        1, // is_approved
+        1,
         mysqlDate
       );
     }
@@ -718,7 +842,6 @@ const seed1080AuthenticReviews = async (customPool = null) => {
     );
   }
 
-  // Update memoryReviewsStore
   memoryReviewsStore = INITIAL_REVIEWS_SEED.map(r => {
     const targetProdId = productSlugToDbId.get(r.product_slug) || r.product_id;
     return {
@@ -729,17 +852,31 @@ const seed1080AuthenticReviews = async (customPool = null) => {
   });
   savePersistedStore(memoryReviewsStore);
 
-  // Sync stats for all products
+  // Sync stats for all 6 products and 3 regimen bundles
   const productIdsToSync = productSlugToDbId.size > 0
-    ? [...new Set([...productSlugToDbId.values(), 1, 2, 3, 4, 5, 6])]
-    : [1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15];
+    ? [...new Set([...productSlugToDbId.values(), 1, 2, 3, 4, 5, 6, 7, 8, 9])]
+    : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 
   for (const pid of productIdsToSync) {
     await syncProductStats(pid, db);
   }
 
+  // Also sync bundle product rows by name/slug
+  for (const bundle of (MAISON_REGIMEN_BUNDLES || [])) {
+    try {
+      await db.query(`
+        UPDATE products p
+        SET rating = (SELECT IFNULL(ROUND(AVG(rating), 2), 4.75) FROM reviews WHERE combo_name = ? AND is_approved = 1),
+            review_count = (SELECT COUNT(*) FROM reviews WHERE combo_name = ? AND is_approved = 1)
+        WHERE p.slug = ? OR p.sku = ? OR p.name = ?
+      `, [bundle.name, bundle.name, bundle.id, bundle.sku, bundle.name]);
+    } catch (_) {}
+  }
+
   return INITIAL_REVIEWS_SEED.length;
 };
+
+const seed1080AuthenticReviews = seed1500AuthenticReviews;
 
 module.exports = {
   createReviewTable,
@@ -756,7 +893,9 @@ module.exports = {
   getUserReviews,
   updateReviewAsAdmin,
   syncProductStats,
+  seed1500AuthenticReviews,
   seed1080AuthenticReviews,
   PRODUCT_SLUGS,
   PRODUCT_NAMES,
+  COMBO_BY_KEY,
 };

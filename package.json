@@ -15,7 +15,8 @@
     "veo:list": "node scripts/generateConciergeVeoVideos.js --list",
     "veo:dry-run": "node scripts/generateConciergeVeoVideos.js --dry-run --all",
     "veo:generate": "node scripts/generateConciergeVeoVideos.js --all",
-    "seed:luxury": "node scripts/seedLuxuryCatalog.js"
+    "seed:luxury": "node scripts/seedLuxuryCatalog.js",
+    "seed:reviews": "node scripts/seedReviews.js"
   },
   "keywords": [
     "ecommerce",

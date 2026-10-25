@@ -205,8 +205,8 @@ describe('runMigrations', () => {
     assert.match(statement, /INSERT INTO settings/);
     assert.match(statement, /ON DUPLICATE KEY UPDATE value = IF\(value IS NULL OR TRIM\(value\) = '', VALUES\(value\), value\)/);
     const rewards = JSON.parse(values[0]);
-    assert.equal(rewards.length, 6);
-    assert.equal(rewards.reduce((total, reward) => total + reward.chance, 0), 100);
+    assert.equal(rewards.length, 5);
+    assert.equal(rewards.reduce((total, reward) => total + reward.chance, 0), 230);
 
     const validRewards = JSON.stringify(rewards);
     const statements = [];
@@ -226,7 +226,7 @@ describe('runMigrations', () => {
     pool.query = async (sql, params = []) => {
       invalidStatements.push(sql);
       if (sql.startsWith('SELECT value FROM settings')) {
-        return [[{ value: JSON.stringify(rewards.slice(0, 5)) }], []];
+        return [[{ value: JSON.stringify([]) }], []];
       }
       values = params;
       return [{ affectedRows: 1 }, []];
@@ -237,7 +237,7 @@ describe('runMigrations', () => {
       pool.query = originalQuery;
     }
     assert.equal(invalidStatements.length, 2, 'invalid saved rewards should be repaired');
-    assert.equal(JSON.parse(values[0]).length, 6);
+    assert.equal(JSON.parse(values[0]).length, 5);
   });
 
   it('records each successful migration and skips it on later runs', async () => {

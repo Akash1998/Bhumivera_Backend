@@ -113,7 +113,10 @@ router.get('/product/:productId', async (req, res) => {
 });
 
 router.get('/combo/:bundleId', async (req, res) => {
-  const bundle = MAISON_REGIMEN_BUNDLES.find(item => item.id === req.params.bundleId);
+  const param = req.params.bundleId;
+  const bundle = MAISON_REGIMEN_BUNDLES.find(
+    item => item.id === param || item.sku === param || item.name === param
+  );
   if (!bundle) return res.status(404).json({ message: 'Regimen not found.' });
   try {
     const reviews = await getReviewsByComboName(bundle.name);
@@ -152,12 +155,14 @@ router.get('/my', authenticateUser, async (req, res) => {
 // PUT /api/reviews/:id - owner: update own review
 router.put('/:id', authenticateUser, async (req, res) => {
   try {
-    const { rating, title, body, comment, images, videos } = req.body;
-    const reviewText = body || comment;
+    const { rating, title, body, comment, images, videos, reviewer_location, user_name } = req.body;
+    const reviewText = body !== undefined ? body : comment;
     const result = await updateReviewAsAdmin(req.params.id, {
       ...(rating !== undefined ? { rating: Number(rating) } : {}),
       ...(title !== undefined ? { title } : {}),
       ...(reviewText !== undefined ? { body: reviewText } : {}),
+      ...(user_name !== undefined ? { user_name } : {}),
+      ...(reviewer_location !== undefined ? { reviewer_location } : {}),
       ...(images !== undefined ? { images } : {}),
       ...(videos !== undefined ? { videos } : {})
     });
@@ -182,6 +187,9 @@ router.post('/', reviewLimiter, async (req, res) => {
       user_name = 'Verified Patron',
       reviewer_location = 'India',
       category_tag = 'Quick & Everyday Impressions',
+      combo_name = null,
+      is_combo_review = false,
+      created_at,
       images = [],
       videos = [],
       public_story_consent = true
@@ -207,6 +215,9 @@ router.post('/', reviewLimiter, async (req, res) => {
       user_name: String(user_name || 'Verified Patron').trim(),
       reviewer_location: String(reviewer_location || 'India').trim(),
       category_tag: String(category_tag || 'Quick & Everyday Impressions').trim(),
+      combo_name: combo_name ? String(combo_name).trim() : null,
+      is_combo_review: Boolean(is_combo_review || combo_name),
+      created_at,
       images,
       videos,
       public_story_consent: Boolean(public_story_consent)
@@ -234,7 +245,7 @@ router.post('/admin/upload-url', authenticateAdmin, async (req, res) => {
   }
 });
 
-// GET /api/reviews - admin: all 1,080+ reviews
+// GET /api/reviews - admin: all 1,500+ reviews
 router.get('/', authenticateAdmin, async (req, res) => {
   try {
     const approved = req.query.approved !== undefined ? parseInt(req.query.approved, 10) : null;
@@ -251,6 +262,8 @@ router.post('/admin', authenticateAdmin, async (req, res) => {
   try {
     const {
       product_id = 2,
+      product_slug,
+      product_name,
       rating = 5,
       title = '',
       body = '',
@@ -260,6 +273,11 @@ router.post('/admin', authenticateAdmin, async (req, res) => {
       reviewer_location = 'India',
       category_tag = 'Quick & Everyday Impressions',
       is_combo_review = false,
+      combo_name = null,
+      combo_slug = null,
+      combo_sku = null,
+      order_number,
+      helpful_count,
       created_at,
       images = [],
       videos = [],
@@ -276,13 +294,20 @@ router.post('/admin', authenticateAdmin, async (req, res) => {
 
     const created = await createReviewAsAdmin({
       product_id: Number(product_id) || 2,
+      product_slug,
+      product_name,
       rating: Math.round(numericRating),
       title: String(title || '').slice(0, 255),
       body: String(body || comment || '').slice(0, 5000),
       user_name: String(user_name || reviewer_name || 'Verified Patron').slice(0, 120),
       reviewer_location: String(reviewer_location || 'India').slice(0, 120),
       category_tag: String(category_tag || 'Quick & Everyday Impressions').slice(0, 120),
-      is_combo_review: Boolean(is_combo_review || category_tag === 'Combo Pack Ritual'),
+      is_combo_review: Boolean(is_combo_review || combo_name || category_tag === 'Combo Pack Ritual'),
+      combo_name: combo_name ? String(combo_name).slice(0, 255) : null,
+      combo_slug,
+      combo_sku,
+      order_number: order_number ? String(order_number).slice(0, 64) : undefined,
+      helpful_count: helpful_count !== undefined ? Number(helpful_count) : undefined,
       created_at: created_at || new Date().toISOString(),
       images,
       videos,
@@ -295,7 +320,7 @@ router.post('/admin', authenticateAdmin, async (req, res) => {
   }
 });
 
-// PUT /api/reviews/admin/:id - admin: manually edit review (date 2020-2029+, rating 1-5, photos, videos, classification, text)
+// PUT /api/reviews/admin/:id - admin: manually edit review (date 2020-2030+, rating 1-5, combo, order_number, helpful_count, photos, videos, classification, text)
 router.put('/admin/:id', authenticateAdmin, async (req, res) => {
   const rating = req.body?.rating === undefined ? undefined : Number(req.body.rating);
   const {
@@ -307,8 +332,15 @@ router.put('/admin/:id', authenticateAdmin, async (req, res) => {
     reviewer_location,
     category_tag,
     is_combo_review,
+    combo_name,
+    combo_slug,
+    combo_sku,
+    order_number,
+    helpful_count,
     created_at,
     product_id,
+    product_slug,
+    product_name,
     images,
     videos,
     is_approved: isApproved
@@ -328,14 +360,21 @@ router.put('/admin/:id', authenticateAdmin, async (req, res) => {
   try {
     const result = await updateReviewAsAdmin(req.params.id, {
       ...(rating !== undefined ? { rating: Math.round(rating) } : {}),
-      ...(title !== undefined ? { title: String(title).trim() || null } : {}),
-      ...(reviewText !== undefined ? { body: String(reviewText).trim() || null } : {}),
+      ...(title !== undefined ? { title: String(title).trim() } : {}),
+      ...(reviewText !== undefined ? { body: String(reviewText).trim() } : {}),
       ...((user_name !== undefined || reviewer_name !== undefined) ? { user_name: String(user_name ?? reviewer_name).trim() } : {}),
       ...(reviewer_location !== undefined ? { reviewer_location: String(reviewer_location).trim() } : {}),
       ...(category_tag !== undefined ? { category_tag: String(category_tag).trim() } : {}),
       ...(is_combo_review !== undefined ? { is_combo_review: Boolean(is_combo_review) } : {}),
+      ...(combo_name !== undefined ? { combo_name: combo_name ? String(combo_name).trim() : null } : {}),
+      ...(combo_slug !== undefined ? { combo_slug: combo_slug ? String(combo_slug).trim() : null } : {}),
+      ...(combo_sku !== undefined ? { combo_sku: combo_sku ? String(combo_sku).trim() : null } : {}),
+      ...(order_number !== undefined ? { order_number: String(order_number).trim() } : {}),
+      ...(helpful_count !== undefined ? { helpful_count: Number(helpful_count) || 0 } : {}),
       ...(created_at !== undefined ? { created_at: new Date(created_at).toISOString() } : {}),
       ...(product_id !== undefined ? { product_id: Number(product_id) } : {}),
+      ...(product_slug !== undefined ? { product_slug: String(product_slug).trim() } : {}),
+      ...(product_name !== undefined ? { product_name: String(product_name).trim() } : {}),
       ...(images !== undefined ? { images } : {}),
       ...(videos !== undefined ? { videos } : {}),
       ...(isApproved !== undefined ? { is_approved: isApproved ? 1 : 0 } : {})

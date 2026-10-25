@@ -848,9 +848,15 @@ const migrations = [
   {
     version: 73,
     name: 'reseed 1080 authentic multilingual Indian marketplace reviews v5',
+    previousNames: ['retired 1080 customer review seed v5'],
+    up: async () => {},
+  },
+  {
+    version: 74,
+    name: 'purge repetitive reviews and seed 1500 authentic pan-India customer reviews v6 (2020-2026)',
     up: async () => {
-      const { seed1080AuthenticReviews } = require('../models/reviewModel');
-      return seed1080AuthenticReviews(pool);
+      const { seed1500AuthenticReviews } = require('../models/reviewModel');
+      return seed1500AuthenticReviews(pool);
     },
   },
 ];
