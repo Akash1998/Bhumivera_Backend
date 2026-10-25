@@ -25,7 +25,7 @@ router.get('/scarcity-simulator/public', async (req, res) => {
   try {
     const ids = req.query.ids ? String(req.query.ids).split(',') : [];
     const snapshots = await getScarcitySimulatorSnapshots(ids);
-    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300, stale-while-revalidate=600');
     res.json(snapshots);
   } catch (err) {
     if (err.status === 400) {
