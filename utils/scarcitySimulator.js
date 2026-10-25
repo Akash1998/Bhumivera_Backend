@@ -156,6 +156,10 @@ const getProductSnapshot = (config, productId, now = new Date(), activityProfile
     ? 0
     : Math.max(0, productConfig.dailyCap - soldToday);
 
+  const sampleActivity = config.sampleActivityEnabled
+    ? getSampleActivity(dayKey, productId, simulatedSoldToday, dayProgress, hourlyWeights)
+    : [];
+
   return {
     enabled: Boolean(config.enabled && productConfig.enabled),
     paused: Boolean(productConfig.paused),
@@ -164,7 +168,7 @@ const getProductSnapshot = (config, productId, now = new Date(), activityProfile
     soldToday,
     simulatedSoldToday,
     remaining,
-    lifetimeSold: productConfig.lifetimeSold + soldToday,
+    sampleActivity,
     label: 'Simulation — illustrative data, not live inventory or sales',
   };
 };
