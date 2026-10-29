@@ -8,7 +8,7 @@
 ### Backend (`Bhumivera_Backend`)
 - **Runtime & Framework**: Node.js 22.x / Express 5.3 (`server.js`, `index.js`), MySQL (`mysql2/promise` pool in `config/db.js`), Redis rate-limiting & response caching (`middleware/rateLimiter.js`, `middleware/redisResponseCache.js`).
 - **Database Schema & Migrations (`migrations/index.js`, `utils/migrationRunner.js`)**:
-  - 74 sequential, idempotent migrations (`v1` to `v74`).
+  - 75 sequential migrations (`v1` to `v75`), including the traceable product-batch and expiry-backed authenticity-label schema in `v75`.
   - Migration 66 seeds the 6 flagship products (`seedLuxuryCatalog`).
   - Migration 72 seeds the 3 reservable Maison Regimen Bundle products (`seedMaisonRegimenBundles`) with component-stock reservation (`utils/bundleInventory.js`).
   - Migration 74 (`purge repetitive reviews and seed 1500 authentic pan-India customer reviews v6 (2020-2026)`) executes `seed1500AuthenticReviews(pool)` to populate all 1,500 authentic reviews and sync ratings across all 6 products and 3 combos.

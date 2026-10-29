@@ -859,6 +859,54 @@ const migrations = [
       return seed1500AuthenticReviews(pool);
     },
   },
+  {
+    version: 75,
+    name: 'create traceable product batches and expiry-backed authenticity labels',
+    up: async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS product_batches (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          product_id INT NOT NULL,
+          batch_number VARCHAR(50) NOT NULL UNIQUE,
+          manufacture_date DATE NOT NULL,
+          expiry_date DATE NOT NULL,
+          unit_count INT UNSIGNED NOT NULL,
+          details JSON NOT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_product_batches_product_created (product_id, created_at),
+          FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+
+      const [batchColumn] = await pool.query("SHOW COLUMNS FROM product_serials LIKE 'batch_id'");
+      if (!batchColumn.length) {
+        await pool.query('ALTER TABLE product_serials ADD COLUMN batch_id INT DEFAULT NULL AFTER product_id');
+      }
+
+      const [batchIndex] = await pool.query(
+        "SHOW INDEX FROM product_serials WHERE Key_name = 'idx_product_serials_batch'"
+      );
+      if (!batchIndex.length) {
+        await pool.query('CREATE INDEX idx_product_serials_batch ON product_serials (batch_id)');
+      }
+
+      const [batchForeignKey] = await pool.query(`
+        SELECT CONSTRAINT_NAME
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'product_serials'
+          AND COLUMN_NAME = 'batch_id'
+          AND REFERENCED_TABLE_NAME = 'product_batches'
+      `);
+      if (!batchForeignKey.length) {
+        await pool.query(`
+          ALTER TABLE product_serials
+          ADD CONSTRAINT fk_product_serials_batch
+          FOREIGN KEY (batch_id) REFERENCES product_batches(id) ON DELETE SET NULL
+        `);
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

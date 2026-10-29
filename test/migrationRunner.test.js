@@ -57,6 +57,32 @@ describe('runMigrations', () => {
     });
   });
 
+  it('creates expiry-backed product batches and links serials to their batches', async () => {
+    const migration = migrations.find(candidate => candidate.version === 75);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      if (sql.startsWith('SHOW COLUMNS') || sql.startsWith('SHOW INDEX') ||
+          sql.includes('information_schema.KEY_COLUMN_USAGE')) {
+        return [[], []];
+      }
+      return [{}, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.match(statements[0], /CREATE TABLE IF NOT EXISTS product_batches/);
+    assert.match(statements[0], /expiry_date DATE NOT NULL/);
+    assert.ok(statements.some(sql => /ADD COLUMN batch_id INT DEFAULT NULL/.test(sql)));
+    assert.ok(statements.some(sql => /CREATE INDEX idx_product_serials_batch/.test(sql)));
+    assert.ok(statements.some(sql => /FOREIGN KEY \(batch_id\) REFERENCES product_batches\(id\) ON DELETE SET NULL/.test(sql)));
+  });
+
   it('expands the customer reset OTP column to hold its hash', async () => {
     const migration = migrations.find(candidate => candidate.name === 'expand customer password reset OTP hashes');
     const originalQuery = pool.query;
