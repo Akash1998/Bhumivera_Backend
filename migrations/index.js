@@ -859,34 +859,6 @@ const migrations = [
       return seed1500AuthenticReviews(pool);
     },
   },
-  {
-    version: 75,
-    name: 'create traceable product batches and expiry-backed authenticity labels',
-    up: async () => {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS product_batches (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          product_id INT NOT NULL,
-          batch_number VARCHAR(40) NOT NULL UNIQUE,
-          manufacture_date DATE NOT NULL,
-          expiry_date DATE NOT NULL,
-          unit_count INT UNSIGNED NOT NULL,
-          details JSON NOT NULL,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_product_batches_product_created (product_id, created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-
-      const [columns] = await pool.query("SHOW COLUMNS FROM product_serials LIKE 'batch_id'");
-      if (!columns.length) {
-        await pool.query('ALTER TABLE product_serials ADD COLUMN batch_id INT NULL AFTER product_id');
-      }
-      const [indexes] = await pool.query("SHOW INDEX FROM product_serials WHERE Key_name = 'idx_product_serials_batch_id'");
-      if (!indexes.length) {
-        await pool.query('CREATE INDEX idx_product_serials_batch_id ON product_serials (batch_id)');
-      }
-    },
-  },
 ];
 
 module.exports = migrations;

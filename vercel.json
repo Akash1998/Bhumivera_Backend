@@ -2,17 +2,11 @@
   "version": 2,
   "regions": ["bom1"],
   "functions": {
-    "api/index.js": {
-      "memory": 512,
+    "server.js": {
+      "memory": 1024,
       "maxDuration": 30
     }
   },
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index.js"
-    }
-  ],
   "headers": [
     {
       "source": "/api/(products|categories|subcategories|flash-sales)(.*)",

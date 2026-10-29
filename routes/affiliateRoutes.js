@@ -42,7 +42,6 @@ router.get('/referral/link', authenticateUser, async (req, res) => {
 
 router.get('/referral/summary', authenticateUser, async (req, res) => {
   try {
-    await approveDueReferralClaims().catch(() => {});
     const data = await getReferralSummary(req.user.id);
     return res.json({ success: true, data });
   } catch (error) {

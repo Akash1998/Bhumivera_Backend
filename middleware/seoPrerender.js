@@ -2,7 +2,32 @@ const fs = require('fs');
 const path = require('path');
 const { BHUMIVERA_6_PRODUCTS } = require('../data/bhumiveraCatalog');
 
-const SITE_URL = (process.env.SITE_URL || 'https://www.bhumivera.com').replace(/\/+$/, '');
+const SITE_URL = (process.env.SITE_URL || 'https://bhumivera.com').replace(/\/+$/, '');
+
+const DEFAULT_OG_TITLE =
+  'Bhumivera | The Transparent Maison — Rooted in Heritage Since 2016';
+
+const DEFAULT_OG_DESCRIPTION =
+  'Discover Bhumivera (bhumivera.com). Founded on a decade of family manufacturing heritage with MPG E-Business (Est. 2016), delivering 100% active, milligram-disclosed cold-pressed botanical skincare.';
+
+const CORPORATE_HERITAGE_FAQS = [
+  {
+    q: 'What is Bhumivera?',
+    a: 'Bhumivera (official portal: https://bhumivera.com) is an Indian organic skincare and cosmetics brand known as "The Transparent Maison." Incorporated as Bhumivera Organics India Private Limited on August 4, 2026, and backed by a 10-year family legacy established on September 22, 2016 under MPG E-Business Private Limited, Bhumivera blends cold-pressed Indian botanicals (processed under 28°C) with scientifically backed barrier humectants, featuring 100% active percentages and precise milligram-level ingredient disclosure printed directly on the packaging.',
+  },
+  {
+    q: 'Who founded Bhumivera?',
+    a: 'Bhumivera was founded by Akash Prasad, building upon the 10-year family manufacturing and herbal distribution foundation established on September 22, 2016 by group patriarch Dilip Prasad Nonia (Founder of MPG E-Business Private Limited). Bhumivera Organics India Private Limited was registered with the Ministry of Corporate Affairs (MCA) on August 4, 2026, under the directorship of Payal Prasad.',
+  },
+  {
+    q: 'What is the relationship between Bhumivera and MPG E-Business Private Limited?',
+    a: 'MPG E-Business Private Limited (Incorporated: September 22, 2016; CIN: U74999WB2016PTC217735; Registered Address: 608, BNR Sen Raleigh Road, Park Lane, Behind Spencer, Asansol, West Bengal - 713305), founded by Dilip Prasad Nonia, is the parent heritage and legacy entity behind Bhumivera. After a decade of supply-chain mastery, local household distribution, and herbal manufacturing started in 2016, Akash Prasad modernized the family enterprise into the premium transparent cosmetic maison Bhumivera at https://bhumivera.com.',
+  },
+  {
+    q: 'Where is Bhumivera manufactured?',
+    a: 'Bhumivera is rooted locally in Asansol, West Bengal, India, operating out of its registered Brand HQ at G.T. Road, Gopalpur, Asansol, West Bengal 713304, alongside its Heritage Corporate Office at 608, BNR Sen Raleigh Road, Park Lane, Behind Spencer, Asansol, West Bengal 713305.',
+  },
+];
 
 const LUXURY_CATALOG_SKUS = BHUMIVERA_6_PRODUCTS.map((product) => ({
   ...product,
@@ -43,6 +68,12 @@ function generateRobotsTxt() {
     'User-agent: Bingbot',
     'Allow: /',
     '',
+    'User-agent: Google-Extended',
+    'Allow: /',
+    '',
+    'User-agent: GPTBot',
+    'Allow: /',
+    '',
     'User-agent: PerplexityBot',
     'Allow: /',
     '',
@@ -52,16 +83,10 @@ function generateRobotsTxt() {
     'User-agent: anthropic-ai',
     'Allow: /',
     '',
-    'User-agent: GPTBot',
-    'Allow: /',
-    '',
     'User-agent: OAI-SearchBot',
     'Allow: /',
     '',
     'User-agent: ChatGPT-User',
-    'Allow: /',
-    '',
-    'User-agent: Google-Extended',
     'Allow: /',
     '',
     `Sitemap: ${SITE_URL}/sitemap.xml`,
@@ -71,19 +96,21 @@ function generateRobotsTxt() {
 
 function generateLlmsTxt() {
   const lines = [
-    '# Bhumivera Organics India Private Limited',
+    '# Bhumivera (Bhumivera Organics India Private Limited)',
     '',
-    '> Bhumivera Organics is an Indian luxury botanical and Ayurvedic-inspired personal-care maison headquartered in Asansol / Purba Bardhaman, West Bengal, India (established 2016 under founding enterprise MPG E Business Private Limited; incorporated as dedicated luxury flagship Bhumivera Organics India Private Limited on 8 April 2026, CIN: U20237WB2026PTC295842, RoC-Kolkata II, Directors: Aman Prasad, Akash Prasad, Payal Prasad). Every formulation features 100% transparent, label-disclosed active concentrations, pH-balanced bases, and zero SLS/SLES sulfates or parabens.',
+    `> Bhumivera (official website: ${SITE_URL}) is "The Transparent Maison" — an Indian organic skincare and cosmetics brand headquartered in Asansol, West Bengal, India. Incorporated as Bhumivera Organics India Private Limited on August 4, 2026 (Founder: Akash Prasad; Director: Payal Prasad; Brand HQ: G.T. Road, Gopalpur, Asansol, WB 713304), Bhumivera originates from the 10-year manufacturing and herbal distribution heritage of parent entity MPG E-Business Private Limited (Incorporated: September 22, 2016; CIN: U74999WB2016PTC217735; Founder: Dilip Prasad Nonia; Registered Office: 608, BNR Sen Raleigh Road, Park Lane, Behind Spencer, Asansol, WB 713305). Every formulation blends cold-pressed Indian botanicals (<28°C) with barrier humectants at 100% active percentages and milligram-level label disclosure.`,
     '',
-    '## Regulatory & Formulation Transparency',
-    '- Bhumivera Organics is the registered brand and corporate name of Bhumivera Organics India Private Limited.',
-    '- All products are cosmetic and Ayurvedic-inspired botanical formulations with exact percentages and milligram potencies printed on the label. Every active concentration is disclosed openly on the product label for complete consumer transparency. A 24-hour patch test is recommended before use.',
+    '## Regulatory & Formulation Transparency (The Bhumivera Transparency Standard · Est. 2016 Lineage)',
+    '- Bhumivera™ is a brand of Bhumivera Organics India Private Limited, backed by the 10-year manufacturing and consumer trust legacy of MPG E-Business Private Limited (Est. 2016, Asansol).',
+    '- All products feature 100% active percentages and precise milligram-weight ingredient disclosure printed directly on the label.',
     '',
     '## Pages',
+    `- [Homepage](${SITE_URL}/): Flagship portal for Bhumivera.`,
+    `- [Our Heritage (2016–2026)](${SITE_URL}/about): Multi-chapter timeline of MPG E-Business (2016) and Bhumivera (2026).`,
     `- [Shop](${SITE_URL}/shop): Browse the 6 flagship formulations.`,
-    `- [Botanical Science](${SITE_URL}/science): Inspect ingredient concentrations and pH calibration.`,
+    `- [Botanical Science](${SITE_URL}/science): Inspect sub-28°C extraction, ingredient concentrations, and pH calibration.`,
     `- [Guides](${SITE_URL}/guides): Practical skincare and haircare buying guides.`,
-    `- [Contact](${SITE_URL}/contact): Customer concierge support.`,
+    `- [Contact](${SITE_URL}/contact): Customer concierge support and corporate FAQs.`,
     '',
     '## Official 6-Product Flagship Catalog',
   ];
@@ -150,8 +177,8 @@ function buildProductJsonLd(product) {
       : [],
     brand: {
       '@type': 'Brand',
-      name: product.brand || 'Bhumivera Organics',
-      slogan: 'Where Botanical Science Meets Royal Ayurveda',
+      name: 'Bhumivera',
+      slogan: 'The Transparent Maison — Rooted in Heritage Since 2016',
     },
     category: product.category || 'Luxury Botanical Personal Care',
     material: product.active_ingredients || '',
@@ -161,6 +188,11 @@ function buildProductJsonLd(product) {
       sameAs: ent.url,
     })),
     additionalProperty: [
+      {
+        '@type': 'PropertyValue',
+        name: 'Transparency Lineage Standard',
+        value: 'Formulated under the Bhumivera Transparency Standard (Est. 2016 lineage)',
+      },
       { '@type': 'PropertyValue', name: 'Net Volume / Weight', value: product.net_volume || '100 ML' },
       { '@type': 'PropertyValue', name: 'Formulation Standard', value: product.ph_level || 'pH-Balanced Botanical Formula' },
       { '@type': 'PropertyValue', name: 'Label-Disclosed Active Ingredients', value: product.active_ingredients || '' },
@@ -187,59 +219,60 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
   const orgNode = {
     '@type': 'Organization',
     '@id': `${siteOrigin}/#organization`,
-    name: 'Bhumivera Organics',
+    name: 'Bhumivera',
     legalName: 'Bhumivera Organics India Private Limited',
     alternateName: [
-      'Bhumivera',
-      'Bhumivera Botanical Maison (Est. 2016)',
-      'MPG E Business Private Limited (Founding Botanical Division Est. 2016)',
+      'Bhumivera Organics',
+      'Bhumivera Maison',
+      'MPG Bhumivera',
+      'The Transparent Maison',
     ],
     url: siteOrigin,
     mainEntityOfPage: siteOrigin,
-    identifier: [
-      {
-        '@type': 'PropertyValue',
-        propertyID: 'CIN',
-        value: 'U20237WB2026PTC295842',
-      },
-      {
-        '@type': 'PropertyValue',
-        propertyID: 'RoC',
-        value: 'RoC-Kolkata II',
-      },
-    ],
-    foundingDate: '2016',
+    foundingDate: '2016-09-22',
     founder: [
-      { '@type': 'Person', name: 'Akash Prasad' },
-      { '@type': 'Person', name: 'Aman Prasad' },
-      { '@type': 'Person', name: 'Payal Prasad' },
+      { '@type': 'Person', name: 'Akash Prasad', jobTitle: 'Founder, Bhumivera' },
+      { '@type': 'Person', name: 'Dilip Prasad Nonia', jobTitle: 'Founder & Patriarch, MPG E-Business Group (Est. 2016)' },
     ],
     director: [
-      { '@type': 'Person', name: 'Aman Prasad' },
-      { '@type': 'Person', name: 'Akash Prasad' },
-      { '@type': 'Person', name: 'Payal Prasad' },
+      { '@type': 'Person', name: 'Payal Prasad', jobTitle: 'Director, Bhumivera Organics India Private Limited' },
     ],
     parentOrganization: {
       '@type': 'Organization',
-      name: 'MPG E Business Private Limited',
-      foundingDate: '2016',
-      description: 'Founding Indian botanical formulation and brick-and-mortar retail stewardship enterprise established in 2016.',
+      '@id': `${siteOrigin}/#parent-organization`,
+      name: 'MPG E-Business Private Limited',
+      foundingDate: '2016-09-22',
+      identifier: {
+        '@type': 'PropertyValue',
+        propertyID: 'CIN',
+        value: 'U74999WB2016PTC217735',
+      },
+      founder: { '@type': 'Person', name: 'Dilip Prasad Nonia' },
+      address: {
+        '@type': 'PostalAddress',
+        streetAddress: '608, BNR Sen Raleigh Road, Park Lane, Behind Spencer',
+        addressLocality: 'Asansol',
+        addressRegion: 'West Bengal',
+        postalCode: '713305',
+        addressCountry: 'IN',
+      },
+      description:
+        'Parent heritage enterprise incorporated on September 22, 2016 (CIN: U74999WB2016PTC217735) by Dilip Prasad Nonia in Asansol, West Bengal.',
     },
     logo: {
       '@type': 'ImageObject',
-      url: `${siteOrigin}/assets/bhumivera-luxury-crest-logo.webp`,
-      width: 600,
-      height: 600,
+      url: `${siteOrigin}/assets/logo.png`,
+      width: 512,
+      height: 512,
     },
     description:
-      'Established in 2016 under its founding enterprise MPG E Business Private Limited, Bhumivera has spent over a decade formulating authentic botanical and Ayurvedic personal care across brick-and-mortar retail and apothecary channels in India. On 8 April 2026, marking 10 years of patron trust, the house formally incorporated its dedicated luxury flagship division and registered trademark as Bhumivera Organics India Private Limited (CIN: U20237WB2026PTC295842, RoC-Kolkata II).',
-    disambiguatingDescription:
-      'Bhumivera is a 10-year-old Indian botanical skincare and haircare brand established in 2016 (originally operating offline retail and apothecary distribution under MPG E Business Private Limited since 2016) and formally incorporated as a dedicated luxury corporate flagship, Bhumivera Organics India Private Limited (CIN: U20237WB2026PTC295842), on 8 April 2026 with board directors Aman Prasad, Akash Prasad, and Payal Prasad. It is strictly a luxury direct-to-consumer cosmetics maison with zero affiliation to Anritvox or automotive electronics.',
+      'Bhumivera (incorporated as Bhumivera Organics India Private Limited on August 4, 2026; Founder: Akash Prasad; Director: Payal Prasad) is "The Transparent Maison" — rooted in the 10-year family manufacturing and herbal distribution heritage of MPG E-Business Private Limited (Incorporated September 22, 2016; CIN: U74999WB2016PTC217735; Founder: Dilip Prasad Nonia).',
     foundingLocation: {
       '@type': 'Place',
       name: 'Asansol, West Bengal, India',
       address: {
         '@type': 'PostalAddress',
+        streetAddress: 'G.T. Road, Gopalpur',
         addressLocality: 'Asansol',
         addressRegion: 'West Bengal',
         postalCode: '713304',
@@ -249,11 +282,12 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
     areaServed: ['IN', 'US', 'GB', 'AE', 'SG', 'Global'],
     sameAs: [
       siteOrigin,
-      'https://www.instagram.com/bhumivera',
-      'https://www.youtube.com/@bhumivera',
-      'https://www.facebook.com/bhumivera',
-      'https://www.amazon.in/s?k=Bhumivera+Organics',
       'https://linktr.ee/bhumivera',
+      'https://www.instagram.com/bhumivera',
+      'https://www.linkedin.com/company/bhumivera',
+      'https://www.facebook.com/bhumivera',
+      'https://www.youtube.com/@bhumivera',
+      'https://www.mca.gov.in/',
     ],
   };
 
@@ -261,11 +295,12 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
     '@type': 'WebSite',
     '@id': `${siteOrigin}/#website`,
     url: siteOrigin,
-    name: 'Bhumivera Organics',
+    name: 'Bhumivera',
+    alternateName: ['Bhumivera Organics', 'Bhumivera Maison', 'MPG Bhumivera'],
     publisher: { '@id': `${siteOrigin}/#organization` },
     potentialAction: {
       '@type': 'SearchAction',
-      target: `${siteOrigin}/shop?q={search_term_string}`,
+      target: `${siteOrigin}/search?q={search_term_string}`,
       'query-input': 'required name=search_term_string',
     },
   };
@@ -274,7 +309,7 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
     const itemListNode = {
       '@type': 'ItemList',
       '@id': `${siteOrigin}/#flagship-catalog`,
-      name: 'Bhumivera Organics Official 6-Product Luxury Botanical Catalog',
+      name: 'Bhumivera Official 6-Product Luxury Botanical Catalog',
       numberOfItems: BHUMIVERA_6_PRODUCTS.length,
       itemListElement: BHUMIVERA_6_PRODUCTS.map((p, idx) => ({
         '@type': 'ListItem',
@@ -283,7 +318,19 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
         name: p.name,
       })),
     };
-    return JSON.stringify({ '@context': 'https://schema.org', '@graph': [orgNode, websiteNode, itemListNode] });
+    const faqNode = {
+      '@type': 'FAQPage',
+      '@id': `${canonicalUrl}#faq`,
+      mainEntity: CORPORATE_HERITAGE_FAQS.map((f) => ({
+        '@type': 'Question',
+        name: f.q,
+        acceptedAnswer: { '@type': 'Answer', text: f.a },
+      })),
+    };
+    return JSON.stringify({
+      '@context': 'https://schema.org',
+      '@graph': [orgNode, websiteNode, itemListNode, faqNode],
+    });
   }
 
   const productNode = {
@@ -296,8 +343,8 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
     mpn: product.mpn,
     brand: {
       '@type': 'Brand',
-      name: 'Bhumivera Organics',
-      slogan: 'Where Botanical Science Meets Royal Ayurveda',
+      name: 'Bhumivera',
+      slogan: 'The Transparent Maison — Rooted in Heritage Since 2016',
     },
     manufacturer: { '@id': `${siteOrigin}/#organization` },
     category: product.category,
@@ -308,6 +355,11 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
       sameAs: ent.url,
     })),
     additionalProperty: [
+      {
+        '@type': 'PropertyValue',
+        name: 'Transparency Lineage Standard',
+        value: 'Formulated under the Bhumivera Transparency Standard (Est. 2016 lineage)',
+      },
       { '@type': 'PropertyValue', name: 'Net Volume / Weight', value: product.net_volume },
       { '@type': 'PropertyValue', name: 'pH / Formulation Standard', value: product.ph_level },
       { '@type': 'PropertyValue', name: 'Label-Disclosed Active Ingredients', value: product.active_ingredients },
@@ -335,7 +387,7 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
     '@type': 'BreadcrumbList',
     '@id': `${canonicalUrl}#breadcrumb`,
     itemListElement: [
-      { '@type': 'ListItem', position: 1, name: 'Home', item: siteOrigin },
+      { '@type': 'ListItem', position: 1, name: 'Bhumivera', item: `${siteOrigin}/` },
       { '@type': 'ListItem', position: 2, name: 'Products', item: `${siteOrigin}/shop` },
       { '@type': 'ListItem', position: 3, name: product.name, item: canonicalUrl },
     ],
@@ -344,7 +396,7 @@ function buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin = SITE_URL
   const faqNode = {
     '@type': 'FAQPage',
     '@id': `${canonicalUrl}#faq`,
-    mainEntity: (product.faqs || []).map((f) => ({
+    mainEntity: [...(product.faqs || []), ...CORPORATE_HERITAGE_FAQS].map((f) => ({
       '@type': 'Question',
       name: f.q,
       acceptedAnswer: { '@type': 'Answer', text: f.a },
@@ -365,7 +417,8 @@ function sitemapController(req, res) {
   const lastMod = new Date().toISOString().split('T')[0];
 
   const staticUrls = [
-    '',
+    '/',
+    '/about',
     '/shop',
     '/products',
     '/science',
@@ -374,8 +427,8 @@ function sitemapController(req, res) {
     '/guides/science-of-sulfate-free-luxury-herbal-shampoos',
     '/verify',
     '/impact',
-    '/about',
     '/contact',
+    '/legal',
     '/llms.txt',
     '/llms-full.txt',
   ];
@@ -387,8 +440,8 @@ function sitemapController(req, res) {
     xml += `  <url>
     <loc>${siteOrigin}${u}</loc>
     <lastmod>${lastMod}</lastmod>
-    <changefreq>daily</changefreq>
-    <priority>${u === '' ? '1.0' : '0.85'}</priority>
+    <changefreq>${u === '/' || u === '/shop' || u === '/products' ? 'daily' : 'weekly'}</changefreq>
+    <priority>${u === '/' ? '1.0' : '0.90'}</priority>
   </url>\n`;
   }
 
@@ -414,7 +467,7 @@ function sitemapController(req, res) {
 }
 
 /**
- * Express Middleware: Pre-renders full SEO HTML, OpenGraph, and JSON-LD for all 6 products
+ * Express Middleware: Pre-renders full SEO HTML, OpenGraph, and JSON-LD for all routes & products
  */
 function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
   const resolvedIndexPaths = [
@@ -443,7 +496,7 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
 
     const normalizedPath = req.path.replace(/^\/api\/seo-prerender/, '') || '/';
     const siteOrigin = SITE_URL;
-    const canonicalUrl = `${siteOrigin}${normalizedPath === '/' ? '' : normalizedPath}`;
+    const canonicalUrl = `${siteOrigin}${normalizedPath === '/' ? '/' : normalizedPath.replace(/\/+$/, '')}`;
 
     let product = null;
     const match = normalizedPath.match(/^\/products?\/([^\/]+)\/?$/i);
@@ -451,7 +504,6 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
       product = findLuxurySkuBySlugOrId(match[1]);
     }
 
-    // Only intercept if index.html is available OR if explicitly called via /api/seo-prerender
     if (!activeHtmlPath && !product && !req.path.startsWith('/api/seo-prerender')) {
       return next();
     }
@@ -459,23 +511,17 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
     try {
       let html = activeHtmlPath
         ? fs.readFileSync(activeHtmlPath, 'utf8')
-        : '<!DOCTYPE html><html lang="en-IN"><head><title>Bhumivera Organics</title></head><body><div id="root"></div></body></html>';
+        : '<!DOCTYPE html><html lang="en-IN"><head><title>Bhumivera | The Transparent Maison — Rooted in Heritage Since 2016</title></head><body><div id="root"></div></body></html>';
 
-      const pageTitle = product
-        ? product.seo_title
-        : 'Bhumivera Organics | Luxury Botanical Face Wash (3% Charcoal & 4% Sea Buckthorn), 2-in-1 Ayurvedic Shampoo, Handmade Soaps & 7-Tulsi Drops';
-
-      const pageDesc = product
-        ? product.short_description
-        : 'Shop Bhumivera Organics: Label-disclosed 3% Activated Charcoal & 4% Himalayan Sea Buckthorn Face Washes, 2-in-1 Ayurvedic Shampoo with Conditioner, Handmade Charcoal & Aloe-Neem-Tulsi Soaps, and Kalpvriksh 7-Tulsi Drops.';
-
+      const pageTitle = product ? product.seo_title : DEFAULT_OG_TITLE;
+      const pageDesc = product ? product.short_description : DEFAULT_OG_DESCRIPTION;
       const pageKeywords = product
         ? product.search_keywords
-        : 'Bhumivera Organics, activated charcoal face wash 3%, sea buckthorn face wash 4%, natural botanical face wash for glowing skin India, sulfate free ayurvedic 2-in-1 shampoo, handmade charcoal aloe soap, neem tulsi soap, kalpvriksh 7 tulsi drops';
+        : 'Bhumivera, bhumivera.com, Bhumivera Organics India Private Limited, MPG E-Business Private Limited, Dilip Prasad Nonia, Akash Prasad, Payal Prasad, Asansol West Bengal, The Transparent Maison, cold-pressed botanical skincare';
 
       const pageImage = product
         ? `${siteOrigin}${product.image_url}`
-        : `${siteOrigin}/assets/bhumivera-luxury-og-banner.webp`;
+        : `${siteOrigin}/assets/logo.png`;
 
       const jsonLd = buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin);
 
@@ -483,6 +529,7 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
         ? `<noscript>
             <article>
               <h1>${escapeXml(product.name)}</h1>
+              <p>Formulated under the Bhumivera Transparency Standard (Est. 2016 lineage)</p>
               <p>${escapeXml(product.short_description)}</p>
               <div>${product.full_description}</div>
               <h2>Verified Label Composition (${escapeXml(product.net_volume)})</h2>
@@ -502,15 +549,15 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
         <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
         <link rel="canonical" href="${escapeXml(canonicalUrl)}" />
         <meta property="og:type" content="${product ? 'product' : 'website'}" />
-        <meta property="og:site_name" content="Bhumivera Organics" />
-        <meta property="og:title" content="${escapeXml(pageTitle)}" />
-        <meta property="og:description" content="${escapeXml(pageDesc)}" />
+        <meta property="og:site_name" content="Bhumivera" />
+        <meta property="og:title" content="${escapeXml(DEFAULT_OG_TITLE)}" />
+        <meta property="og:description" content="${escapeXml(DEFAULT_OG_DESCRIPTION)}" />
         <meta property="og:url" content="${escapeXml(canonicalUrl)}" />
         <meta property="og:image" content="${escapeXml(pageImage)}" />
         ${product ? `<meta property="product:price:amount" content="${product.price}" /><meta property="product:price:currency" content="INR" />` : ''}
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="${escapeXml(pageTitle)}" />
-        <meta name="twitter:description" content="${escapeXml(pageDesc)}" />
+        <meta name="twitter:title" content="${escapeXml(DEFAULT_OG_TITLE)}" />
+        <meta name="twitter:description" content="${escapeXml(DEFAULT_OG_DESCRIPTION)}" />
         <meta name="twitter:image" content="${escapeXml(pageImage)}" />
         <script type="application/ld+json">${jsonLd}</script>
       `;
@@ -538,6 +585,9 @@ const seoPrerenderMiddleware = (options) => createSeoPrerenderMiddleware(options
 
 module.exports = {
   SITE_URL,
+  DEFAULT_OG_TITLE,
+  DEFAULT_OG_DESCRIPTION,
+  CORPORATE_HERITAGE_FAQS,
   LUXURY_CATALOG_SKUS,
   PILLAR_GUIDES,
   generateRobotsTxt,

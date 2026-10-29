@@ -18,7 +18,6 @@ const { createRequestObservability } = require("./middleware/requestObservabilit
 const { createSystemDiagnostics } = require("./utils/systemDiagnostics");
 const { clientContextMiddleware, ALLOWED_NATIVE_ORIGINS } = require("./middleware/clientContext");
 const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
-const { nightSleepManager } = require("./middleware/nightSleepManager");
 const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
 const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
@@ -26,6 +25,9 @@ const migrations = require("./migrations");
 const { approveDueReferralClaims } = require("./models/referralModel");
 const {
   SITE_URL,
+  DEFAULT_OG_TITLE,
+  DEFAULT_OG_DESCRIPTION,
+  CORPORATE_HERITAGE_FAQS,
   LUXURY_CATALOG_SKUS,
   PILLAR_GUIDES,
   generateRobotsTxt,
@@ -35,6 +37,43 @@ const {
   seoPrerenderMiddleware,
   sitemapController,
 } = require("./middleware/seoPrerender");
+
+const BHUMIVERA_BRAND_METADATA = Object.freeze({
+  brand: "Bhumivera",
+  positioning: "The Transparent Maison",
+  url: "https://bhumivera.com",
+  alternateNames: ["Bhumivera Organics", "Bhumivera Maison", "MPG Bhumivera"],
+  corporateEntity: {
+    legalName: "Bhumivera Organics India Private Limited",
+    incorporationDate: "2026-08-04",
+    founder: "Akash Prasad",
+    director: "Payal Prasad",
+    registeredOffice: "G.T. Road, Gopalpur, Asansol, West Bengal - 713304, India",
+  },
+  parentHeritageEntity: {
+    legalName: "MPG E-Business Private Limited",
+    incorporationDate: "2016-09-22",
+    cin: "U74999WB2016PTC217735",
+    founder: "Dilip Prasad Nonia",
+    registeredOffice: "608, BNR Sen Raleigh Road, Park Lane, Behind Spencer, Asansol, West Bengal - 713305, India",
+  },
+  formulationStandard: "Formulated under the Bhumivera Transparency Standard (Est. 2016 lineage) — Cold-pressed Indian botanicals (<28°C), 100% active percentages, and milligram-level label disclosure.",
+  seo: {
+    canonicalBase: "https://bhumivera.com",
+    ogSiteName: "Bhumivera",
+    ogTitle: DEFAULT_OG_TITLE,
+    ogDescription: DEFAULT_OG_DESCRIPTION,
+    sitemapUrl: "https://bhumivera.com/sitemap.xml",
+  },
+  digitalTouchpoints: {
+    officialPortal: "https://bhumivera.com",
+    linktree: "https://linktr.ee/bhumivera",
+    instagram: "https://www.instagram.com/bhumivera",
+    linkedin: "https://www.linkedin.com/company/bhumivera",
+    facebook: "https://www.facebook.com/bhumivera",
+  },
+  faqs: CORPORATE_HERITAGE_FAQS,
+});
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 if (JWT_SECRET === 'fallback_secret') {
@@ -98,8 +137,8 @@ app.use(clientContextMiddleware());
 
 // --- SECURITY & CORS POLICIES ---
 const defaultAllowedOrigins = [
-  "https://www.bhumivera.com",
   "https://bhumivera.com",
+  "https://www.bhumivera.com",
   "http://localhost:5173",
   "http://localhost:3000"
 ];
@@ -146,7 +185,7 @@ app.use((req, res, next) => {
     "script-src-elem 'self' 'unsafe-eval' 'unsafe-inline' blob: https://challenges.cloudflare.com https://vercel.live https://overbridgenet.com https://www.google-analytics.com https://ssl.google-analytics.com https://www.googletagmanager.com https://checkout.razorpay.com https://cdn.razorpay.com https://translate.google.com https://translate.googleapis.com https://translate-pa.googleapis.com; " +
     "worker-src 'self' blob:; " +
     "frame-src 'self' https://challenges.cloudflare.com https://vercel.live https://*.google.com https://checkout.razorpay.com https://api.razorpay.com; " +
-    "connect-src 'self' https://challenges.cloudflare.com https://vercel.live https://bhumivera-backend.railway.app https://bhumiverabackend-production.up.railway.app https://service.bhumivera.com https://analytics.google.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://*.r2.cloudflarestorage.com https://overbridgenet.com https://api.razorpay.com https://lumberjack.razorpay.com https://translate.google.com https://translate.googleapis.com https://translate-pa.googleapis.com; " +
+    "connect-src 'self' https://challenges.cloudflare.com https://vercel.live https://bhumivera.com https://bhumivera-backend.railway.app https://bhumiverabackend-production.up.railway.app https://service.bhumivera.com https://analytics.google.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://*.r2.cloudflarestorage.com https://overbridgenet.com https://api.razorpay.com https://lumberjack.razorpay.com https://translate.google.com https://translate.googleapis.com https://translate-pa.googleapis.com; " +
     "img-src 'self' data: blob: https: https://*.google-analytics.com https://*.analytics.google.com https://*.razorpay.com; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://www.gstatic.com; " +
     "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com https://www.gstatic.com; " +
@@ -171,7 +210,8 @@ app.use(["/api/users", "/api/addresses", "/api/auth/profile"], (req, res, next) 
   res.setHeader("Vary", "Authorization");
   next();
 });
-// --- SEO, BRAVE SEARCH & GEO STATIC/DYNAMIC ENDPOINTS (Always Available) ---
+
+// --- SEO, CRAWLER & HEADLESS BRAND METADATA ENDPOINTS (Always Available) ---
 app.get("/robots.txt", (req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.setHeader("Cache-Control", "public, max-age=3600");
@@ -195,6 +235,26 @@ app.get("/bhumivera-indexnow-2026.txt", (req, res) => {
   res.status(200).send("bhumivera-indexnow-2026");
 });
 
+app.get(["/api/brand", "/api/meta"], (req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.status(200).json({
+    status: "ok",
+    ...BHUMIVERA_BRAND_METADATA,
+  });
+});
+
+app.get("/api/health", (req, res) => {
+  res.status(databaseReady ? 200 : 503).json({
+    status: databaseReady ? "ready" : "starting",
+    databaseReady,
+    brand: BHUMIVERA_BRAND_METADATA.brand,
+    url: BHUMIVERA_BRAND_METADATA.url,
+    corporateEntity: BHUMIVERA_BRAND_METADATA.corporateEntity,
+    parentHeritageEntity: BHUMIVERA_BRAND_METADATA.parentHeritageEntity,
+    ...(startupFailure ? { failure: startupFailure } : {}),
+  });
+});
+
 // Mount SSR Prerender Middleware for Search & AI Crawlers
 app.use(createSeoPrerenderMiddleware({
   db: pool,
@@ -206,7 +266,7 @@ app.use("/health", createHealthRouter(
   isVercelRuntime ? () => initializeDatabase() : null
 ));
 
-// --- SEO: DYNAMIC XML SITEMAP GENERATOR (Google, Brave Search, Bing & AI Crawlers) ---
+// --- SEO: DYNAMIC XML SITEMAP GENERATOR (Google, Bing & AI Crawlers) ---
 app.get(["/sitemap.xml", "/api/sitemap.xml"], async (req, res) => {
   try {
     let dbProducts = [];
@@ -224,22 +284,22 @@ app.get(["/sitemap.xml", "/api/sitemap.xml"], async (req, res) => {
 
     const staticRoutes = [
       { loc: `${SITE_URL}/`, changefreq: "daily", priority: "1.0" },
+      { loc: `${SITE_URL}/about`, changefreq: "weekly", priority: "0.95" },
       { loc: `${SITE_URL}/shop`, changefreq: "daily", priority: "0.95" },
       { loc: `${SITE_URL}/products`, changefreq: "daily", priority: "0.90" },
+      { loc: `${SITE_URL}/science`, changefreq: "weekly", priority: "0.90" },
       { loc: `${SITE_URL}/guides`, changefreq: "weekly", priority: "0.90" },
       { loc: `${SITE_URL}/guides/ultimate-guide-luxury-organic-face-wash-india`, changefreq: "weekly", priority: "0.95" },
       { loc: `${SITE_URL}/guides/science-of-sulfate-free-luxury-herbal-shampoos`, changefreq: "weekly", priority: "0.95" },
-      { loc: `${SITE_URL}/science`, changefreq: "weekly", priority: "0.90" },
       { loc: `${SITE_URL}/provenance-engine`, changefreq: "weekly", priority: "0.85" },
       { loc: `${SITE_URL}/somatic-registry`, changefreq: "weekly", priority: "0.85" },
-      { loc: `${SITE_URL}/verify`, changefreq: "monthly", priority: "0.80" },
-      { loc: `${SITE_URL}/impact`, changefreq: "weekly", priority: "0.80" },
-      { loc: `${SITE_URL}/about`, changefreq: "monthly", priority: "0.75" },
-      { loc: `${SITE_URL}/contact`, changefreq: "monthly", priority: "0.70" },
-      { loc: `${SITE_URL}/purchase-protection`, changefreq: "monthly", priority: "0.65" },
-      { loc: `${SITE_URL}/legal`, changefreq: "monthly", priority: "0.50" },
-      { loc: `${SITE_URL}/llms.txt`, changefreq: "weekly", priority: "0.80" },
-      { loc: `${SITE_URL}/llms-full.txt`, changefreq: "weekly", priority: "0.80" },
+      { loc: `${SITE_URL}/verify`, changefreq: "weekly", priority: "0.85" },
+      { loc: `${SITE_URL}/impact`, changefreq: "weekly", priority: "0.85" },
+      { loc: `${SITE_URL}/contact`, changefreq: "weekly", priority: "0.85" },
+      { loc: `${SITE_URL}/purchase-protection`, changefreq: "weekly", priority: "0.75" },
+      { loc: `${SITE_URL}/legal`, changefreq: "weekly", priority: "0.75" },
+      { loc: `${SITE_URL}/llms.txt`, changefreq: "weekly", priority: "0.85" },
+      { loc: `${SITE_URL}/llms-full.txt`, changefreq: "weekly", priority: "0.85" },
     ];
 
     for (const r of staticRoutes) {
@@ -270,30 +330,6 @@ app.get(["/sitemap.xml", "/api/sitemap.xml"], async (req, res) => {
     res.status(500).end();
   }
 });
-
-// --- POWER SAVING & NIGHT SLEEP CONTROL ENDPOINTS (Zero-DB) ---
-app.get("/api/system/sleep-status", (req, res) => {
-  res.json({ success: true, ...nightSleepManager.getStatus() });
-});
-
-app.post("/api/system/wake", (req, res) => {
-  const durationMinutes = Number(req.body?.minutes) || 15;
-  const result = nightSleepManager.wake(durationMinutes * 60 * 1000, "api_call");
-  res.json({ success: true, ...result });
-});
-
-app.post("/api/system/sleep", (req, res) => {
-  const result = nightSleepManager.sleep(8 * 60 * 60 * 1000, "api_call");
-  res.json({ success: true, ...result });
-});
-
-app.post("/api/system/reset-schedule", (req, res) => {
-  const result = nightSleepManager.resetSchedule();
-  res.json({ success: true, ...result });
-});
-
-// Intercept requests during night sleep (10 PM to 6 AM IST) before database check
-app.use(nightSleepManager.middleware());
 
 app.use(async (req, res, next) => {
   if (databaseReady) return next();
@@ -361,7 +397,13 @@ app.use("/api/inventory", createModuleAvailabilityMiddleware('inventory'), inven
 app.use("/api/warehouse", createModuleAvailabilityMiddleware('warehouse'), warehouseRoutes);
 app.use("/api/gst", createModuleAvailabilityMiddleware('gst'), gstRoutes);
 
-app.get("/", (req, res) => res.json({ status: "ok", message: "Bhumivera Maison Core API running!" }));
+app.get("/", (req, res) =>
+  res.json({
+    status: "ok",
+    message: "Bhumivera Maison Core API running!",
+    ...BHUMIVERA_BRAND_METADATA,
+  })
+);
 
 // --- ERROR HANDLING ---
 app.use("/api", (req, res) => {
@@ -394,9 +436,7 @@ const initializeDatabaseOnce = async () => {
       console.warn('[RESPONSE_CACHE] Redis connection failed; requests will continue without response caching.', error.message);
     }
     await pool.query('SELECT 1');
-    if (process.env.SKIP_MIGRATIONS !== 'true') {
-      await runMigrations(pool, migrations);
-    }
+    await runMigrations(pool, migrations);
     if (!systemDiagnostics) {
       systemDiagnostics = createSystemDiagnostics(pool);
       app.locals.systemDiagnostics = systemDiagnostics;
@@ -404,19 +444,13 @@ const initializeDatabaseOnce = async () => {
     databaseReady = true;
     startupFailure = null;
     databaseRetryAfter = 0;
-    // In serverless / app-sleeping environments, interval polling resets cloud inactivity timers
-    // and keeps the database container continuously active 24/7.
-    // Claims are approved lazily on user visits or admin actions.
-    if (process.env.ENABLE_REFERRAL_POLL_INTERVAL === 'true' && !referralApprovalTimer) {
-      const pollIntervalMs = Number(process.env.REFERRAL_POLL_INTERVAL_MS) || 300000;
+    if (!referralApprovalTimer) {
       const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
         console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
       });
-      referralApprovalTimer = setInterval(runReferralApprovals, pollIntervalMs);
+      runReferralApprovals();
+      referralApprovalTimer = setInterval(runReferralApprovals, 15000);
       referralApprovalTimer.unref();
-    } else {
-      // Single on-demand pass on startup without continuous background timer
-      approveDueReferralClaims().catch(() => {});
     }
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {
@@ -471,3 +505,4 @@ if (httpServer) {
 }
 
 module.exports = app;
+module.exports.BHUMIVERA_BRAND_METADATA = BHUMIVERA_BRAND_METADATA;

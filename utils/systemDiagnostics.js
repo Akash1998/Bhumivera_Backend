@@ -22,12 +22,9 @@ function createSystemDiagnostics(pool, { logger = console, now = Date.now } = {}
       logger.error(`[SYSTEM_DIAGNOSTICS_RETENTION_FAILED] code=${error.code || 'UNKNOWN'}`);
     }
   };
-  let retentionTimer = null;
-  if (process.env.ENABLE_DIAGNOSTICS_RETENTION_TIMER === 'true') {
-    void purgeExpired();
-    retentionTimer = setInterval(purgeExpired, 24 * 60 * 60 * 1000);
-    retentionTimer.unref();
-  }
+  void purgeExpired();
+  const retentionTimer = setInterval(purgeExpired, 24 * 60 * 60 * 1000);
+  retentionTimer.unref();
 
   const persistEvent = async event => {
     try {
