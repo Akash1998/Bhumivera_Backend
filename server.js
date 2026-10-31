@@ -153,6 +153,7 @@ const allowedOrigins = new Set(parseOrigins(
   process.env.NODE_ENV === "production" ? productionAllowedOrigins : defaultAllowedOrigins,
   process.env.NODE_ENV
 ));
+allowedOrigins.add("https://bhumivera-frontend.vercel.app");
 
 const corsOptions = {
   origin: function (origin, callback) {

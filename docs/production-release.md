@@ -7,7 +7,7 @@ Set `NODE_ENV=production` and provide:
 - `JWT_SECRET`: a random value with at least 32 characters. `OTP_SECRET` is recommended as a separate random value with at least 32 characters; if omitted, OTP HMAC uses a stable HKDF-derived key from `JWT_SECRET`.
 - `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `DB_PORT`
 - `DB_SSL=true`; provide `DB_SSL_CA` only when the database provider uses a private CA.
-- `FRONTEND_ORIGINS`: recommended comma-separated exact HTTPS origins for the deployed frontend (no paths, wildcards, or preview domains). If omitted, the API allows only `https://www.bhumivera.com` and `https://bhumivera.com`.
+- `FRONTEND_ORIGINS`: recommended comma-separated exact HTTPS origins for the deployed frontend (no paths, wildcards, or preview domains). The API also allows the verified first-party Vercel storefront origin `https://bhumivera-frontend.vercel.app`; arbitrary Vercel preview origins remain blocked. If omitted, the API allows `https://www.bhumivera.com` and `https://bhumivera.com` as well.
 
 On Railway, link the backend service to the Railway MySQL service by setting `MYSQLHOST`, `MYSQLPORT`, `MYSQLUSER`, `MYSQLPASSWORD`, and `MYSQLDATABASE` as Railway variable references. The backend uses these variables instead of `DB_*` whenever it runs on Railway; it will not silently connect to a TiDB host from stale `DB_*` values. Railway's private `*.railway.internal` database connection uses the private network without TLS. Ensure the Railway database already contains the application data before deploying; switching connection settings does not copy data from TiDB.
 
