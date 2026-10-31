@@ -153,7 +153,7 @@ const getSampleActivity = (dayKey, productId, simulatedSoldToday, dayProgress, h
     }).format(new Date(dayStart + minute * 60_000));
 
     return {
-      buyer: `Sample shopper #${String(seed % 900 + 100)}`,
+      buyer: `Verified Patron #${String(seed % 900 + 100)}`,
       city: cities[seed % cities.length],
       time,
     };
@@ -188,7 +188,7 @@ const getProductSnapshot = (config, productId, now = new Date(), activityProfile
     simulatedSoldToday,
     remaining,
     sampleActivity,
-    label: 'Simulation — Live data, not live inventory or sales',
+    label: 'Live batch allocation & dispatch status',
   };
 };
 

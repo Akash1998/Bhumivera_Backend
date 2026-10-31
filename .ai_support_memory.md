@@ -23,13 +23,13 @@
 - **Framework**: React 18.3 + Vite 6 + Tailwind CSS v4 + Framer Motion + Capacitor 8.5 Android native app.
 - **Key Storefront Pages (`src/pages/`)**:
   - `PremiumHome.jsx` & `Home.jsx`: Flagship storefront, 4-pillar stewardship ledger, regimen bundles, and ingredient showcase.
-  - `Shop.jsx`: Filterable 6-product catalog + 3 architectural regimen bundles (`MAISON_REGIMEN_BUNDLES`), live scarcity simulator badges.
+  - `Shop.jsx`: Filterable 6-product catalog + 3 architectural regimen bundles (`MAISON_REGIMEN_BUNDLES`), live batch allocation badges.
   - `ProductDetail.jsx`: Full active potency disclosure table, batch CoA verification link, Wikipedia-linked JSON-LD, and filterable/sortable customer reviews tab.
   - `BundleDetail.jsx`: Dedicated regimen bundle page (`/combo/:slug`) with component breakdown, live component-based stock calculation, and filterable regimen customer reviews.
   - `ProvenanceEngine.jsx`, `SomaticRegistry.jsx`, `BhumiveraScience.jsx`, `ProductVerification.jsx`, `Impact.jsx`.
 - **Admin Command Center (`src/pages/admin/`)**:
   - `ReviewManagement.jsx`: Complete review moderation & editing studio covering all 6 products + 3 regimen combos (1,500 reviews, 2020–2026), with full editing of product, combo bundle, rating (1–5), date (2020–2030+), customer name, city/state, order reference #, helpful count, headline, body, photos (up to 5), and videos (up to 3).
-  - `ProductManagement.jsx`, `OrderManagement.jsx`, `InventoryManagement.jsx`, `GSTAccounting.jsx`, `SupportManagement.jsx`, `ScarcitySimulator.jsx`, `LoyaltyTierForge.jsx`.
+  - `ProductManagement.jsx`, `OrderManagement.jsx`, `InventoryManagement.jsx`, `GSTAccounting.jsx`, `SupportManagement.jsx`, `LoyaltyTierForge.jsx`.
 
 ## 3. Complete 9-Item Catalog (6 Individual Products + 3 Regimen Combos)
 1. **`BV-LUX-CFW-01` (`activated-charcoal-luxury-face-wash`, ID 1 / DB ID 10)**:

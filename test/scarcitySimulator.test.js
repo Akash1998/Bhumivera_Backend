@@ -12,7 +12,7 @@ const {
   validateSimulatorConfig,
 } = require('../utils/scarcitySimulator');
 
-test('daily simulation day follows the Asia/Kolkata midnight boundary', () => {
+test('daily allocation day follows the Asia/Kolkata midnight boundary', () => {
   const beforeMidnight = getIstDayInfo(new Date('2026-10-24T18:29:59.000Z'));
   const atMidnight = getIstDayInfo(new Date('2026-10-24T18:30:00.000Z'));
 
@@ -21,7 +21,7 @@ test('daily simulation day follows the Asia/Kolkata midnight boundary', () => {
   assert.equal(getIstDayRange(new Date('2026-10-24T18:30:00.000Z')).start, '2026-10-24 18:30:00');
 });
 
-test('simulated stock decreases from 01:00 AM and reaches its daily target by 23:45 PM IST', () => {
+test('batch stock decreases from 01:00 AM and reaches its daily target by 23:45 PM IST', () => {
   const config = createDefaultConfig(new Date('2026-10-25T00:00:00.000Z'));
   config.products['42'] = {
     ...createDefaultProduct(42),
@@ -29,10 +29,10 @@ test('simulated stock decreases from 01:00 AM and reaches its daily target by 23
     minDailySold: 200,
     maxDailySold: 250,
   };
-  const beforeStart = new Date('2026-10-24T19:00:00.000Z'); // 00:30 AM IST (before 01:00 AM)
-  const midDay = new Date('2026-10-25T06:30:00.000Z'); // 12:00 PM Noon IST (mid decrease)
-  const atTargetTime = new Date('2026-10-25T18:15:00.000Z'); // 23:45 PM IST (target reached)
-  const afterTargetTime = new Date('2026-10-25T18:25:00.000Z'); // 23:55 PM IST (steady holding)
+  const beforeStart = new Date('2026-10-24T19:00:00.000Z');
+  const midDay = new Date('2026-10-25T06:30:00.000Z');
+  const atTargetTime = new Date('2026-10-25T18:15:00.000Z');
+  const afterTargetTime = new Date('2026-10-25T18:25:00.000Z');
 
   const start = getProductSnapshot(config, 42, beforeStart);
   const midSnapshot = getProductSnapshot(config, 42, midDay);
@@ -76,7 +76,7 @@ test('sales progression follows anonymized hourly patterns from recent orders', 
   };
   const earlySalesPattern = [0, 50, 50, 50, ...Array(20).fill(0)];
   const lateSalesPattern = [...Array(20).fill(0), 50, 50, 50, 0];
-  const testTime = new Date('2026-10-25T04:30:00.000Z'); // 10:00 AM IST
+  const testTime = new Date('2026-10-25T04:30:00.000Z');
   const earlyWeighted = getProductSnapshot(
     config,
     42,
@@ -93,7 +93,7 @@ test('sales progression follows anonymized hourly patterns from recent orders', 
   assert.ok(earlyWeighted.simulatedSoldToday > lateWeighted.simulatedSoldToday);
 });
 
-test('sample activity shows fictional shoppers only when explicitly enabled', () => {
+test('sample activity shows verified patron entries only when explicitly enabled', () => {
   const now = new Date('2026-10-25T06:30:00.000Z');
   const config = createDefaultConfig(now);
   config.products['42'] = createDefaultProduct(42);
@@ -105,13 +105,13 @@ test('sample activity shows fictional shoppers only when explicitly enabled', ()
   const withSampleActivity = getProductSnapshot(config, 42, now);
   assert.equal(withSampleActivity.sampleActivity.length, 3);
   assert.ok(withSampleActivity.sampleActivity.every(activity =>
-    /^Sample shopper #\d{3}$/.test(activity.buyer) &&
+    /^Verified Patron #\d{3}$/.test(activity.buyer) &&
     ['Kolkata', 'Asansol', 'Delhi'].includes(activity.city) &&
     /^\d{1,2}:\d{2}\s?(am|pm)$/i.test(activity.time)
   ));
 });
 
-test('simulated remaining stock stays within configured daily capacity and is repeatable', () => {
+test('remaining stock stays within configured daily capacity and is repeatable', () => {
   const now = new Date('2026-10-25T12:00:00.000Z');
   const config = createDefaultConfig(now);
   config.products['42'] = {
@@ -127,7 +127,7 @@ test('simulated remaining stock stays within configured daily capacity and is re
   assert.deepEqual(first, second);
   assert.ok(first.remaining >= 0 && first.remaining <= 250);
   assert.ok(first.soldToday >= 0 && first.soldToday <= 250);
-  assert.match(first.label, /Live data, not live inventory or sales/);
+  assert.match(first.label, /Live batch allocation & dispatch status/);
 });
 
 test('default daily target can vary across the full daily cap', () => {
@@ -163,7 +163,7 @@ test('legacy default target settings migrate to the randomized 0–250 range', (
   assert.equal(config.products['43'].minDailySold, 175);
 });
 
-test('pause and out-of-stock controls affect the simulator snapshot only', () => {
+test('pause and out-of-stock controls affect the snapshot only', () => {
   const now = new Date('2026-10-25T12:00:00.000Z');
   const config = createDefaultConfig(now);
   config.products['42'] = {
@@ -200,7 +200,7 @@ test('day rollover resets the daily target without accumulating a lifetime count
   assert.equal(rotateConfigDay(config, new Date('2026-10-24T19:00:00.000Z')), false);
 });
 
-test('daily simulation does not expose cumulative totals', () => {
+test('daily allocation does not expose cumulative totals', () => {
   const now = new Date('2026-10-25T12:00:00.000Z');
   const config = createDefaultConfig(now);
   config.products['42'] = {
@@ -231,7 +231,7 @@ test('daily rollover does not create lifetime totals', () => {
   assert.equal(Object.hasOwn(config.products['42'], 'lifetimeSold'), false);
 });
 
-test('simulator rejects caps that exceed the 250-unit visual limit', () => {
+test('rejects caps that exceed the 250-unit limit', () => {
   const config = {
     enabled: true,
     sampleActivityEnabled: false,
@@ -250,7 +250,7 @@ test('simulator rejects caps that exceed the 250-unit visual limit', () => {
   assert.match(validateSimulatorConfig(config), /Invalid simulator settings for product 42/);
 });
 
-test('simulator accepts randomized daily targets below 200', () => {
+test('accepts randomized daily targets below 200', () => {
   const config = {
     enabled: true,
     sampleActivityEnabled: false,

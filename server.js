@@ -125,6 +125,11 @@ const supportRoutes = require("./routes/supportRoutes");
 const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
 
 const app = express();
+app.disable("x-powered-by");
+app.use((req, res, next) => {
+  if (req.path && req.path.endsWith(".map")) return res.status(404).end();
+  next();
+});
 const isVercelRuntime = process.env.VERCEL === "1";
 let databaseReady = false;
 let startupFailure = null;

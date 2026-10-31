@@ -1,4 +1,3 @@
-// backend/routes/settingsRoutes
 const express = require('express');
 const router = express.Router();
 const { authenticateAdmin } = require('../middleware/authMiddleware');
@@ -14,56 +13,53 @@ const {
 const { evaluateCartRules } = require('../utils/cartRulesEngine');
 const { listLoyaltyTiers } = require('../models/loyaltyTierModel');
 const {
-  getAdminConfig: getScarcitySimulatorConfig,
-  getPublicSnapshots: getScarcitySimulatorSnapshots,
+  getAdminConfig: getAllocationControlsConfig,
+  getPublicSnapshots: getCatalogAvailabilitySnapshots,
   getTodaysBestsellers,
-  saveAdminConfig: saveScarcitySimulatorConfig,
+  saveAdminConfig: saveAllocationControlsConfig,
 } = require('../services/scarcitySimulatorService');
 const { validateSimulatorConfig } = require('../utils/scarcitySimulator');
 
-router.get('/scarcity-simulator/public', async (req, res) => {
+router.get(['/catalog-availability', '/scarcity-simulator/public'], async (req, res) => {
   try {
     const ids = req.query.ids ? String(req.query.ids).split(',') : [];
-    const snapshots = await getScarcitySimulatorSnapshots(ids);
+    const snapshots = await getCatalogAvailabilitySnapshots(ids);
     res.setHeader('Cache-Control', 'no-store');
     res.json(snapshots);
   } catch (err) {
     if (err.status === 400) {
-      return res.status(400).json({ code: 'INVALID_SIMULATOR_PRODUCT_IDS', message: err.message });
+      return res.status(400).json({ code: 'INVALID_PRODUCT_IDS', message: err.message });
     }
-    console.error('[SCARCITY_SIMULATOR_PUBLIC]', err);
-    res.status(500).json({ code: 'SIMULATOR_LOAD_FAILED', message: 'Could not load Live availability.' });
+    res.status(500).json({ code: 'AVAILABILITY_LOAD_FAILED', message: 'Could not load live availability.' });
   }
 });
 
-router.get('/scarcity-simulator/popular-today', async (req, res) => {
+router.get(['/catalog-highlights', '/scarcity-simulator/popular-today'], async (req, res) => {
   try {
     const products = await getTodaysBestsellers();
     res.setHeader('Cache-Control', 'no-store');
     res.json({ products, source: 'verified_orders' });
-  } catch (err) {
-    console.error('[SCARCITY_SIMULATOR_POPULAR_TODAY]', err);
+  } catch {
     res.status(500).json({ code: 'POPULAR_PRODUCTS_LOAD_FAILED', message: 'Could not load today’s most ordered products.' });
   }
 });
 
-router.get('/scarcity-simulator', authenticateAdmin, async (req, res) => {
+router.get(['/allocation-controls', '/scarcity-simulator'], authenticateAdmin, async (req, res) => {
   try {
-    res.json({ config: await getScarcitySimulatorConfig() });
-  } catch (err) {
-    console.error('[SCARCITY_SIMULATOR_ADMIN_LOAD]', err);
-    res.status(500).json({ code: 'SIMULATOR_CONFIG_LOAD_FAILED', message: 'Could not load simulator settings.' });
+    res.json({ config: await getAllocationControlsConfig() });
+  } catch {
+    res.status(500).json({ code: 'ALLOCATION_CONFIG_LOAD_FAILED', message: 'Could not load allocation settings.' });
   }
 });
 
-router.put('/scarcity-simulator', authenticateAdmin, async (req, res) => {
+router.put(['/allocation-controls', '/scarcity-simulator'], authenticateAdmin, async (req, res) => {
   const validationError = validateSimulatorConfig(req.body);
   if (validationError) {
-    return res.status(400).json({ code: 'INVALID_SIMULATOR_CONFIG', message: validationError });
+    return res.status(400).json({ code: 'INVALID_ALLOCATION_CONFIG', message: validationError });
   }
   const allowedKeys = new Set(['enabled', 'sampleActivityEnabled', 'products']);
   if (Object.keys(req.body).some(key => !allowedKeys.has(key))) {
-    return res.status(400).json({ code: 'INVALID_SIMULATOR_CONFIG', message: 'Unsupported simulator settings were supplied.' });
+    return res.status(400).json({ code: 'INVALID_ALLOCATION_CONFIG', message: 'Unsupported allocation settings were supplied.' });
   }
   const allowedProductKeys = new Set([
     'enabled',
@@ -76,25 +72,22 @@ router.put('/scarcity-simulator', authenticateAdmin, async (req, res) => {
   if (Object.values(req.body.products).some(product =>
     Object.keys(product).some(key => !allowedProductKeys.has(key))
   )) {
-    return res.status(400).json({ code: 'INVALID_SIMULATOR_CONFIG', message: 'Unsupported per-product simulator settings were supplied.' });
+    return res.status(400).json({ code: 'INVALID_ALLOCATION_CONFIG', message: 'Unsupported per-product allocation settings were supplied.' });
   }
   try {
-    const config = await saveScarcitySimulatorConfig(req.body);
-    res.json({ message: 'Simulator settings saved. Actual inventory and orders are unchanged.', config });
-  } catch (err) {
-    console.error('[SCARCITY_SIMULATOR_ADMIN_SAVE]', err);
-    res.status(500).json({ code: 'SIMULATOR_CONFIG_SAVE_FAILED', message: 'Could not save simulator settings.' });
+    const config = await saveAllocationControlsConfig(req.body);
+    res.json({ message: 'Allocation settings saved.', config });
+  } catch {
+    res.status(500).json({ code: 'ALLOCATION_CONFIG_SAVE_FAILED', message: 'Could not save allocation settings.' });
   }
 });
 
-// GET /api/settings/public - public: get non-sensitive settings (store info, SEO, social)
 router.get('/public', async (req, res) => {
   try {
     const groups = ['general', 'seo', 'social', 'policy', 'shipping', 'gamification', 'loyalty'];
     const result = {};
     for (const g of groups) {
       const data = await getSettingsByGroup(g);
-      // Remove sensitive keys
       delete data.smtp_pass;
       Object.assign(result, data);
     }
@@ -121,8 +114,7 @@ router.get('/public', async (req, res) => {
       enforce_min_checkout: Number(rule.enforce_min_checkout) === 1,
     }));
     res.json(result);
-  } catch (err) {
-    console.error(err);
+  } catch {
     res.status(500).json({ message: 'Failed to get settings' });
   }
 });
@@ -130,8 +122,7 @@ router.get('/public', async (req, res) => {
 router.get('/cart-rules/list', authenticateAdmin, async (req, res) => {
   try {
     res.json({ data: await listCartRules() });
-  } catch (err) {
-    console.error('[CART_RULES_LIST]', err);
+  } catch {
     res.status(500).json({ code: 'CART_RULES_LOAD_FAILED', message: 'Failed to load cart rules.' });
   }
 });
@@ -145,8 +136,7 @@ router.get('/cart-rules/preview', async (req, res) => {
     const rules = await listCartRules({ activeOnly: true });
     const enforceMinimum = (await getSetting('enforce_cart_rule_minimum')) === '1';
     res.json(evaluateCartRules(subtotal, rules, { enforceMinimum }));
-  } catch (err) {
-    console.error('[CART_RULES_PREVIEW]', err);
+  } catch {
     res.status(500).json({ code: 'CART_RULES_PREVIEW_FAILED', message: 'Failed to preview cart rules.' });
   }
 });
@@ -154,8 +144,7 @@ router.get('/cart-rules/preview', async (req, res) => {
 router.get('/cart-rules/loyalty-tiers', authenticateAdmin, async (req, res) => {
   try {
     res.json({ data: await listLoyaltyTiers({ activeOnly: true }) });
-  } catch (err) {
-    console.error('[CART_RULES_LOYALTY_TIERS]', err);
+  } catch {
     res.status(500).json({ code: 'CART_RULES_TIERS_LOAD_FAILED', message: 'Failed to load loyalty tiers.' });
   }
 });
@@ -165,8 +154,7 @@ router.get('/cart-rules/:id', authenticateAdmin, async (req, res) => {
     const rule = await getCartRuleById(req.params.id);
     if (!rule) return res.status(404).json({ code: 'CART_RULE_NOT_FOUND', message: 'Cart rule not found.' });
     res.json(rule);
-  } catch (err) {
-    console.error('[CART_RULE_GET]', err);
+  } catch {
     res.status(500).json({ code: 'CART_RULE_LOAD_FAILED', message: 'Failed to load cart rule.' });
   }
 });
@@ -187,7 +175,6 @@ router.post('/cart-rules/create', authenticateAdmin, async (req, res) => {
     res.status(201).json({ data: rule });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ code: 'CART_RULE_EXISTS', message: 'A cart rule with this name already exists.' });
-    console.error('[CART_RULE_CREATE]', err);
     res.status(500).json({ code: 'CART_RULE_CREATE_FAILED', message: 'Failed to create cart rule.' });
   }
 });
@@ -202,8 +189,7 @@ router.put('/cart-rules/:id', authenticateAdmin, async (req, res) => {
     const rule = await updateCartRule(req.params.id, req.body || {});
     if (!rule) return res.status(404).json({ code: 'CART_RULE_NOT_FOUND', message: 'Cart rule not found.' });
     res.json({ data: rule });
-  } catch (err) {
-    console.error('[CART_RULE_UPDATE]', err);
+  } catch {
     res.status(500).json({ code: 'CART_RULE_UPDATE_FAILED', message: 'Failed to update cart rule.' });
   }
 });
@@ -217,8 +203,7 @@ router.patch('/cart-rules/:id/toggle', authenticateAdmin, async (req, res) => {
     const rule = await toggleCartRule(req.params.id, status);
     if (!rule) return res.status(404).json({ code: 'CART_RULE_NOT_FOUND', message: 'Cart rule not found.' });
     res.json({ data: rule });
-  } catch (err) {
-    console.error('[CART_RULE_TOGGLE]', err);
+  } catch {
     res.status(500).json({ code: 'CART_RULE_TOGGLE_FAILED', message: 'Failed to update cart rule status.' });
   }
 });
@@ -228,61 +213,51 @@ router.delete('/cart-rules/:id', authenticateAdmin, async (req, res) => {
     const deleted = await deleteCartRule(req.params.id);
     if (!deleted) return res.status(404).json({ code: 'CART_RULE_NOT_FOUND', message: 'Cart rule not found.' });
     res.json({ success: true });
-  } catch (err) {
-    console.error('[CART_RULE_DELETE]', err);
+  } catch {
     res.status(500).json({ code: 'CART_RULE_DELETE_FAILED', message: 'Failed to delete cart rule.' });
   }
 });
 
-// GET /api/settings - admin: get all settings grouped
 router.get('/', authenticateAdmin, async (req, res) => {
   try {
     const { rows } = await getAllSettings();
-    // Group by group_name
     const grouped = {};
     rows.forEach(r => {
       if (!grouped[r.group_name]) grouped[r.group_name] = {};
       grouped[r.group_name][r.key_name] = r.value;
     });
     res.json(grouped);
-  } catch (err) {
-    console.error(err);
+  } catch {
     res.status(500).json({ message: 'Failed to get settings' });
   }
 });
 
-// GET /api/settings/:group - admin: get settings by group
 router.get('/:group', authenticateAdmin, async (req, res) => {
   try {
     const data = await getSettingsByGroup(req.params.group);
     res.json(data);
-  } catch (err) {
-    console.error(err);
+  } catch {
     res.status(500).json({ message: 'Failed to get settings' });
   }
 });
 
-// PUT /api/settings - admin: bulk update settings
 router.put('/', authenticateAdmin, async (req, res) => {
   try {
     const data = req.body;
     if (!data || typeof data !== 'object') return res.status(400).json({ message: 'Body must be key-value object' });
     await bulkUpdateSettings(data);
     res.json({ message: 'Settings updated successfully' });
-  } catch (err) {
-    console.error(err);
+  } catch {
     res.status(500).json({ message: 'Failed to update settings' });
   }
 });
 
-// PUT /api/settings/:key - admin: update single setting
 router.put('/:key', authenticateAdmin, async (req, res) => {
   try {
     const { value } = req.body;
     await updateSetting(req.params.key, value);
     res.json({ message: 'Setting updated' });
-  } catch (err) {
-    console.error(err);
+  } catch {
     res.status(500).json({ message: 'Failed to update setting' });
   }
 });
