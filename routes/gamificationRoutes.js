@@ -17,6 +17,16 @@ const spinLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Too many spin attempts. Please try again later.' },
 });
+const boxGiftClaimLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { code: 'BOX_GIFT_RATE_LIMITED', message: 'Too many gift claim attempts. Please try again later.' },
+});
+const BOX_GIFT_CODE = 'BHUMIVERA-GIFT-2026';
+const BOX_GIFT_CREDIT_INR = 250;
+const BOX_GIFT_LOYALTY_POINTS = 100;
 let spinTableReady;
 
 const ensureSpinTable = async () => {
@@ -58,6 +68,234 @@ const responseForClaim = claim => ({
   reward: claim.reward_label,
   couponCode: claim.coupon_code,
   message: 'Your reward is ready to use at checkout.'
+});
+
+const normalizeBoxGiftInput = (body, query) => ({
+  code: String(body?.qr ?? query?.qr ?? '').trim().toUpperCase(),
+  serial: String(body?.serial ?? query?.serial ?? '').trim().toUpperCase(),
+});
+
+const validateBoxGiftSerial = async (serial, query = pool.query.bind(pool)) => {
+  if (!serial) return true;
+  const [rows] = await query(
+    'SELECT id FROM product_serials WHERE serial_number = ? LIMIT 1',
+    [serial]
+  );
+  return rows.length > 0;
+};
+
+router.get('/box-qr-status', authenticateUser, async (req, res) => {
+  const { code, serial } = normalizeBoxGiftInput(null, req.query);
+  if (code !== BOX_GIFT_CODE) {
+    return res.status(400).json({
+      valid: false,
+      code: 'INVALID_GIFT_CODE',
+      message: 'This box gift code is not valid.',
+    });
+  }
+
+  try {
+    if (serial && !(await validateBoxGiftSerial(serial))) {
+      return res.status(404).json({
+        valid: false,
+        code: 'INVALID_SERIAL',
+        message: 'This bottle serial was not found in the product registry.',
+      });
+    }
+
+    const [[claim]] = await pool.query(
+      'SELECT created_at FROM box_gift_claims WHERE user_id = ?',
+      [req.user.id]
+    );
+    if (claim) {
+      return res.json({
+        valid: true,
+        canRedeem: false,
+        alreadyRedeemed: true,
+        redeemedAt: claim.created_at,
+        reward: { creditInr: BOX_GIFT_CREDIT_INR, loyaltyPoints: BOX_GIFT_LOYALTY_POINTS },
+        message: 'This one-time box gift has already been claimed on your account.',
+      });
+    }
+
+    const [[qualifyingOrder]] = await pool.query(
+      `SELECT id, order_number
+       FROM orders
+       WHERE user_id = ? AND status = 'delivered'
+       ORDER BY delivered_at DESC, id DESC
+       LIMIT 1`,
+      [req.user.id]
+    );
+    if (!qualifyingOrder) {
+      return res.json({
+        valid: false,
+        canRedeem: false,
+        alreadyRedeemed: false,
+        code: 'NO_DELIVERED_ORDER',
+        reward: { creditInr: BOX_GIFT_CREDIT_INR, loyaltyPoints: BOX_GIFT_LOYALTY_POINTS },
+        message: 'A delivered Bhumivera order is required before this one-time gift can be claimed.',
+      });
+    }
+
+    return res.json({
+      valid: true,
+      canRedeem: true,
+      alreadyRedeemed: false,
+      qualifyingOrder,
+      reward: { creditInr: BOX_GIFT_CREDIT_INR, loyaltyPoints: BOX_GIFT_LOYALTY_POINTS },
+      message: 'Your delivered order qualifies for this one-time box gift.',
+    });
+  } catch (error) {
+    console.error('[BOX_GIFT_STATUS]', error);
+    return res.status(500).json({
+      code: 'BOX_GIFT_STATUS_FAILED',
+      message: 'Could not check your box gift eligibility right now.',
+    });
+  }
+});
+
+router.post('/redeem-box-qr', boxGiftClaimLimiter, authenticateUser, async (req, res) => {
+  const { code, serial } = normalizeBoxGiftInput(req.body);
+  if (code !== BOX_GIFT_CODE) {
+    return res.status(400).json({
+      valid: false,
+      code: 'INVALID_GIFT_CODE',
+      message: 'This box gift code is not valid.',
+    });
+  }
+
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [[user]] = await connection.query(
+      'SELECT id, loyalty_points, loyalty_lifetime_points FROM users WHERE id = ? FOR UPDATE',
+      [req.user.id]
+    );
+    if (!user) {
+      await connection.rollback();
+      return res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Customer account not found.' });
+    }
+
+    const [[existingClaim]] = await connection.query(
+      'SELECT id FROM box_gift_claims WHERE user_id = ? FOR UPDATE',
+      [req.user.id]
+    );
+    if (existingClaim) {
+      await connection.rollback();
+      return res.status(409).json({
+        valid: false,
+        alreadyRedeemed: true,
+        code: 'GIFT_ALREADY_REDEEMED',
+        message: 'This one-time box gift has already been claimed on your account.',
+      });
+    }
+
+    if (serial && !(await validateBoxGiftSerial(serial, connection.query.bind(connection)))) {
+      await connection.rollback();
+      return res.status(404).json({
+        valid: false,
+        code: 'INVALID_SERIAL',
+        message: 'This bottle serial was not found in the product registry.',
+      });
+    }
+
+    const [[qualifyingOrder]] = await connection.query(
+      `SELECT id
+       FROM orders
+       WHERE user_id = ? AND status = 'delivered'
+       ORDER BY delivered_at DESC, id DESC
+       LIMIT 1
+       FOR UPDATE`,
+      [req.user.id]
+    );
+    if (!qualifyingOrder) {
+      await connection.rollback();
+      return res.status(409).json({
+        valid: false,
+        code: 'NO_DELIVERED_ORDER',
+        message: 'A delivered Bhumivera order is required before this one-time gift can be claimed.',
+      });
+    }
+
+    await connection.query(
+      'INSERT IGNORE INTO referral_wallets (user_id, balance) VALUES (?, 0.00)',
+      [req.user.id]
+    );
+    const [[wallet]] = await connection.query(
+      'SELECT balance FROM referral_wallets WHERE user_id = ? FOR UPDATE',
+      [req.user.id]
+    );
+    const nextWalletBalance = Math.round(((Number(wallet?.balance) || 0) + BOX_GIFT_CREDIT_INR) * 100) / 100;
+    const nextPointsBalance = (Number(user.loyalty_points) || 0) + BOX_GIFT_LOYALTY_POINTS;
+
+    await connection.query(
+      'UPDATE referral_wallets SET balance = ? WHERE user_id = ?',
+      [nextWalletBalance, req.user.id]
+    );
+    await connection.query(
+      `INSERT INTO referral_wallet_transactions
+       (user_id, amount, type, description, reference_id, order_id)
+       VALUES (?, ?, 'credit', ?, ?, ?)`,
+      [
+        req.user.id,
+        BOX_GIFT_CREDIT_INR,
+        'One-time delivered-order Bhumivera box gift',
+        `box-gift-${req.user.id}`,
+        qualifyingOrder.id,
+      ]
+    );
+    await connection.query(
+      'UPDATE users SET loyalty_points = ?, loyalty_lifetime_points = COALESCE(loyalty_lifetime_points, 0) + ? WHERE id = ?',
+      [nextPointsBalance, BOX_GIFT_LOYALTY_POINTS, req.user.id]
+    );
+    await connection.query(
+      `INSERT INTO loyalty_point_transactions
+       (user_id, points_delta, balance_after, type, description, reference_id, order_id)
+       VALUES (?, ?, ?, 'earn', ?, ?, ?)`,
+      [
+        req.user.id,
+        BOX_GIFT_LOYALTY_POINTS,
+        nextPointsBalance,
+        'One-time delivered-order Bhumivera box gift',
+        `box-gift-${req.user.id}`,
+        qualifyingOrder.id,
+      ]
+    );
+    await connection.query(
+      `INSERT INTO box_gift_claims
+       (user_id, order_id, serial_number, credit_amount, points_awarded)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        req.user.id,
+        qualifyingOrder.id,
+        serial || null,
+        BOX_GIFT_CREDIT_INR,
+        BOX_GIFT_LOYALTY_POINTS,
+      ]
+    );
+    await connection.commit();
+
+    return res.status(201).json({
+      valid: true,
+      redeemedNow: true,
+      creditInr: BOX_GIFT_CREDIT_INR,
+      loyaltyPoints: BOX_GIFT_LOYALTY_POINTS,
+      walletBalance: nextWalletBalance,
+      pointsBalance: nextPointsBalance,
+      message: 'Your ₹250 Patron Ritual credit and 100 privilege points have been added to your account.',
+    });
+  } catch (error) {
+    if (connection) await connection.rollback().catch(() => {});
+    console.error('[BOX_GIFT_REDEEM]', error);
+    return res.status(500).json({
+      code: 'BOX_GIFT_REDEEM_FAILED',
+      message: 'Could not redeem your box gift right now. Please try again.',
+    });
+  } finally {
+    connection?.release();
+  }
 });
 
 router.post('/spin', spinLimiter, async (req, res) => {

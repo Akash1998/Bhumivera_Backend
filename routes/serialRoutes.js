@@ -33,29 +33,6 @@ router.get("/batch-coa/:serial", async (req, res) => {
     if (BATCH_COA_REGISTRY && BATCH_COA_REGISTRY[cleanSerial]) {
       return res.json({ success: true, verified: true, coa: BATCH_COA_REGISTRY[cleanSerial] });
     }
-    // Deterministic COA synthesis for valid Bhumivera micro-batch serial formats (BHMV-* or BV-*)
-    if (/^(BHMV|BV|BHM)[A-Z0-9-]{4,20}$/.test(cleanSerial)) {
-      const bottleNum = String((cleanSerial.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) % 250) + 1).padStart(3, '0');
-      return res.json({
-        success: true,
-        verified: true,
-        coa: {
-          serial: cleanSerial,
-          batchCode: 'BATCH-04/26-BV',
-          productName: 'Bhumivera Micro-Batch Botanical Formulation (250-Bottle Run)',
-          bottleSequence: `Bottle #${bottleNum} of 250`,
-          remainingInBatch: 83,
-          pressedDate: '2026-10-18',
-          extractionTemp: '26.4°C (Sub-28°C Cold-Pressed Verified)',
-          calibratedPh: '5.44 pH (at 25.0°C Digital Electrode)',
-          microbiologicalAssay: 'Total Aerobic Microbial Count < 10 CFU/ml (Sterile Cleanroom Fill)',
-          heavyMetals: 'Lead <0.05 ppm · Arsenic <0.02 ppm · Mercury ND (ICP-MS Verified)',
-          disclosedActives: '100% Label-Disclosed Active Percentages Verified on Bottle',
-          tamperCustody: 'Artisanal Wax-Sealed & Gold-Foil Neck Collar Intact',
-          originLot: 'Bhumivera Cleanroom Compounding Registry #BV-2026-Q4'
-        }
-      });
-    }
     return res.status(404).json({ success: false, verified: false, message: "Serial number not found in Batch 04/26 COA Registry." });
   } catch (err) {
     res.status(500).json({ success: false, message: "Batch COA lookup error." });

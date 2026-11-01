@@ -649,7 +649,7 @@ const migrations = [
       await pool.query(`
         CREATE TABLE IF NOT EXISTS order_spin_claims (
           id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-          order_id INT NOT NULL,
+          order_id INT DEFAULT NULL,
           user_id INT NOT NULL,
           reward_label VARCHAR(120) NOT NULL,
           coupon_code VARCHAR(50) NOT NULL UNIQUE,
@@ -905,6 +905,26 @@ const migrations = [
           FOREIGN KEY (batch_id) REFERENCES product_batches(id) ON DELETE SET NULL
         `);
       }
+    },
+  },
+  {
+    version: 76,
+    name: 'create one-time delivered-order box gift claims',
+    up: async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS box_gift_claims (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          order_id INT NOT NULL,
+          serial_number VARCHAR(100) DEFAULT NULL,
+          credit_amount DECIMAL(10,2) NOT NULL,
+          points_awarded INT UNSIGNED NOT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_box_gift_claim_user (user_id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
     },
   },
 ];
