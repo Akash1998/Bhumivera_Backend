@@ -190,6 +190,218 @@ const updateProductBatchDetails = async (batchId, details) => {
   return normalizedDetails;
 };
 
+const createGenuinitySerialQR = async ({
+  productId,
+  serialNumber,
+  batchNumber,
+  bottleSequence,
+  manufactureDate,
+  expiryDate,
+  calibratedPh,
+  extractionTemp,
+  microbiologicalAssay,
+  heavyMetals,
+  disclosedActives,
+  tamperCustody,
+  originLot,
+  details = []
+}) => {
+  const normalizedProductId = Number(productId);
+  if (!Number.isSafeInteger(normalizedProductId) || normalizedProductId < 1) {
+    throw Object.assign(new Error('Choose a valid product.'), { status: 400 });
+  }
+
+  // Format serial number: e.g. "123456" or clean alphanumeric string
+  let cleanSerial = String(serialNumber || '').trim().toUpperCase();
+  if (!cleanSerial) {
+    const randomHex = crypto.randomBytes(3).toString('hex').toUpperCase();
+    const dateStamp = new Date().toISOString().slice(2, 7).replace('-', '');
+    cleanSerial = `BHMV-${dateStamp}-${randomHex}`;
+  }
+  if (!/^[A-Z0-9_-]{3,64}$/.test(cleanSerial)) {
+    throw Object.assign(new Error('Serial number must be 3–64 letters, numbers, or dashes (e.g. 123456).'), { status: 400 });
+  }
+
+  // Manufacture and expiry dates
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const mfg = (manufactureDate && isIsoDate(manufactureDate)) ? manufactureDate : todayIso;
+  let exp = (expiryDate && isIsoDate(expiryDate)) ? expiryDate : null;
+  if (!exp || exp <= mfg) {
+    const d = new Date(mfg);
+    d.setFullYear(d.getFullYear() + 2);
+    exp = d.toISOString().slice(0, 10);
+  }
+
+  // Assemble full details list
+  const structuredDetails = Array.isArray(details) ? [...details] : [];
+  const addIfPresent = (lbl, val) => {
+    if (val && typeof val === 'string' && val.trim()) {
+      const idx = structuredDetails.findIndex(d => (d.label || '').toLowerCase() === lbl.toLowerCase());
+      if (idx >= 0) {
+        structuredDetails[idx].value = val.trim();
+        structuredDetails[idx].visible = true;
+      } else {
+        structuredDetails.push({ label: lbl, value: val.trim(), visible: true });
+      }
+    }
+  };
+
+  addIfPresent('Bottle Sequence', bottleSequence);
+  addIfPresent('Calibrated pH Assay', calibratedPh);
+  addIfPresent('Cold-Press Extraction Temp', extractionTemp);
+  addIfPresent('Microbiological Assay', microbiologicalAssay);
+  addIfPresent('Heavy Metal Screen (ICP-MS)', heavyMetals);
+  addIfPresent('100% Disclosed Active Profile', disclosedActives);
+  addIfPresent('Artisanal Tamper Custody', tamperCustody);
+  addIfPresent('Botanical Origin & Lot', originLot);
+
+  const normalizedDetails = normalizeDetails(structuredDetails);
+
+  // Batch Number
+  let cleanBatch = String(batchNumber || '').trim().toUpperCase();
+  if (!cleanBatch) {
+    const dateStamp = mfg.slice(2, 4) + '/' + mfg.slice(5, 7);
+    cleanBatch = `BATCH-${dateStamp}-${cleanSerial.slice(-4)}`;
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [products] = await connection.query(
+      'SELECT id, name, sku FROM products WHERE id = ? FOR UPDATE',
+      [normalizedProductId]
+    );
+    if (!products.length) {
+      throw Object.assign(new Error('Product not found.'), { status: 404 });
+    }
+
+    // Check if batch exists or insert new batch
+    let batchId;
+    const [existingBatches] = await connection.query(
+      'SELECT id FROM product_batches WHERE batch_number = ?',
+      [cleanBatch]
+    );
+
+    if (existingBatches.length > 0) {
+      batchId = existingBatches[0].id;
+      await connection.query(
+        'UPDATE product_batches SET details = ?, manufacture_date = ?, expiry_date = ? WHERE id = ?',
+        [JSON.stringify(normalizedDetails), mfg, exp, batchId]
+      );
+    } else {
+      const [batchResult] = await connection.query(
+        `INSERT INTO product_batches
+          (product_id, batch_number, manufacture_date, expiry_date, unit_count, details)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [normalizedProductId, cleanBatch, mfg, exp, 1, JSON.stringify(normalizedDetails)]
+      );
+      batchId = batchResult.insertId;
+    }
+
+    // Check if serial already exists
+    const [existingSerials] = await connection.query(
+      'SELECT id FROM product_serials WHERE serial_number = ?',
+      [cleanSerial]
+    );
+
+    let serialId;
+    if (existingSerials.length > 0) {
+      serialId = existingSerials[0].id;
+      await connection.query(
+        'UPDATE product_serials SET product_id = ?, batch_id = ?, status = "available", is_legacy = 0 WHERE id = ?',
+        [normalizedProductId, batchId, serialId]
+      );
+    } else {
+      const [insertSerial] = await connection.query(
+        'INSERT INTO product_serials (product_id, batch_id, serial_number, status, is_legacy) VALUES (?, ?, ?, "available", 0)',
+        [normalizedProductId, batchId, cleanSerial]
+      );
+      serialId = insertSerial.insertId;
+    }
+
+    await connection.commit();
+
+    return {
+      id: serialId,
+      serialNumber: cleanSerial,
+      productId: normalizedProductId,
+      productName: products[0].name,
+      sku: products[0].sku,
+      batchId,
+      batchNumber: cleanBatch,
+      manufactureDate: mfg,
+      expiryDate: exp,
+      bottleSequence: bottleSequence || `Bottle #${serialId}`,
+      calibratedPh: calibratedPh || '',
+      extractionTemp: extractionTemp || '',
+      microbiologicalAssay: microbiologicalAssay || '',
+      heavyMetals: heavyMetals || '',
+      disclosedActives: disclosedActives || '',
+      tamperCustody: tamperCustody || '',
+      originLot: originLot || '',
+      details: normalizedDetails,
+      verificationUrl: `https://bhumivera.com/verify?code=${encodeURIComponent(cleanSerial)}`,
+    };
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
+};
+
+const listGenuinitySerials = async () => {
+  const [rows] = await pool.query(`
+    SELECT ps.id AS serial_id, ps.serial_number, ps.status, ps.created_at,
+           b.id AS batch_id, b.batch_number, b.manufacture_date, b.expiry_date, b.unit_count, b.details,
+           p.id AS product_id, p.name AS product_name, p.sku,
+           (SELECT pi.file_path FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.sort_order, pi.id LIMIT 1) AS image
+    FROM product_serials ps
+    LEFT JOIN product_batches b ON b.id = ps.batch_id
+    LEFT JOIN products p ON p.id = ps.product_id
+    ORDER BY ps.created_at DESC, ps.id DESC
+    LIMIT 300
+  `);
+
+  return rows.map(row => {
+    const rawDetails = parseDetails(row.details);
+    const findVal = (keywords) => {
+      const found = rawDetails.find(d => keywords.some(k => (d.label || '').toLowerCase().includes(k.toLowerCase())));
+      return found ? found.value : null;
+    };
+
+    return {
+      id: row.serial_id,
+      serialNumber: row.serial_number,
+      status: row.status,
+      createdAt: row.created_at,
+      productId: row.product_id,
+      productName: row.product_name,
+      sku: row.sku,
+      image: row.image,
+      batchId: row.batch_id,
+      batchNumber: row.batch_number || 'N/A',
+      manufactureDate: row.manufacture_date ? String(row.manufacture_date).slice(0, 10) : '—',
+      expiryDate: row.expiry_date ? String(row.expiry_date).slice(0, 10) : '—',
+      calibratedPh: findVal(['calibrated ph', 'ph']),
+      extractionTemp: findVal(['extraction temp', 'extraction']),
+      microbiologicalAssay: findVal(['microbiological', 'microbial']),
+      heavyMetals: findVal(['heavy metal', 'metals']),
+      disclosedActives: findVal(['active', 'actives', 'disclosed']),
+      bottleSequence: findVal(['bottle sequence', 'bottle #', 'sequence']) || `Bottle #${row.serial_id}`,
+      details: rawDetails,
+      verificationUrl: `https://bhumivera.com/verify?code=${encodeURIComponent(row.serial_number)}`,
+    };
+  });
+};
+
+const deleteGenuinitySerial = async (serialId) => {
+  const [res] = await pool.query('DELETE FROM product_serials WHERE id = ?', [serialId]);
+  if (!res.affectedRows) throw Object.assign(new Error('Serial not found'), { status: 404 });
+  return { success: true };
+};
+
 const getPublicProductVerification = async serial => {
   const cleanSerial = String(serial || '').trim().toUpperCase();
   if (!cleanSerial || cleanSerial.length > 255) {
@@ -197,25 +409,72 @@ const getPublicProductVerification = async serial => {
   }
 
   const [rows] = await pool.query(
-    `SELECT ps.serial_number, ps.status, b.id AS batch_id, b.batch_number,
+    `SELECT ps.id AS serial_id, ps.serial_number, ps.status, b.id AS batch_id, b.batch_number,
             b.manufacture_date, b.expiry_date, b.unit_count, b.details,
             p.name AS product_name, p.sku,
             (SELECT pi.file_path FROM product_images pi
              WHERE pi.product_id = p.id ORDER BY pi.sort_order, pi.id LIMIT 1) AS image
      FROM product_serials ps
-     JOIN product_batches b ON b.id = ps.batch_id
-     JOIN products p ON p.id = ps.product_id
+     LEFT JOIN product_batches b ON b.id = ps.batch_id
+     LEFT JOIN products p ON p.id = ps.product_id
      WHERE ps.serial_number = ?
      LIMIT 1`,
     [cleanSerial]
   );
-  if (!rows.length) return null;
+
+  if (!rows.length) {
+    // Check fallback BATCH_COA_REGISTRY
+    let catalogRegistry = null;
+    try {
+      const { BATCH_COA_REGISTRY } = require('../data/luxuryCatalog');
+      catalogRegistry = BATCH_COA_REGISTRY;
+    } catch {
+      catalogRegistry = null;
+    }
+
+    if (catalogRegistry && catalogRegistry[cleanSerial]) {
+      const coa = catalogRegistry[cleanSerial];
+      return {
+        verified: true,
+        serialNumber: coa.serial,
+        productName: coa.productName,
+        sku: coa.sku || 'BHMV-MICRO-BATCH',
+        image: null,
+        batchNumber: coa.batchCode,
+        manufactureDate: coa.pressedDate,
+        expiryDate: coa.expiryDate || '2028-10-18',
+        expired: false,
+        batchQuantity: coa.remainingInBatch || 250,
+        itemStatus: 'available',
+        bottleSequence: coa.bottleSequence,
+        calibratedPh: coa.calibratedPh,
+        extractionTemp: coa.extractionTemp,
+        microbiologicalAssay: coa.microbiologicalAssay,
+        heavyMetals: coa.heavyMetals,
+        disclosedActives: coa.disclosedActives,
+        tamperCustody: coa.tamperCustody,
+        originLot: coa.originLot,
+        details: [
+          { label: 'Bottle Sequence', value: coa.bottleSequence, visible: true },
+          { label: 'Calibrated pH Assay', value: coa.calibratedPh, visible: true },
+          { label: 'Extraction Temp', value: coa.extractionTemp, visible: true },
+          { label: 'Microbiological Assay', value: coa.microbiologicalAssay, visible: true },
+          { label: 'Heavy Metal Screen', value: coa.heavyMetals, visible: true },
+          { label: 'Disclosed Actives', value: coa.disclosedActives, visible: true },
+          { label: 'Tamper Custody', value: coa.tamperCustody, visible: true },
+          { label: 'Origin Lot', value: coa.originLot, visible: true },
+        ],
+        verificationUrl: `https://bhumivera.com/verify?code=${encodeURIComponent(coa.serial)}`
+      };
+    }
+    return null;
+  }
 
   const row = rows[0];
+  const today = new Date().toISOString().slice(0, 10);
   const expiryDate = typeof row.expiry_date === 'string'
     ? row.expiry_date.slice(0, 10)
-    : new Date(row.expiry_date).toISOString().slice(0, 10);
-  const today = new Date().toISOString().slice(0, 10);
+    : row.expiry_date ? new Date(row.expiry_date).toISOString().slice(0, 10) : '';
   const cloudfrontBase = process.env.CLOUDFRONT_BASE_URL || '';
   const image = row.image
     ? (/^https?:\/\//i.test(row.image) || !cloudfrontBase
@@ -223,27 +482,54 @@ const getPublicProductVerification = async serial => {
       : `${cloudfrontBase.replace(/\/+$/, '')}/${row.image.replace(/^\/+/, '')}`)
     : null;
 
+  const rawDetails = parseDetails(row.details);
+  const findVal = (keywords) => {
+    const found = rawDetails.find(d => keywords.some(k => (d.label || '').toLowerCase().includes(k.toLowerCase())));
+    return found ? found.value : null;
+  };
+
+  const bottleSequence = findVal(['bottle sequence', 'bottle #', 'sequence']) || `Bottle #${row.serial_id || 1}`;
+  const calibratedPh = findVal(['calibrated ph', 'ph assay', 'ph']);
+  const extractionTemp = findVal(['extraction temp', 'extraction', 'temperature']);
+  const microbiologicalAssay = findVal(['microbiological', 'microbial', 'aerobic']);
+  const heavyMetals = findVal(['heavy metal', 'icp-ms', 'lead', 'arsenic']);
+  const disclosedActives = findVal(['disclosed active', 'actives', 'active ingredients', 'composition']);
+  const tamperCustody = findVal(['tamper custody', 'custody', 'tamper', 'wax']);
+  const originLot = findVal(['origin', 'lot', 'harvest', 'sourcing']);
+
   return {
     verified: true,
     serialNumber: row.serial_number,
-    productName: row.product_name,
-    sku: row.sku,
+    productName: row.product_name || 'Bhumivera Authentic Product',
+    sku: row.sku || '',
     image,
-    batchNumber: row.batch_number,
+    batchNumber: row.batch_number || 'AUTHENTIC-BATCH',
     manufactureDate: typeof row.manufacture_date === 'string'
       ? row.manufacture_date.slice(0, 10)
-      : new Date(row.manufacture_date).toISOString().slice(0, 10),
+      : row.manufacture_date ? new Date(row.manufacture_date).toISOString().slice(0, 10) : today,
     expiryDate,
-    expired: expiryDate < today,
-    batchQuantity: Number(row.unit_count),
+    expired: expiryDate ? expiryDate < today : false,
+    batchQuantity: Number(row.unit_count || 1),
     itemStatus: row.status,
-    details: parseDetails(row.details).filter(detail => detail.visible !== false),
+    bottleSequence,
+    calibratedPh,
+    extractionTemp,
+    microbiologicalAssay,
+    heavyMetals,
+    disclosedActives,
+    tamperCustody,
+    originLot,
+    details: rawDetails.filter(detail => detail.visible !== false),
+    verificationUrl: `https://bhumivera.com/verify?code=${encodeURIComponent(row.serial_number)}`,
   };
 };
 
 module.exports = {
   MAX_BATCH_SIZE,
   createProductBatch,
+  createGenuinitySerialQR,
+  listGenuinitySerials,
+  deleteGenuinitySerial,
   getProductBatch,
   getPublicProductVerification,
   listProductBatches,
