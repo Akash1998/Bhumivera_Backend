@@ -927,6 +927,27 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 77,
+    name: 'update free shipping 599, referral threshold 799, and loyalty cap 10 percent',
+    up: async () => {
+      await pool.query(`
+        UPDATE settings SET value = '599' WHERE key_name = 'free_shipping_threshold'
+      `).catch(() => {});
+      await pool.query(`
+        UPDATE settings SET value = '10' WHERE key_name = 'loyalty_max_redemption_percent'
+      `).catch(() => {});
+      await pool.query(`
+        UPDATE referral_settings SET referral_redemption_tiers = ?
+      `, [JSON.stringify([
+        { min_order_amount: 799, referral_amount: 100 },
+        { min_order_amount: 1499, referral_amount: 250 },
+      ])]).catch(() => {});
+      await pool.query(`
+        UPDATE cart_rules SET min_cart_value = 599 WHERE free_shipping_enabled = 1
+      `).catch(() => {});
+    },
+  },
 ];
 
 module.exports = migrations;

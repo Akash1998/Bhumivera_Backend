@@ -41,7 +41,7 @@ const createCartRulesTable = async () => {
       INSERT IGNORE INTO cart_rules
         (name, description, priority, min_cart_value, free_shipping_enabled, gift_product_id, gift_quantity, loyalty_bonus_points, enforce_min_checkout, badge_text, status)
       VALUES
-        ('Silver Tier', 'Free shipping and 100 loyalty points on qualifying carts.', 10, 799, 1, NULL, 1, 100, 0, 'Silver Tier', 'active')
+        ('Silver Tier', 'Free shipping and 100 loyalty points on qualifying carts.', 10, 599, 1, NULL, 1, 100, 0, 'Silver Tier', 'active')
     `);
   })().catch(error => {
     tablePromise = null;
