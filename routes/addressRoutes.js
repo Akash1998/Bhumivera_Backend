@@ -112,41 +112,72 @@ router.put('/:id', authenticateUser, async (req, res) => {
       await pool.query('UPDATE addresses SET is_default = FALSE WHERE user_id = ?', [userId]);
     }
 
-    await pool.query(
-      `UPDATE addresses SET
-        full_name = COALESCE(?, full_name),
-        phone_number = COALESCE(?, phone_number),
-        street_address = COALESCE(?, street_address),
-        line2 = IF(?, ?, line2),
-        city = COALESCE(?, city),
-        state = COALESCE(?, state),
-        postal_code = COALESCE(?, postal_code),
-        country = COALESCE(?, country),
-        is_default = COALESCE(?, is_default),
-        label = COALESCE(?, label),
-        latitude = COALESCE(?, latitude),
-        longitude = COALESCE(?, longitude),
-        google_maps_url = COALESCE(?, google_maps_url)
-       WHERE id = ? AND user_id = ?`,
-      [
-        final_full_name,
-        final_phone,
-        final_street_address,
-        line2Provided ? 1 : 0,
-        final_line2,
-        final_city,
-        final_state,
-        final_postal_code,
-        final_country,
-        final_is_default,
-        final_label,
-        final_latitude,
-        final_longitude,
-        final_google_maps_url,
-        addressId,
-        userId
-      ]
-    );
+    try {
+      await pool.query(
+        `UPDATE addresses SET
+          full_name = COALESCE(?, full_name),
+          phone_number = COALESCE(?, phone_number),
+          street_address = COALESCE(?, street_address),
+          line2 = IF(?, ?, line2),
+          city = COALESCE(?, city),
+          state = COALESCE(?, state),
+          postal_code = COALESCE(?, postal_code),
+          country = COALESCE(?, country),
+          is_default = COALESCE(?, is_default),
+          label = COALESCE(?, label),
+          latitude = COALESCE(?, latitude),
+          longitude = COALESCE(?, longitude),
+          google_maps_url = COALESCE(?, google_maps_url)
+         WHERE id = ? AND user_id = ?`,
+        [
+          final_full_name,
+          final_phone,
+          final_street_address,
+          line2Provided ? 1 : 0,
+          final_line2,
+          final_city,
+          final_state,
+          final_postal_code,
+          final_country,
+          final_is_default,
+          final_label,
+          final_latitude,
+          final_longitude,
+          final_google_maps_url,
+          addressId,
+          userId
+        ]
+      );
+    } catch (updateErr) {
+      if (updateErr.code === 'ER_BAD_FIELD_ERROR' || updateErr.message?.includes('Unknown column')) {
+        await pool.query(
+          `UPDATE addresses SET
+            full_name = COALESCE(?, full_name),
+            phone_number = COALESCE(?, phone_number),
+            street_address = COALESCE(?, street_address),
+            city = COALESCE(?, city),
+            state = COALESCE(?, state),
+            postal_code = COALESCE(?, postal_code),
+            country = COALESCE(?, country),
+            is_default = COALESCE(?, is_default)
+           WHERE id = ? AND user_id = ?`,
+          [
+            final_full_name,
+            final_phone,
+            final_street_address,
+            final_city,
+            final_state,
+            final_postal_code,
+            final_country,
+            final_is_default,
+            addressId,
+            userId
+          ]
+        );
+      } else {
+        throw updateErr;
+      }
+    }
 
     const updatedAddresses = await AddressModel.getAddressesByUser(userId);
     res.json({ success: true, message: 'Address updated', data: updatedAddresses, addresses: updatedAddresses });

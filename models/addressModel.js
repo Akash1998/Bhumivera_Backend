@@ -92,36 +92,61 @@ const AddressModel = {
     const db_phone = phone_number || phone;
     const db_street = street_address || line1;
     const db_postal = postal_code || pincode;
-    const db_lat = latitude !== undefined && latitude !== null && latitude !== '' ? Number(latitude) : null;
-    const db_lng = longitude !== undefined && longitude !== null && longitude !== '' ? Number(longitude) : null;
-    const db_maps_url = google_maps_url || maps_url || (db_lat && db_lng ? `https://www.google.com/maps?q=${db_lat},${db_lng}` : null);
+    const db_lat = latitude !== undefined && latitude !== null && latitude !== '' && !Number.isNaN(Number(latitude)) ? Number(latitude) : null;
+    const db_lng = longitude !== undefined && longitude !== null && longitude !== '' && !Number.isNaN(Number(longitude)) ? Number(longitude) : null;
+    const db_maps_url = google_maps_url || maps_url || (db_lat !== null && db_lng !== null ? `https://www.google.com/maps?q=${db_lat},${db_lng}` : null);
 
     try {
       if (is_default) {
         await pool.query('UPDATE addresses SET is_default = FALSE WHERE user_id = ?', [userId]);
       }
 
-      const [result] = await pool.query(
-        `INSERT INTO addresses (user_id, full_name, phone_number, street_address, line2, city, state, postal_code, country, is_default, label, latitude, longitude, google_maps_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          userId, 
-          full_name, 
-          db_phone, 
-          db_street, 
-          line2 || null,
-          city, 
-          state, 
-          db_postal, 
-          country || 'India', 
-          is_default ? 1 : 0,
-          label || 'Home',
-          db_lat,
-          db_lng,
-          db_maps_url
-        ]
-      );
-      return result.insertId;
+      let insertId = null;
+      try {
+        const [result] = await pool.query(
+          `INSERT INTO addresses (user_id, full_name, phone_number, street_address, line2, city, state, postal_code, country, is_default, label, latitude, longitude, google_maps_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            userId, 
+            full_name, 
+            db_phone, 
+            db_street, 
+            line2 || null,
+            city, 
+            state, 
+            db_postal, 
+            country || 'India', 
+            is_default ? 1 : 0,
+            label || 'Home',
+            db_lat,
+            db_lng,
+            db_maps_url
+          ]
+        );
+        insertId = result.insertId;
+      } catch (insertErr) {
+        if (insertErr.code === 'ER_BAD_FIELD_ERROR' || insertErr.message?.includes('Unknown column')) {
+          console.warn("[AddressModel.createAddress] Retrying insert with schema-compatible columns...", insertErr.message);
+          try {
+            const [fallbackResult] = await pool.query(
+              `INSERT INTO addresses (user_id, full_name, phone_number, street_address, line2, city, state, postal_code, country, is_default, label)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [userId, full_name, db_phone, db_street, line2 || null, city, state, db_postal, country || 'India', is_default ? 1 : 0, label || 'Home']
+            );
+            insertId = fallbackResult.insertId;
+          } catch (fallbackErr2) {
+            const [minimalResult] = await pool.query(
+              `INSERT INTO addresses (user_id, full_name, phone_number, street_address, city, state, postal_code, country, is_default)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [userId, full_name, db_phone, db_street, city, state, db_postal, country || 'India', is_default ? 1 : 0]
+            );
+            insertId = minimalResult.insertId;
+          }
+        } else {
+          throw insertErr;
+        }
+      }
+      return insertId;
     } catch (error) {
       console.error("[AddressModel.createAddress Error]:", error.message);
       throw error;
