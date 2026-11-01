@@ -36,6 +36,16 @@ router.get("/balance", authenticateUser, async (req, res) => {
         welcomeBonusBalance,
         referralBalanceAvailable,
       });
+    } catch (referralError) {
+      await syncUserWallet(req.user.id).catch(() => {});
+      return res.json({
+        success: true,
+        balance,
+        referralBalance: 0,
+        welcomeBonusBalance: 0,
+        referralBalanceAvailable: false,
+      });
+    }
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
