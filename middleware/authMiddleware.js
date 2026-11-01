@@ -14,7 +14,7 @@ const ROLE_PERMISSIONS = Object.freeze({
     'accounting.read', 'accounting.manage', 'gst.issue', 'marketing.manage',
     'settings.manage', 'impact.manage', 'reviews.manage', 'coupons.manage',
     'notifications.manage', 'logs.read', 'warehouse.operations', 'serials.manage',
-    'affiliate.manage', 'tax.manage', 'wallet.manage', 'warranty.manage',
+    'affiliate.manage', 'tax.manage', 'wallet.manage', 'warranty.manage', 'welcome-gifts.manage',
     'gamification.manage', 'ai.generate', 'search.manage',
   ]),
   warehouse_admin: new Set([
@@ -65,6 +65,7 @@ const ADMIN_PERMISSION_ROUTES = [
   { pattern: /^\/api\/logs(?:\/|$)/, permission: 'logs.read' },
   { pattern: /^\/api\/serials\/admin(?:\/|$)/, permission: 'serials.manage' },
   { pattern: /^\/api\/serials(?:\/|$)/, permission: 'serials.manage', methods: ['POST', 'PUT', 'PATCH', 'DELETE'] },
+  { pattern: /^\/api\/welcome-gifts\/admin(?:\/|$)/, permission: 'welcome-gifts.manage' },
   { pattern: /^\/api\/settings(?:\/|$)/, permission: 'settings.manage' },
   { pattern: /^\/api\/affiliate(?:\/|$)/, permission: 'affiliate.manage' },
   { pattern: /^\/api\/tax(?:\/|$)/, permission: 'tax.manage' },

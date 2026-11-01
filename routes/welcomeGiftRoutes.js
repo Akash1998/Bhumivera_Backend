@@ -89,4 +89,13 @@ router.post('/admin/cards/:id/void', authenticateAdmin, async (req, res) => {
   }
 });
 
+router.delete('/admin/campaigns/:id/cards', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await welcomeGifts.bulkDeleteUnclaimedCards(req.params.id, req.body?.cardIds);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    sendError(res, error, 'Could not delete the selected welcome cards.');
+  }
+});
+
 module.exports = router;

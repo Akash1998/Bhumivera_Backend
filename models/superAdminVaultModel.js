@@ -16,7 +16,7 @@ const VALID_ACCESS_LEVELS = Object.freeze(['hidden', 'read', 'write', 'full']);
 const VALID_PORTALS = Object.freeze(['storefront', 'admin', 'warehouse', 'support', 'superadminsupport', 'controlcentre']);
 
 /**
- * 108 Granular Platform Modules & Functions governed by the Single-Master Control Centre
+ * 109 Granular Platform Modules & Functions governed by the Single-Master Control Centre
  * (`/superadmin/controlcentre`) across all 5 Bhumivera Portals.
  */
 const PLATFORM_MODULES_CATALOG = Object.freeze([
@@ -120,7 +120,7 @@ const PLATFORM_MODULES_CATALOG = Object.freeze([
   { key: 'returns.purchase_protection', title: 'Bhumivera Purchase Protection Claims', category: 'Returns & Refunds', portal: 'storefront', adminTab: 'returns', apiPrefixes: ['/api/returns'] },
   { key: 'returns.earth_impact_pledges', title: 'Ecological Tree-Planting Pledge Reconciliation', category: 'Returns & Refunds', portal: 'admin', adminTab: 'impact', apiPrefixes: ['/api/impact'], pauseKey: 'impact' },
 
-  // ── 10. CLIENTELE PRIVILEGE & TIERS (8 Modules) ─────────────────────────────
+  // ── 10. CLIENTELE PRIVILEGE & TIERS (9 Modules) ─────────────────────────────
   { key: 'privilege.tier_architecture', title: 'Clientele Privilege & Tiers Configuration', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-tiers', apiPrefixes: ['/api/users/loyalty/tiers'] },
   { key: 'privilege.member_directory', title: 'Privilege Member Balances & Tier Progression', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-members', apiPrefixes: ['/api/admin/users'] },
   { key: 'privilege.redemption_cap_policy', title: 'Points Earning Multipliers & Redemption Cap', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-matrix', apiPrefixes: ['/api/settings/cart-rules/loyalty-tiers'] },
@@ -129,6 +129,7 @@ const PLATFORM_MODULES_CATALOG = Object.freeze([
   { key: 'privilege.post_order_ritual_wheel', title: 'Post-Purchase Privilege Reward Wheel', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'gamification', apiPrefixes: ['/api/gamification'], pauseKey: 'gamification' },
   { key: 'privilege.lifecycle_gift_triggers', title: 'Milestone Order Complimentary Botanical Gifts', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'lifecycle-offers', apiPrefixes: ['/api/settings'] },
   { key: 'privilege.vip_concierge_routing', title: 'Platinum Clientele Priority Concierge Routing', category: 'Clientele Privilege & Tiers', portal: 'support', adminTab: 'loyalty-members', apiPrefixes: ['/api/support'] },
+  { key: 'privilege.welcome_card_gifts', title: 'Welcome Card Gift Campaigns & QR Cards', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'welcome-cards', apiPrefixes: ['/api/welcome-gifts/admin'] },
 
   // ── 11. BESPOKE CLIENT CURATION & PROMOTIONS (8 Modules) ────────────────────
   { key: 'curation.bespoke_recommendations', title: 'Bespoke Client Curation & Scoring Weights', category: 'Bespoke Client Curation', portal: 'admin', adminTab: 'personalization', apiPrefixes: ['/api/recommendations'], pauseKey: 'recommendations' },
@@ -159,7 +160,7 @@ const PLATFORM_MODULES_CATALOG = Object.freeze([
 
   // ── 14. CLIENT DIRECTORY, RBAC & CONTROL CENTRE SECURITY (6 Modules) ────────
   { key: 'governance.client_directory', title: 'Client Directory & Account Status Governance', category: 'Client Directory & Security', portal: 'admin', adminTab: 'users', apiPrefixes: ['/api/admin/users'] },
-  { key: 'governance.staff_rbac_matrix', title: 'Staff Accounts & 108-Module Permission Matrix', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'support-agents', apiPrefixes: ['/api/superadmin/controlcentre/staff'] },
+  { key: 'governance.staff_rbac_matrix', title: 'Staff Accounts & 109-Module Permission Matrix', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'support-agents', apiPrefixes: ['/api/superadmin/controlcentre/staff'] },
   { key: 'governance.security_vault_config', title: 'SuperAdmin Dual-Password, 3-Q&A & Passcode Vault', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'settings', apiPrefixes: ['/api/superadmin/controlcentre/vault'] },
   { key: 'governance.module_pause_switchboard', title: 'Live Platform Module Pause & Maintenance Switchboard', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'system-health', apiPrefixes: ['/api/admin/system/modules'] },
   { key: 'governance.realtime_api_telemetry', title: 'Real-Time API Latency, HTTP Status & F12 Crash Monitor', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'system-health', apiPrefixes: ['/api/superadmin/controlcentre/telemetry', '/api/admin/system/health'] },

@@ -176,6 +176,52 @@ const voidCard = async cardId => {
   return { id: Number(cardId), status: 'void' };
 };
 
+const bulkDeleteUnclaimedCards = async (campaignId, cardIds) => {
+  const cleanCampaignId = Number(campaignId);
+  if (!Number.isSafeInteger(cleanCampaignId) || cleanCampaignId < 1) {
+    throw fail('A valid campaign is required.');
+  }
+  if (!Array.isArray(cardIds) || cardIds.length === 0 || cardIds.length > MAX_CARDS_PER_CAMPAIGN) {
+    throw fail(`Select between 1 and ${MAX_CARDS_PER_CAMPAIGN} cards to delete.`);
+  }
+  const cleanIds = [...new Set(cardIds.map(Number))];
+  if (cleanIds.some(id => !Number.isSafeInteger(id) || id < 1)) {
+    throw fail('Invalid card IDs provided.');
+  }
+
+  await ensureTables();
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [cards] = await connection.query(
+      'SELECT id, status FROM welcome_gift_cards WHERE campaign_id = ? AND id IN (?) FOR UPDATE',
+      [cleanCampaignId, cleanIds]
+    );
+    if (cards.length !== cleanIds.length || cards.some(card => card.status !== 'unclaimed')) {
+      throw fail('Only selected unclaimed cards in this campaign can be deleted.', 409);
+    }
+
+    const [result] = await connection.query(
+      "DELETE FROM welcome_gift_cards WHERE campaign_id = ? AND status = 'unclaimed' AND id IN (?)",
+      [cleanCampaignId, cleanIds]
+    );
+    if (result.affectedRows !== cleanIds.length) {
+      throw fail('Some cards changed before deletion. Refresh the campaign and try again.', 409);
+    }
+    await connection.query(
+      'UPDATE welcome_gift_campaigns SET card_count = GREATEST(card_count - ?, 0) WHERE id = ?',
+      [result.affectedRows, cleanCampaignId]
+    );
+    await connection.commit();
+    return { count: result.affectedRows };
+  } catch (error) {
+    await connection.rollback().catch(() => {});
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
 const publicTerms = campaign => ({
   totalValue: Number(campaign.total_value),
   perOrderValue: Number(campaign.per_order_value),
@@ -313,6 +359,7 @@ module.exports = {
   getCampaign,
   updateCampaignTerms,
   voidCard,
+  bulkDeleteUnclaimedCards,
   getCardStatus,
   claimCard,
 };
