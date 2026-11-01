@@ -915,7 +915,7 @@ const migrations = [
         CREATE TABLE IF NOT EXISTS box_gift_claims (
           id BIGINT AUTO_INCREMENT PRIMARY KEY,
           user_id INT NOT NULL,
-          order_id INT NOT NULL,
+          order_id INT DEFAULT NULL,
           serial_number VARCHAR(100) DEFAULT NULL,
           credit_amount DECIMAL(10,2) NOT NULL,
           points_awarded INT UNSIGNED NOT NULL,
