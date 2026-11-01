@@ -14,6 +14,14 @@ const {
   checkSerialAvailability,
 } = require("../models/serialModel");
 
+const {
+  createProductBatch,
+  getProductBatch,
+  getPublicProductVerification,
+  listProductBatches,
+  updateProductBatchDetails,
+} = require("../models/productBatchModel");
+
 const generateChecksum = (baseString) => {
   let sum = 0;
   for (let i = 0; i < baseString.length; i++) sum += baseString.charCodeAt(i);
@@ -69,6 +77,56 @@ router.post("/validate", async (req, res) => {
   } catch (err) {
     console.error("[SERIAL_VALIDATE_ERROR]:", err);
     res.status(500).json({ success: false, message: "Serial validation error." });
+  }
+});
+
+// GET /api/serials/verify/:serial - Public bottle verification (product, batch, manufacture/expiry dates)
+router.get("/verify/:serial", async (req, res) => {
+  try {
+    const verification = await getPublicProductVerification(req.params.serial);
+    if (!verification) {
+      return res.status(404).json({ success: false, verified: false, message: "This serial is not in the Bhumivera authentic registry." });
+    }
+    res.json({ success: true, ...verification });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.status ? err.message : "Serial verification error." });
+  }
+});
+
+// Admin batch management (registered before /:productId routes to prevent route shadowing)
+router.get("/batches", authenticateAdmin, async (req, res) => {
+  try {
+    res.json({ success: true, batches: await listProductBatches() });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post("/batches", authenticateAdmin, async (req, res) => {
+  try {
+    const batch = await createProductBatch(req.body || {});
+    res.status(201).json({ success: true, batch });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/batches/:id", authenticateAdmin, async (req, res) => {
+  try {
+    const batch = await getProductBatch(req.params.id);
+    if (!batch) return res.status(404).json({ success: false, message: "Batch not found." });
+    res.json({ success: true, batch });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.patch("/batches/:id/details", authenticateAdmin, async (req, res) => {
+  try {
+    const details = await updateProductBatchDetails(req.params.id, req.body?.details);
+    res.json({ success: true, details });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
   }
 });
 
