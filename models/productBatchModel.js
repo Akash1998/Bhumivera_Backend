@@ -190,8 +190,54 @@ const updateProductBatchDetails = async (batchId, details) => {
   return normalizedDetails;
 };
 
+const generateSerialSequence = (seed, totalCount, prefixFallback) => {
+  const serials = [];
+  const cleanSeed = String(seed || '').trim().toUpperCase();
+
+  if (totalCount <= 1) {
+    if (cleanSeed) return [cleanSeed];
+    const rand = crypto.randomBytes(3).toString('hex').toUpperCase();
+    const dateStamp = new Date().toISOString().slice(2, 7).replace('-', '');
+    return [`${prefixFallback || 'BHMV'}-${dateStamp}-${rand}`];
+  }
+
+  // Pure numeric seed: e.g. "123456"
+  if (/^\d+$/.test(cleanSeed)) {
+    const startNum = BigInt(cleanSeed);
+    const padLen = cleanSeed.length;
+    for (let i = 0; i < totalCount; i++) {
+      const nextNum = (startNum + BigInt(i)).toString().padStart(padLen, '0');
+      serials.push(nextNum);
+    }
+    return serials;
+  }
+
+  // Alphanumeric with trailing digits: e.g. "BV-SB001" or "BATCH1-01"
+  const trailingDigitsMatch = cleanSeed.match(/^(.*?)(\d+)$/);
+  if (trailingDigitsMatch) {
+    const prefix = trailingDigitsMatch[1];
+    const numPart = trailingDigitsMatch[2];
+    const startNum = BigInt(numPart);
+    const padLen = numPart.length;
+    for (let i = 0; i < totalCount; i++) {
+      const nextNum = (startNum + BigInt(i)).toString().padStart(padLen, '0');
+      serials.push(`${prefix}${nextNum}`);
+    }
+    return serials;
+  }
+
+  // Prefix without trailing digits or empty: e.g. "BV-SBFW" or ""
+  const pfx = cleanSeed || prefixFallback || 'BHMV';
+  const padLen = Math.max(3, String(totalCount).length);
+  for (let i = 1; i <= totalCount; i++) {
+    serials.push(`${pfx}-${String(i).padStart(padLen, '0')}`);
+  }
+  return serials;
+};
+
 const createGenuinitySerialQR = async ({
   productId,
+  count = 1,
   serialNumber,
   batchNumber,
   bottleSequence,
@@ -211,16 +257,7 @@ const createGenuinitySerialQR = async ({
     throw Object.assign(new Error('Choose a valid product.'), { status: 400 });
   }
 
-  // Format serial number: e.g. "123456" or clean alphanumeric string
-  let cleanSerial = String(serialNumber || '').trim().toUpperCase();
-  if (!cleanSerial) {
-    const randomHex = crypto.randomBytes(3).toString('hex').toUpperCase();
-    const dateStamp = new Date().toISOString().slice(2, 7).replace('-', '');
-    cleanSerial = `BHMV-${dateStamp}-${randomHex}`;
-  }
-  if (!/^[A-Z0-9_-]{3,64}$/.test(cleanSerial)) {
-    throw Object.assign(new Error('Serial number must be 3–64 letters, numbers, or dashes (e.g. 123456).'), { status: 400 });
-  }
+  const normalizedCount = Math.max(1, Math.min(1000, Number(count) || 1));
 
   // Manufacture and expiry dates
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -257,13 +294,6 @@ const createGenuinitySerialQR = async ({
 
   const normalizedDetails = normalizeDetails(structuredDetails);
 
-  // Batch Number
-  let cleanBatch = String(batchNumber || '').trim().toUpperCase();
-  if (!cleanBatch) {
-    const dateStamp = mfg.slice(2, 4) + '/' + mfg.slice(5, 7);
-    cleanBatch = `BATCH-${dateStamp}-${cleanSerial.slice(-4)}`;
-  }
-
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -276,55 +306,69 @@ const createGenuinitySerialQR = async ({
       throw Object.assign(new Error('Product not found.'), { status: 404 });
     }
 
+    const defaultPrefix = String(products[0].sku || products[0].name || 'BHMV').replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase();
+    const generatedSerials = generateSerialSequence(serialNumber, normalizedCount, defaultPrefix);
+
+    // Batch Number
+    let cleanBatch = String(batchNumber || '').trim().toUpperCase();
+    if (!cleanBatch) {
+      const dateStamp = mfg.slice(2, 4) + '/' + mfg.slice(5, 7);
+      cleanBatch = `BATCH-${dateStamp}-${generatedSerials[0].slice(-4)}`;
+    }
+
     // Check if batch exists or insert new batch
     let batchId;
     const [existingBatches] = await connection.query(
-      'SELECT id FROM product_batches WHERE batch_number = ?',
+      'SELECT id, unit_count FROM product_batches WHERE batch_number = ?',
       [cleanBatch]
     );
 
     if (existingBatches.length > 0) {
       batchId = existingBatches[0].id;
       await connection.query(
-        'UPDATE product_batches SET details = ?, manufacture_date = ?, expiry_date = ? WHERE id = ?',
-        [JSON.stringify(normalizedDetails), mfg, exp, batchId]
+        'UPDATE product_batches SET details = ?, manufacture_date = ?, expiry_date = ?, unit_count = unit_count + ? WHERE id = ?',
+        [JSON.stringify(normalizedDetails), mfg, exp, normalizedCount, batchId]
       );
     } else {
       const [batchResult] = await connection.query(
         `INSERT INTO product_batches
           (product_id, batch_number, manufacture_date, expiry_date, unit_count, details)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [normalizedProductId, cleanBatch, mfg, exp, 1, JSON.stringify(normalizedDetails)]
+        [normalizedProductId, cleanBatch, mfg, exp, normalizedCount, JSON.stringify(normalizedDetails)]
       );
       batchId = batchResult.insertId;
     }
 
-    // Check if serial already exists
-    const [existingSerials] = await connection.query(
-      'SELECT id FROM product_serials WHERE serial_number = ?',
-      [cleanSerial]
-    );
-
-    let serialId;
-    if (existingSerials.length > 0) {
-      serialId = existingSerials[0].id;
+    // Upsert serials into product_serials
+    const insertValues = generatedSerials.map(sn => [normalizedProductId, batchId, sn, 'available', 0]);
+    for (let i = 0; i < insertValues.length; i += 500) {
+      const chunk = insertValues.slice(i, i + 500);
       await connection.query(
-        'UPDATE product_serials SET product_id = ?, batch_id = ?, status = "available", is_legacy = 0 WHERE id = ?',
-        [normalizedProductId, batchId, serialId]
+        `INSERT INTO product_serials (product_id, batch_id, serial_number, status, is_legacy)
+         VALUES ?
+         ON DUPLICATE KEY UPDATE
+           product_id = VALUES(product_id),
+           batch_id = VALUES(batch_id),
+           status = 'available',
+           is_legacy = 0`,
+        [chunk]
       );
-    } else {
-      const [insertSerial] = await connection.query(
-        'INSERT INTO product_serials (product_id, batch_id, serial_number, status, is_legacy) VALUES (?, ?, ?, "available", 0)',
-        [normalizedProductId, batchId, cleanSerial]
-      );
-      serialId = insertSerial.insertId;
     }
+
+    // Fetch primary serial ID
+    const [firstSerialRow] = await connection.query(
+      'SELECT id FROM product_serials WHERE serial_number = ? LIMIT 1',
+      [generatedSerials[0]]
+    );
+    const primarySerialId = firstSerialRow[0]?.id || null;
 
     await connection.commit();
 
     return {
-      id: serialId,
-      serialNumber: cleanSerial,
+      id: primarySerialId,
+      count: normalizedCount,
+      serialNumber: generatedSerials[0],
+      serials: generatedSerials,
       productId: normalizedProductId,
       productName: products[0].name,
       sku: products[0].sku,
@@ -332,7 +376,7 @@ const createGenuinitySerialQR = async ({
       batchNumber: cleanBatch,
       manufactureDate: mfg,
       expiryDate: exp,
-      bottleSequence: bottleSequence || `Bottle #${serialId}`,
+      bottleSequence: bottleSequence || (normalizedCount > 1 ? `Batch of ${normalizedCount} units` : `Bottle #${generatedSerials[0]}`),
       calibratedPh: calibratedPh || '',
       extractionTemp: extractionTemp || '',
       microbiologicalAssay: microbiologicalAssay || '',
@@ -341,7 +385,7 @@ const createGenuinitySerialQR = async ({
       tamperCustody: tamperCustody || '',
       originLot: originLot || '',
       details: normalizedDetails,
-      verificationUrl: `https://bhumivera.com/verify?code=${encodeURIComponent(cleanSerial)}`,
+      verificationUrl: `https://bhumivera.com/verify?code=${encodeURIComponent(generatedSerials[0])}`,
     };
   } catch (err) {
     await connection.rollback();
@@ -361,7 +405,7 @@ const listGenuinitySerials = async () => {
     LEFT JOIN product_batches b ON b.id = ps.batch_id
     LEFT JOIN products p ON p.id = ps.product_id
     ORDER BY ps.created_at DESC, ps.id DESC
-    LIMIT 300
+    LIMIT 1000
   `);
 
   return rows.map(row => {
@@ -400,6 +444,22 @@ const deleteGenuinitySerial = async (serialId) => {
   const [res] = await pool.query('DELETE FROM product_serials WHERE id = ?', [serialId]);
   if (!res.affectedRows) throw Object.assign(new Error('Serial not found'), { status: 404 });
   return { success: true };
+};
+
+const bulkDeleteGenuinitySerials = async ({ serialIds, deleteAll }) => {
+  if (deleteAll) {
+    const [res] = await pool.query('DELETE FROM product_serials');
+    return { success: true, count: res.affectedRows };
+  }
+  if (!Array.isArray(serialIds) || serialIds.length === 0) {
+    throw Object.assign(new Error('Select at least one serial to delete.'), { status: 400 });
+  }
+  const cleanIds = serialIds.map(Number).filter(id => Number.isSafeInteger(id) && id > 0);
+  if (!cleanIds.length) {
+    throw Object.assign(new Error('Invalid serial IDs provided.'), { status: 400 });
+  }
+  const [res] = await pool.query('DELETE FROM product_serials WHERE id IN (?)', [cleanIds]);
+  return { success: true, count: res.affectedRows };
 };
 
 const getPublicProductVerification = async serial => {
@@ -530,6 +590,7 @@ module.exports = {
   createGenuinitySerialQR,
   listGenuinitySerials,
   deleteGenuinitySerial,
+  bulkDeleteGenuinitySerials,
   getProductBatch,
   getPublicProductVerification,
   listProductBatches,

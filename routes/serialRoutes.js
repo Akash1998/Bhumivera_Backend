@@ -19,6 +19,7 @@ const {
   createGenuinitySerialQR,
   listGenuinitySerials,
   deleteGenuinitySerial,
+  bulkDeleteGenuinitySerials,
   getProductBatch,
   getPublicProductVerification,
   listProductBatches,
@@ -177,6 +178,16 @@ router.post("/genuinity/create", authenticateAdmin, async (req, res) => {
 router.delete("/genuinity/:serialId", authenticateAdmin, async (req, res) => {
   try {
     const result = await deleteGenuinitySerial(req.params.serialId);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+router.post("/genuinity/bulk-delete", authenticateAdmin, async (req, res) => {
+  try {
+    const { serialIds, deleteAll } = req.body || {};
+    const result = await bulkDeleteGenuinitySerials({ serialIds, deleteAll });
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
