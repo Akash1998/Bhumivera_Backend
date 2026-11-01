@@ -18,7 +18,7 @@ router.get('/', authenticateUser, async (req, res) => {
 // POST /api/wishlist - add to wishlist via JSON body { productId } (frontend api.js shape)
 router.post('/', authenticateUser, async (req, res) => {
   try {
-    const rawId = req.body?.productId ?? req.params.productId;
+    const rawId = req.body?.productId ?? req.body?.product_id ?? req.body?.id ?? req.params?.productId;
     const productId = parseInt(rawId, 10);
     if (!productId || isNaN(productId)) return res.status(400).json({ message: 'productId is required' });
     await addToWishlist(req.user.id, productId);
