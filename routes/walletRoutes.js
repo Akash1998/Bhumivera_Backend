@@ -19,21 +19,23 @@ router.get("/balance", authenticateUser, async (req, res) => {
     let referralBalanceAvailable = false;
     try {
       const [[referralWallet]] = await pool.query(
-        'SELECT balance FROM referral_wallets WHERE user_id = ?',
+        'SELECT balance, welcome_bonus_balance FROM referral_wallets WHERE user_id = ?',
         [req.user.id]
-      );
+      ).catch(async () => {
+        const [[fallback]] = await pool.query('SELECT balance FROM referral_wallets WHERE user_id = ?', [req.user.id]);
+        return [[fallback]];
+      });
       referralBalance = Number(referralWallet?.balance) || 0;
+      const welcomeBonusBalance = Number(referralWallet?.welcome_bonus_balance) || 0;
       referralBalanceAvailable = true;
-    } catch (error) {
-      console.error(`[WALLET_REFERRAL_BALANCE_UNAVAILABLE] code=${error.code || 'UNKNOWN'} message=${error.message}`);
-    }
-    await syncUserWallet(req.user.id);
-    res.json({
-      success: true,
-      balance,
-      referralBalance,
-      referralBalanceAvailable,
-    });
+      await syncUserWallet(req.user.id);
+      return res.json({
+        success: true,
+        balance,
+        referralBalance,
+        welcomeBonusBalance,
+        referralBalanceAvailable,
+      });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

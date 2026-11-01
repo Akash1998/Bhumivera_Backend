@@ -169,7 +169,7 @@ describe('delivered-order box gift routes', () => {
         walletBalance,
         pointsBalance,
       }))(await first.json()),
-      { creditInr: 250, loyaltyPoints: 100, walletBalance: 260, pointsBalance: 102 },
+      { creditInr: 300, loyaltyPoints: 100, walletBalance: 310, pointsBalance: 102 },
     );
 
     const repeated = await request('POST', '/redeem-box-qr', { qr: 'BHUMIVERA-GIFT-2026' });

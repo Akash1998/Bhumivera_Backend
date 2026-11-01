@@ -325,14 +325,18 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     );
     const referralConfig = await getReferralConfig();
     const [[referralWallet]] = await pool.query(
-      'SELECT balance FROM referral_wallets WHERE user_id = ?',
+      'SELECT balance, welcome_bonus_balance FROM referral_wallets WHERE user_id = ?',
       [req.user.id]
-    );
+    ).catch(async () => {
+      const [[fallback]] = await pool.query('SELECT balance FROM referral_wallets WHERE user_id = ?', [req.user.id]);
+      return [[fallback]];
+    });
     referralWalletAmount = calculateTieredReferralWalletRedemption(
       Math.max(0, Number(referralWallet?.balance) || 0),
       Number(cartTotal) || 0,
       referralConfig.referral_redemption_tiers,
-      Math.max(0, Number(cartTotal) - discount - tierDiscount)
+      Math.max(0, Number(cartTotal) - discount - tierDiscount),
+      referralWallet?.welcome_bonus_balance !== undefined ? Number(referralWallet.welcome_bonus_balance) : null
     );
 
     const shippingSettings = await getSettingsByGroup('shipping');

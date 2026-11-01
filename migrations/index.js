@@ -940,12 +940,21 @@ const migrations = [
       await pool.query(`
         UPDATE referral_settings SET referral_redemption_tiers = ?
       `, [JSON.stringify([
-        { min_order_amount: 799, referral_amount: 100 },
-        { min_order_amount: 1499, referral_amount: 250 },
+        { min_order_amount: 799, referral_amount: 250 },
       ])]).catch(() => {});
       await pool.query(`
         UPDATE cart_rules SET min_cart_value = 599 WHERE free_shipping_enabled = 1
       `).catch(() => {});
+    },
+  },
+  {
+    version: 78,
+    name: 'add welcome_bonus_balance to referral_wallets',
+    up: async () => {
+      const [col] = await pool.query("SHOW COLUMNS FROM referral_wallets LIKE 'welcome_bonus_balance'");
+      if (!col.length) {
+        await pool.query('ALTER TABLE referral_wallets ADD COLUMN welcome_bonus_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+      }
     },
   },
 ];

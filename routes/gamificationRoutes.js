@@ -25,7 +25,7 @@ const boxGiftClaimLimiter = rateLimit({
   message: { code: 'BOX_GIFT_RATE_LIMITED', message: 'Too many gift claim attempts. Please try again later.' },
 });
 const BOX_GIFT_CODE = 'BHUMIVERA-GIFT-2026';
-const BOX_GIFT_CREDIT_INR = 250;
+const BOX_GIFT_CREDIT_INR = 300;
 const BOX_GIFT_LOYALTY_POINTS = 100;
 let spinTableReady;
 
@@ -223,17 +223,20 @@ router.post('/redeem-box-qr', boxGiftClaimLimiter, authenticateUser, async (req,
       'INSERT IGNORE INTO referral_wallets (user_id, balance) VALUES (?, 0.00)',
       [req.user.id]
     );
-    const [[wallet]] = await connection.query(
+    const [walletRows] = await connection.query(
       'SELECT balance FROM referral_wallets WHERE user_id = ? FOR UPDATE',
       [req.user.id]
     );
+    const wallet = Array.isArray(walletRows) ? walletRows[0] : null;
     const nextWalletBalance = Math.round(((Number(wallet?.balance) || 0) + BOX_GIFT_CREDIT_INR) * 100) / 100;
     const nextPointsBalance = (Number(user.loyalty_points) || 0) + BOX_GIFT_LOYALTY_POINTS;
 
     await connection.query(
-      'UPDATE referral_wallets SET balance = ? WHERE user_id = ?',
-      [nextWalletBalance, req.user.id]
-    );
+      'UPDATE referral_wallets SET balance = ?, welcome_bonus_balance = COALESCE(welcome_bonus_balance, 0) + ? WHERE user_id = ?',
+      [nextWalletBalance, BOX_GIFT_CREDIT_INR, req.user.id]
+    ).catch(async () => {
+      await connection.query('UPDATE referral_wallets SET balance = ? WHERE user_id = ?', [nextWalletBalance, req.user.id]);
+    });
     await connection.query(
       `INSERT INTO referral_wallet_transactions
        (user_id, amount, type, description, reference_id, order_id)
@@ -241,7 +244,7 @@ router.post('/redeem-box-qr', boxGiftClaimLimiter, authenticateUser, async (req,
       [
         req.user.id,
         BOX_GIFT_CREDIT_INR,
-        'One-time delivered-order Bhumivera box gift',
+        'One-time delivered-order Bhumivera box gift welcome bonus',
         `box-gift-${req.user.id}`,
         qualifyingOrder.id,
       ]
@@ -284,7 +287,7 @@ router.post('/redeem-box-qr', boxGiftClaimLimiter, authenticateUser, async (req,
       loyaltyPoints: BOX_GIFT_LOYALTY_POINTS,
       walletBalance: nextWalletBalance,
       pointsBalance: nextPointsBalance,
-      message: 'Your ₹250 Patron Ritual credit and 100 privilege points have been added to your account.',
+      message: 'Your ₹300 Patron Ritual welcome bonus credit and 100 privilege points have been added to your account.',
     });
   } catch (error) {
     if (connection) await connection.rollback().catch(() => {});

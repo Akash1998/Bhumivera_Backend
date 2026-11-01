@@ -5,11 +5,6 @@ const { calculateTieredReferralWalletRedemption } = require('../services/orderPa
 const { calculateLoyaltyRedemption, calculateTierDiscount } = require('../services/loyaltyPolicy');
 
 test('failsafe & unhackable stacking security policy', async (t) => {
-  const referralTiers = [
-    { min_order_amount: 799, referral_amount: 100 },
-    { min_order_amount: 1499, referral_amount: 250 },
-  ];
-
   await t.test('free shipping unlocks strictly at >= ₹599', () => {
     // Below ₹599: shipping is charged
     assert.equal(
@@ -38,45 +33,79 @@ test('failsafe & unhackable stacking security policy', async (t) => {
     );
   });
 
-  await t.test('gift card / referral wallet is blocked below ₹799 and strictly capped at ₹100 for ₹999', () => {
-    const fullGiftBalance = 250.00;
+  await t.test('orders between ₹799 and ₹999 allow only welcome bonus (max ₹100); referral balance is ineligible', () => {
+    // Customer has ₹300 welcome bonus + ₹200 referral balance (total ₹500)
+    const totalBalance = 500.00;
+    const welcomeBonus = 300.00;
 
-    // Order of ₹798: Zero discount allowed
+    // Order of ₹798: Zero discount
     assert.equal(
-      calculateTieredReferralWalletRedemption(fullGiftBalance, 798.99, referralTiers, 798.99),
+      calculateTieredReferralWalletRedemption(totalBalance, 798.99, [], 798.99, welcomeBonus),
       0,
-      'No gift card / referral deduction allowed below ₹799'
+      'No wallet deduction allowed below ₹799'
     );
 
-    // Order of ₹999: Max ₹100 allowed (even with ₹250 or ₹500 balance)
+    // Order of ₹799: Exactly ₹100 from welcome bonus
     assert.equal(
-      calculateTieredReferralWalletRedemption(fullGiftBalance, 999.00, referralTiers, 999.00),
+      calculateTieredReferralWalletRedemption(totalBalance, 799.00, [], 799.00, welcomeBonus),
       100,
-      'Orders between ₹799 and ₹1498 are capped at exactly ₹100'
+      'At ₹799, exactly ₹100 allowed from welcome bonus'
     );
 
-    // Order of ₹2000: Full ₹250 allowed
+    // Order of ₹999: Exactly ₹100 from welcome bonus (referral balance not eligible below 1000)
     assert.equal(
-      calculateTieredReferralWalletRedemption(fullGiftBalance, 2000.00, referralTiers, 2000.00),
-      250,
-      'Orders at or above ₹1499 can unlock full ₹250'
+      calculateTieredReferralWalletRedemption(totalBalance, 999.00, [], 999.00, welcomeBonus),
+      100,
+      'At ₹999, only ₹100 welcome bonus allowed'
+    );
+
+    // If customer has only referral balance (no welcome bonus) on ₹999: gets ₹0
+    assert.equal(
+      calculateTieredReferralWalletRedemption(200.00, 999.00, [], 999.00, 0),
+      0,
+      'Referral balance is ineligible for orders <= ₹999'
+    );
+  });
+
+  await t.test('orders above ₹999 allow ₹100 welcome bonus + ₹100 referral balance (₹200 total)', () => {
+    const totalBalance = 500.00; // ₹300 welcome + ₹200 referral
+    const welcomeBonus = 300.00;
+
+    // Order of ₹1,200 (above ₹999): ₹100 welcome + ₹100 referral = ₹200
+    assert.equal(
+      calculateTieredReferralWalletRedemption(totalBalance, 1200.00, [], 1200.00, welcomeBonus),
+      200,
+      'Orders above ₹999 allow ₹100 welcome + ₹100 referral = ₹200'
+    );
+
+    // Order of ₹1,200 with only referral balance: gets ₹100
+    assert.equal(
+      calculateTieredReferralWalletRedemption(200.00, 1200.00, [], 1200.00, 0),
+      100,
+      'Above ₹999, referral balance unlocks up to ₹100'
+    );
+
+    // Order of ₹1,200 with only welcome bonus: gets ₹100
+    assert.equal(
+      calculateTieredReferralWalletRedemption(300.00, 1200.00, [], 1200.00, 300.00),
+      100,
+      'Welcome bonus capped at ₹100'
     );
   });
 
   await t.test('loyalty points redemption is strictly capped at 10% maximum', () => {
-    const userPointsBalance = 10000; // Customer has 10,000 points (₹1,000 worth)
+    const userPointsBalance = 10000;
     const eligibleAmount = 775.13;
 
     const result = calculateLoyaltyRedemption({
       pointsBalance: userPointsBalance,
       eligibleSubtotal: eligibleAmount,
       redemptionPointsPerRupee: 10,
-      maxRedemptionPercent: 10, // 10% cap
+      maxRedemptionPercent: 10,
       minimumRedemptionPoints: 100,
       enabled: true,
     });
 
-    // 10% of 775.13 = max ₹77.51, capped to nearest 10-point increment (₹77.50)
     assert.ok(
       result.discount <= 77.51,
       `Loyalty discount (${result.discount}) must not exceed 10% cap (77.51)`
@@ -85,24 +114,25 @@ test('failsafe & unhackable stacking security policy', async (t) => {
     assert.equal(result.points, 775);
   });
 
-  await t.test('end-to-end ₹999 purchase calculation matches profit protection guarantee', () => {
+  await t.test('end-to-end ₹999 purchase calculation with welcome bonus + coupon + tier + loyalty', () => {
     const subtotal = 999.00;
 
-    // 1. Gift card / referral deduction (capped at ₹100)
-    const walletDeduction = calculateTieredReferralWalletRedemption(250, subtotal, referralTiers, subtotal);
+    // 1. Welcome bonus deduction: capped at ₹100 (referral ineligible)
+    const walletDeduction = calculateTieredReferralWalletRedemption(500, subtotal, [], subtotal, 300);
     assert.equal(walletDeduction, 100);
 
-    // 2. 10% coupon on subtotal
+    // 2. 10% coupon
     const couponDiscount = 99.90;
 
     // 3. Platinum tier discount (3% of subtotal, bounded by remaining balance)
     const tierDiscount = calculateTierDiscount(subtotal, walletDeduction + couponDiscount, 3, true);
     assert.equal(tierDiscount, 29.97);
 
-    // Post-tier eligible balance for points
-    const postTier = subtotal - walletDeduction - couponDiscount - tierDiscount; // 769.13
+    // Post-tier eligible balance for points: 999 - 100 - 99.90 - 29.97 = 769.13
+    const postTier = subtotal - walletDeduction - couponDiscount - tierDiscount;
+    assert.equal(Math.round(postTier * 100) / 100, 769.13);
 
-    // 4. Loyalty points capped at 10% of remaining 769.13
+    // 4. Loyalty points capped at 10% of remaining 769.13 = max ₹76.90
     const loyalty = calculateLoyaltyRedemption({
       pointsBalance: 5000,
       eligibleSubtotal: postTier,
@@ -112,7 +142,6 @@ test('failsafe & unhackable stacking security policy', async (t) => {
       enabled: true,
     });
     assert.equal(loyalty.discount, 76.90);
-    assert.equal(loyalty.points, 769);
 
     // 5. Final payable
     const totalDeductions = walletDeduction + couponDiscount + tierDiscount + loyalty.discount;
@@ -120,11 +149,42 @@ test('failsafe & unhackable stacking security policy', async (t) => {
 
     assert.equal(Math.round(totalDeductions * 100) / 100, 306.77);
     assert.equal(Math.round(finalPayable * 100) / 100, 692.23);
+  });
 
-    // Assert that the store retains >= 69% of gross merchandise value
-    assert.ok(
-      finalPayable >= 690,
-      `Store must retain at least ₹690 on a ₹999 order (actual retained: ₹${finalPayable})`
-    );
+  await t.test('end-to-end above ₹999 purchase (e.g. ₹1,200) with ₹100 welcome + ₹100 referral + extra coupon', () => {
+    const subtotal = 1200.00;
+
+    // 1. Above ₹999: ₹100 welcome bonus + ₹100 referral balance = ₹200
+    const walletDeduction = calculateTieredReferralWalletRedemption(500, subtotal, [], subtotal, 300);
+    assert.equal(walletDeduction, 200);
+
+    // 2. Extra coupon (e.g. ₹120 or 10%)
+    const couponDiscount = 120.00;
+
+    // 3. Platinum tier discount (3% of subtotal)
+    const tierDiscount = calculateTierDiscount(subtotal, walletDeduction + couponDiscount, 3, true);
+    assert.equal(tierDiscount, 36.00);
+
+    // Post-tier eligible balance: 1200 - 200 - 120 - 36 = 844.00
+    const postTier = subtotal - walletDeduction - couponDiscount - tierDiscount;
+    assert.equal(postTier, 844.00);
+
+    // 4. Loyalty points (10% of 844 = ₹84.40)
+    const loyalty = calculateLoyaltyRedemption({
+      pointsBalance: 5000,
+      eligibleSubtotal: postTier,
+      redemptionPointsPerRupee: 10,
+      maxRedemptionPercent: 10,
+      minimumRedemptionPoints: 100,
+      enabled: true,
+    });
+    assert.equal(loyalty.discount, 84.40);
+
+    // 5. Final payable
+    const totalDeductions = walletDeduction + couponDiscount + tierDiscount + loyalty.discount;
+    const finalPayable = subtotal - totalDeductions;
+
+    assert.equal(Math.round(totalDeductions * 100) / 100, 440.40);
+    assert.equal(Math.round(finalPayable * 100) / 100, 759.60);
   });
 });

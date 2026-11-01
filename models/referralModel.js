@@ -15,8 +15,7 @@ const defaultConfig = {
   coupon_min_order_amount: 0,
   coupon_valid_days: 30,
   referral_redemption_tiers: [
-    { min_order_amount: 799, referral_amount: 100 },
-    { min_order_amount: 1499, referral_amount: 250 },
+    { min_order_amount: 799, referral_amount: 250 },
   ],
 };
 

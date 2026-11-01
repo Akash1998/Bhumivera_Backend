@@ -6,19 +6,34 @@ const calculateReferralWalletRedemption = (balance, perOrderLimit, subtotal) => 
   return Math.min(toCents(balance), toCents(perOrderLimit), toCents(subtotal)) / 100;
 };
 
-const calculateTieredReferralWalletRedemption = (balance, orderSubtotal, tiers = [], eligibleSubtotal = orderSubtotal) => {
+const calculateTieredReferralWalletRedemption = (balance, orderSubtotal, tiers = [], eligibleSubtotal = orderSubtotal, welcomeBonusBalance = null) => {
   const toCents = value => Math.round(Math.max(0, Number(value) || 0) * 100);
   const orderCents = toCents(orderSubtotal);
   const eligibleCents = toCents(eligibleSubtotal);
-  const eligibleTier = (Array.isArray(tiers) ? tiers : [])
-    .filter(tier => orderCents >= toCents(tier?.min_order_amount))
-    .sort((first, second) => toCents(second.min_order_amount) - toCents(first.min_order_amount))[0];
-  if (!eligibleTier) return 0;
-  return Math.min(
-    toCents(balance),
-    eligibleCents,
-    toCents(eligibleTier.referral_amount)
-  ) / 100;
+  const totalBalanceCents = toCents(balance);
+
+  if (orderCents < 79900) return 0;
+
+  if (welcomeBonusBalance !== null && welcomeBonusBalance !== undefined) {
+    const welcomeCents = Math.min(totalBalanceCents, toCents(welcomeBonusBalance));
+    const referralCents = Math.max(0, totalBalanceCents - welcomeCents);
+
+    const maxWelcome = orderCents >= 79900 ? 10000 : 0;
+    const maxReferral = orderCents > 99900 ? 10000 : 0;
+
+    const redeemWelcome = Math.min(welcomeCents, maxWelcome);
+    const redeemReferral = Math.min(referralCents, maxReferral);
+
+    if (welcomeCents === 0 && referralCents === 0 && totalBalanceCents > 0) {
+      const maxAllowed = orderCents > 99900 ? 20000 : 10000;
+      return Math.min(totalBalanceCents, eligibleCents, maxAllowed) / 100;
+    }
+
+    return Math.min(eligibleCents, redeemWelcome + redeemReferral) / 100;
+  }
+
+  const maxAllowed = orderCents > 99900 ? 20000 : 10000;
+  return Math.min(totalBalanceCents, eligibleCents, maxAllowed) / 100;
 };
 
 const assertCodEligibility = (paymentMode, deliveredOrderCount) => {

@@ -394,16 +394,21 @@ const createOrder = async ({
     let safeReferralWalletAmount = 0;
     if (requestedReferralWalletAmount > 0) {
       const [[referralWallet]] = await conn.query(
-        'SELECT balance FROM referral_wallets WHERE user_id = ? FOR UPDATE',
+        'SELECT balance, welcome_bonus_balance FROM referral_wallets WHERE user_id = ? FOR UPDATE',
         [userId]
-      );
+      ).catch(async () => {
+        const [[fallback]] = await conn.query('SELECT balance FROM referral_wallets WHERE user_id = ? FOR UPDATE', [userId]);
+        return [[fallback]];
+      });
       const availableReferralBalance = Math.max(0, Number(referralWallet?.balance) || 0);
+      const welcomeBonusBalance = referralWallet?.welcome_bonus_balance !== undefined ? Number(referralWallet.welcome_bonus_balance) : null;
       const referralConfig = await getReferralConfig(conn);
       const maxReferralRedemption = calculateTieredReferralWalletRedemption(
         availableReferralBalance,
         backendSubtotal,
         referralConfig.referral_redemption_tiers,
-        backendSubtotal - safeDiscount - safeTierDiscount
+        backendSubtotal - safeDiscount - safeTierDiscount,
+        welcomeBonusBalance
       );
       if (Math.abs(maxReferralRedemption - requestedReferralWalletAmount) >= 0.005) {
         throw Object.assign(new Error('Your referral reward balance changed. Reapply the coupon and try again.'), {
@@ -539,10 +544,19 @@ const createOrder = async ({
     }
 
     if (safeReferralWalletAmount > 0) {
-      const [referralDebit] = await conn.query(
-        'UPDATE referral_wallets SET balance = balance - ? WHERE user_id = ? AND balance >= ?',
-        [safeReferralWalletAmount, userId, safeReferralWalletAmount]
+      const safeWelcomeDebit = Math.min(
+        safeReferralWalletAmount,
+        backendSubtotal >= 799 ? 100 : 0
       );
+      const [referralDebit] = await conn.query(
+        'UPDATE referral_wallets SET balance = balance - ?, welcome_bonus_balance = GREATEST(0, COALESCE(welcome_bonus_balance, 0) - ?) WHERE user_id = ? AND balance >= ?',
+        [safeReferralWalletAmount, safeWelcomeDebit, userId, safeReferralWalletAmount]
+      ).catch(async () => {
+        return conn.query(
+          'UPDATE referral_wallets SET balance = balance - ? WHERE user_id = ? AND balance >= ?',
+          [safeReferralWalletAmount, userId, safeReferralWalletAmount]
+        );
+      });
       if (referralDebit.affectedRows !== 1) {
         throw Object.assign(new Error('Your referral reward balance changed. Reapply the coupon and try again.'), {
           status: 409,

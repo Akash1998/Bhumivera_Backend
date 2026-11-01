@@ -123,12 +123,18 @@ router.get('/', authenticateUser, async (req, res) => {
     let referralReward = { balance: 0, estimatedAmount: 0, tiers: [] };
     try {
       const config = await getReferralConfig();
-      const [[wallet]] = await pool.query('SELECT balance FROM referral_wallets WHERE user_id = ?', [req.user.id]);
+      const [[wallet]] = await pool.query('SELECT balance, welcome_bonus_balance FROM referral_wallets WHERE user_id = ?', [req.user.id])
+        .catch(async () => {
+          const [[fallback]] = await pool.query('SELECT balance FROM referral_wallets WHERE user_id = ?', [req.user.id]);
+          return [[fallback]];
+        });
       const balance = Math.max(0, Number(wallet?.balance) || 0);
+      const welcomeBonusBalance = wallet?.welcome_bonus_balance !== undefined ? Number(wallet.welcome_bonus_balance) : null;
       const eligibleSubtotal = Math.max(0, (Number(total) || 0) - (Number(rulePreview.totalDiscount) || 0));
       referralReward = {
         balance,
-        estimatedAmount: calculateTieredReferralWalletRedemption(balance, Number(total) || 0, config.referral_redemption_tiers, eligibleSubtotal),
+        welcomeBonusBalance,
+        estimatedAmount: calculateTieredReferralWalletRedemption(balance, Number(total) || 0, config.referral_redemption_tiers, eligibleSubtotal, welcomeBonusBalance),
         tiers: config.referral_redemption_tiers,
       };
     } catch (error) {
