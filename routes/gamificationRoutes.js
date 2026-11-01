@@ -24,7 +24,12 @@ const boxGiftClaimLimiter = rateLimit({
   legacyHeaders: false,
   message: { code: 'BOX_GIFT_RATE_LIMITED', message: 'Too many gift claim attempts. Please try again later.' },
 });
-const BOX_GIFT_CODE = 'BHUMIVERA-GIFT-2026';
+const BOX_GIFT_CODE = '8492-7105-3824';
+const LEGACY_BOX_GIFT_CODE = 'BHUMIVERA-GIFT-2026';
+const isValidBoxGiftCode = (raw) => {
+  const normalized = String(raw || '').trim().toUpperCase().replace(/[\s-]/g, '');
+  return normalized === '849271053824' || normalized === 'BHUMIVERAGIFT2026';
+};
 const BOX_GIFT_CREDIT_INR = 300;
 const BOX_GIFT_LOYALTY_POINTS = 100;
 let spinTableReady;
@@ -86,7 +91,7 @@ const validateBoxGiftSerial = async (serial, query = pool.query.bind(pool)) => {
 
 router.get('/box-qr-status', authenticateUser, async (req, res) => {
   const { code, serial } = normalizeBoxGiftInput(null, req.query);
-  if (code !== BOX_GIFT_CODE) {
+  if (!isValidBoxGiftCode(code)) {
     return res.status(400).json({
       valid: false,
       code: 'INVALID_GIFT_CODE',
@@ -156,7 +161,7 @@ router.get('/box-qr-status', authenticateUser, async (req, res) => {
 
 router.post('/redeem-box-qr', boxGiftClaimLimiter, authenticateUser, async (req, res) => {
   const { code, serial } = normalizeBoxGiftInput(req.body);
-  if (code !== BOX_GIFT_CODE) {
+  if (!isValidBoxGiftCode(code)) {
     return res.status(400).json({
       valid: false,
       code: 'INVALID_GIFT_CODE',
