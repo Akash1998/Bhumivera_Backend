@@ -113,6 +113,7 @@ const returnRoutes = require("./routes/returnRoutes");
 const inventoryRoutes = require("./routes/inventoryRoutes");
 const warehouseRoutes = require("./routes/warehouseRoutes");
 const inventorySoftwareRoutes = require("./routes/inventorySoftwareRoutes");
+const { ensureInventorySoftwareTables } = require("./models/inventorySoftwareModel");
 const gstRoutes = require("./routes/gstRoutes");
 const clientLogRoutes = require("./routes/clientLogRoutes");
 const logsRoutes = require("./routes/logsRoutes");
@@ -443,6 +444,7 @@ const initializeDatabaseOnce = async () => {
     }
     await pool.query('SELECT 1');
     await runMigrations(pool, migrations);
+    await ensureInventorySoftwareTables(pool).catch(err => console.warn("[INVENTORY_SCHEMA_INIT_WARN]", err.message));
     if (!systemDiagnostics) {
       systemDiagnostics = createSystemDiagnostics(pool);
       app.locals.systemDiagnostics = systemDiagnostics;
