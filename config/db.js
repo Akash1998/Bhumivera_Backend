@@ -37,8 +37,11 @@ const ssl = sslDisabled
       ca: [...require("tls").rootCertificates, ...(sslCa ? [sslCa] : [])]
     };
 
-const maxIdle = Math.min(connectionLimit, 1);
+// Zero idle connections so serverless MySQL can automatically sleep/pause when traffic stops
+const maxIdle = 0;
 const queueLimit = 100;
+const idleTimeout = Number(process.env.DB_IDLE_TIMEOUT_MS) || 30000; // Close idle connections after 30s of inactivity
+
 const pool = mysql
   .createPool({
     host: database.host || "localhost",
@@ -52,9 +55,8 @@ const pool = mysql
     queueLimit,
     connectTimeout: 10000,
     ssl,
-    idleTimeout: 60000,
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 0
+    idleTimeout,
+    enableKeepAlive: false, // Disable TCP keepAlive probes so MySQL idle timers are not constantly reset
   })
   .promise();
 

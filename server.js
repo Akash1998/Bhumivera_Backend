@@ -22,7 +22,6 @@ const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
 const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
 const migrations = require("./migrations");
-const { approveDueReferralClaims } = require("./models/referralModel");
 const {
   SITE_URL,
   DEFAULT_OG_TITLE,
@@ -135,7 +134,6 @@ let databaseReady = false;
 let startupFailure = null;
 let databaseInitializationPromise = null;
 let databaseRetryAfter = 0;
-let referralApprovalTimer = null;
 let systemDiagnostics = null;
 app.use(createRequestObservability());
 app.use(clientContextMiddleware());
@@ -450,14 +448,6 @@ const initializeDatabaseOnce = async () => {
     databaseReady = true;
     startupFailure = null;
     databaseRetryAfter = 0;
-    if (!referralApprovalTimer) {
-      const runReferralApprovals = () => approveDueReferralClaims().catch(error => {
-        console.error('[REFERRAL_AUTO_APPROVAL_RUN]', error);
-      });
-      runReferralApprovals();
-      referralApprovalTimer = setInterval(runReferralApprovals, 15000);
-      referralApprovalTimer.unref();
-    }
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {
     databaseReady = false;

@@ -13,7 +13,11 @@ const normalizeQuery = query => String(query || '')
 
 function createSystemDiagnostics(pool, { logger = console, now = Date.now } = {}) {
   const originalQuery = pool.query.bind(pool);
+  let lastPurge = 0;
   const purgeExpired = async () => {
+    const nowTime = now();
+    if (nowTime - lastPurge < 7 * 24 * 60 * 60 * 1000) return; // Throttle to at most once a week
+    lastPurge = nowTime;
     try {
       await originalQuery(
         'DELETE FROM system_error_events WHERE occurred_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)'
@@ -22,9 +26,6 @@ function createSystemDiagnostics(pool, { logger = console, now = Date.now } = {}
       logger.error(`[SYSTEM_DIAGNOSTICS_RETENTION_FAILED] code=${error.code || 'UNKNOWN'}`);
     }
   };
-  void purgeExpired();
-  const retentionTimer = setInterval(purgeExpired, 24 * 60 * 60 * 1000);
-  retentionTimer.unref();
 
   const persistEvent = async event => {
     try {
