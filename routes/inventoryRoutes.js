@@ -3,6 +3,8 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
+const { invalidatePublicCatalogCache } = require('../middleware/redisResponseCache');
+const { recalculateAllBundleStocks } = require('../models/inventorySoftwareModel');
 
 router.get('/', authenticateAdmin, async (req, res) => {
   try {
@@ -13,7 +15,7 @@ router.get('/', authenticateAdmin, async (req, res) => {
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       ORDER BY p.quantity ASC
-    `); // Added p.video_urls and p.product_links to the selection
+    `);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -73,6 +75,14 @@ router.put('/:productId/stock', authenticateAdmin, async (req, res) => {
     }
     
     const [[product]] = await pool.query('SELECT id, name, quantity AS stock FROM products WHERE id = ?', [productId]);
+    if (product) {
+      await pool.query(
+        'UPDATE inventory_product_meta SET physical_stock = ? WHERE product_id = ?',
+        [product.stock, productId]
+      ).catch(() => {});
+    }
+    await recalculateAllBundleStocks(pool);
+    await invalidatePublicCatalogCache();
     res.json({ message: 'Stock updated', product });
   } catch (err) {
     console.error(err);
@@ -87,8 +97,15 @@ router.put('/bulk-update', authenticateAdmin, async (req, res) => {
     if (!updates || !Array.isArray(updates)) return res.status(400).json({ message: 'updates array required' });
     
     for (const { product_id, stock } of updates) {
-      await pool.query('UPDATE products SET quantity = ? WHERE id = ?', [parseInt(stock), product_id]);
+      const safeStock = parseInt(stock) || 0;
+      await pool.query('UPDATE products SET quantity = ? WHERE id = ?', [safeStock, product_id]);
+      await pool.query(
+        'UPDATE inventory_product_meta SET physical_stock = ? WHERE product_id = ?',
+        [safeStock, product_id]
+      ).catch(() => {});
     }
+    await recalculateAllBundleStocks(pool);
+    await invalidatePublicCatalogCache();
     
     res.json({ message: `Updated stock for ${updates.length} products` });
   } catch (err) {

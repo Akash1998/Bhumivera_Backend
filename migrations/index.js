@@ -29,6 +29,7 @@ const { initWarrantyTable } = require('../models/warrantyModel');
 const { initReturnRefundTable } = require('../models/returnRefundModel');
 const { initAiSupportTables } = require('../models/aiSupportModel');
 const { initSuperAdminFortressTables } = require('../models/superAdminVaultModel');
+const { initInventorySoftwareTables } = require('../models/inventorySoftwareModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
 const { seedLuxuryCatalog, seedMaisonRegimenBundles } = require('../scripts/seedLuxuryCatalog');
 const { generateOrderNumber } = require('../services/orderNumber');
@@ -956,6 +957,11 @@ const migrations = [
         await pool.query('ALTER TABLE referral_wallets ADD COLUMN welcome_bonus_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00');
       }
     },
+  },
+  {
+    version: 79,
+    name: 'initialize 10x omnichannel inventory software, storage keeper, pos billing, and staff iam schema',
+    up: () => initInventorySoftwareTables(pool),
   },
 ];
 

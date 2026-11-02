@@ -3,6 +3,8 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 const { authenticateUser, authenticateAdmin } = require("../middleware/authMiddleware");
+const { invalidatePublicCatalogCache } = require("../middleware/redisResponseCache");
+const { syncWebsiteProductsToInventoryMeta } = require("../models/inventorySoftwareModel");
 const { sendOrderStatusEmail } = require("../utils/mail");
 
 const { 
@@ -444,6 +446,8 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     }
 
     await clearCart(req.user.id);
+    await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
+    await invalidatePublicCatalogCache().catch(() => {});
 
     const orderNotifications = [
       {

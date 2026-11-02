@@ -38,7 +38,10 @@ const cacheMetrics = {
   writeErrors: 0,
   skippedLargeResponses: 0,
   writes: 0,
+  invalidations: 0,
 };
+
+const trackedCacheKeys = new Set();
 
 const hashRequest = req => {
   const headers = CACHE_KEY_HEADERS.map(name => [name, req.get(name) || '']);
@@ -149,6 +152,7 @@ const createRedisResponseCache = (client, {
         });
         Promise.resolve().then(() => client.set(key, entry, { EX: ttlSeconds })).then(() => {
           cacheMetrics.writes += 1;
+          trackedCacheKeys.add(key);
         }).catch(error => {
           cacheMetrics.writeErrors += 1;
           logger.error('[RESPONSE_CACHE_WRITE_ERROR]', error.message);
@@ -164,6 +168,23 @@ const createRedisResponseCache = (client, {
   }).finally(() => {
     clearTimeout(timeoutId);
   });
+};
+
+const invalidatePublicCatalogCache = async () => {
+  cacheMetrics.invalidations += 1;
+  if (!redisClient || !redisClient.isReady) {
+    trackedCacheKeys.clear();
+    return;
+  }
+  try {
+    const keys = Array.from(trackedCacheKeys);
+    trackedCacheKeys.clear();
+    if (keys.length > 0 && typeof redisClient.del === 'function') {
+      await redisClient.del(keys);
+    }
+  } catch (err) {
+    console.warn('[RESPONSE_CACHE_INVALIDATE_WARN]', err.message);
+  }
 };
 
 let responseCacheConnectionPromise;
@@ -219,4 +240,5 @@ module.exports = {
   connectResponseCache,
   closeResponseCache,
   getResponseCacheStatus,
+  invalidatePublicCatalogCache,
 };

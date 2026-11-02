@@ -112,6 +112,7 @@ const shippingRoutes = require("./routes/shippingRoutes");
 const returnRoutes = require("./routes/returnRoutes");
 const inventoryRoutes = require("./routes/inventoryRoutes");
 const warehouseRoutes = require("./routes/warehouseRoutes");
+const inventorySoftwareRoutes = require("./routes/inventorySoftwareRoutes");
 const gstRoutes = require("./routes/gstRoutes");
 const clientLogRoutes = require("./routes/clientLogRoutes");
 const logsRoutes = require("./routes/logsRoutes");
@@ -353,6 +354,7 @@ app.use(async (req, res, next) => {
 
 app.set("trust proxy", 1);
 app.use("/api/webhooks/razorpay", createRazorpayWebhookRouter({ pool }));
+app.use("/api/inventory-software", express.json({ limit: "5mb" }), express.urlencoded({ extended: true, limit: "5mb" }), normalizeErrorResponses, inventorySoftwareRoutes);
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(normalizeErrorResponses);
