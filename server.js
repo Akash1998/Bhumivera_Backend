@@ -118,7 +118,6 @@ const clientLogRoutes = require("./routes/clientLogRoutes");
 const logsRoutes = require("./routes/logsRoutes");
 const newsletterRoutes = require("./routes/newsletterRoutes");
 const gamificationRoutes = require("./routes/gamificationRoutes");
-const welcomeGiftRoutes = require("./routes/welcomeGiftRoutes");
 const impactRoutes = require("./routes/impactRoutes");
 const systemAdminRoutes = require("./routes/systemAdminRoutes");
 const supportRoutes = require("./routes/supportRoutes");
@@ -364,7 +363,7 @@ app.use(redisResponseCache);
 
 // --- ROUTE REGISTRATION ---
 app.use("/api/admin/system", systemAdminRoutes);
-app.use("/api/support", supportRoutes);
+app.use("/api/support", createModuleAvailabilityMiddleware('support'), supportRoutes);
 app.use("/api/flash-sales", createModuleAvailabilityMiddleware('flash_sales'), flashSalesRoutes);
 app.use("/api/client-log", clientLogRoutes);
 app.use("/api/logs", logsRoutes);
@@ -396,7 +395,6 @@ app.use("/api/coupons", createModuleAvailabilityMiddleware('coupons'), couponRou
 app.use("/api/reviews", createModuleAvailabilityMiddleware('reviews'), reviewRoutes);
 app.use("/api/notifications", createModuleAvailabilityMiddleware('notifications'), notificationRoutes);
 app.use("/api/gamification", createModuleAvailabilityMiddleware('gamification'), gamificationRoutes);
-app.use("/api/welcome-gifts", createModuleAvailabilityMiddleware('gamification'), welcomeGiftRoutes);
 app.use("/api/analytics", createModuleAvailabilityMiddleware('analytics'), analyticsRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/shipping", createModuleAvailabilityMiddleware('shipping'), shippingRoutes);

@@ -1097,12 +1097,14 @@ async function processSupportTurn({
   });
 
   let resolvedUser = user;
-  if (!resolvedUser && session?.userId && activePool) {
-    try {
-      const [uRows] = await activePool.query('SELECT id, name, email, phone, role FROM users WHERE id = ? LIMIT 1', [session.userId]);
-      if (uRows?.[0]) resolvedUser = uRows[0];
-    } catch {
-      // Ignore if not mocked
+  if (session?.userId) {
+    if (user && Number(user.id) === Number(session.userId)) {
+      resolvedUser = user;
+    } else if (user && Number(user.id) !== Number(session.userId)) {
+      throw Object.assign(new Error('Unauthorized session access.'), { status: 403, code: 'FORBIDDEN_SESSION' });
+    } else {
+      // Do not bind an unauthenticated caller to a registered user's account session
+      resolvedUser = null;
     }
   }
 

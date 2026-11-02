@@ -4,6 +4,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const Module = require('node:module');
 const path = require('node:path');
+const pool = require('../config/db');
 
 const secret = 'authorization-tests-only-secret-with-more-than-32-characters';
 const authMiddlewarePath = path.resolve(__dirname, '../middleware/authMiddleware.js');
@@ -39,7 +40,9 @@ before(async () => {
 });
 
 after(async () => {
+  server.closeAllConnections?.();
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  await pool.end?.();
 });
 
 const tokenFor = role => jwt.sign({
@@ -102,10 +105,14 @@ describe('central admin route authorization', () => {
 
   it('permits fulfillment statuses for warehouse users but blocks financial/order-management statuses', async () => {
     assert.equal((await request('warehouse_admin', 'PUT', '/orders/12/status', { status: 'shipped' })).status, 200);
-    const denied = await request('warehouse_admin', 'PUT', '/orders/12/status', { status: 'cancelled' });
+    const denied = await request('warehouse_admin', 'PUT', '/orders/12/status', { status: 'processing' });
     assert.equal(denied.status, 403);
     assert.equal((await denied.json()).code, 'AUTH_PERMISSION_DENIED');
-    assert.equal((await request('admin', 'PUT', '/orders/12/status', { status: 'cancelled' })).status, 200);
+    assert.equal((await request('admin', 'PUT', '/orders/12/status', { status: 'processing' })).status, 200);
+    const cancelledByAdmin = await request('admin', 'PUT', '/orders/12/status', { status: 'cancelled' });
+    assert.equal(cancelledByAdmin.status, 403);
+    assert.equal((await cancelledByAdmin.json()).code, 'SUPERADMIN_REQUIRED_FOR_CANCELLATION');
+    assert.equal((await request('superadmin', 'PUT', '/orders/12/status', { status: 'cancelled' })).status, 200);
   });
 
   it('reserves customer and warehouse account administration for superadmins', async () => {

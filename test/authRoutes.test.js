@@ -4,6 +4,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const Module = require('node:module');
 const path = require('node:path');
+const realDbPool = require('../config/db');
 const originalLoad = Module._load;
 const authRoutesPath = path.resolve(__dirname, '../routes/authRoutes.js');
 const secret = 'auth-route-tests-only-secret-with-more-than-32-characters';
@@ -175,6 +176,7 @@ after(async () => {
   const serverClosed = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   server.closeAllConnections();
   await serverClosed;
+  await realDbPool.end?.();
   for (const request of [
     '../models/adminModel',
     '../models/userModel',

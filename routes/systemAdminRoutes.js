@@ -29,7 +29,7 @@ const moduleApiPrefixes = {
   payments: ['/api/create-order', '/api/verify-payment'],
   warehouse: ['/api/warehouse'],
   inventory: ['/api/inventory'],
-  support: ['/api/contact'],
+  support: ['/api/contact', '/api/support'],
   returns: ['/api/returns'],
   shipping: ['/api/shipping'],
   wallet: ['/api/wallet'],

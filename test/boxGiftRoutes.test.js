@@ -3,6 +3,7 @@ const { after, before, beforeEach, describe, it } = require('node:test');
 const express = require('express');
 const Module = require('node:module');
 const path = require('node:path');
+const realDbPool = require('../config/db');
 
 const routePath = path.resolve(__dirname, '../routes/gamificationRoutes.js');
 const originalLoad = Module._load;
@@ -118,6 +119,7 @@ after(async () => {
     server.close(error => error ? reject(error) : resolve());
     server.closeAllConnections();
   });
+  await realDbPool.end?.();
 });
 
 beforeEach(() => {

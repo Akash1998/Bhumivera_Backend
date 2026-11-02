@@ -126,6 +126,9 @@ const authenticateSupportAgent = async (req, res, next) => {
   try {
     const payload = jwt.verify(token, secret());
     if (['admin', 'superadmin'].includes(payload.role)) {
+      if (payload.scope !== 'superadmin-controlcentre' && !await isSessionActive(payload, req)) {
+        return res.status(401).json({ code: 'AUTH_SESSION_REAUTH_REQUIRED', message: 'Session expired or revoked. Please sign in again.' });
+      }
       req.supportAgent = {
         id: payload.id || 0,
         username: payload.email || 'superadmin',
@@ -386,7 +389,7 @@ router.patch('/chat/session/:sessionToken/status', supportSessionLimiter, option
     if (!session) {
       return res.status(404).json({ success: false, code: 'SESSION_NOT_FOUND', message: 'Chat session not found.' });
     }
-    if (session.userId && req.user?.id && Number(session.userId) !== Number(req.user.id)) {
+    if (!isSupportStaffCaller && session.userId && (!req.user?.id || Number(session.userId) !== Number(req.user.id))) {
       return res.status(403).json({ success: false, code: 'FORBIDDEN_SESSION', message: 'Unauthorized session access.' });
     }
 
@@ -647,7 +650,7 @@ router.get('/chat/history/:sessionToken', optionalAuthenticateCustomer, async (r
     if (!session) {
       return res.status(404).json({ success: false, code: 'SESSION_NOT_FOUND', message: 'Chat session not found.' });
     }
-    if (session.userId && req.user?.id && Number(session.userId) !== Number(req.user.id)) {
+    if (!isSupportStaffCaller && session.userId && (!req.user?.id || Number(session.userId) !== Number(req.user.id))) {
       return res.status(403).json({ success: false, code: 'FORBIDDEN_SESSION', message: 'Unauthorized session access.' });
     }
     const messages = await getSessionMessages(session.id, 100, pool, { includeInternal: false });
@@ -882,86 +885,18 @@ router.post('/login', loginLimiter, async (req, res) => {
       return res.json({ token, agent: normalized });
     }
 
-    // 2. Fallback: Check admin_users (Website Admin / SuperAdmin signing into /support or /superadminsupport)
+    // Admin accounts must sign in via the official Admin Login with mandatory 2FA
     try {
       const adminRow = await getAdminByEmail(identifier);
-      if (adminRow && adminRow.password_hash && await verifyAdminPassword(password, adminRow.password_hash)) {
-        const superProfile = {
-          id: adminRow.id,
-          username: adminRow.email,
-          name: adminRow.name || 'SuperAdmin',
-          email: adminRow.email,
-          role: 'superadmin',
-          department: 'Executive Command Center',
-          max_concurrent_chats: 50,
-          online_status: 'online',
-          permissions: resolveRolePermissions('superadmin'),
-          is_active: true,
-          last_login_at: new Date().toISOString(),
-        };
-        const token = jwt.sign(
-          {
-            id: adminRow.id,
-            sub: String(adminRow.id),
-            username: adminRow.email,
-            name: superProfile.name,
-            email: adminRow.email,
-            role: 'superadmin',
-            scope: 'support-agent',
-          },
-          secret(),
-          { expiresIn: '12h', jwtid: crypto.randomUUID() }
-        );
-        await appendSupportAuditLog({
-          actorId: adminRow.id,
-          actorName: superProfile.name,
-          actorRole: 'superadmin',
-          actionType: 'SUPERADMIN_LOGIN',
-          targetRef: adminRow.email,
-          details: 'Website Admin authenticated into SuperAdmin Support Command Center',
+      if (adminRow) {
+        return res.status(403).json({
+          code: 'ADMIN_2FA_REQUIRED',
+          message: 'Administrator accounts must sign in via the secure Admin Control Centre with mandatory 2FA.',
         });
-        return res.json({ token, agent: superProfile });
       }
     } catch {}
 
-    // 3. Fallback: Check users table where role IN ('admin', 'superadmin')
-    try {
-      const [uRows] = await pool.query(
-        "SELECT * FROM users WHERE LOWER(email) = ? AND role IN ('admin', 'superadmin') LIMIT 1",
-        [identifier]
-      );
-      const uAdmin = uRows?.[0];
-      if (uAdmin && uAdmin.password_hash && await bcrypt.compare(password, uAdmin.password_hash)) {
-        const superProfile = {
-          id: uAdmin.id,
-          username: uAdmin.email,
-          name: uAdmin.name || 'SuperAdmin',
-          email: uAdmin.email,
-          role: 'superadmin',
-          department: 'Executive Command Center',
-          max_concurrent_chats: 50,
-          online_status: 'online',
-          permissions: resolveRolePermissions('superadmin'),
-          is_active: true,
-        };
-        const token = jwt.sign(
-          {
-            id: uAdmin.id,
-            sub: String(uAdmin.id),
-            username: uAdmin.email,
-            name: superProfile.name,
-            email: uAdmin.email,
-            role: 'superadmin',
-            scope: 'support-agent',
-          },
-          secret(),
-          { expiresIn: '12h', jwtid: crypto.randomUUID() }
-        );
-        return res.json({ token, agent: superProfile });
-      }
-    } catch {}
-
-    return res.status(401).json({ message: 'Invalid user ID / email or password.' });
+    return res.status(401).json({ message: 'Invalid support user ID / email or password.' });
   } catch (error) {
     console.error('[SUPPORT_AGENT_LOGIN]', error);
     return res.status(500).json({ message: 'Could not sign in to support.' });
