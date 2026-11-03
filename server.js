@@ -251,8 +251,9 @@ app.get(["/api/brand", "/api/meta"], (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
-  res.status(databaseReady ? 200 : 503).json({
-    status: databaseReady ? "ready" : "starting",
+  // The DB initializes lazily, so "idle" is healthy and must not fail platform health checks.
+  res.status(startupFailure ? 503 : 200).json({
+    status: databaseReady ? "ready" : startupFailure ? "starting" : "idle",
     databaseReady,
     brand: BHUMIVERA_BRAND_METADATA.brand,
     url: BHUMIVERA_BRAND_METADATA.url,
@@ -348,6 +349,8 @@ if (!isVercelRuntime) app.use(publicSwrCache);
 
 app.use(async (req, res, next) => {
   if (databaseReady) return next();
+  // Uptime probes must never wake the sleeping database.
+  if (req.method === "GET" && req.path === "/") return next();
   if (databaseInitializationPromise) {
     await databaseInitializationPromise;
   } else if (Date.now() >= databaseRetryAfter) {
@@ -462,19 +465,17 @@ const initializeDatabaseOnce = async () => {
     startupFailure = null;
     databaseRetryAfter = 0;
     console.log("[STARTUP] Database initialization complete; API is ready.");
-    if (!isVercelRuntime) publicSwrCache.warmUp();
   } catch (err) {
     databaseReady = false;
     databaseRetryAfter = Date.now() + 15000;
     startupFailure = err.migration
       ? { migration: err.migration, code: err.code || "MIGRATION_FAILED" }
       : { code: err.code || "STARTUP_FAILED" };
-    console.error("[STARTUP] Required database initialization failed; API will retry.", err);
-    setTimeout(initializeDatabase, 15000).unref();
+    console.error("[STARTUP] Required database initialization failed; will retry on the next request.", err);
   }
 };
 
-if (!isVercelRuntime) initializeDatabase();
+// Database initialization is lazy (first request that needs it) so an idle backend never wakes the DB.
 
 let shutdownStarted = false;
 const shutdown = signal => {
