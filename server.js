@@ -16,6 +16,8 @@ const {
 } = require("./middleware/redisResponseCache");
 const { createRequestObservability, getCurrentRequestContext } = require("./middleware/requestObservability");
 const { recordWake, countRequest } = require("./utils/wakeTracker");
+const deferredClientLogs = require("./utils/deferredClientLogs");
+const { createClientError } = require("./models/clientErrorModel");
 const { createSystemDiagnostics } = require("./utils/systemDiagnostics");
 const { clientContextMiddleware, ALLOWED_NATIVE_ORIGINS } = require("./middleware/clientContext");
 const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
@@ -140,6 +142,7 @@ let startupFailure = null;
 let databaseInitializationPromise = null;
 let databaseRetryAfter = 0;
 let systemDiagnostics = null;
+app.locals.isDatabaseReady = () => databaseReady;
 app.use(createRequestObservability());
 app.use(clientContextMiddleware());
 
@@ -357,6 +360,8 @@ app.use(async (req, res, next) => {
   if (req.method === "GET" && req.path === "/") return next();
   // Preflights, bot scans and non-API paths never need the database, so they must not wake it.
   if (req.method === "OPTIONS" || req.method === "HEAD" || !req.path.startsWith("/api")) return next();
+  // Error reports are queued in memory while the DB sleeps (see clientLogRoutes), so they must not wake it.
+  if (req.method === "POST" && req.path === "/api/client-log") return next();
   if (databaseInitializationPromise) {
     await databaseInitializationPromise;
   } else if (Date.now() >= databaseRetryAfter) {
@@ -472,6 +477,7 @@ const initializeDatabaseOnce = async () => {
     databaseReady = true;
     startupFailure = null;
     databaseRetryAfter = 0;
+    void deferredClientLogs.flush(createClientError);
     console.log("[STARTUP] Database initialization complete; API is ready.");
   } catch (err) {
     databaseReady = false;

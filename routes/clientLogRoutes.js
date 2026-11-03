@@ -3,6 +3,7 @@ const router = express.Router();
 const { clientErrorLimiter } = require('../middleware/rateLimiter');
 const { createClientError } = require('../models/clientErrorModel');
 const { createError, sendError } = require('../utils/errorReporting');
+const deferredClientLogs = require('../utils/deferredClientLogs');
 
 const text = (value, maxLength) => typeof value === 'string' ? value.trim().slice(0, maxLength) || null : null;
 const numberOrNull = value => value === null || value === undefined || value === ''
@@ -14,7 +15,7 @@ router.post('/', clientErrorLimiter, async (req, res) => {
   if (!message) return sendError(res, createError(400, 'CLIENT_LOG_MESSAGE_REQUIRED', 'An error message is required.'));
 
   try {
-    const id = await createClientError({
+    const entry = {
       message,
       source: text(req.body?.source, 500),
       lineNumber: numberOrNull(req.body?.lineNumber),
@@ -22,7 +23,12 @@ router.post('/', clientErrorLimiter, async (req, res) => {
       pageUrl: text(req.body?.pageUrl, 1000),
       stack: text(req.body?.stack, 8000),
       userAgent: text(req.get('user-agent'), 500),
-    });
+    };
+    if (req.app.locals.isDatabaseReady && !req.app.locals.isDatabaseReady()) {
+      deferredClientLogs.enqueue(entry);
+      return res.status(202).json({ accepted: true, deferred: true });
+    }
+    const id = await createClientError(entry);
     res.status(202).json({ accepted: true, id });
   } catch (error) {
     console.error('[CLIENT_LOG_WRITE]', error);

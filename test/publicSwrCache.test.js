@@ -63,7 +63,7 @@ test('stale entries are served instantly and refreshed in the background', async
   const ctx = await startApp();
   try {
     await fetch(`${ctx.base}/api/products/active`);
-    const offset = 31 * 60 * 1000;
+    const offset = 6 * 60 * 60 * 1000 + 60 * 1000;
     Date.now = () => realNow() + offset;
     const stale = await fetch(`${ctx.base}/api/products/active`);
     assert.equal(stale.headers.get('x-public-cache'), 'STALE');

@@ -2,14 +2,15 @@ const crypto = require('node:crypto');
 const http = require('node:http');
 
 const MINUTE = 60 * 1000;
-const FRESH_MS = Number(process.env.PUBLIC_CACHE_FRESH_MS) || 30 * MINUTE;
+const FRESH_MS = Number(process.env.PUBLIC_CACHE_FRESH_MS) || 6 * 60 * MINUTE;
 const MAX_STALE_MS = Number(process.env.PUBLIC_CACHE_MAX_STALE_MS) || 7 * 24 * 60 * MINUTE;
 const MAX_ENTRIES = 300;
 // Total byte budget: keys include query strings, so unique URLs could otherwise fill ~1 GB.
 const MAX_TOTAL_BYTES = Number(process.env.PUBLIC_CACHE_MAX_BYTES) || 24 * 1024 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const REFRESH_FAILURE_COOLDOWN_MS = MINUTE;
-const BROWSER_CACHE_CONTROL = 'public, max-age=60, stale-while-revalidate=600';
+// s-maxage lets a CDN absorb traffic bursts, but stays short because admin edits cannot purge the CDN.
+const BROWSER_CACHE_CONTROL = 'public, max-age=300, s-maxage=120, stale-while-revalidate=3600';
 const REFRESH_HEADER = 'x-swr-refresh';
 const REFRESH_SECRET = crypto.randomBytes(24).toString('hex');
 
@@ -20,7 +21,7 @@ const CACHE_RULES = [
   { re: /^\/api\/products\/\d+(\/qa)?$/ },
   { re: /^\/api\/categories(\/\d+)?$/ },
   { re: /^\/api\/subcategories(\/\d+|\/by-category\/\d+)?$/ },
-  { re: /^\/api\/flash-sales(\/active)?$/, freshMs: 5 * MINUTE },
+  { re: /^\/api\/flash-sales(\/active)?$/, freshMs: 10 * MINUTE },
   { re: /^\/api\/impact\/public$/ },
   { re: /^\/api\/reviews\/(product|combo)\/[^/]+$/ },
   { re: /^\/api\/reviews\/public-stories$/ },
@@ -35,6 +36,7 @@ const NON_INVALIDATING_PREFIXES = [
   '/api/client-log', '/api/logs', '/api/analytics', '/api/auth', '/api/cart', '/api/wishlist',
   '/api/notifications', '/api/newsletter', '/api/support', '/api/contact', '/api/ai',
   '/api/addresses', '/api/users', '/api/wallet', '/api/recommendations',
+  '/api/gamification', '/api/returns', '/api/warranty', '/api/serials', '/api/affiliate', '/api/coupons',
 ];
 
 const WARMUP_PATHS = [
