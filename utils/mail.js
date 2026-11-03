@@ -199,4 +199,84 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
   }
 };
 
-module.exports = { sendMail, sendOrderStatusEmail, getMailMetrics };
+const sendOrderModificationEmail = async ({
+  email,
+  name,
+  orderNumber,
+  status,
+  courier,
+  trackingNumber,
+  estimatedDeliveryDate,
+  currentLocationCheckpoint,
+  address,
+}) => {
+  const formattedId = String(orderNumber || '').padStart(9, '0');
+  const safeName = escapeHtml(name || 'Bhumivera customer');
+  const safeStatus = escapeHtml(status || 'updated');
+  const addressLines = [
+    address?.full_name || address?.name,
+    address?.line1 || address?.street_address,
+    address?.line2,
+    address?.landmark,
+    [address?.city, address?.state, address?.pincode || address?.postal_code].filter(Boolean).join(', '),
+  ].filter(Boolean);
+  const safeAddress = addressLines.map(escapeHtml).join('<br>') || 'No shipping address on file';
+  const safeDeliveryDate = escapeHtml(estimatedDeliveryDate || 'Not specified');
+  const safeCheckpoint = escapeHtml(currentLocationCheckpoint || 'Not specified');
+  const safeCourier = escapeHtml(courier || 'Not assigned');
+  const safeTrackingNumber = escapeHtml(trackingNumber || 'Not assigned');
+  const trackingUrl = trackingNumber && courier
+    ? `https://www.google.com/search?q=${encodeURIComponent(`${trackingNumber} ${courier} tracking`)}`
+    : null;
+  const trackingLink = trackingUrl
+    ? `<p style="margin:16px 0 0"><a href="${trackingUrl}" style="display:inline-block;padding:11px 18px;border-radius:6px;background:#0b6b45;color:#fff;text-decoration:none;font-weight:bold">Track your package</a></p>`
+    : '';
+  const details = `
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      <tr><td style="padding:8px 0;color:#64748b">Status</td><td style="padding:8px 0;text-align:right;font-weight:bold">${safeStatus}</td></tr>
+      <tr><td style="padding:8px 0;color:#64748b">Courier</td><td style="padding:8px 0;text-align:right">${safeCourier}</td></tr>
+      <tr><td style="padding:8px 0;color:#64748b">Tracking number</td><td style="padding:8px 0;text-align:right;font-family:monospace">${safeTrackingNumber}</td></tr>
+      <tr><td style="padding:8px 0;color:#64748b">Estimated delivery</td><td style="padding:8px 0;text-align:right">${safeDeliveryDate}</td></tr>
+      <tr><td style="padding:8px 0;color:#64748b">Latest update</td><td style="padding:8px 0;text-align:right">${safeCheckpoint}</td></tr>
+    </table>
+    <div style="margin-top:20px;padding:16px;background:#f8fafc;border-radius:8px">
+      <div style="margin-bottom:8px;color:#64748b;font-size:12px;text-transform:uppercase;font-weight:bold">Shipping address</div>
+      <div style="line-height:1.6">${safeAddress}</div>
+    </div>
+    ${trackingLink}`;
+  const html = `
+    <!doctype html>
+    <html lang="en">
+      <body style="margin:0;padding:32px 16px;background:#f4f7f6;font-family:Arial,Helvetica,sans-serif;color:#1f2937">
+        <main style="max-width:600px;margin:0 auto;padding:28px;background:#fff;border:1px solid #e2e8f0;border-radius:8px">
+          <h1 style="margin:0 0 8px;color:#064e3b;font-size:22px">Your order details were updated</h1>
+          <p style="margin:0 0 20px;color:#64748b">Order #${escapeHtml(formattedId)}</p>
+          <p>Dear ${safeName},</p>
+          <p style="line-height:1.6">Our team has updated the fulfillment or shipping details for your Bhumivera order. Here are the current details:</p>
+          ${details}
+          <p style="margin:24px 0 0;font-size:13px;color:#64748b">Need help? Contact <a href="https://www.bhumivera.com/contact" style="color:#0b6b45">Bhumivera Support</a>.</p>
+        </main>
+      </body>
+    </html>`;
+  const text = [
+    `Your order details were updated (Order #${formattedId}).`,
+    `Dear ${name || 'Bhumivera customer'},`,
+    `Status: ${status || 'updated'}`,
+    `Courier: ${courier || 'Not assigned'}`,
+    `Tracking number: ${trackingNumber || 'Not assigned'}`,
+    `Estimated delivery: ${estimatedDeliveryDate || 'Not specified'}`,
+    `Latest update: ${currentLocationCheckpoint || 'Not specified'}`,
+    `Shipping address: ${addressLines.join(', ') || 'No shipping address on file'}`,
+    'Need help? https://www.bhumivera.com/contact',
+  ].join('\n\n');
+
+  return sendMail({
+    to: email,
+    subject: `[Bhumivera] Shipping details updated for Order #${formattedId}`,
+    html,
+    text,
+    timeoutMs: 15000,
+  });
+};
+
+module.exports = { sendMail, sendOrderStatusEmail, sendOrderModificationEmail, getMailMetrics };

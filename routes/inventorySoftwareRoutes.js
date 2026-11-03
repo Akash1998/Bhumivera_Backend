@@ -6,7 +6,7 @@ const pool = require('../config/db');
 const { isSessionActive } = require('../utils/sessionStore');
 const { invalidatePublicCatalogCache } = require('../middleware/redisResponseCache');
 const { updateOrderStatus } = require('../models/orderModel');
-const { sendOrderStatusEmail } = require('../utils/mail');
+const { sendOrderStatusEmail, sendOrderModificationEmail } = require('../utils/mail');
 const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
 const { getRazorpayClient } = require('../services/razorpayService');
 const {
@@ -2359,7 +2359,13 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
 router.put('/online-orders/:orderId/edit', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
   try {
     const orderId = Number(req.params.orderId);
-    const [[existing]] = await pool.query('SELECT * FROM orders WHERE id = ?', [orderId]);
+    const [[existing]] = await pool.query(
+      `SELECT o.*, u.name AS account_customer_name, u.email AS customer_email
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.user_id
+       WHERE o.id = ?`,
+      [orderId]
+    );
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Order not found.' });
     }
@@ -2429,9 +2435,41 @@ router.put('/online-orders/:orderId/edit', authenticateInventoryStaff, requirePe
       summary: `Edited Order #${existing.order_number || orderId} details (Tracking: ${trackingNumber || existing.tracking_number || 'N/A'}, Location: ${currentLocationCheckpoint || 'Updated'}, City: ${updatedAddr.city || '-'}).`,
     });
 
+    const customerEmail = existing.customer_email || updatedAddr.email || updatedAddr.customer_email;
+    let emailStatus = 'sent';
+    if (customerEmail) {
+      try {
+        await sendOrderModificationEmail({
+          email: customerEmail,
+          name: updatedAddr.full_name || updatedAddr.name || existing.account_customer_name,
+          orderNumber: existing.order_number || orderId,
+          status: status || existing.status,
+          courier: courier !== undefined ? courier : existing.courier,
+          trackingNumber: trackingNumber !== undefined ? trackingNumber : existing.tracking_number,
+          estimatedDeliveryDate: estimatedDeliveryDate || existing.estimated_delivery_date,
+          currentLocationCheckpoint:
+            currentLocationCheckpoint !== undefined
+              ? currentLocationCheckpoint
+              : existing.current_location_checkpoint,
+          address: updatedAddr,
+        });
+      } catch (emailError) {
+        emailStatus = 'failed';
+        console.error(`[Mailer] Failed to send order modification email for Order #${existing.order_number || orderId}:`, emailError);
+      }
+    } else {
+      emailStatus = 'no_email';
+      console.warn(`[Mailer] No customer email available for Order #${existing.order_number || orderId}; modification email was not sent.`);
+    }
+
     res.json({
       success: true,
-      message: `Order #${existing.order_number || orderId} details, tracking & shipping label address updated!`,
+      emailStatus,
+      message: emailStatus === 'sent'
+        ? `Order #${existing.order_number || orderId} updated. Customer notification email sent.`
+        : emailStatus === 'failed'
+          ? `Order #${existing.order_number || orderId} updated, but the customer email could not be sent. Please notify them manually.`
+          : `Order #${existing.order_number || orderId} updated. No customer email is on file, so no notification was sent.`,
     });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
