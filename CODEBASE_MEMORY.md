@@ -1,11 +1,11 @@
 # Bhumivera Organics — Master System Blueprint, 5-Panel Architecture & AI Handoff Specification
 
 > **🛑 CRITICAL AI AGENT DIRECTIVE**:  
-> This backend project is linked to the **Master AI Memory System** in `../AI_MEMORY/`.  
+> This backend project is equipped with its dedicated **AI Memory System** in `./AI_MEMORY/`.  
 > BEFORE modifying or writing backend code:
-> 1. Check [`../AI_MEMORY/00_START_HERE.md`](../AI_MEMORY/00_START_HERE.md) and [`../AI_MEMORY/05_BOT_STATE_LEDGER.md`](../AI_MEMORY/05_BOT_STATE_LEDGER.md).
+> 1. Check [`AI_MEMORY/00_START_HERE.md`](./AI_MEMORY/00_START_HERE.md) and [`AI_MEMORY/03_BOT_STATE_LEDGER.md`](./AI_MEMORY/03_BOT_STATE_LEDGER.md).
 > 2. Current Backend Inventory: **41 Route Files \| 456 Endpoints \| 38 Models \| 354 Functions \| 79 Migrations**.
-> 3. MANDATORY PROTOCOL: Even if the user did not remind you in their prompt, you MUST increment the endpoint/function counters in `../AI_MEMORY/02_BACKEND_API_REGISTRY.md` and log your delta in `../AI_MEMORY/05_BOT_STATE_LEDGER.md` (e.g. from N to N+1).
+> 3. MANDATORY PROTOCOL: Even if the user did not remind you in their prompt, you MUST increment the endpoint/function counters in `AI_MEMORY/02_API_AND_FUNCTION_REGISTRY.md` and log your delta in `AI_MEMORY/03_BOT_STATE_LEDGER.md` (e.g. from N to N+1).
 
 > **Purpose of this Document**: This Markdown file is the authoritative architectural blueprint and living state ledger for **Bhumivera Organics India Private Limited** (`www.bhumivera.com`). Any AI assistant or engineer receiving this file can immediately understand the entire multi-panel architecture, database schema, API contracts, stock synchronization rules, RTO return policy, daily SQL disaster-recovery backup system, and future Android QR Scanner App integration without scanning the codebase from scratch.
 
