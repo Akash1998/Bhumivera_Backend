@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 const { isSessionActive } = require('../utils/sessionStore');
@@ -45,6 +46,35 @@ const {
 
 const router = express.Router();
 const secret = () => process.env.JWT_SECRET || 'fallback_secret';
+
+const posRateKey = req => req.get('x-scanner-api-key') || req.headers.authorization || ipKeyGenerator(req.ip);
+const posLimiter = (max, message) =>
+  rateLimit({
+    windowMs: 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: posRateKey,
+    message: { success: false, message },
+  });
+const scannerScanLimiter = posLimiter(120, 'Too many scans. Wait a moment and try again.');
+const posCheckoutLimiter = posLimiter(30, 'Too many checkout attempts. Wait a moment and retry with the same bill.');
+
+const STALE_QUEUE_HOURS = 24;
+const STALE_DRAFT_DAYS = 7;
+let lastPosPruneAt = 0;
+async function pruneStalePosData() {
+  if (Date.now() - lastPosPruneAt < 10 * 60 * 1000) return;
+  lastPosPruneAt = Date.now();
+  await pool
+    .query("DELETE FROM inventory_scanner_queue WHERE status = 'queued' AND created_at < (NOW() - INTERVAL ? HOUR)", [
+      STALE_QUEUE_HOURS,
+    ])
+    .catch(() => {});
+  await pool
+    .query('DELETE FROM inventory_pos_drafts WHERE updated_at < (NOW() - INTERVAL ? DAY)', [STALE_DRAFT_DAYS])
+    .catch(() => {});
+}
 
 function parseJsonSafe(val, fallback = null) {
   if (!val) return fallback;
@@ -239,6 +269,13 @@ async function authenticateScannerOrStaff(req, res, next) {
 
       const [[cfg]] = await pool.query('SELECT scanner_api_key FROM inventory_store_config WHERE id = 1');
       if (cfg && cfg.scanner_api_key && String(scannerKey).trim() === String(cfg.scanner_api_key).trim()) {
+        if (process.env.INVENTORY_DISABLE_LEGACY_SCANNER_KEY === 'true') {
+          return res.status(401).json({
+            success: false,
+            code: 'LEGACY_SCANNER_KEY_DISABLED',
+            message: 'The legacy scanner key is disabled. Re-pair this device from /inventorysoftware.',
+          });
+        }
         if (requestedSessionCode && requestedSessionCode !== 'DEFAULT-POS-TERMINAL') {
           return res.status(403).json({ success: false, message: 'The legacy scanner key can only access the default terminal. Re-pair this device.' });
         }
@@ -851,6 +888,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
   try {
     await ensureInventorySoftwareTables(pool);
     await syncWebsiteProductsToInventoryMeta(pool);
+    void pruneStalePosData();
     const scannerSessionCode = normalizePosSessionCode(req.query.sessionCode) || 'DEFAULT-POS-TERMINAL';
     // Trigger daily auto-backup non-blockingly so today's SQL backup is always guaranteed
     void ensureDailyAutoBackup(pool, req.invUser.username || 'auto-daily').catch(() => {});
@@ -1580,7 +1618,7 @@ router.delete('/pos/draft', authenticateInventoryStaff, requirePermission('can_u
 });
 
 // 5. OFFLINE SHOP POS BILLING ENGINE (ATOMIC WEBSITE STOCK DEDUCTION!)
-router.post('/pos/checkout', authenticateScannerOrStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
   const conn = await pool.getConnection();
   let transactionStarted = false;
   try {
@@ -3191,7 +3229,7 @@ router.post('/scanner/regenerate-key', authenticateInventoryStaff, requirePermis
  * or the in-browser QR/Barcode input in /inventorysoftware.
  * Supports single scan ({ qrCode, quantity: 1 }) or batch scan ({ items: [{ qrCode, quantity }] }).
  */
-router.post('/scanner/scan', authenticateScannerOrStaff, async (req, res) => {
+router.post('/scanner/scan', scannerScanLimiter, authenticateScannerOrStaff, async (req, res) => {
   try {
     const {
       qrCode,
@@ -3288,6 +3326,9 @@ router.post('/scanner/scan', authenticateScannerOrStaff, async (req, res) => {
       success: true,
       message: `Scanned ${resolvedList.map(i => `${i.name} (×${i.quantity})`).join(', ')} into POS Billing Queue!`,
       scanned: resolvedList,
+      lowStock: resolvedList
+        .filter(i => Number(i.availableStock) - Number(i.quantity) <= 5)
+        .map(i => ({ sku: i.sku, name: i.name, remaining: Math.max(0, Number(i.availableStock) - Number(i.quantity)) })),
       queue: updatedQueue,
     });
   } catch (err) {
