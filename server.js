@@ -124,6 +124,7 @@ const systemAdminRoutes = require("./routes/systemAdminRoutes");
 const supportRoutes = require("./routes/supportRoutes");
 
 const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
+const { createPublicSwrCache } = require("./middleware/publicSwrCache");
 
 const app = express();
 app.disable("x-powered-by");
@@ -337,6 +338,14 @@ app.get(["/sitemap.xml", "/api/sitemap.xml"], async (req, res) => {
   }
 });
 
+// Public GETs are served from memory (stale-while-revalidate) so the sleeping DB is only
+// woken by cache refreshes, writes, or user-specific requests.
+const publicSwrCache = createPublicSwrCache({
+  getPort: () => httpServer?.address()?.port,
+  isDatabaseReady: () => databaseReady,
+});
+if (!isVercelRuntime) app.use(publicSwrCache);
+
 app.use(async (req, res, next) => {
   if (databaseReady) return next();
   if (databaseInitializationPromise) {
@@ -453,6 +462,7 @@ const initializeDatabaseOnce = async () => {
     startupFailure = null;
     databaseRetryAfter = 0;
     console.log("[STARTUP] Database initialization complete; API is ready.");
+    if (!isVercelRuntime) publicSwrCache.warmUp();
   } catch (err) {
     databaseReady = false;
     databaseRetryAfter = Date.now() + 15000;

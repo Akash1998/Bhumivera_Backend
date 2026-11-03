@@ -190,7 +190,22 @@ const getPublicSnapshots = async productIds => {
   };
 };
 
+let bestsellersCache = null;
+
 const getTodaysBestsellers = async () => {
+  if (bestsellersCache && bestsellersCache.expiresAt > Date.now()) return bestsellersCache.rows;
+  try {
+    const rows = await queryTodaysBestsellers();
+    bestsellersCache = { rows, expiresAt: Date.now() + PUBLIC_CACHE_MS };
+    return rows;
+  } catch (error) {
+    if (!bestsellersCache) throw error;
+    bestsellersCache.expiresAt = Date.now() + 60 * 1000;
+    return bestsellersCache.rows;
+  }
+};
+
+const queryTodaysBestsellers = async () => {
   const range = getIstDayRange();
   const [rows] = await pool.query(
     `SELECT p.id, p.name, p.slug, SUM(oi.quantity) AS units_ordered
