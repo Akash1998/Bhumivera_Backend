@@ -355,7 +355,7 @@ app.use(async (req, res, next) => {
 
 app.set("trust proxy", 1);
 app.use("/api/webhooks/razorpay", createRazorpayWebhookRouter({ pool }));
-app.use("/api/inventory-software", express.json({ limit: "5mb" }), express.urlencoded({ extended: true, limit: "5mb" }), normalizeErrorResponses, inventorySoftwareRoutes);
+app.use("/api/inventory-software", express.json({ limit: "50mb" }), express.urlencoded({ extended: true, limit: "50mb" }), normalizeErrorResponses, inventorySoftwareRoutes);
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(normalizeErrorResponses);

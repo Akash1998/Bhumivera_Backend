@@ -6,6 +6,23 @@ const pool = require('../config/db');
 const { isSessionActive } = require('../utils/sessionStore');
 const { invalidatePublicCatalogCache } = require('../middleware/redisResponseCache');
 const { updateOrderStatus } = require('../models/orderModel');
+const { sendOrderStatusEmail } = require('../utils/mail');
+const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
+const { getRazorpayClient } = require('../services/razorpayService');
+const {
+  beginShippingLabel,
+  updateLabelRecord,
+  getShippingLabel,
+  getShippingLabels,
+  logShippingLabelEvent,
+} = require('../models/shippingLabelModel');
+const {
+  PROVIDERS,
+  saveAndTestCarrierConfiguration,
+  getPublicCarrierStatus,
+  createLabelWithProvider,
+  prepareLabelOrder,
+} = require('../services/carrierLabelService');
 const {
   VALID_INVENTORY_ROLES,
   INVENTORY_PERMISSION_DEFINITIONS,
@@ -13,12 +30,17 @@ const {
   resolveInventoryPermissions,
   generateTotpSecret,
   verifyTotpCode,
+  calculateEstimatedDeliveryDate,
   ensureInventorySoftwareTables,
   syncWebsiteProductsToInventoryMeta,
   recalculateAllBundleStocks,
   appendInventoryAuditLog,
   recordStockMovement,
   atomicAdjustProductStock,
+  resolveProductByQrOrCode,
+  generateFullDatabaseBackup,
+  ensureDailyAutoBackup,
+  restoreFullDatabaseBackup,
 } = require('../models/inventorySoftwareModel');
 
 const router = express.Router();
@@ -162,6 +184,46 @@ async function authenticateInventoryStaff(req, res, next) {
     return res.status(403).json({ message: 'Access denied: Valid Inventory Software or Admin credentials required.' });
   } catch (err) {
     return res.status(401).json({ code: 'AUTH_TOKEN_INVALID', message: 'Your session has expired. Please sign in again.' });
+  }
+}
+
+/**
+ * Authenticates either a logged-in Inventory Staff member OR an external Mobile QR Scanner App
+ * using x-scanner-api-key / apiKey.
+ */
+async function authenticateScannerOrStaff(req, res, next) {
+  try {
+    await ensureInventorySoftwareTables(pool);
+    const scannerKey =
+      req.headers['x-scanner-api-key'] ||
+      req.body?.scannerApiKey ||
+      req.body?.apiKey ||
+      req.query?.scannerApiKey;
+
+    if (scannerKey) {
+      const [[cfg]] = await pool.query('SELECT scanner_api_key FROM inventory_store_config WHERE id = 1');
+      if (cfg && cfg.scanner_api_key && String(scannerKey).trim() === String(cfg.scanner_api_key).trim()) {
+        req.invUser = {
+          id: 1,
+          username: req.body?.scannedBy || 'mobile-qr-scanner',
+          fullName: req.body?.deviceName || 'Bhumivera Android QR Scanner App',
+          role: 'cashier',
+          assignedHub: 'Bhumivera Flagship Hub — Asansol',
+          permissions: resolveInventoryPermissions('admin'),
+          fullAllAccess: true,
+        };
+        return next();
+      }
+      return res.status(401).json({
+        success: false,
+        code: 'INVALID_SCANNER_API_KEY',
+        message: 'Invalid Scanner API Key. Re-scan the pairing QR in /inventorysoftware.',
+      });
+    }
+
+    return authenticateInventoryStaff(req, res, next);
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 }
 
@@ -744,13 +806,13 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
   try {
     await ensureInventorySoftwareTables(pool);
     await syncWebsiteProductsToInventoryMeta(pool);
+    // Trigger daily auto-backup non-blockingly so today's SQL backup is always guaranteed
+    void ensureDailyAutoBackup(pool, req.invUser.username || 'auto-daily').catch(() => {});
 
     const [
       [itemRows],
       [binRows],
-      [custRows],
       [saleRows],
-      [khataRows],
       [supRows],
       [grnRows],
       [movementRows],
@@ -758,6 +820,9 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       [configRows],
       [batchRows],
       [onlineOrderRows],
+      [scannerQueueRows],
+      [dailyBackupRows],
+      [shippingZoneRows],
     ] = await Promise.all([
       pool.query(`
         SELECT m.*,
@@ -774,9 +839,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         ORDER BY COALESCE(p.id, m.id) ASC
       `),
       pool.query('SELECT * FROM inventory_storage_bins ORDER BY zone_name ASC, rack_no ASC'),
-      pool.query('SELECT * FROM inventory_customers ORDER BY name ASC'),
       pool.query('SELECT * FROM inventory_pos_invoices ORDER BY created_at DESC LIMIT 300'),
-      pool.query('SELECT * FROM inventory_khata_transactions ORDER BY created_at DESC LIMIT 300'),
       pool.query('SELECT * FROM inventory_suppliers ORDER BY name ASC'),
       pool.query('SELECT * FROM inventory_grn_entries ORDER BY created_at DESC LIMIT 150'),
       pool.query('SELECT * FROM inventory_stock_movements ORDER BY created_at DESC LIMIT 400'),
@@ -789,20 +852,40 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         ORDER BY pb.expiry_date ASC
       `).catch(() => [[]]),
       pool.query(`
-        SELECT o.id, o.order_number, o.status, o.payment_mode, o.payment_status,
-               o.subtotal, o.discount, o.total, o.courier, o.tracking_number,
-               o.created_at, o.address_snapshot,
+        SELECT o.id, o.order_number, o.user_id, o.status, o.delivery_type,
+               o.payment_mode, o.payment_status, o.payment_id,
+               o.subtotal, o.discount, o.tier_discount, o.referral_wallet_amount,
+               o.shipping_cost, o.total, o.courier, o.tracking_number,
+               o.notes, o.cancel_reason, o.created_at, o.updated_at, o.delivered_at,
+               o.estimated_delivery_date, o.current_location_checkpoint,
+               o.rto_reason, o.rto_restock_mode, o.rto_processed_at, o.label_printed_at,
+               o.address_snapshot,
                u.name AS customer_name, u.email AS customer_email, u.phone AS customer_phone
         FROM orders o
         LEFT JOIN users u ON o.user_id = u.id
-        WHERE o.status NOT IN ('cancelled', 'returned', 'archived')
+        WHERE o.status <> 'archived'
         ORDER BY o.created_at DESC
-        LIMIT 80
+        LIMIT 250
       `).catch(() => [[]]),
+      pool.query(`
+        SELECT * FROM inventory_scanner_queue
+        WHERE status = 'queued'
+        ORDER BY created_at ASC
+        LIMIT 100
+      `).catch(() => [[]]),
+      pool.query(`
+        SELECT id, backup_code, backup_date, trigger_type, tables_count, rows_count,
+               size_bytes, checksum_sha512, created_by, created_at
+        FROM system_daily_backups
+        ORDER BY created_at DESC
+        LIMIT 15
+      `).catch(() => [[]]),
+      pool.query('SELECT * FROM shipping_zones ORDER BY id ASC').catch(() => [[]]),
     ]);
 
     const onlineOrderIds = onlineOrderRows.map(o => o.id);
     const orderItemsByOrder = {};
+    const shippingLabelsByOrder = {};
     if (onlineOrderIds.length > 0) {
       const placeholders = onlineOrderIds.map(() => '?').join(',');
       const [oItems] = await pool
@@ -811,6 +894,14 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       for (const it of oItems) {
         if (!orderItemsByOrder[it.order_id]) orderItemsByOrder[it.order_id] = [];
         orderItemsByOrder[it.order_id].push(it);
+      }
+
+      const [sLabels] = await pool
+        .query(`SELECT * FROM shipping_labels WHERE order_id IN (${placeholders}) ORDER BY created_at DESC`, onlineOrderIds)
+        .catch(() => [[]]);
+      for (const lbl of sLabels) {
+        if (!shippingLabelsByOrder[lbl.order_id]) shippingLabelsByOrder[lbl.order_id] = [];
+        shippingLabelsByOrder[lbl.order_id].push(lbl);
       }
     }
 
@@ -825,6 +916,9 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         }
       }
     }
+
+    const itemByProductId = new Map();
+    const itemBySku = new Map();
 
     const items = itemRows.map(r => {
       const liveQty =
@@ -846,14 +940,19 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         }
       }
       const isBundle = specs?.product_type === 'bundle';
+      const qrCodePayload =
+        r.qr_code_payload ||
+        `https://www.bhumivera.com/verify?sku=${encodeURIComponent(r.sku)}&batch=${encodeURIComponent(r.batch_no || 'BV-BATCH-2026')}`;
 
-      return {
+      const formatted = {
         id: r.id,
+        warehouseId: Number(r.warehouse_id) || 1,
         productId: r.product_id,
         name: r.web_name || r.custom_name || 'Product',
         slug: r.web_slug || '',
         sku: r.sku,
         barcode: r.barcode,
+        qrCodePayload,
         cat: r.category_name || 'Botanical Formulations',
         uom: r.uom || 'Pcs',
         qty: liveQty,
@@ -884,24 +983,10 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         imageUrl: r.image_url || '/images/products/bhumivera-activated-charcoal-luxury-face-wash.webp',
         dateAdded: r.updated_at,
       };
+      if (formatted.productId) itemByProductId.set(Number(formatted.productId), formatted);
+      if (formatted.sku) itemBySku.set(String(formatted.sku).toUpperCase(), formatted);
+      return formatted;
     });
-
-    const customers = custRows.map(c => ({
-      id: c.id,
-      userId: c.user_id,
-      name: c.name,
-      phone: c.phone || '',
-      email: c.email || '',
-      gstin: c.gstin || '',
-      loc: c.location || '',
-      type: c.customer_type || 'Walk-in',
-      wallet: Number(c.wallet_balance) || 0,
-      creditLimit: Number(c.credit_limit) || 50000,
-      totalPurchases: Number(c.total_purchases) || 0,
-      visitCount: Number(c.visit_count) || 0,
-      notes: c.notes || '',
-      createdAt: c.created_at,
-    }));
 
     const sales = saleRows.map(s => ({
       id: s.id,
@@ -912,7 +997,6 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         name: s.customer_name,
         phone: s.customer_phone || '-',
         gstin: s.customer_gstin || '',
-        wallet: Number(s.new_khata_balance) || 0,
       },
       items: parseJsonSafe(s.items_json, []) || [],
       extra: parseJsonSafe(s.extra_charges_json, []) || [],
@@ -924,28 +1008,12 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       tax: Number(s.tax_amount) || 0,
       total: Number(s.subtotal) || 0,
       billTotal: Number(s.bill_total) || 0,
-      prevBal: Number(s.prev_khata_balance) || 0,
       paid: Number(s.paid_amount) || 0,
-      newBal: Number(s.new_khata_balance) || 0,
       paymentMode: s.payment_mode || 'Cash',
       upiReference: s.upi_reference || '',
       status: s.status || 'completed',
       cashier: s.cashier_username || 'admin',
       hubName: s.hub_name || 'Bhumivera Flagship Hub — Asansol',
-    }));
-
-    const proofs = khataRows.map(k => ({
-      id: k.id,
-      t: k.created_at,
-      customerId: k.customer_id,
-      cust: k.customer_name,
-      type: k.transaction_type,
-      amt: Number(k.amount) || 0,
-      balanceAfter: Number(k.balance_after) || 0,
-      paymentMode: k.payment_mode || 'Cash',
-      note: k.reference_note || '',
-      src: k.proof_image || null,
-      recordedBy: k.recorded_by || 'admin',
     }));
 
     const cfgRow = configRows[0] || {};
@@ -959,6 +1027,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       gstin: cfgRow.gstin || '19AAKCB2026A1Z5',
       cin: cfgRow.cin || 'U20237WB2026PTC295842',
       upiId: cfgRow.upi_id || 'bhumivera@okhdfcbank',
+      scannerApiKey: cfgRow.scanner_api_key || 'BV-SCAN-DEFAULT',
       taxRate: Number(cfgRow.default_tax_rate) || 18,
       autoSyncWebsite: Boolean(cfgRow.auto_sync_website ?? 1),
       posHoldReservation: Boolean(cfgRow.pos_hold_reservation ?? 1),
@@ -977,33 +1046,115 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
 
     const onlineOrders = onlineOrderRows.map(o => {
       const addr = parseJsonSafe(o.address_snapshot, {}) || {};
+      const recipientName = addr.full_name || addr.fullName || addr.name || o.customer_name || 'Online Patron';
+      const recipientPhone = addr.phone || addr.mobile || o.customer_phone || '';
+      const recipientAltPhone = addr.alternate_phone || addr.altPhone || '';
+      const line1 = addr.line1 || addr.street_address || addr.address_line1 || addr.address || '';
+      const line2 = addr.line2 || addr.address_line2 || addr.area || '';
+      const landmark = addr.landmark || '';
+      const city = addr.city || addr.district || '';
+      const state = addr.state || '';
+      const pincode = String(addr.pincode || addr.postal_code || addr.zip || '');
+      const fullFormattedAddress = [line1, line2, landmark ? `Landmark: ${landmark}` : '', city, state, pincode]
+        .filter(Boolean)
+        .join(', ');
+      const hasGps = Boolean(addr.latitude && addr.longitude);
+      const googleMapsUrl =
+        addr.google_maps_url ||
+        (hasGps
+          ? `https://www.google.com/maps?q=${addr.latitude},${addr.longitude}`
+          : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+              [line1, line2, city, state, pincode, 'India'].filter(Boolean).join(', ')
+            )}`);
+
+      const estDate = o.estimated_delivery_date
+        ? new Date(o.estimated_delivery_date).toISOString().split('T')[0]
+        : calculateEstimatedDeliveryDate(addr, o.delivery_type || 'standard', o.created_at);
+
+      const defaultCheckpoint =
+        o.status === 'delivered'
+          ? `Delivered to Customer in ${city || state || 'Destination'}`
+          : o.status === 'returned'
+          ? `RTO Returned to Asansol Hub (${o.rto_reason || 'Undelivered'})`
+          : o.status === 'shipped'
+          ? `In Transit via ${o.courier || 'Courier'} → Destination: ${city || 'Customer City'}`
+          : o.status === 'packed'
+          ? 'Packed & Weighed at Asansol Dispatch Bay — Ready for Courier Handover'
+          : o.status === 'confirmed'
+          ? 'Order Confirmed — Stock Allocated in Asansol Hub'
+          : 'Order Placed — Routed to Asansol Inventory Hub';
+
+      const mappedItems = (orderItemsByOrder[o.id] || []).map(it => {
+        const linkedInv =
+          (it.product_id && itemByProductId.get(Number(it.product_id))) ||
+          (it.sku && itemBySku.get(String(it.sku).toUpperCase())) ||
+          null;
+        return {
+          id: it.id,
+          productId: it.product_id,
+          metaId: linkedInv?.id || null,
+          name: it.name,
+          sku: it.sku || linkedInv?.sku || '',
+          gstHsnCode: it.gst_hsn_code || linkedInv?.gstHsnCode || '33049990',
+          gstRate: Number(it.gst_rate || linkedInv?.gstRate || 18),
+          quantity: Number(it.quantity) || 1,
+          price: Number(it.price) || 0,
+          inStockQty: linkedInv ? Number(linkedInv.qty) : 0,
+          binCode: linkedInv?.binCode || 'ASN-SHOP-R1-B01',
+          batchNo: linkedInv?.batchNo || '',
+        };
+      });
+
       return {
         id: o.id,
         orderNumber: o.order_number || String(o.id),
+        userId: o.user_id,
         status: o.status,
-        paymentMode: o.payment_mode,
-        paymentStatus: o.payment_status,
+        deliveryType: o.delivery_type || 'standard',
+        paymentMode: o.payment_mode || 'COD',
+        paymentStatus: o.payment_status || 'pending',
+        paymentId: o.payment_id || '',
         subtotal: Number(o.subtotal) || 0,
         discount: Number(o.discount) || 0,
+        tierDiscount: Number(o.tier_discount) || 0,
+        referralWalletAmount: Number(o.referral_wallet_amount) || 0,
+        shippingCost: Number(o.shipping_cost) || 0,
         total: Number(o.total) || 0,
         courier: o.courier || '',
         trackingNumber: o.tracking_number || '',
+        estimatedDeliveryDate: estDate,
+        currentLocationCheckpoint: o.current_location_checkpoint || defaultCheckpoint,
+        rtoReason: o.rto_reason || '',
+        rtoRestockMode: o.rto_restock_mode || 'NONE',
+        rtoProcessedAt: o.rto_processed_at || null,
+        labelPrintedAt: o.label_printed_at || null,
+        notes: o.notes || '',
+        cancelReason: o.cancel_reason || '',
         createdAt: o.created_at,
-        customerName: o.customer_name || addr.name || addr.fullName || 'Online Patron',
-        customerPhone: o.customer_phone || addr.phone || '',
-        city: addr.city || '',
-        state: addr.state || '',
-        pincode: addr.pincode || addr.zip || '',
-        items: (orderItemsByOrder[o.id] || []).map(it => ({
-          id: it.id,
-          productId: it.product_id,
-          name: it.name,
-          sku: it.sku || '',
-          quantity: Number(it.quantity) || 1,
-          price: Number(it.price) || 0,
-        })),
+        updatedAt: o.updated_at,
+        deliveredAt: o.delivered_at,
+        customerName: recipientName,
+        customerEmail: o.customer_email || addr.email || '',
+        customerPhone: recipientPhone,
+        customerAltPhone: recipientAltPhone,
+        line1,
+        line2,
+        landmark,
+        city,
+        state,
+        pincode,
+        fullFormattedAddress,
+        hasGps,
+        latitude: addr.latitude || null,
+        longitude: addr.longitude || null,
+        googleMapsUrl,
+        addressSnapshot: addr,
+        items: mappedItems,
+        shippingLabels: shippingLabelsByOrder[o.id] || [],
       };
     });
+
+    const carriers = await getPublicCarrierStatus().catch(() => []);
 
     res.json({
       success: true,
@@ -1011,9 +1162,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       viewer: req.invUser,
       items,
       bins: binRows,
-      customers,
       sales,
-      proofs,
       suppliers: supRows,
       grnEntries: grnRows,
       movements: movementRows,
@@ -1028,6 +1177,10 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       })),
       batches: batchRows,
       onlineOrders,
+      scannerQueue: scannerQueueRows,
+      dailyBackups: dailyBackupRows,
+      shippingZones: shippingZoneRows,
+      carriers,
       cfg,
     });
   } catch (err) {
@@ -1088,6 +1241,7 @@ router.post('/items/save', authenticateInventoryStaff, requirePermission('can_ma
       warehouseVaultStock !== undefined
         ? Math.max(0, Math.trunc(Number(warehouseVaultStock)))
         : Math.max(0, safeQty - safeShopDisplay);
+    const qrPayload = `https://www.bhumivera.com/verify?sku=${encodeURIComponent(cleanSku)}&batch=${encodeURIComponent(batchNo || 'BV-BATCH-2026')}`;
 
     let linkedProductId = productId ? Number(productId) : null;
     let qtyBefore = 0;
@@ -1102,7 +1256,7 @@ router.post('/items/save', authenticateInventoryStaff, requirePermission('can_ma
         qtyBefore = Number(existingMeta.physical_stock) || 0;
         await conn.query(
           `UPDATE inventory_product_meta
-           SET custom_name = ?, sku = ?, barcode = ?, category_name = ?, uom = ?,
+           SET custom_name = ?, sku = ?, barcode = ?, qr_code_payload = ?, category_name = ?, uom = ?,
                cost_price = ?, mrp = ?, selling_price = ?, gst_hsn_code = ?, gst_rate = ?,
                physical_stock = ?, shop_display_stock = ?, warehouse_vault_stock = ?,
                safety_buffer_stock = ?, min_stock_alert = ?, reorder_qty = ?,
@@ -1113,6 +1267,7 @@ router.post('/items/save', authenticateInventoryStaff, requirePermission('can_ma
             cleanName,
             cleanSku,
             cleanBarcode,
+            qrPayload,
             cat,
             uom,
             safeCostPrice,
@@ -1152,16 +1307,17 @@ router.post('/items/save', authenticateInventoryStaff, requirePermission('can_ma
 
       await conn.query(
         `INSERT INTO inventory_product_meta
-          (product_id, custom_name, sku, barcode, category_name, uom, cost_price, mrp, selling_price,
+          (warehouse_id, product_id, custom_name, sku, barcode, qr_code_payload, category_name, uom, cost_price, mrp, selling_price,
            gst_hsn_code, gst_rate, physical_stock, shop_display_stock, warehouse_vault_stock,
            safety_buffer_stock, min_stock_alert, reorder_qty, bin_code, rack_location,
            batch_no, mfg_date, expiry_date, sync_to_website)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           linkedProductId,
           cleanName,
           cleanSku,
           cleanBarcode,
+          qrPayload,
           cat,
           uom,
           safeCostPrice,
@@ -1323,6 +1479,7 @@ router.post('/pos/checkout', authenticateInventoryStaff, requirePermission('can_
       paymentMode = 'Cash',
       upiReference = '',
       notes = '',
+      scannerQueueIds = [],
     } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
@@ -1357,35 +1514,10 @@ router.post('/pos/checkout', authenticateInventoryStaff, requirePermission('can_
     const taxAmount = Math.round((taxableAmount * safeTaxRate) / 100);
     const billTotal = taxableAmount + taxAmount;
 
-    let custId = customer?.id || null;
-    let custName = customer?.name || 'Walk-in Retail Shopper';
-    let custPhone = customer?.phone || '-';
-    let custGstin = customer?.gstin || '';
-    let prevBal = 0;
-
-    if (custId) {
-      const [[liveCust]] = await conn.query('SELECT * FROM inventory_customers WHERE id = ? FOR UPDATE', [custId]);
-      if (liveCust) {
-        prevBal = Number(liveCust.wallet_balance) || 0;
-        custName = liveCust.name;
-        custPhone = liveCust.phone || custPhone;
-        custGstin = liveCust.gstin || custGstin;
-      }
-    }
-
-    const paid = Math.max(0, Number(paidAmount) || 0);
-    const newBal = prevBal - billTotal + paid;
-
-    if (custId) {
-      await conn.query(
-        `UPDATE inventory_customers
-         SET wallet_balance = ?,
-             total_purchases = total_purchases + ?,
-             visit_count = visit_count + 1
-         WHERE id = ?`,
-        [newBal, billTotal, custId]
-      );
-    }
+    const custName = String(customer?.name || 'Walk-in Retail Shopper').trim();
+    const custPhone = String(customer?.phone || '-').trim();
+    const custGstin = String(customer?.gstin || '').trim();
+    const paid = paidAmount === '' || paidAmount === undefined ? billTotal : Math.max(0, Number(paidAmount) || 0);
 
     const [[countRow]] = await conn.query('SELECT COUNT(*) AS cnt FROM inventory_pos_invoices');
     const seq = Number(countRow?.cnt || 0) + 1;
@@ -1398,10 +1530,9 @@ router.post('/pos/checkout', authenticateInventoryStaff, requirePermission('can_
          taxable_amount, tax_rate, tax_amount, bill_total, prev_khata_balance,
          paid_amount, new_khata_balance, payment_mode, upi_reference, status,
          cashier_username, hub_name, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, 'completed', ?, ?, ?)`,
       [
         invoiceNo,
-        custId,
         custName,
         custPhone,
         custGstin,
@@ -1414,9 +1545,7 @@ router.post('/pos/checkout', authenticateInventoryStaff, requirePermission('can_
         safeTaxRate,
         taxAmount,
         billTotal,
-        prevBal,
         paid,
-        newBal,
         paymentMode || 'Cash',
         upiReference || null,
         req.invUser.username,
@@ -1430,21 +1559,16 @@ router.post('/pos/checkout', authenticateInventoryStaff, requirePermission('can_
       [invoiceNo, req.invUser.username, items.length]
     );
 
-    if (paid > 0) {
-      await conn.query(
-        `INSERT INTO inventory_khata_transactions
-          (customer_id, customer_name, transaction_type, amount, balance_after, payment_mode, reference_note, recorded_by)
-         VALUES (?, ?, 'SALE_BILL', ?, ?, ?, ?, ?)`,
-        [
-          custId,
-          custName,
-          paid,
-          newBal,
-          paymentMode || 'Cash',
-          `Paid against POS Invoice #${invoiceNo} (${paymentMode || 'Cash'})`,
-          req.invUser.username,
-        ]
-      );
+    // Mark any mobile-scanned items as consumed
+    if (Array.isArray(scannerQueueIds) && scannerQueueIds.length > 0) {
+      const ph = scannerQueueIds.map(() => '?').join(',');
+      await conn
+        .query(`UPDATE inventory_scanner_queue SET status = 'consumed' WHERE id IN (${ph})`, scannerQueueIds)
+        .catch(() => {});
+    } else {
+      await conn
+        .query("UPDATE inventory_scanner_queue SET status = 'consumed' WHERE status = 'queued'")
+        .catch(() => {});
     }
 
     for (const item of items) {
@@ -1486,7 +1610,7 @@ router.post('/pos/checkout', authenticateInventoryStaff, requirePermission('can_
       id: invRes.insertId,
       invoiceNo,
       date: new Date().toISOString(),
-      cust: { id: custId, name: custName, phone: custPhone, gstin: custGstin, wallet: newBal },
+      cust: { name: custName, phone: custPhone, gstin: custGstin },
       items,
       extra: extraCharges || [],
       subTotal,
@@ -1497,9 +1621,7 @@ router.post('/pos/checkout', authenticateInventoryStaff, requirePermission('can_
       tax: taxAmount,
       total: subTotal,
       billTotal,
-      prevBal,
       paid,
-      newBal,
       paymentMode: paymentMode || 'Cash',
       cashier: req.invUser.username,
       stockDeductions,
@@ -1549,14 +1671,6 @@ router.post('/pos/:invoiceId/cancel', authenticateInventoryStaff, requirePermiss
           operatorUsername: req.invUser.username,
         },
         conn
-      );
-    }
-
-    if (sale.customer_id) {
-      const delta = Number(sale.bill_total) - Number(sale.paid_amount);
-      await conn.query(
-        'UPDATE inventory_customers SET wallet_balance = wallet_balance + ?, total_purchases = GREATEST(0, total_purchases - ?) WHERE id = ?',
-        [delta, Number(sale.bill_total) || 0, sale.customer_id]
       );
     }
 
@@ -1766,157 +1880,177 @@ router.post('/keeper/audit-reconcile', authenticateInventoryStaff, requirePermis
   }
 });
 
-// 7. CUSTOMER LEDGER, KHATA & RETURNS
-router.post('/customers/save', authenticateInventoryStaff, requirePermission('can_manage_khata'), async (req, res) => {
-  try {
-    const {
-      id,
-      name,
-      phone = '',
-      email = '',
-      gstin = '',
-      loc = '',
-      type = 'Walk-in',
-      wallet = 0,
-      creditLimit = 50000,
-      notes = '',
-    } = req.body || {};
-
-    if (!name || !String(name).trim()) {
-      return res.status(400).json({ success: false, message: 'Customer name is required.' });
-    }
-
-    if (id) {
-      await pool.query(
-        `UPDATE inventory_customers
-         SET name = ?, phone = ?, email = ?, gstin = ?, location = ?, customer_type = ?, credit_limit = ?, notes = ?
-         WHERE id = ?`,
-        [
-          String(name).trim(),
-          String(phone).trim(),
-          String(email).trim(),
-          String(gstin).trim(),
-          String(loc).trim(),
-          type,
-          Number(creditLimit) || 50000,
-          notes,
-          id,
-        ]
-      );
-    } else {
-      await pool.query(
-        `INSERT INTO inventory_customers
-          (name, phone, email, gstin, location, customer_type, wallet_balance, credit_limit, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          String(name).trim(),
-          String(phone).trim(),
-          String(email).trim(),
-          String(gstin).trim(),
-          String(loc).trim(),
-          type,
-          Number(wallet) || 0,
-          Number(creditLimit) || 50000,
-          notes,
-        ]
-      );
-    }
-
-    res.json({ success: true, message: `Customer profile "${name}" saved.` });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-router.delete('/customers/:id', authenticateInventoryStaff, requirePermission('can_manage_khata'), async (req, res) => {
-  try {
-    await pool.query('DELETE FROM inventory_customers WHERE id = ?', [req.params.id]);
-    res.json({ success: true, message: 'Customer profile deleted.' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-router.post('/khata/transact', authenticateInventoryStaff, requirePermission('can_manage_khata'), async (req, res) => {
+// 7. UNDELIVERED ORDER (RTO — RETURN TO ORIGIN) & QUARANTINE ENGINE
+// Note: Bhumivera has ZERO policy of post-delivery returns. Only Undelivered / Courier RTO returns are accepted.
+router.post('/returns/rto-process', authenticateInventoryStaff, requirePermission('can_process_returns'), async (req, res) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     const {
-      customerId,
-      type = 'RECEIVE_PAYMENT',
-      amount = 0,
-      paymentMode = 'UPI',
-      note = '',
-      proofBase64 = null,
+      orderId,
+      mode = 'RESTOCK', // 'RESTOCK' (Unopened/Intact -> Add to Main Stock) | 'QUARANTINE' (Damaged in Transit -> Quarantine Bay)
+      rtoReason = 'Undelivered by Courier — Return to Origin (RTO)',
     } = req.body || {};
 
-    const safeAmt = Math.max(0, Number(amount) || 0);
-    if (!customerId || safeAmt <= 0) {
+    if (!orderId) {
       await conn.rollback();
-      return res.status(400).json({ success: false, message: 'Valid customer and positive amount are required.' });
+      return res.status(400).json({ success: false, message: 'Select a valid Order ID to process RTO return.' });
     }
 
-    const [[cust]] = await conn.query('SELECT * FROM inventory_customers WHERE id = ? FOR UPDATE', [customerId]);
-    if (!cust) {
+    const [[order]] = await conn.query('SELECT * FROM orders WHERE id = ? FOR UPDATE', [Number(orderId)]);
+    if (!order) {
       await conn.rollback();
-      return res.status(404).json({ success: false, message: 'Customer not found.' });
+      return res.status(404).json({ success: false, message: 'Order not found.' });
     }
 
-    const currentBal = Number(cust.wallet_balance) || 0;
-    const nextBal = type === 'ADD_DEBT' ? currentBal - safeAmt : currentBal + safeAmt;
-    const txType = type === 'ADD_DEBT' ? 'CREDIT_GIVEN' : 'PAYMENT_RECEIVED';
+    if (order.status === 'delivered') {
+      await conn.rollback();
+      return res.status(400).json({
+        success: false,
+        code: 'POST_DELIVERY_RETURN_PROHIBITED',
+        message: `Order #${order.order_number || order.id} is marked DELIVERED. Under Bhumivera company policy, delivered orders are 100% non-returnable. Only undelivered (RTO) shipments can be returned and restocked.`,
+      });
+    }
 
-    await conn.query('UPDATE inventory_customers SET wallet_balance = ? WHERE id = ?', [nextBal, cust.id]);
+    if (order.rto_restock_mode && order.rto_restock_mode !== 'NONE') {
+      await conn.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `Order #${order.order_number || order.id} has already been processed as RTO (${order.rto_restock_mode}).`,
+      });
+    }
 
-    await conn.query(
-      `INSERT INTO inventory_khata_transactions
-        (customer_id, customer_name, transaction_type, amount, balance_after, payment_mode, reference_note, proof_image, recorded_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        cust.id,
-        cust.name,
-        txType,
-        safeAmt,
-        nextBal,
-        paymentMode,
-        note || (type === 'ADD_DEBT' ? 'Credit debt recorded' : 'Payment received for Khata'),
-        proofBase64 || null,
-        req.invUser.username,
-      ]
+    const [orderItems] = await conn.query('SELECT * FROM order_items WHERE order_id = ?', [order.id]);
+    const alreadyReturnedStatus = ['returned', 'cancelled'].includes(order.status);
+
+    // Release conn lock briefly if calling updateOrderStatus, or perform atomic update directly
+    await conn.rollback();
+    conn.release();
+
+    // Transition order status to 'returned' (updateOrderStatus automatically restores products.quantity if not already returned/cancelled)
+    if (!alreadyReturnedStatus) {
+      await updateOrderStatus(order.id, 'returned', rtoReason, {
+        trackingNumber: order.tracking_number,
+        courier: order.courier,
+      });
+    }
+
+    const restockedItems = [];
+    for (const item of orderItems) {
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      if (mode === 'QUARANTINE') {
+        // Because updateOrderStatus added qty back to products.quantity, we subtract it from sellable stock and move to damaged_quarantine_stock
+        const adj = await atomicAdjustProductStock({
+          productId: item.product_id,
+          sku: item.sku,
+          operation: alreadyReturnedStatus ? 'add' : 'subtract',
+          quantity: alreadyReturnedStatus ? 0 : qty,
+          quarantineDelta: qty,
+          movementType: 'ONLINE_ORDER_RTO_QUARANTINE',
+          referenceId: `ORD-#${order.order_number || order.id}`,
+          reason: `RTO Damaged in Courier Transit (${rtoReason}) — Moved to Quarantine`,
+          operatorUsername: req.invUser.username,
+        });
+        restockedItems.push(adj);
+      } else {
+        // Mode === 'RESTOCK': if order was already returned earlier without restock, add back; otherwise sync meta & log movement
+        if (alreadyReturnedStatus) {
+          const adj = await atomicAdjustProductStock({
+            productId: item.product_id,
+            sku: item.sku,
+            operation: 'add',
+            quantity: qty,
+            movementType: 'ONLINE_ORDER_RTO_RESTOCK',
+            referenceId: `ORD-#${order.order_number || order.id}`,
+            reason: `RTO Undelivered Order Restocked (${rtoReason})`,
+            operatorUsername: req.invUser.username,
+          });
+          restockedItems.push(adj);
+        } else {
+          await syncWebsiteProductsToInventoryMeta(pool);
+          await recalculateAllBundleStocks(pool);
+          const [[prod]] = await pool.query('SELECT id, name, sku, quantity FROM products WHERE id = ?', [
+            item.product_id,
+          ]);
+          if (prod) {
+            const qtyAfter = Number(prod.quantity) || 0;
+            await recordStockMovement(pool, {
+              productId: prod.id,
+              sku: prod.sku,
+              productName: prod.name,
+              movementType: 'ONLINE_ORDER_RTO_RESTOCK',
+              qtyBefore: Math.max(0, qtyAfter - qty),
+              qtyDelta: qty,
+              qtyAfter,
+              binCode: 'ASN-DISPATCH-R1-B01',
+              referenceId: `ORD-#${order.order_number || order.id}`,
+              reason: `RTO Undelivered Order Restocked to Main Inventory (${rtoReason})`,
+              operatorUsername: req.invUser.username,
+            });
+            restockedItems.push({
+              productId: prod.id,
+              sku: prod.sku,
+              name: prod.name,
+              qtyAdded: qty,
+              websiteAvailableQty: qtyAfter,
+            });
+          }
+        }
+      }
+    }
+
+    const rtoModeValue = mode === 'QUARANTINE' ? 'QUARANTINED' : 'RESTOCKED';
+    const checkpointMsg =
+      mode === 'QUARANTINE'
+        ? `RTO Parcel Received Damaged — Moved to Quarantine Bay (${rtoReason})`
+        : `RTO Parcel Received Intact — Restocked to Main Website Inventory (${rtoReason})`;
+
+    await pool.query(
+      `UPDATE orders
+       SET status = 'returned',
+           rto_reason = ?,
+           rto_restock_mode = ?,
+           rto_processed_at = NOW(),
+           current_location_checkpoint = ?
+       WHERE id = ?`,
+      [rtoReason, rtoModeValue, checkpointMsg, order.id]
     );
 
-    await appendInventoryAuditLog(conn, {
+    await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
-      actionCode: txType,
-      summary: `${type === 'ADD_DEBT' ? 'Added credit debt' : 'Received payment'} of ₹${safeAmt} for ${cust.name} (New Khata Balance: ₹${nextBal}).`,
+      actionCode: mode === 'QUARANTINE' ? 'RTO_RETURN_QUARANTINE' : 'RTO_RETURN_RESTOCK',
+      summary: `Processed Undelivered RTO Order #${order.order_number || order.id} in ${rtoModeValue} mode (${rtoReason}).`,
+      details: { orderId: order.id, orderNumber: order.order_number, rtoReason, restockedItems },
     });
 
-    await conn.commit();
-    res.json({
+    await invalidatePublicCatalogCache();
+
+    return res.json({
       success: true,
-      message: `Khata updated for ${cust.name}. New balance: ₹${nextBal}.`,
-      newBalance: nextBal,
+      message:
+        mode === 'QUARANTINE'
+          ? `Order #${order.order_number || order.id} marked as RTO Returned & Damaged units moved to Quarantine Bay.`
+          : `Order #${order.order_number || order.id} marked as RTO Returned & all items restocked to live main inventory!`,
+      restockedItems,
     });
   } catch (err) {
-    await conn.rollback();
-    res.status(500).json({ success: false, message: err.message });
-  } finally {
-    conn.release();
+    try {
+      await conn.rollback();
+      conn.release();
+    } catch {}
+    return res.status(err.status || 500).json({ success: false, message: err.message });
   }
 });
 
 router.post('/returns/process', authenticateInventoryStaff, requirePermission('can_process_returns'), async (req, res) => {
   try {
     const {
-      customerId,
       metaId,
       productId,
       quantity = 1,
       mode = 'GOOD',
-      creditCustomerKhata = false,
-      refundAmount = 0,
-      reason = 'Customer Return',
+      reason = 'Undelivered / Courier RTO Return',
     } = req.body || {};
 
     const safeQty = Math.max(1, Math.trunc(Number(quantity) || 1));
@@ -1928,8 +2062,8 @@ router.post('/returns/process', authenticateInventoryStaff, requirePermission('c
         productId,
         operation: 'add',
         quantity: safeQty,
-        movementType: 'CUSTOMER_RETURN_RESTOCK',
-        reason: `Customer Return (Good Condition — Restocked): ${reason}`,
+        movementType: 'RTO_RETURN_RESTOCK',
+        reason: `Undelivered Return (Intact — Restocked): ${reason}`,
         operatorUsername: req.invUser.username,
       });
     } else {
@@ -1939,24 +2073,17 @@ router.post('/returns/process', authenticateInventoryStaff, requirePermission('c
         operation: 'add',
         quantity: 0,
         quarantineDelta: safeQty,
-        movementType: 'CUSTOMER_RETURN_SCRAP',
-        reason: `Customer Return (Damaged/Quarantined): ${reason}`,
+        movementType: 'RTO_RETURN_QUARANTINE',
+        reason: `Undelivered Return (Damaged/Quarantined): ${reason}`,
         operatorUsername: req.invUser.username,
       });
-    }
-
-    if (creditCustomerKhata && customerId && Number(refundAmount) > 0) {
-      await pool.query('UPDATE inventory_customers SET wallet_balance = wallet_balance + ? WHERE id = ?', [
-        Number(refundAmount),
-        customerId,
-      ]);
     }
 
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
       actionCode: mode === 'GOOD' ? 'RETURN_RESTOCK' : 'RETURN_QUARANTINE',
-      summary: `Processed ${safeQty}x "${stockResult.name}" return in ${mode === 'GOOD' ? 'Restock (Added to Website)' : 'Quarantine/Scrap'} mode.`,
+      summary: `Processed ${safeQty}x "${stockResult.name}" undelivered return in ${mode === 'GOOD' ? 'Restock (Added to Website)' : 'Quarantine/Scrap'} mode.`,
     });
 
     res.json({
@@ -2129,37 +2256,640 @@ router.post('/grn/inward', authenticateInventoryStaff, requirePermission('can_ma
   }
 });
 
-// 9. LIVE ONLINE WEBSITE ORDERS DISPATCH QUEUE
+// 9. FULL ONLINE ORDER LIFECYCLE, DISPATCH, TRACKING, LABEL PRINTING & CARRIER BOOKING
 router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
   try {
     const orderId = Number(req.params.orderId);
-    const { status, courier, trackingNumber } = req.body || {};
-    if (!['confirmed', 'packed', 'shipped', 'delivered'].includes(status)) {
+    const {
+      status,
+      courier,
+      trackingNumber,
+      estimatedDeliveryDate,
+      currentLocationCheckpoint,
+      notes,
+      cancelReason,
+    } = req.body || {};
+
+    const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'returned', 'cancelled'];
+    if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: 'Warehouse dispatch status must be confirmed, packed, shipped, or delivered.',
+        message: 'Order status must be pending, confirmed, packed, shipped, delivered, returned, or cancelled.',
       });
     }
 
-    await updateOrderStatus(orderId, status, null, { courier, trackingNumber });
+    if (status === 'cancelled') {
+      const cancelResult = await executeAtomicOrderCancellationAndRefund(pool, {
+        orderId,
+        reason: cancelReason || 'Cancelled from Inventory & Order Lifecycle Hub',
+        refundDestinationPreference: 'auto',
+        executedByEmail: req.invUser.email || 'admin@bhumivera.com',
+        razorpay: getRazorpayClient(),
+      });
+      await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
+      await invalidatePublicCatalogCache().catch(() => {});
+      return res.json({
+        success: true,
+        message: `Order #${orderId} cancelled and stock restored to main inventory.`,
+        refundSummary: cancelResult.refundSummary,
+      });
+    }
+
+    await updateOrderStatus(orderId, status, cancelReason || null, { courier, trackingNumber });
+
+    const defaultCheckpoint =
+      currentLocationCheckpoint ||
+      (status === 'delivered'
+        ? 'Delivered to Customer'
+        : status === 'shipped'
+        ? `Dispatched via ${courier || 'Courier'}${trackingNumber ? ` (AWB: ${trackingNumber})` : ''} — In Transit`
+        : status === 'packed'
+        ? 'Packed & Weighed at Asansol Hub — Ready for Courier Pickup'
+        : status === 'confirmed'
+        ? 'Confirmed & Stock Reserved at Asansol Hub'
+        : null);
+
+    await pool.query(
+      `UPDATE orders
+       SET estimated_delivery_date = COALESCE(?, estimated_delivery_date),
+           current_location_checkpoint = COALESCE(?, current_location_checkpoint),
+           notes = COALESCE(?, notes)
+       WHERE id = ?`,
+      [estimatedDeliveryDate || null, defaultCheckpoint, notes !== undefined ? notes : null, orderId]
+    );
+
+    await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
+    await invalidatePublicCatalogCache().catch(() => {});
+
+    // Notify customer by email
+    try {
+      const [orderData] = await pool.query(
+        'SELECT o.id, o.order_number, o.status, u.name, u.email FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE o.id = ?',
+        [orderId]
+      );
+      if (orderData.length > 0 && orderData[0].email) {
+        sendOrderStatusEmail(
+          orderData[0].email,
+          orderData[0].name || 'Patron',
+          orderId,
+          status,
+          trackingNumber,
+          courier,
+          orderData[0].order_number
+        ).catch(() => {});
+      }
+    } catch {}
 
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
-      actionCode: 'ONLINE_ORDER_DISPATCH',
-      summary: `Updated online website Order #${orderId} status to ${status.toUpperCase()}${trackingNumber ? ` (AWB: ${trackingNumber})` : ''}.`,
+      actionCode: 'ONLINE_ORDER_LIFECYCLE',
+      summary: `Updated Order #${orderId} status to ${status.toUpperCase()}${trackingNumber ? ` (AWB: ${trackingNumber}, Courier: ${courier || 'Standard'})` : ''}.`,
     });
 
     res.json({
       success: true,
-      message: `Online Order #${orderId} marked as ${status.toUpperCase()}.`,
+      message: `Online Order #${orderId} updated to ${status.toUpperCase()}.`,
     });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
   }
 });
 
-// 10. STORE CONFIGURATION
+router.put('/online-orders/:orderId/edit', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  try {
+    const orderId = Number(req.params.orderId);
+    const [[existing]] = await pool.query('SELECT * FROM orders WHERE id = ?', [orderId]);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Order not found.' });
+    }
+
+    const {
+      status,
+      courier,
+      trackingNumber,
+      estimatedDeliveryDate,
+      currentLocationCheckpoint,
+      notes,
+      recipientName,
+      recipientPhone,
+      recipientAltPhone,
+      line1,
+      line2,
+      landmark,
+      city,
+      state,
+      pincode,
+    } = req.body || {};
+
+    if (status && status !== existing.status) {
+      await updateOrderStatus(orderId, status, null, { courier, trackingNumber });
+    }
+
+    const currentAddr = parseJsonSafe(existing.address_snapshot, {}) || {};
+    const updatedAddr = {
+      ...currentAddr,
+      ...(recipientName !== undefined ? { full_name: recipientName, name: recipientName } : {}),
+      ...(recipientPhone !== undefined ? { phone: recipientPhone } : {}),
+      ...(recipientAltPhone !== undefined ? { alternate_phone: recipientAltPhone } : {}),
+      ...(line1 !== undefined ? { line1, street_address: line1 } : {}),
+      ...(line2 !== undefined ? { line2 } : {}),
+      ...(landmark !== undefined ? { landmark } : {}),
+      ...(city !== undefined ? { city } : {}),
+      ...(state !== undefined ? { state } : {}),
+      ...(pincode !== undefined ? { pincode, postal_code: pincode } : {}),
+    };
+
+    await pool.query(
+      `UPDATE orders
+       SET courier = COALESCE(?, courier),
+           tracking_number = COALESCE(?, tracking_number),
+           estimated_delivery_date = COALESCE(?, estimated_delivery_date),
+           current_location_checkpoint = COALESCE(?, current_location_checkpoint),
+           notes = COALESCE(?, notes),
+           address_snapshot = ?
+       WHERE id = ?`,
+      [
+        courier !== undefined ? courier : null,
+        trackingNumber !== undefined ? trackingNumber : null,
+        estimatedDeliveryDate || null,
+        currentLocationCheckpoint !== undefined ? currentLocationCheckpoint : null,
+        notes !== undefined ? notes : null,
+        JSON.stringify(updatedAddr),
+        orderId,
+      ]
+    );
+
+    await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
+
+    await appendInventoryAuditLog(pool, {
+      actorUsername: req.invUser.username,
+      actorRole: req.invUser.role,
+      actionCode: 'ONLINE_ORDER_EDIT',
+      summary: `Edited Order #${existing.order_number || orderId} details (Tracking: ${trackingNumber || existing.tracking_number || 'N/A'}, Location: ${currentLocationCheckpoint || 'Updated'}, City: ${updatedAddr.city || '-'}).`,
+    });
+
+    res.json({
+      success: true,
+      message: `Order #${existing.order_number || orderId} details, tracking & shipping label address updated!`,
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/online-orders/mark-labels-printed', authenticateInventoryStaff, async (req, res) => {
+  try {
+    const orderIds = Array.isArray(req.body?.orderIds)
+      ? req.body.orderIds.map(id => Number(id)).filter(Boolean)
+      : req.body?.orderId
+      ? [Number(req.body.orderId)]
+      : [];
+
+    if (orderIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Provide at least one orderId.' });
+    }
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    await pool.query(`UPDATE orders SET label_printed_at = NOW() WHERE id IN (${placeholders})`, orderIds);
+
+    res.json({
+      success: true,
+      message: `Marked shipping labels printed for ${orderIds.length} order(s).`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/online-orders/:orderId/book-carrier-label', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  try {
+    const orderId = Number(req.params.orderId);
+    const provider = String(req.body?.provider || 'shiprocket').toLowerCase();
+    if (!PROVIDERS.includes(provider)) {
+      return res.status(400).json({ success: false, message: 'Select Shiprocket or Delhivery.' });
+    }
+    const dimensions = {
+      weight: Math.max(0.1, Number(req.body?.weight) || 0.5),
+      length: Math.max(1, Number(req.body?.length) || 20),
+      width: Math.max(1, Number(req.body?.width) || 15),
+      height: Math.max(1, Number(req.body?.height) || 10),
+    };
+
+    const { order } = await prepareLabelOrder({ orderId, returnId: null, direction: 'forward' });
+    const labelId = await beginShippingLabel({
+      orderId,
+      returnId: null,
+      direction: 'forward',
+      provider,
+      packageDetails: dimensions,
+      adminId: req.invUser.id || 1,
+    });
+
+    await logShippingLabelEvent(labelId, 'booking_started', { provider, direction: 'forward' }, req.invUser.id || 1);
+    const result = await createLabelWithProvider({
+      order,
+      provider,
+      packageDetails: dimensions,
+      labelId,
+      direction: 'forward',
+      courierId: req.body?.courier_id ? String(req.body.courier_id) : null,
+    });
+
+    await updateLabelRecord(labelId, {
+      status: 'booked',
+      externalOrderId: result.externalOrderId,
+      externalShipmentId: result.externalShipmentId,
+      trackingNumber: result.trackingNumber,
+      labelUrl: result.labelUrl,
+      serviceName: result.serviceName,
+      errorMessage: null,
+    });
+
+    if (result.trackingNumber) {
+      await pool.query(
+        `UPDATE orders
+         SET tracking_number = ?, courier = ?,
+             current_location_checkpoint = CONCAT('Carrier AWB Booked (', ?, ') — Ready for Handover')
+         WHERE id = ?`,
+        [result.trackingNumber, result.serviceName || provider, result.trackingNumber, orderId]
+      );
+    }
+
+    const bookedLabel = await getShippingLabel(labelId);
+    res.status(201).json({
+      success: true,
+      message: `Booked ${provider.toUpperCase()} label${result.trackingNumber ? ` (AWB: ${result.trackingNumber})` : ''}!`,
+      label: bookedLabel,
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+// 10. SHIPPING ZONES & CARRIER CONFIGURATION (PORTED FROM ADMIN PANEL)
+router.get('/shipping/zones', authenticateInventoryStaff, async (_req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM shipping_zones ORDER BY id ASC').catch(() => [[]]);
+    res.json({ success: true, zones: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/shipping/zones/save', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  try {
+    const { id, name, regions, base_charge, is_active = 1 } = req.body || {};
+    if (!name || !regions) {
+      return res.status(400).json({ success: false, message: 'Zone name and regions are required.' });
+    }
+    if (id) {
+      await pool.query(
+        'UPDATE shipping_zones SET name = ?, regions = ?, base_charge = ?, is_active = ? WHERE id = ?',
+        [name, regions, Number(base_charge) || 0, is_active ? 1 : 0, id]
+      );
+    } else {
+      await pool.query(
+        'INSERT INTO shipping_zones (name, regions, base_charge, is_active) VALUES (?, ?, ?, ?)',
+        [name, regions, Number(base_charge) || 0, is_active ? 1 : 0]
+      );
+    }
+    res.json({ success: true, message: `Shipping zone "${name}" saved.` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.delete('/shipping/zones/:id', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  try {
+    await pool.query('DELETE FROM shipping_zones WHERE id = ?', [req.params.id]);
+    res.json({ success: true, message: 'Shipping zone deleted.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.put('/shipping/carriers/:provider', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  try {
+    const { provider } = req.params;
+    if (!PROVIDERS.includes(provider)) {
+      return res.status(404).json({ success: false, message: 'Unsupported carrier.' });
+    }
+    const result = await saveAndTestCarrierConfiguration(provider, req.body || {}, req.invUser.id || 1);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+// 11. MOBILE QR CODE SCANNER API & LIVE POS CART BRIDGE (FOR ANDROID SCANNER APP)
+router.get('/scanner/config', authenticateInventoryStaff, async (_req, res) => {
+  try {
+    const [[cfg]] = await pool.query('SELECT scanner_api_key, store_name FROM inventory_store_config WHERE id = 1');
+    const [queueRows] = await pool.query(
+      "SELECT * FROM inventory_scanner_queue WHERE status = 'queued' ORDER BY created_at ASC"
+    );
+    res.json({
+      success: true,
+      scannerApiKey: cfg?.scanner_api_key || 'BV-SCAN-DEFAULT',
+      scanEndpoint: '/api/inventory-software/scanner/scan',
+      queueEndpoint: '/api/inventory-software/scanner/queue',
+      queue: queueRows,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/scanner/regenerate-key', authenticateInventoryStaff, requirePermission('can_manage_store_settings'), async (req, res) => {
+  try {
+    const newKey = 'BV-SCAN-' + crypto.randomBytes(12).toString('hex').toUpperCase();
+    await pool.query('UPDATE inventory_store_config SET scanner_api_key = ? WHERE id = 1', [newKey]);
+    await appendInventoryAuditLog(pool, {
+      actorUsername: req.invUser.username,
+      actorRole: req.invUser.role,
+      actionCode: 'SCANNER_KEY_ROTATED',
+      summary: `Regenerated Mobile QR Scanner API Key for Android Scanner App pairing.`,
+    });
+    res.json({
+      success: true,
+      scannerApiKey: newKey,
+      message: 'Generated new Mobile QR Scanner API Key.',
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * POST /api/inventory-software/scanner/scan
+ * Called by either the future Android Mobile QR Scanner App (via x-scanner-api-key)
+ * or the in-browser QR/Barcode input in /inventorysoftware.
+ * Supports single scan ({ qrCode, quantity: 1 }) or batch scan ({ items: [{ qrCode, quantity }] }).
+ */
+router.post('/scanner/scan', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const {
+      qrCode,
+      sku,
+      barcode,
+      serialNumber,
+      quantity = 1,
+      items: batchScanItems,
+      sessionCode = 'DEFAULT-POS-TERMINAL',
+      deviceName = 'Android QR Scanner App',
+    } = req.body || {};
+
+    const rawEntries =
+      Array.isArray(batchScanItems) && batchScanItems.length > 0
+        ? batchScanItems
+        : [{ qrCode: qrCode || serialNumber || barcode || sku, quantity }];
+
+    const resolvedList = [];
+    for (const entry of rawEntries) {
+      const code = entry.qrCode || entry.serialNumber || entry.barcode || entry.sku;
+      const qty = Math.max(1, Math.trunc(Number(entry.quantity || 1)));
+      const item = await resolveProductByQrOrCode(pool, code);
+      if (!item) {
+        return res.status(404).json({
+          success: false,
+          code: 'QR_PRODUCT_NOT_FOUND',
+          message: `No Bhumivera product found matching QR/Code "${code}".`,
+        });
+      }
+      if (item.availableStock < qty) {
+        return res.status(409).json({
+          success: false,
+          code: 'INSUFFICIENT_STOCK_ON_SCAN',
+          message: `Insufficient stock for "${item.name}". Available: ${item.availableStock}, Scanned: ${qty}.`,
+        });
+      }
+
+      // Check if this SKU is already queued in the active POS session
+      const [existingRows] = await pool.query(
+        `SELECT * FROM inventory_scanner_queue
+         WHERE session_code = ? AND sku = ? AND status = 'queued'
+         LIMIT 1`,
+        [sessionCode, item.sku]
+      );
+
+      if (existingRows.length > 0) {
+        const existing = existingRows[0];
+        const nextQty = Math.min(item.availableStock, Number(existing.quantity) + qty);
+        await pool.query(
+          'UPDATE inventory_scanner_queue SET quantity = ?, available_stock = ?, qr_payload = ? WHERE id = ?',
+          [nextQty, item.availableStock, String(code).slice(0, 255), existing.id]
+        );
+        resolvedList.push({ ...item, queueId: existing.id, quantity: nextQty });
+      } else {
+        const [ins] = await pool.query(
+          `INSERT INTO inventory_scanner_queue
+            (session_code, qr_payload, meta_id, product_id, sku, barcode, serial_number, product_name,
+             unit_price, mrp, gst_hsn_code, gst_rate, uom, quantity, available_stock, scanned_by, device_name, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
+          [
+            sessionCode,
+            String(code).slice(0, 255),
+            item.metaId,
+            item.productId,
+            item.sku,
+            item.barcode,
+            item.serialNumber,
+            item.name,
+            item.price,
+            item.mrp,
+            item.gstHsnCode,
+            item.gstRate,
+            item.uom,
+            qty,
+            item.availableStock,
+            req.invUser?.username || 'mobile-scanner',
+            deviceName,
+          ]
+        );
+        resolvedList.push({ ...item, queueId: ins.insertId, quantity: qty });
+      }
+    }
+
+    const [updatedQueue] = await pool.query(
+      "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
+      [sessionCode]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: `Scanned ${resolvedList.map(i => `${i.name} (×${i.quantity})`).join(', ')} into POS Billing Queue!`,
+      scanned: resolvedList,
+      queue: updatedQueue,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get('/scanner/queue', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const sessionCode = String(req.query.sessionCode || 'DEFAULT-POS-TERMINAL');
+    const [rows] = await pool.query(
+      "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
+      [sessionCode]
+    );
+    res.json({ success: true, queue: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/scanner/queue/consume', authenticateInventoryStaff, async (req, res) => {
+  try {
+    const { ids = [], clearAll = false, sessionCode = 'DEFAULT-POS-TERMINAL' } = req.body || {};
+    if (clearAll) {
+      await pool.query(
+        "UPDATE inventory_scanner_queue SET status = 'consumed' WHERE session_code = ? AND status = 'queued'",
+        [sessionCode]
+      );
+    } else if (Array.isArray(ids) && ids.length > 0) {
+      const ph = ids.map(() => '?').join(',');
+      await pool.query(`UPDATE inventory_scanner_queue SET status = 'consumed' WHERE id IN (${ph})`, ids);
+    }
+    res.json({ success: true, message: 'Scanner queue synced with POS cart.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 12. DAILY SQL & FULL DATABASE DISASTER RECOVERY BACKUP ENGINE (VERCEL + RAILWAY SYNC)
+router.get('/backup/list', authenticateInventoryStaff, async (_req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT id, backup_code, backup_date, trigger_type, tables_count, rows_count,
+             size_bytes, checksum_sha512, created_by, created_at
+      FROM system_daily_backups
+      ORDER BY created_at DESC
+      LIMIT 15
+    `);
+    res.json({ success: true, backups: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/backup/create', authenticateInventoryStaff, requirePermission('can_export_data'), async (req, res) => {
+  try {
+    const triggerType = req.body?.triggerType === 'ON_UPDATE' ? 'ON_UPDATE' : 'MANUAL';
+    const backup = await generateFullDatabaseBackup(pool, {
+      triggerType,
+      actorUsername: req.invUser.username,
+      saveToVault: true,
+    });
+
+    await appendInventoryAuditLog(pool, {
+      actorUsername: req.invUser.username,
+      actorRole: req.invUser.role,
+      actionCode: 'DAILY_SQL_BACKUP_CREATED',
+      summary: `Generated full Railway MySQL + Vercel snapshot backup ${backup.backupCode} (${backup.tablesCount} tables, ${backup.rowsCount} rows).`,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Full SQL & JSON Backup "${backup.backupCode}" created (${backup.tablesCount} tables, ${backup.rowsCount} records)!`,
+      backup: {
+        id: backup.id,
+        backup_code: backup.backupCode,
+        backup_date: backup.backupDate,
+        trigger_type: backup.triggerType,
+        tables_count: backup.tablesCount,
+        rows_count: backup.rowsCount,
+        size_bytes: backup.sizeBytes,
+        checksum_sha512: backup.checksumSha512,
+        created_at: backup.exportedAt,
+      },
+      sqlDump: req.body?.includePayload ? backup.sqlDump : undefined,
+      snapshotObj: req.body?.includePayload ? backup.snapshotObj : undefined,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get('/backup/download/:id', authenticateInventoryStaff, requirePermission('can_export_data'), async (req, res) => {
+  try {
+    const format = String(req.query.format || 'sql').toLowerCase();
+    const targetId = req.params.id;
+
+    let backupCode = '';
+    let sqlDump = '';
+    let snapshotJson = '';
+
+    if (targetId === 'latest') {
+      const fresh = await generateFullDatabaseBackup(pool, {
+        triggerType: 'MANUAL',
+        actorUsername: req.invUser.username,
+        saveToVault: true,
+      });
+      backupCode = fresh.backupCode;
+      sqlDump = fresh.sqlDump;
+      snapshotJson = JSON.stringify(fresh.snapshotObj, null, 2);
+    } else {
+      const [[row]] = await pool.query('SELECT * FROM system_daily_backups WHERE id = ?', [Number(targetId)]);
+      if (!row) {
+        return res.status(404).json({ success: false, message: 'Backup record not found.' });
+      }
+      backupCode = row.backup_code;
+      sqlDump = row.sql_dump;
+      snapshotJson = row.snapshot_json;
+    }
+
+    if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${backupCode}.avbak.json"`);
+      return res.send(snapshotJson);
+    }
+
+    res.setHeader('Content-Type', 'application/sql; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${backupCode}.sql"`);
+    return res.send(sqlDump);
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/backup/restore', authenticateInventoryStaff, requirePermission('can_export_data'), async (req, res) => {
+  try {
+    const { backupId, snapshotObj, sqlDump } = req.body || {};
+    const result = await restoreFullDatabaseBackup(pool, {
+      backupId,
+      snapshotObj,
+      sqlDump,
+      actorUsername: req.invUser.username,
+    });
+
+    res.json({
+      success: true,
+      message: `Disaster Recovery Restore Complete! Restored ${result.restoredRows} records across ${result.restoredTables} tables from ${result.sourceLabel}. Railway SQL & Vercel Storefront are 100% synced!`,
+      result,
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+// Cron / Webhook endpoint for automated daily backups on Vercel & Railway
+router.all('/backup/cron-daily', async (req, res) => {
+  try {
+    await ensureInventorySoftwareTables(pool);
+    const backup = await ensureDailyAutoBackup(pool, 'vercel-railway-cron');
+    res.json({
+      success: true,
+      message: 'Daily SQL & Snapshot backup verified and synced.',
+      backup,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 13. STORE CONFIGURATION
 router.put('/config', authenticateInventoryStaff, requirePermission('can_manage_store_settings'), async (req, res) => {
   try {
     const {

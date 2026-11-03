@@ -89,7 +89,7 @@ const VALID_INVENTORY_ROLES = Object.freeze(['admin', 'manager', 'keeper', 'cash
 const INVENTORY_PERMISSION_DEFINITIONS = Object.freeze({
   full_all_access: {
     label: 'Grant All Access (100% Super Inventory & POS Authority)',
-    desc: 'Full unrestricted access to all 10X Inventory, Storage Keeper, Offline POS, Website Stock Sync, Khata, GRN & Settings modules.',
+    desc: 'Full unrestricted access to all 10X Inventory, Order Lifecycle, Shipping Labels, RTO Returns, Storage Keeper, Offline POS, QR Scanner API & Daily SQL Backups.',
   },
   can_access_dashboard: {
     label: 'Executive Omnichannel Dashboard',
@@ -108,8 +108,8 @@ const INVENTORY_PERMISSION_DEFINITIONS = Object.freeze({
     desc: 'Manage warehouse zones, rack/shelf/bin coordinates, cold-storage logs, FEFO batches, and bin transfers.',
   },
   can_use_pos_billing: {
-    label: 'Offline Shop POS Billing Terminal',
-    desc: 'Create walk-in & registered customer POS bills that atomically deduct stock from the live website.',
+    label: 'Offline Shop POS Billing & Mobile QR Scanner',
+    desc: 'Create walk-in & registered customer POS bills (manual or via Mobile QR Scanner API) that atomically deduct stock from the live website.',
   },
   can_give_discounts: {
     label: 'Apply Custom POS Discounts',
@@ -117,19 +117,19 @@ const INVENTORY_PERMISSION_DEFINITIONS = Object.freeze({
   },
   can_void_invoices: {
     label: 'Void / Cancel POS Invoices & Restock',
-    desc: 'Cancel completed POS invoices, automatically restore stock to bhumivera.com, and reverse Khata balances.',
+    desc: 'Cancel completed POS invoices and automatically restore stock to bhumivera.com.',
   },
   can_manage_khata: {
-    label: 'Customer Khata & Credit Ledger',
-    desc: 'Manage customer profiles, credit limits, debt collection, payment proof uploads, and WhatsApp reminders.',
+    label: 'Shipping Label Address & Dispatch Verification',
+    desc: 'View and print auto-fetched customer shipping labels and update recipient dispatch details.',
   },
   can_process_returns: {
-    label: 'Customer Returns & Replacements',
-    desc: 'Process returned items into Restock (Good Condition) or Scrap/Quarantine (Damaged Condition).',
+    label: 'Undelivered Order (RTO) Returns & Quarantine',
+    desc: 'Process undelivered courier returns (RTO) into Restock (Unopened/Intact) or Quarantine/Scrap (Damaged in Transit).',
   },
   can_manage_online_dispatch: {
-    label: 'Live Online Website Orders & Dispatch Queue',
-    desc: 'Inspect live bhumivera.com online orders, verify stock allocation, and mark orders Packed or Shipped.',
+    label: 'Full Online Order Lifecycle & Shipment Tracking',
+    desc: 'Manage all bhumivera.com orders from placement to confirmation, packing, carrier label booking, AWB tracking, live location, and delivery.',
   },
   can_manage_suppliers_grn: {
     label: 'Suppliers, Purchase Orders & GRN Inwarding',
@@ -140,20 +140,20 @@ const INVENTORY_PERMISSION_DEFINITIONS = Object.freeze({
     desc: 'Conduct physical bin stock counts, compute variance, and reconcile live website inventory.',
   },
   can_view_reports: {
-    label: 'Time-Machine Financial Reports & Proof Gallery',
-    desc: 'Access daily/monthly revenue reports, margin analytics, and payment proof gallery.',
+    label: 'Time-Machine Financial Reports & Invoice Archive',
+    desc: 'Access daily/monthly revenue reports, margin analytics, and invoice history.',
   },
   can_export_data: {
-    label: 'Excel Exports & Encrypted Backups (.avbak)',
-    desc: 'Export inventory/sales/logs to Excel (.xlsx) and create or restore daily snapshots.',
+    label: 'Daily SQL Database Backups & Disaster Recovery Restore',
+    desc: 'Export inventory/orders to Excel (.xlsx) and create or restore daily SQL (.sql) & snapshot (.avbak.json) backups synced with Vercel & Railway.',
   },
   can_view_audit_logs: {
     label: 'Cryptographic Audit Trail & Stock Ledger',
     desc: 'View immutable 512-bit signed audit logs and before/after stock movement history.',
   },
   can_manage_store_settings: {
-    label: 'Store & Billing Configuration',
-    desc: 'Configure store name, address, GSTIN, UPI ID for dynamic QR codes, and invoice branding.',
+    label: 'Store, Carrier & Scanner API Configuration',
+    desc: 'Configure store details, GSTIN, UPI ID, carrier shipping zones, and Mobile QR Scanner API pairing keys.',
   },
 });
 
@@ -187,7 +187,7 @@ const ROLE_DEFAULT_INVENTORY_PERMISSIONS = Object.freeze({
     can_use_pos_billing: false,
     can_give_discounts: false,
     can_void_invoices: false,
-    can_manage_khata: false,
+    can_manage_khata: true,
     can_process_returns: true,
     can_manage_online_dispatch: true,
     can_manage_suppliers_grn: true,
@@ -208,7 +208,7 @@ const ROLE_DEFAULT_INVENTORY_PERMISSIONS = Object.freeze({
     can_void_invoices: false,
     can_manage_khata: true,
     can_process_returns: true,
-    can_manage_online_dispatch: false,
+    can_manage_online_dispatch: true,
     can_manage_suppliers_grn: false,
     can_run_stock_audit: false,
     can_view_reports: true,
@@ -255,7 +255,76 @@ function resolveInventoryPermissions(role = 'manager', customPermissions = null)
   return merged;
 }
 
+/**
+ * Automatically calculates Estimated Delivery Date based on customer destination (State/City/Pincode)
+ * and delivery type (standard vs express).
+ */
+function calculateEstimatedDeliveryDate(addressSnapshot = {}, deliveryType = 'standard', createdAt = null) {
+  let addr = addressSnapshot;
+  if (typeof addr === 'string') {
+    try {
+      addr = JSON.parse(addr);
+    } catch {
+      addr = {};
+    }
+  }
+  addr = addr || {};
+  const state = String(addr.state || '').toLowerCase();
+  const city = String(addr.city || '').toLowerCase();
+  const pin = String(addr.pincode || addr.postal_code || addr.zip || '').trim();
+
+  let transitDays = 5; // Default pan-India
+  if (
+    state.includes('west bengal') ||
+    state.includes('jharkhand') ||
+    state.includes('bihar') ||
+    state.includes('odisha') ||
+    pin.startsWith('71') ||
+    pin.startsWith('70') ||
+    pin.startsWith('81') ||
+    pin.startsWith('82')
+  ) {
+    transitDays = 2; // East India & Asansol/Kolkata regional hub
+  } else if (
+    state.includes('delhi') ||
+    city.includes('delhi') ||
+    city.includes('new delhi') ||
+    city.includes('noida') ||
+    city.includes('gurugram') ||
+    city.includes('gurgaon') ||
+    city.includes('mumbai') ||
+    city.includes('bengaluru') ||
+    city.includes('bangalore') ||
+    city.includes('hyderabad') ||
+    city.includes('chennai') ||
+    city.includes('pune') ||
+    city.includes('ahmedabad')
+  ) {
+    transitDays = 4; // Metro Air/Surface Express corridors (including Delhi NCR)
+  }
+
+  if (String(deliveryType || '').toLowerCase() === 'express') {
+    transitDays = Math.max(1, transitDays - 1);
+  }
+
+  const baseDate = createdAt ? new Date(createdAt) : new Date();
+  const safeBase = Number.isNaN(baseDate.getTime()) ? new Date() : baseDate;
+  const est = new Date(safeBase.getTime() + transitDays * 24 * 60 * 60 * 1000);
+  return est.toISOString().split('T')[0];
+}
+
 let tablesInitializedPromise = null;
+
+async function ensureColumnExists(db, tableName, columnName, definition) {
+  try {
+    const [cols] = await db.query(`SHOW COLUMNS FROM \`${tableName}\` LIKE ?`, [columnName]);
+    if (!cols || cols.length === 0) {
+      await db.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`);
+    }
+  } catch {
+    // Ignore if table doesn't exist yet
+  }
+}
 
 async function initInventorySoftwareTables(db = pool) {
   await db.query(`
@@ -287,6 +356,7 @@ async function initInventorySoftwareTables(db = pool) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS inventory_storage_bins (
       id INT AUTO_INCREMENT PRIMARY KEY,
+      warehouse_id INT NOT NULL DEFAULT 1,
       bin_code VARCHAR(64) NOT NULL UNIQUE,
       hub_name VARCHAR(150) NOT NULL DEFAULT 'Bhumivera Flagship Hub — Asansol',
       zone_name VARCHAR(120) NOT NULL,
@@ -306,10 +376,12 @@ async function initInventorySoftwareTables(db = pool) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS inventory_product_meta (
       id INT AUTO_INCREMENT PRIMARY KEY,
+      warehouse_id INT NOT NULL DEFAULT 1,
       product_id INT UNIQUE DEFAULT NULL,
       custom_name VARCHAR(255) DEFAULT NULL,
       sku VARCHAR(100) NOT NULL UNIQUE,
       barcode VARCHAR(100) NOT NULL,
+      qr_code_payload VARCHAR(255) DEFAULT NULL,
       category_name VARCHAR(120) DEFAULT 'Botanical Formulations',
       uom VARCHAR(30) DEFAULT 'Pcs',
       cost_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -336,6 +408,18 @@ async function initInventorySoftwareTables(db = pool) {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  await ensureColumnExists(db, 'inventory_product_meta', 'warehouse_id', 'INT NOT NULL DEFAULT 1');
+  await ensureColumnExists(db, 'inventory_product_meta', 'qr_code_payload', 'VARCHAR(255) DEFAULT NULL');
+  await ensureColumnExists(db, 'inventory_storage_bins', 'warehouse_id', 'INT NOT NULL DEFAULT 1');
+
+  // Enhance orders table with full order lifecycle & RTO columns
+  await ensureColumnExists(db, 'orders', 'estimated_delivery_date', 'DATE DEFAULT NULL');
+  await ensureColumnExists(db, 'orders', 'current_location_checkpoint', 'VARCHAR(255) DEFAULT NULL');
+  await ensureColumnExists(db, 'orders', 'rto_reason', 'VARCHAR(255) DEFAULT NULL');
+  await ensureColumnExists(db, 'orders', 'rto_restock_mode', "ENUM('NONE','RESTOCKED','QUARANTINED') NOT NULL DEFAULT 'NONE'");
+  await ensureColumnExists(db, 'orders', 'rto_processed_at', 'DATETIME DEFAULT NULL');
+  await ensureColumnExists(db, 'orders', 'label_printed_at', 'DATETIME DEFAULT NULL');
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS inventory_customers (
@@ -494,6 +578,7 @@ async function initInventorySoftwareTables(db = pool) {
       gstin VARCHAR(30) NOT NULL DEFAULT '19AAKCB2026A1Z5',
       cin VARCHAR(40) NOT NULL DEFAULT 'U20237WB2026PTC295842',
       upi_id VARCHAR(120) NOT NULL DEFAULT 'bhumivera@okhdfcbank',
+      scanner_api_key VARCHAR(120) DEFAULT NULL,
       default_tax_rate DECIMAL(5,2) NOT NULL DEFAULT 18.00,
       auto_sync_website TINYINT(1) NOT NULL DEFAULT 1,
       pos_hold_reservation TINYINT(1) NOT NULL DEFAULT 1,
@@ -504,10 +589,60 @@ async function initInventorySoftwareTables(db = pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  await ensureColumnExists(db, 'inventory_store_config', 'scanner_api_key', 'VARCHAR(120) DEFAULT NULL');
+
+  // Mobile QR Scanner App Queue Table (for future Android Scanner App -> POS Billing integration)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_scanner_queue (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      session_code VARCHAR(64) NOT NULL DEFAULT 'DEFAULT-POS-TERMINAL',
+      qr_payload VARCHAR(255) NOT NULL,
+      meta_id INT DEFAULT NULL,
+      product_id INT DEFAULT NULL,
+      sku VARCHAR(100) NOT NULL,
+      barcode VARCHAR(100) DEFAULT NULL,
+      serial_number VARCHAR(120) DEFAULT NULL,
+      product_name VARCHAR(255) NOT NULL,
+      unit_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+      mrp DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+      gst_hsn_code VARCHAR(20) DEFAULT '33049990',
+      gst_rate DECIMAL(5,2) NOT NULL DEFAULT 18.00,
+      uom VARCHAR(30) DEFAULT 'Pcs',
+      quantity INT NOT NULL DEFAULT 1,
+      available_stock INT NOT NULL DEFAULT 0,
+      scanned_by VARCHAR(80) DEFAULT 'mobile-scanner',
+      device_name VARCHAR(120) DEFAULT 'Android QR Scanner App',
+      status ENUM('queued','consumed','cancelled') NOT NULL DEFAULT 'queued',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_scanner_queue_status (session_code, status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  // Daily SQL & Full Database Disaster Recovery Vault (Synced with Vercel & Railway)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS system_daily_backups (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      backup_code VARCHAR(64) NOT NULL UNIQUE,
+      backup_date DATE NOT NULL,
+      trigger_type ENUM('AUTO_DAILY','ON_UPDATE','MANUAL','CRON_SYNC') NOT NULL DEFAULT 'AUTO_DAILY',
+      tables_count INT NOT NULL DEFAULT 0,
+      rows_count INT NOT NULL DEFAULT 0,
+      size_bytes BIGINT NOT NULL DEFAULT 0,
+      checksum_sha512 VARCHAR(140) NOT NULL,
+      snapshot_json LONGTEXT NOT NULL,
+      sql_dump LONGTEXT NOT NULL,
+      created_by VARCHAR(80) DEFAULT 'system',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_daily_backups_date (backup_date DESC, created_at DESC)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  const defaultScannerKey = 'BV-SCAN-' + crypto.createHash('sha256').update(process.env.JWT_SECRET || 'bhumivera_scanner_2026').digest('hex').slice(0, 24).toUpperCase();
+
   await db.query(
     `INSERT IGNORE INTO inventory_store_config
-      (id, store_name, tagline, address, phone, email, website, gstin, cin, upi_id, default_tax_rate, auto_sync_website, categories_json, hidden_widgets_json, logo_url)
-     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 18.00, 1, ?, '[]', '/assets/bhumivera-luxury-crest-logo.webp')`,
+      (id, store_name, tagline, address, phone, email, website, gstin, cin, upi_id, scanner_api_key, default_tax_rate, auto_sync_website, categories_json, hidden_widgets_json, logo_url)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 18.00, 1, ?, '[]', '/assets/bhumivera-luxury-crest-logo.webp')`,
     [
       'Bhumivera Organics India Private Limited',
       'The Transparent Maison — 100% Label-Disclosed Botanical Formulations',
@@ -518,6 +653,7 @@ async function initInventorySoftwareTables(db = pool) {
       '19AAKCB2026A1Z5',
       'U20237WB2026PTC295842',
       'bhumivera@okhdfcbank',
+      defaultScannerKey,
       JSON.stringify([
         'Luxury Facial Cleansers',
         'Luxury Hair Care',
@@ -529,6 +665,11 @@ async function initInventorySoftwareTables(db = pool) {
       ]),
     ]
   );
+
+  await db.query(
+    `UPDATE inventory_store_config SET scanner_api_key = ? WHERE id = 1 AND (scanner_api_key IS NULL OR scanner_api_key = '')`,
+    [defaultScannerKey]
+  ).catch(() => {});
 
   const [[staffCountRow]] = await db.query('SELECT COUNT(*) AS cnt FROM inventory_staff_accounts');
   if (Number(staffCountRow?.cnt || 0) === 0) {
@@ -592,24 +733,6 @@ async function initInventorySoftwareTables(db = pool) {
     }
   }
 
-  const [[custCountRow]] = await db.query('SELECT COUNT(*) AS cnt FROM inventory_customers');
-  if (Number(custCountRow?.cnt || 0) === 0) {
-    const seedCustomers = [
-      ['Walk-in Retail Shopper', '+91 90000 00000', 'walkin@bhumivera.com', '', 'Asansol Flagship Counter', 'Walk-in', 0.00, 25000.00, 0.00, 1, 'Default counter walk-in profile for quick POS billing'],
-      ['Aura Luxury Salon & Wellness Spa', '+91 98321 55667', 'procurement@auraspa.in', '19AABCA1122K1Z1', 'City Centre, Durgapur, WB', 'Salon / Spa Partner', -4500.00, 100000.00, 28500.00, 6, 'Wholesale B2B salon partner — Net 15 Khata terms'],
-      ['Royal Ayurveda & Organic Boutique', '+91 98305 88990', 'orders@royalayurveda.in', '19AABCR3344M1Z8', 'Park Street, Kolkata, WB', 'Retail Shop', 0.00, 75000.00, 42000.00, 9, 'Authorized retail stockist'],
-      ['Ananya Chatterjee (VIP Patron)', '+91 98324 12345', 'ananya.c@gmail.com', '', 'Burnpur Road, Asansol, WB', 'VIP Patron', 1500.00, 50000.00, 14200.00, 5, 'Regular offline + online patron'],
-    ];
-    for (const c of seedCustomers) {
-      await db.query(
-        `INSERT INTO inventory_customers
-          (name, phone, email, gstin, location, customer_type, wallet_balance, credit_limit, total_purchases, visit_count, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        c
-      );
-    }
-  }
-
   await syncWebsiteProductsToInventoryMeta(db);
 }
 
@@ -638,12 +761,26 @@ const DEFAULT_PRODUCT_KEEPER_CONFIG = {
 async function syncWebsiteProductsToInventoryMeta(db = pool) {
   try {
     const [products] = await db.query(`
-      SELECT p.id, p.name, p.sku, p.price, p.discount_price, p.quantity,
+      SELECT p.id, p.name, p.slug, p.sku, p.price, p.discount_price, p.quantity,
              p.gst_hsn_code, p.gst_rate, p.specifications,
              c.name AS category_name
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
     `);
+
+    const [soldAggRows] = await db
+      .query(`
+        SELECT oi.product_id, COALESCE(SUM(oi.quantity), 0) AS online_sold
+        FROM order_items oi
+        INNER JOIN orders o ON o.id = oi.order_id
+        WHERE o.status NOT IN ('cancelled', 'returned', 'archived')
+          AND oi.product_id IS NOT NULL
+        GROUP BY oi.product_id
+      `)
+      .catch(() => [[]]);
+    const onlineSoldMap = new Map(
+      (soldAggRows || []).map(r => [Number(r.product_id), Number(r.online_sold) || 0])
+    );
 
     for (const prod of products) {
       const sku = prod.sku || `BV-PROD-${prod.id}`;
@@ -655,24 +792,29 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
       const qty = Math.max(0, Number(prod.quantity) || 0);
       const shopDisplay = Math.min(qty, Math.ceil(qty * 0.3));
       const vaultStock = Math.max(0, qty - shopDisplay);
+      const qrPayload = `https://www.bhumivera.com/verify?sku=${encodeURIComponent(sku)}&batch=${encodeURIComponent(preset.batchNo || `BV-BATCH-2026-${prod.id}`)}`;
+      const onlineSold = onlineSoldMap.get(Number(prod.id)) || 0;
 
       await db.query(
         `INSERT INTO inventory_product_meta
-          (product_id, custom_name, sku, barcode, category_name, uom, cost_price, mrp, selling_price,
+          (warehouse_id, product_id, custom_name, sku, barcode, qr_code_payload, category_name, uom, cost_price, mrp, selling_price,
            gst_hsn_code, gst_rate, physical_stock, shop_display_stock, warehouse_vault_stock,
            safety_buffer_stock, min_stock_alert, reorder_qty, bin_code, rack_location,
-           batch_no, mfg_date, expiry_date, sync_to_website)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, 1)
+           batch_no, mfg_date, expiry_date, sold_online_qty, sync_to_website)
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 1)
          ON DUPLICATE KEY UPDATE
            custom_name = VALUES(custom_name),
            selling_price = VALUES(selling_price),
            physical_stock = VALUES(physical_stock),
+           sold_online_qty = GREATEST(sold_online_qty, VALUES(sold_online_qty)),
+           qr_code_payload = COALESCE(qr_code_payload, VALUES(qr_code_payload)),
            category_name = COALESCE(VALUES(category_name), category_name)`,
         [
           prod.id,
           prod.name,
           sku,
           preset.barcode || `8908020${String(prod.id).padStart(6, '0')}`,
+          qrPayload,
           prod.category_name || 'Botanical Formulations',
           preset.uom || 'Pcs',
           costPrice,
@@ -690,6 +832,7 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
           preset.batchNo || `BV-BATCH-2026-${prod.id}`,
           preset.mfgDate || '2026-08-01',
           preset.expiryDate || '2028-07-31',
+          onlineSold,
         ]
       );
     }
@@ -967,6 +1110,495 @@ async function atomicAdjustProductStock(
   }
 }
 
+/**
+ * Resolves any scanned QR code payload, serial number, EAN-13 barcode, or SKU
+ * into an inventory item for the Mobile QR Scanner App & POS Billing Terminal.
+ */
+async function resolveProductByQrOrCode(db = pool, rawInput = '') {
+  const raw = String(rawInput || '').trim();
+  if (!raw) return null;
+
+  let extractedSku = null;
+  let extractedSerial = null;
+  let extractedSlug = null;
+
+  if (raw.startsWith('http://') || raw.startsWith('https://') || raw.includes('bhumivera.com')) {
+    try {
+      const urlObj = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+      extractedSku = urlObj.searchParams.get('sku') || null;
+      extractedSerial = urlObj.searchParams.get('serial') || urlObj.searchParams.get('code') || null;
+      const parts = urlObj.pathname.split('/').filter(Boolean);
+      const prodIdx = parts.findIndex(p => p === 'product' || p === 'products' || p === 'combo');
+      if (prodIdx !== -1 && parts[prodIdx + 1]) {
+        extractedSlug = parts[prodIdx + 1];
+      } else if (parts[0] === 'verify' && parts[1]) {
+        extractedSerial = parts[1];
+      }
+    } catch {
+      // Fallback to direct matching
+    }
+  }
+
+  let matchedSerialNumber = null;
+
+  // 1. Check if it's a unique bottle/bar Genuinity Serial in product_serials
+  const serialCandidate = extractedSerial || raw;
+  try {
+    const [serialRows] = await db.query(
+      `SELECT ps.serial_number, ps.product_id, ps.batch_id
+       FROM product_serials ps
+       WHERE UPPER(ps.serial_number) = UPPER(?)
+       LIMIT 1`,
+      [serialCandidate]
+    );
+    if (serialRows?.[0]?.product_id) {
+      matchedSerialNumber = serialRows[0].serial_number;
+      const [metaRows] = await db.query(
+        `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
+         FROM inventory_product_meta m
+         LEFT JOIN products p ON m.product_id = p.id
+         WHERE m.product_id = ?
+         LIMIT 1`,
+        [serialRows[0].product_id]
+      );
+      if (metaRows?.[0]) {
+        return formatResolvedScannerItem(metaRows[0], matchedSerialNumber);
+      }
+    }
+  } catch {
+    // Ignore if product_serials table is not present
+  }
+
+  // 2. Match by SKU, Barcode, Batch Number, Slug, or Product Name in inventory_product_meta + products
+  const lookupToken = extractedSku || extractedSlug || raw;
+  const [rows] = await db.query(
+    `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
+     FROM inventory_product_meta m
+     LEFT JOIN products p ON m.product_id = p.id
+     WHERE LOWER(m.sku) = LOWER(?)
+        OR m.barcode = ?
+        OR LOWER(COALESCE(m.batch_no, '')) = LOWER(?)
+        OR LOWER(COALESCE(p.slug, '')) = LOWER(?)
+        OR LOWER(COALESCE(p.name, m.custom_name, '')) = LOWER(?)
+        OR m.id = ?
+        OR p.id = ?
+     LIMIT 1`,
+    [
+      lookupToken,
+      lookupToken,
+      lookupToken,
+      lookupToken,
+      lookupToken,
+      Number.isInteger(Number(lookupToken)) ? Number(lookupToken) : -1,
+      Number.isInteger(Number(lookupToken)) ? Number(lookupToken) : -1,
+    ]
+  );
+
+  if (rows?.[0]) {
+    return formatResolvedScannerItem(rows[0], matchedSerialNumber);
+  }
+  return null;
+}
+
+function formatResolvedScannerItem(r, serialNumber = null) {
+  const liveQty =
+    r.product_id && r.web_quantity !== null && r.web_quantity !== undefined
+      ? Number(r.web_quantity)
+      : Number(r.physical_stock) || 0;
+  const sellingPrice =
+    r.product_id && Number(r.web_discount_price) > 0
+      ? Number(r.web_discount_price)
+      : r.product_id && Number(r.web_price) > 0
+      ? Number(r.web_price)
+      : Number(r.selling_price) || 0;
+
+  return {
+    metaId: r.id,
+    productId: r.product_id,
+    sku: r.sku,
+    barcode: r.barcode,
+    serialNumber: serialNumber || null,
+    name: r.web_name || r.custom_name || 'Bhumivera Formulation',
+    slug: r.web_slug || '',
+    uom: r.uom || 'Pcs',
+    price: sellingPrice,
+    mrp: Number(r.mrp) || sellingPrice,
+    gstHsnCode: r.gst_hsn_code || '33049990',
+    gstRate: Number(r.gst_rate) || 18,
+    availableStock: liveQty,
+    binCode: r.bin_code || 'ASN-SHOP-R1-B01',
+    batchNo: r.batch_no || '',
+  };
+}
+
+const BACKUP_TABLES_ORDER = [
+  'categories',
+  'subcategories',
+  'products',
+  'product_images',
+  'product_batches',
+  'product_serials',
+  'users',
+  'addresses',
+  'orders',
+  'order_items',
+  'coupons',
+  'coupon_redemptions',
+  'wallets',
+  'wallet_transactions',
+  'referral_wallets',
+  'loyalty_tiers',
+  'settings',
+  'support_agents',
+  'support_tickets',
+  'inventory_staff_accounts',
+  'inventory_storage_bins',
+  'inventory_product_meta',
+  'inventory_suppliers',
+  'inventory_grn_entries',
+  'inventory_pos_invoices',
+  'inventory_stock_movements',
+  'inventory_store_config',
+];
+
+function escapeSqlValue(val) {
+  if (val === null || val === undefined) return 'NULL';
+  if (typeof val === 'boolean') return val ? '1' : '0';
+  if (typeof val === 'number') return Number.isFinite(val) ? String(val) : '0';
+  if (val instanceof Date) {
+    return `'${val.toISOString().slice(0, 19).replace('T', ' ')}'`;
+  }
+  if (Buffer.isBuffer(val)) {
+    return `X'${val.toString('hex')}'`;
+  }
+  const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+  return (
+    "'" +
+    str
+      .replace(/\\/g, '\\\\')
+      .replace(/\0/g, '\\0')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/'/g, "\\'")
+      .replace(/"/g, '\\"')
+      .replace(/\x1a/g, '\\Z') +
+    "'"
+  );
+}
+
+/**
+ * Generates a full SQL (.sql) and JSON (.avbak.json) disaster-recovery backup
+ * of all critical tables so that even if the database on Railway is wiped or hacked,
+ * it can be 100% restored in 1 click from /inventorysoftware.
+ */
+async function generateFullDatabaseBackup(
+  db = pool,
+  { triggerType = 'MANUAL', actorUsername = 'admin', saveToVault = true } = {}
+) {
+  await ensureInventorySoftwareTables(db);
+  const exportedAt = new Date().toISOString();
+  const backupDate = exportedAt.slice(0, 10);
+  const backupCode = `BV-SQL-BAK-${backupDate.replace(/-/g, '')}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+  const tablesData = {};
+  const sqlLines = [
+    `-- ============================================================================`,
+    `-- BHUMIVERA ORGANICS — FULL DISASTER RECOVERY SQL DUMP (RAILWAY + VERCEL SYNC)`,
+    `-- Backup Code: ${backupCode}`,
+    `-- Generated At: ${exportedAt}`,
+    `-- Trigger: ${triggerType} | Operator: @${actorUsername}`,
+    `-- ============================================================================`,
+    `SET FOREIGN_KEY_CHECKS = 0;`,
+    `SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";`,
+    ``,
+  ];
+
+  let totalTables = 0;
+  let totalRows = 0;
+
+  for (const tableName of BACKUP_TABLES_ORDER) {
+    try {
+      const [rows] = await db.query(`SELECT * FROM \`${tableName}\``);
+      tablesData[tableName] = rows || [];
+      totalTables += 1;
+      totalRows += (rows || []).length;
+
+      try {
+        const [createInfo] = await db.query(`SHOW CREATE TABLE \`${tableName}\``);
+        const createStmt = createInfo?.[0]?.['Create Table'] || createInfo?.[0]?.['Create View'];
+        if (createStmt) {
+          sqlLines.push(`-- Table structure for \`${tableName}\``);
+          sqlLines.push(createStmt.replace(/^CREATE TABLE/i, 'CREATE TABLE IF NOT EXISTS') + ';');
+          sqlLines.push('');
+        }
+      } catch {
+        // Ignore if SHOW CREATE TABLE is not supported on mock
+      }
+
+      if (Array.isArray(rows) && rows.length > 0) {
+        sqlLines.push(`-- Data for \`${tableName}\` (${rows.length} rows)`);
+        const cols = Object.keys(rows[0]);
+        const colList = cols.map(c => `\`${c}\``).join(', ');
+        const updateList = cols.map(c => `\`${c}\` = VALUES(\`${c}\`)`).join(', ');
+
+        for (const row of rows) {
+          const vals = cols.map(c => escapeSqlValue(row[c])).join(', ');
+          sqlLines.push(
+            `INSERT INTO \`${tableName}\` (${colList}) VALUES (${vals}) ON DUPLICATE KEY UPDATE ${updateList};`
+          );
+        }
+        sqlLines.push('');
+      }
+    } catch {
+      // Table may not exist yet; skip gracefully
+    }
+  }
+
+  sqlLines.push(`SET FOREIGN_KEY_CHECKS = 1;`);
+  sqlLines.push(`-- END OF BHUMIVERA SQL BACKUP (${backupCode})`);
+
+  const sqlDump = sqlLines.join('\n');
+  const snapshotObj = {
+    version: '10X-RAILWAY-VERCEL-SQL-3.0',
+    backupCode,
+    backupDate,
+    exportedAt,
+    triggerType,
+    createdBy: actorUsername,
+    tablesCount: totalTables,
+    rowsCount: totalRows,
+    tables: tablesData,
+  };
+  const snapshotJson = JSON.stringify(snapshotObj);
+  const sizeBytes = Buffer.byteLength(sqlDump, 'utf8') + Buffer.byteLength(snapshotJson, 'utf8');
+  const checksumSha512 = computeQuantumHash512(
+    { backupCode, exportedAt, totalTables, totalRows },
+    'BHUMIVERA_DAILY_SQL_BACKUP_512'
+  );
+
+  let insertedId = null;
+  if (saveToVault) {
+    try {
+      const [ins] = await db.query(
+        `INSERT INTO system_daily_backups
+          (backup_code, backup_date, trigger_type, tables_count, rows_count, size_bytes, checksum_sha512, snapshot_json, sql_dump, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          backupCode,
+          backupDate,
+          triggerType,
+          totalTables,
+          totalRows,
+          sizeBytes,
+          checksumSha512,
+          snapshotJson,
+          sqlDump,
+          actorUsername,
+        ]
+      );
+      insertedId = ins.insertId;
+
+      // Retain latest 15 backups in DB table so Railway storage stays fast and clean
+      await db
+        .query(
+          `DELETE FROM system_daily_backups
+           WHERE id NOT IN (
+             SELECT id FROM (
+               SELECT id FROM system_daily_backups ORDER BY created_at DESC LIMIT 15
+             ) AS recent_backups
+           )`
+        )
+        .catch(() => {});
+    } catch (err) {
+      console.warn('[DAILY_BACKUP_VAULT_SAVE_WARN]', err.message);
+    }
+  }
+
+  return {
+    id: insertedId,
+    backupCode,
+    backupDate,
+    exportedAt,
+    triggerType,
+    tablesCount: totalTables,
+    rowsCount: totalRows,
+    sizeBytes,
+    checksumSha512,
+    snapshotObj,
+    sqlDump,
+  };
+}
+
+/**
+ * Ensures at least one automatic daily backup exists for today's date.
+ */
+async function ensureDailyAutoBackup(db = pool, actorUsername = 'auto-daily-scheduler') {
+  try {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const [existing] = await db.query(
+      'SELECT id, backup_code, backup_date, trigger_type, tables_count, rows_count, size_bytes, checksum_sha512, created_at FROM system_daily_backups WHERE backup_date = ? ORDER BY created_at DESC LIMIT 1',
+      [todayStr]
+    );
+    if (existing && existing.length > 0) {
+      return existing[0];
+    }
+    const created = await generateFullDatabaseBackup(db, {
+      triggerType: 'AUTO_DAILY',
+      actorUsername,
+      saveToVault: true,
+    });
+    return {
+      id: created.id,
+      backup_code: created.backupCode,
+      backup_date: created.backupDate,
+      trigger_type: created.triggerType,
+      tables_count: created.tablesCount,
+      rows_count: created.rowsCount,
+      size_bytes: created.sizeBytes,
+      checksum_sha512: created.checksumSha512,
+      created_at: created.exportedAt,
+    };
+  } catch (err) {
+    console.warn('[ENSURE_DAILY_AUTO_BACKUP_WARN]', err.message);
+    return null;
+  }
+}
+
+/**
+ * Restores the database from a saved backupId, a JSON snapshot (.avbak.json), or raw SQL (.sql).
+ * Re-syncs Railway MySQL tables and invalidates Vercel/Redis public catalog cache.
+ */
+async function restoreFullDatabaseBackup(
+  db = pool,
+  { backupId = null, snapshotObj = null, sqlDump = null, actorUsername = 'admin' } = {}
+) {
+  await ensureInventorySoftwareTables(db);
+  let targetSnapshot = snapshotObj;
+  let targetSql = sqlDump;
+  let sourceLabel = 'Uploaded Backup File';
+
+  if (backupId) {
+    const [[row]] = await db.query('SELECT * FROM system_daily_backups WHERE id = ?', [Number(backupId)]);
+    if (!row) {
+      throw Object.assign(new Error('Selected backup record not found in vault.'), { status: 404 });
+    }
+    sourceLabel = `Vault Backup ${row.backup_code} (${row.backup_date})`;
+    if (row.snapshot_json) {
+      try {
+        targetSnapshot = JSON.parse(row.snapshot_json);
+      } catch {
+        targetSnapshot = null;
+      }
+    }
+    targetSql = row.sql_dump || null;
+  }
+
+  const conn = await db.getConnection();
+  let restoredTables = 0;
+  let restoredRows = 0;
+
+  try {
+    await conn.beginTransaction();
+    await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+
+    if (targetSnapshot && targetSnapshot.tables && typeof targetSnapshot.tables === 'object') {
+      for (const [tableName, rows] of Object.entries(targetSnapshot.tables)) {
+        if (!BACKUP_TABLES_ORDER.includes(tableName) || !Array.isArray(rows) || rows.length === 0) continue;
+        const cols = Object.keys(rows[0]);
+        if (cols.length === 0) continue;
+        const colList = cols.map(c => `\`${c}\``).join(', ');
+        const placeholders = cols.map(() => '?').join(', ');
+        const updateList = cols.map(c => `\`${c}\` = VALUES(\`${c}\`)`).join(', ');
+
+        let tableRestored = 0;
+        for (const r of rows) {
+          const vals = cols.map(c => {
+            const v = r[c];
+            if (v !== null && typeof v === 'object' && !(v instanceof Date) && !Buffer.isBuffer(v)) {
+              return JSON.stringify(v);
+            }
+            if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v)) {
+              return v.slice(0, 19).replace('T', ' ');
+            }
+            return v;
+          });
+          await conn
+            .query(
+              `INSERT INTO \`${tableName}\` (${colList}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${updateList}`,
+              vals
+            )
+            .catch(() => {});
+          tableRestored += 1;
+        }
+        if (tableRestored > 0) {
+          restoredTables += 1;
+          restoredRows += tableRestored;
+        }
+      }
+    } else if (targetSnapshot && Array.isArray(targetSnapshot.items)) {
+      // Legacy .avbak.json format compatibility
+      for (const it of targetSnapshot.items) {
+        if (it.productId && it.qty !== undefined) {
+          await conn
+            .query('UPDATE products SET quantity = ? WHERE id = ?', [Number(it.qty) || 0, Number(it.productId)])
+            .catch(() => {});
+          await conn
+            .query('UPDATE inventory_product_meta SET physical_stock = ? WHERE product_id = ?', [
+              Number(it.qty) || 0,
+              Number(it.productId),
+            ])
+            .catch(() => {});
+          restoredRows += 1;
+        }
+      }
+      restoredTables = 2;
+    } else if (targetSql && typeof targetSql === 'string') {
+      const statements = targetSql
+        .split(/;\s*\r?\n/)
+        .map(s => s.trim())
+        .filter(s => s && !s.startsWith('--'));
+      for (const stmt of statements) {
+        if (/^(INSERT\s+INTO|CREATE\s+TABLE|UPDATE\s+)/i.test(stmt)) {
+          await conn.query(stmt).catch(() => {});
+          restoredRows += 1;
+        }
+      }
+      restoredTables = 1;
+    } else {
+      throw Object.assign(new Error('Invalid backup payload. Provide a valid .avbak.json or .sql backup file.'), {
+        status: 400,
+      });
+    }
+
+    await conn.query('SET FOREIGN_KEY_CHECKS = 1');
+    await syncWebsiteProductsToInventoryMeta(conn);
+    await recalculateAllBundleStocks(conn);
+
+    await appendInventoryAuditLog(conn, {
+      actorUsername,
+      actorRole: 'admin',
+      actionCode: 'SQL_DISASTER_RECOVERY_RESTORE',
+      summary: `Restored ${restoredRows} records across ${restoredTables} tables from ${sourceLabel} and synced Railway DB + Vercel storefront.`,
+    });
+
+    await conn.commit();
+    await invalidatePublicCatalogCache();
+
+    return {
+      restoredTables,
+      restoredRows,
+      sourceLabel,
+      restoredAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    await conn.query('SET FOREIGN_KEY_CHECKS = 1').catch(() => {});
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 module.exports = {
   VALID_INVENTORY_ROLES,
   INVENTORY_PERMISSION_DEFINITIONS,
@@ -974,6 +1606,7 @@ module.exports = {
   resolveInventoryPermissions,
   generateTotpSecret,
   verifyTotpCode,
+  calculateEstimatedDeliveryDate,
   initInventorySoftwareTables,
   ensureInventorySoftwareTables,
   syncWebsiteProductsToInventoryMeta,
@@ -981,4 +1614,8 @@ module.exports = {
   appendInventoryAuditLog,
   recordStockMovement,
   atomicAdjustProductStock,
+  resolveProductByQrOrCode,
+  generateFullDatabaseBackup,
+  ensureDailyAutoBackup,
+  restoreFullDatabaseBackup,
 };

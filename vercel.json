@@ -7,6 +7,12 @@
       "maxDuration": 30
     }
   },
+  "crons": [
+    {
+      "path": "/api/inventory-software/backup/cron-daily",
+      "schedule": "0 2 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/api/(products|categories|subcategories|flash-sales)(.*)",

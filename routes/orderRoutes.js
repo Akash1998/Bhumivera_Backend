@@ -4,7 +4,11 @@ const router = express.Router();
 const pool = require("../config/db");
 const { authenticateUser, authenticateAdmin } = require("../middleware/authMiddleware");
 const { invalidatePublicCatalogCache } = require("../middleware/redisResponseCache");
-const { syncWebsiteProductsToInventoryMeta } = require("../models/inventorySoftwareModel");
+const {
+  syncWebsiteProductsToInventoryMeta,
+  calculateEstimatedDeliveryDate,
+  recordStockMovement,
+} = require("../models/inventorySoftwareModel");
 const { sendOrderStatusEmail } = require("../utils/mail");
 
 const { 
@@ -136,6 +140,9 @@ router.post("/:id/cancel", authenticateUser, async (req, res) => {
       executedByEmail: req.user.email || "customer@bhumivera.com",
     });
 
+    await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
+    await invalidatePublicCatalogCache().catch(() => {});
+
     return res.json({
       success: true,
       message: `Order #${order.order_number || order.id} has been cancelled successfully. Full refund has been initiated.`,
@@ -177,6 +184,8 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
         executedByEmail: req.user?.email || "adminbhumivera27@gmail.com",
         razorpay: getRazorpayClient(),
       });
+      await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
+      await invalidatePublicCatalogCache().catch(() => {});
       const [orderData] = await pool.query(
         `SELECT o.id, o.order_number, o.status, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
         [cancelResult.orderId]
@@ -196,6 +205,9 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 
     const updated = await updateOrderStatus(id, status, req.body.cancelReason, { trackingNumber, courier });
     if (updated === false) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'Order not found.' });
+    await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
+    await invalidatePublicCatalogCache().catch(() => {});
+
     const [orderData] = await pool.query(
       `SELECT o.id, o.order_number, o.status, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
       [id]
@@ -446,7 +458,45 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     }
 
     await clearCart(req.user.id);
-    await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
+
+    // Automatically route order to Inventory Software (/inventorysoftware) with calculated delivery date & live stock movement logs
+    try {
+      const estDate = calculateEstimatedDeliveryDate(address, deliveryType || 'standard');
+      await pool.query(
+        `UPDATE orders
+         SET estimated_delivery_date = COALESCE(estimated_delivery_date, ?),
+             current_location_checkpoint = COALESCE(current_location_checkpoint, 'Order Placed — Routed to Asansol Inventory Hub')
+         WHERE id = ?`,
+        [estDate, orderId]
+      );
+      await syncWebsiteProductsToInventoryMeta(pool);
+      for (const it of orderItems) {
+        const pid = it.product_id || it.id;
+        if (pid) {
+          const [[prodRow]] = await pool.query('SELECT id, name, sku, quantity FROM products WHERE id = ?', [pid]);
+          if (prodRow) {
+            const qtyOrdered = Number(it.quantity) || 1;
+            const qtyAfter = Number(prodRow.quantity) || 0;
+            await recordStockMovement(pool, {
+              productId: prodRow.id,
+              sku: prodRow.sku || `PROD-${prodRow.id}`,
+              productName: prodRow.name,
+              movementType: 'ONLINE_ORDER_PLACED',
+              qtyBefore: qtyAfter + qtyOrdered,
+              qtyDelta: -qtyOrdered,
+              qtyAfter,
+              binCode: 'ASN-DISPATCH-R1-B01',
+              referenceId: `ORD-#${orderResult.orderNumber || orderId}`,
+              reason: `Online Storefront Order #${orderResult.orderNumber || orderId} (${address.city || 'India'})`,
+              operatorUsername: 'bhumivera.com',
+            });
+          }
+        }
+      }
+    } catch (syncErr) {
+      console.warn('[ORDER_INVENTORY_ROUTE_SYNC_WARN]', syncErr.message);
+    }
+
     await invalidatePublicCatalogCache().catch(() => {});
 
     const orderNotifications = [
@@ -459,8 +509,8 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       },
       {
         user_id: null,
-        title: 'New customer order',
-        message: `Order #${orderResult.orderNumber || orderId} was placed by customer ${req.user.id}.`,
+        title: 'New customer order routed to Inventory Hub',
+        message: `Order #${orderResult.orderNumber || orderId} (${address.city || 'India'}) was routed to /inventorysoftware for dispatch.`,
         type: 'order',
         is_global: false,
       },

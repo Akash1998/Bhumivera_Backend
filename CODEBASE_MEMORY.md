@@ -1,83 +1,156 @@
-# Bhumivera Organics — Complete Codebase Architecture & 1,500+ Authentic Customer Reviews Memory
+# Bhumivera Organics — Master System Blueprint, 5-Panel Architecture & AI Handoff Specification
 
-## 1. Corporate & Heritage Profile
-- **Brand & Corporate Entity**: Bhumivera Organics India Private Limited (CIN: `U20237WB2026PTC295842`, RoC-Kolkata II, headquartered in Asansol / Purba Bardhaman, West Bengal, India; Directors: Aman Prasad, Akash Prasad, Payal Prasad; founded 2016 under MPG E Business Private Limited).
-- **Positioning**: "The Transparent Maison" — 100% active percentage and milligram disclosure printed openly on the front label, sub-28°C cold-pressed botanical extraction, pH 5.0–5.5 skin-identical calibration, zero SLS/SLES sulfates or parabens, and serialized 250-bottle micro-batches.
+> **Purpose of this Document**: This Markdown file is the authoritative architectural blueprint and living state ledger for **Bhumivera Organics India Private Limited** (`www.bhumivera.com`). Any AI assistant or engineer receiving this file can immediately understand the entire multi-panel architecture, database schema, API contracts, stock synchronization rules, RTO return policy, daily SQL disaster-recovery backup system, and future Android QR Scanner App integration without scanning the codebase from scratch.
 
-## 2. Full-Stack Codebase Architecture
-### Backend (`Bhumivera_Backend`)
-- **Runtime & Framework**: Node.js 22.x / Express 5.3 (`server.js`, `index.js`), MySQL (`mysql2/promise` pool in `config/db.js`), Redis rate-limiting & response caching (`middleware/rateLimiter.js`, `middleware/redisResponseCache.js`).
-- **Database Schema & Migrations (`migrations/index.js`, `utils/migrationRunner.js`)**:
-  - 75 sequential migrations (`v1` to `v75`), including the traceable product-batch and expiry-backed authenticity-label schema in `v75`.
-  - Migration 66 seeds the 6 flagship products (`seedLuxuryCatalog`).
-  - Migration 72 seeds the 3 reservable Maison Regimen Bundle products (`seedMaisonRegimenBundles`) with component-stock reservation (`utils/bundleInventory.js`).
-  - Migration 74 (`purge repetitive reviews and seed 1500 authentic pan-India customer reviews v6 (2020-2026)`) executes `seed1500AuthenticReviews(pool)` to populate all 1,500 authentic reviews and sync ratings across all 6 products and 3 combos.
-- **Core Modules**:
-  - **Catalog & SEO/GEO Engine**: `data/bhumiveraCatalog.js`, `data/luxuryCatalog.js`, `middleware/seoPrerender.js`, `utils/merchantFeed.js`, `scripts/seedLuxuryCatalog.js`, `scripts/seedReviews.js`.
-  - **Reviews & Customer Stories Engine**: `models/reviewModel.js`, `routes/reviewRoutes.js`, `data/bhumiveraReviewsData.js`, and persistent local JSON store `data/reviewsDatabaseStore.json`.
-  - **AI Concierge & Support Engine**: `services/aiSupportOrchestrator.js`, `services/bhumiveraKnowledgeBase.js` (200 deterministic Q&As), `services/geminiService.js`, `services/aiCopilotRescueService.js`, `services/sentimentEscalationEngine.js`.
-  - **Orders, Payments, GST & Loyalty**: `models/orderModel.js`, `services/razorpayService.js`, `services/razorpayWebhook.js`, `services/walletRefundLedgerService.js`, `models/gstAccountingModel.js`, `models/loyaltyTierModel.js`, `models/referralModel.js`.
-  - **SuperAdmin Security Vault & RBAC**: `models/superAdminVaultModel.js`, `middleware/rbacMatrixMiddleware.js` (108-module RBAC matrix), WebAuthn passkeys (`routes/passkeyRoutes.js`), and Turnstile/OTP protection.
+## 1. Corporate & Technical Foundation
 
-### Frontend (`Bhumivera_Frontend`)
-- **Framework**: React 18.3 + Vite 6 + Tailwind CSS v4 + Framer Motion + Capacitor 8.5 Android native app.
-- **Key Storefront Pages (`src/pages/`)**:
-  - `PremiumHome.jsx` & `Home.jsx`: Flagship storefront, 4-pillar stewardship ledger, regimen bundles, and ingredient showcase.
-  - `Shop.jsx`: Filterable 6-product catalog + 3 architectural regimen bundles (`MAISON_REGIMEN_BUNDLES`), live batch allocation badges.
-  - `ProductDetail.jsx`: Full active potency disclosure table, batch CoA verification link, Wikipedia-linked JSON-LD, and filterable/sortable customer reviews tab.
-  - `BundleDetail.jsx`: Dedicated regimen bundle page (`/combo/:slug`) with component breakdown, live component-based stock calculation, and filterable regimen customer reviews.
-  - `ProvenanceEngine.jsx`, `SomaticRegistry.jsx`, `BhumiveraScience.jsx`, `ProductVerification.jsx`, `Impact.jsx`.
-- **Admin Command Center (`src/pages/admin/`)**:
-  - `ReviewManagement.jsx`: Complete review moderation & editing studio covering all 6 products + 3 regimen combos (1,500 reviews, 2020–2026), with full editing of product, combo bundle, rating (1–5), date (2020–2030+), customer name, city/state, order reference #, helpful count, headline, body, photos (up to 5), and videos (up to 3).
-  - `ProductManagement.jsx`, `OrderManagement.jsx`, `InventoryManagement.jsx`, `GSTAccounting.jsx`, `SupportManagement.jsx`, `LoyaltyTierForge.jsx`.
+* **Corporate Entity**: Bhumivera Organics India Private Limited (CIN: `U20237WB2026PTC295842`, GSTIN: `19AAKCB2026A1Z5`, RoC-Kolkata II; Headquartered at G.T. Road, Gopalpur, Asansol, West Bengal - 713304, India; Directors: Aman Prasad, Akash Prasad, Payal Prasad).
+* **Brand Positioning**: *"The Transparent Maison"* — 100% active percentage and milligram disclosure printed openly on the front label, sub-28°C cold-pressed botanical extraction, pH 5.0–5.5 skin-identical calibration, zero SLS/SLES sulfates or parabens, and serialized micro-batches.
+* **Deployment Stack**:
+  * **Frontend (`Bhumivera_Frontend`)**: React 18.3 + Vite 6 + Tailwind CSS v4 + Framer Motion + Capacitor 8.5 Android app, deployed on **Vercel** (`https://www.bhumivera.com`).
+  * **Backend (`Bhumivera_Backend`)**: Node.js 22.x + Express 5.3 (`server.js`), MySQL (`mysql2/promise` pool in `config/db.js`), and Redis rate-limiting & response caching (`middleware/redisResponseCache.js`), deployed on **Railway** (`https://service.bhumivera.com`) with Vercel serverless compatibility (`vercel.json`).
 
-## 3. Complete 9-Item Catalog (6 Individual Products + 3 Regimen Combos)
-1. **`BV-LUX-CFW-01` (`activated-charcoal-luxury-face-wash`, ID 1 / DB ID 10)**:
-   - *Bhumivera Activated Charcoal Purifying Luxury Face Wash* (100 ML)
-   - Category: `Luxury Facial Cleansers` | Price: `₹299.00` (MRP ₹699–899) | Stock: `249` | **276 Reviews · 4.71 ★**
-   - Actives: 3% Activated Charcoal, 5% Glycerin, 0.5% Manjistha, 0.5% Haridra, 0.5% Neem, 0.5% Cucumber, 0.1% Hyaluronic Acid, 0.1% Niacinamide (pH 5.4–5.5).
-2. **`BV-LUX-SBFW-02` (`himalayan-seabuckthorn-luxury-face-wash`, ID 2 / DB ID 11)**:
-   - *Bhumivera Himalayan Sea Buckthorn Cellular Radiance Face Wash* (100 ML)
-   - Category: `Luxury Facial Cleansers` | Price: `₹399.00` (MRP ₹799–999) | Stock: `249` | **290 Reviews · 4.74 ★**
-   - Actives: 4% Sea Buckthorn, 5% Glycerin, 0.5% Manjistha, 0.5% Haridra, 0.5% Neem, 0.5% Cucumber, 0.1% Hyaluronic Acid, 0.1% Niacinamide (pH 5.3–5.5).
-3. **`BV-LUX-SH2IN1-03` (`luxury-2-in-1-botanical-shampoo-conditioner`, ID 3 / DB ID 12)**:
-   - *Bhumivera Royal Botanical 2-in-1 Luxury Shampoo with Conditioner* (200 ML)
-   - Category: `Luxury Hair Care` | Price: `₹449.00` (MRP ₹899–1199) | Stock: `199` | **222 Reviews · 4.69 ★**
-   - Actives: 25mg Reetha, 20mg Amla, 10mg Triphala, 10mg Bhringraj, 10mg Rosemary Oil, 10mg Neem, 10mg Aloe Vera, 5mg Shikakai (pH 5.0–5.24).
-4. **`BV-LUX-CSOAP-04` (`artisanal-charcoal-handmade-soap`, ID 4 / DB ID 13)**:
-   - *Bhumivera Charcoal Deep Cleansing Bar (Handmade Ayurvedic Luxury Soap)* (100 GM)
-   - Category: `Artisanal Ayurvedic Cleansing Bars` | Price: `₹199.00` (MRP ₹399–499) | Stock: `299` | **219 Reviews · 4.76 ★**
-   - Actives: Activated Charcoal + Soothing Aloe Vera in a detergent-free Ayurvedic soap base.
-5. **`BV-LUX-ASOAP-05` (`artisanal-aloe-vera-handmade-soap`, ID 5 / DB ID 14)**:
-   - *Bhumivera Soothing Bar (Aloe Vera, Neem & Tulsi Handmade Ayurvedic Soap)* (100 GM)
-   - Category: `Artisanal Ayurvedic Cleansing Bars` | Price: `₹199.00` (MRP ₹349–449) | Stock: `299` | **218 Reviews · 4.68 ★**
-   - Actives: Aloe Vera, Neem & Sacred Tulsi in a gentle handmade Ayurvedic soap base.
-6. **`BV-LUX-TULSI-06` (`kalpvriksh-satva-tulsi-7-tulsi-extract`, ID 6 / DB ID 15)**:
-   - *Bhumivera Kalpvriksh Satva Tulsi (Liquid Extract of 7 Types of Tulsi)* (30 ML)
-   - Category: `Luxury Ayurvedic Wellness & Immunity Drops` | Price: `₹299.00` (MRP ₹499–649) | Stock: `299` | **275 Reviews · 4.70 ★**
-   - Actives: 9.0ml per 10ml concentrated extract of 7 Tulsi varieties (Van, Sweet, Marua, Bisva, Kala, Rama & Lemon Tulsi).
-7. **`BV-BND-DAILY-01` (`bundle-daily-regimen`, ID 7 / DB ID 16)**:
-   - *The Complete Botanical Daily Regimen* (Sea Buckthorn Face Wash + Royal 2-in-1 Shampoo + Soothing Aloe-Neem-Tulsi Bar)
-   - Price: `₹2047.00` (Bundle ₹1,499) | Stock: `200` | **160 Combo Reviews · 4.80 ★**
-8. **`BV-BND-INSIDEOUT-02` (`bundle-inside-out-ritual`, ID 8 / DB ID 17)**:
-   - *The Inside-Out Skin-Clearing & Cortisol Ritual* (Activated Charcoal Face Wash + Kalpvriksh 7-Tulsi Drops + Charcoal Cleansing Bar)
-   - Price: `₹1597.00` (Bundle ₹1,299) | Stock: `250` | **160 Combo Reviews · 4.69 ★**
-9. **`BV-BND-VAULT-06` (`bundle-grand-maison-vault`, ID 9 / DB ID 18)**:
-   - *The Grand Maison 6-Piece Apothecary Vault* (All 6 Flagship Formulations)
-   - Price: `₹3644.00` (Bundle ₹2,799) | Stock: `199` | **130 Combo Reviews · 4.68 ★**
+## 2. The 5 Isolated & Interconnected Panels
 
-## 4. 1,500+ Customer Reviews Architecture (2020–2026)
-- **Exact Yearly Breakdown (Total = 1,500 Reviews)**:
-  - **2020** (Jan–Dec 2020): `90` reviews
-  - **2021** (Jan–Dec 2021): `120` reviews
-  - **2022** (Jan–Dec 2022): `180` reviews
-  - **2023** (Jan–Dec 2023): `200` reviews
-  - **2024** (Jan–Dec 2024): `260` reviews
-  - **2025** (Jan–Dec 2025): `300` reviews
-  - **2026** (Jan 1 – Oct 25, 2026): `350` reviews
-- **Exact Persona & Style Breakdown**:
-  - **20% (`300` reviews)**: Ultra-short 1–2 word micro-reviews (`"Good product"`, `"Nice"`, `"Superb"`, `"Mast hai"`, `"Worth it"`, `"Khub bhalo"`, etc.).
-  - **30% (`450` reviews)**: Hinglish, Banglish/Bengali (Bangla+English), and 18 Indian regional languages (`Bengali`, `Hinglish/Hindi`, `Marathi`, `Gujarati`, `Tamil`, `Telugu`, `Kannada`, `Malayalam`, `Punjabi`, `Odia`, `Assamese`, `Marwari/Rajasthani`, `Bhojpuri/Maithili`, `Konkani`, `Urdu/Dakhni`, `Nepali/Gorkhali`, `Dogri/Kashmiri`, `Haryanvi/Chhattisgarhi`) strictly matched to authentic regional names and local cities/states.
-  - **20% (`300` reviews)**: Genuine Amazon / Flipkart / Meesho marketplace-style buyer reviews.
-  - **20% (`300` reviews)**: Casual human-typed reviews with natural mobile spelling errors (`"recieved"`, `"fragnance"`, `"prodcut"`, `"pimpels"`, `"shampo"`, `"delivry"`, etc.).
-  - **10% (`150` reviews)**: 200% natural, lengthy, heavy multi-paragraph customer narratives (90–180 words) detailing week-by-week results across all 6 products and 3 combos.
+All five panels operate on a **Single Shared MySQL Database** on Railway with automatic Redis/Vercel cache invalidation (`invalidatePublicCatalogCache()`), ensuring strict functional isolation per panel while keeping data 100% synchronized in real time.
+
+| Panel URL | Target User | Core Responsibilities (Isolated Scope) | Excluded / Routed Elsewhere |
+| :--- | :--- | :--- | :--- |
+| **`bhumivera.com`** | Customers / Patrons | Browsing 6 flagship products + 3 regimen bundles, live stock badges, QR genuinity verification (`/verify`), reward spins, referral sharing, checkout (Razorpay / Wallet / COD), and live order tracking (`/order-tracking`). | Admin & staff controls hidden. |
+| **`bhumivera.com/admin/login`** (`/admin/dashboard`) | Website Owner / Marketing Admin | **Full Website & Marketing Governance**: Reward Spins & Gamification (`gamification`), Brand Ambassador & Referral Engine (`referral-engine`), Customer Management / CRM (`users`), Website Product Catalog & SEO (`products`), Categories (`categories`), Stock Pacing Simulator (`scarcity-simulator`), Promotions/Coupons/Flash Sales (`growth-offers`), Loyalty Tiers & Members (`loyalty-tiers`, `loyalty-members`), Bespoke AI Curation (`personalization`, `lifecycle-offers`), Reviews Moderation (`reviews`), QR Codes & Genuinity Batch Studio (`authenticity`), GST Financial Ledger (`gst`, `tax`), Earth Impact (`impact`), Client Wallets (`wallet-management`), and Website Settings (`settings`). | **Orders, Delivery, Shipping Labels, Returns, and Stock Management are removed** from `/admin` and routed automatically to `/inventorysoftware`. |
+| **`bhumivera.com/support`** | Support Executives (L1–L3) | Customer Support Desk: Universal search by Order # / Tracking AWB / Email / Phone, customer identity verification checklist, live customer chat replies, support ticket resolution, 1-time courtesy coupons (role-capped), and 30-minute password rescue links. | Cannot manage staff logins or warehouse inventory. |
+| **`bhumivera.com/superadminsupport`** | Owner / SuperAdmin | **Staff Governance & IAM**: Manage all Support Agents (`/support` L1/L2/L3 roles, chat supervision, ticket deletion) **AND** create/manage Staff Account IDs, Roles, Passkeys, 2FA, and granular permissions for `/inventorysoftware` (`Tab 6: Warehouse & Inventory Staff`). | Does not handle direct customer chat queues unless barging in. |
+| **`bhumivera.com/inventorysoftware`** | Owner / Warehouse & POS Staff | **100% Order Lifecycle, Delivery, RTO Returns, Single Main Stock, Offline POS, QR Scanner API & Daily SQL Backups**: All online orders route here (`?view=online`), auto-fetched customer shipping labels (`?view=labels`), undelivered RTO return & restock (`?view=ret`), master online+offline stock (`?view=inv`), POS billing (`?view=sale`), mobile QR scanner bridge (`?view=scanner`), storage keeper bins (`?view=keeper`), GRN inwarding (`?view=grn`), physical stock audit (`?view=audit`), and daily Railway/Vercel SQL backups (`?view=backup`). | Full Customer CRM is kept in `/admin/dashboard/users`; `/inventorysoftware` only auto-fetches customer shipping label details. |
+
+## 3. Core Operational Workflows & Sync Mechanics
+
+### 3.1. Automatic Routing of Online Orders (`bhumivera.com` → `/inventorysoftware`)
+1. When a customer places an order on `bhumivera.com` (`POST /api/orders` in `routes/orderRoutes.js` and `createOrder` in `models/orderModel.js`):
+   * Stock is atomically deducted from `products.quantity` (and component SKUs if a Regimen Bundle is ordered).
+   * `calculateEstimatedDeliveryDate(address, deliveryType)` automatically computes the expected delivery date (`orders.estimated_delivery_date`) based on destination:
+     * **East India (West Bengal, Jharkhand, Bihar, Odisha / Pin `70x`–`82x`)**: `+2 days` (`+1 day` Express).
+     * **Metro Corridors (Delhi NCR, Mumbai, Bengaluru, Hyderabad, Chennai, Pune, Ahmedabad)**: `+4 days` (`+3 days` Express).
+     * **Rest of India**: `+5 days` (`+4 days` Express).
+   * `orders.current_location_checkpoint` is initialized to `'Order Placed — Routed to Asansol Inventory Hub'`.
+   * `syncWebsiteProductsToInventoryMeta(pool)` syncs `inventory_product_meta.physical_stock` and `sold_online_qty`, and `recordStockMovement` writes an `ONLINE_ORDER_PLACED` entry into `inventory_stock_movements`.
+2. In `www.bhumivera.com/inventorysoftware` (`Order Lifecycle` view):
+   * Every order displays its **Ordered Formulations alongside Live Main Stock & Bin Code** (`inStockQty`, `binCode`, `batchNo`).
+   * The operator can manage the entire lifecycle (`pending` → `confirmed` → `packed` → `shipped` → `delivered`), edit the **Tracking ID (AWB)**, **Courier Partner**, **Estimated Delivery Date**, and **Live Location Checkpoint ("Where the product is right now")**, or book a forward carrier shipment directly via **Shiprocket / Delhivery** (`POST /api/inventory-software/online-orders/:orderId/book-carrier-label`).
+
+### 3.2. Auto-Fetched Customer Shipping Labels (Zero Bloated Offline Customer CRM)
+* **Customer Management Isolation**: Full customer account management, LTV analytics, and marketing broadcasts live exclusively in `/admin/dashboard/users`.
+* **Automatic Label Extraction in `/inventorysoftware`**:
+  * Whenever an order arrives (e.g. from Delhi, Mumbai, or anywhere in India), `/inventorysoftware` automatically parses `orders.address_snapshot` into structured shipping label fields: `customerName`, `customerPhone`, `customerAltPhone`, `line1`, `line2`, `landmark`, `city`, `state`, `pincode`, `googleMapsUrl`, and COD/Prepaid banner.
+  * Operators can print single or bulk **4×6 Thermal Courier Shipping Labels** and **A4 Branded GST Tax Invoices** in 1 click (`?view=labels` or inside `Order Lifecycle`), and can edit the recipient address on an order (`PUT /api/inventory-software/online-orders/:orderId/edit`) if a customer requests an address correction before dispatch.
+
+### 3.3. Undelivered Order (RTO — Return to Origin) & Restock Policy
+* **Strict Company Policy**: Bhumivera formulations are intimate personal care cosmetics and have **ZERO policy of post-delivery customer returns**. Once an order status is `delivered`, the backend (`POST /api/inventory-software/returns/rto-process`) strictly blocks any return (`POST_DELIVERY_RETURN_PROHIBITED`).
+* **Undelivered / Courier RTO Returns**:
+  * If a parcel was shipped/dispatched from the warehouse but could not be delivered (customer unavailable, door locked, incomplete address, refused at doorstep, or courier RTO), the operator processes it in `/inventorysoftware?view=ret`:
+    1. **`RESTOCK` Mode (Parcel Returned Intact/Unopened)**: Transitions order to `returned`, sets `rto_restock_mode = 'RESTOCKED'`, atomically adds all item quantities back to `products.quantity` and `inventory_product_meta.physical_stock`, recalculates Regimen Bundle stocks, and logs `ONLINE_ORDER_RTO_RESTOCK`.
+    2. **`QUARANTINE` Mode (Parcel Damaged in Courier Transit)**: Transitions order to `returned`, sets `rto_restock_mode = 'QUARANTINED'`, increments `inventory_product_meta.damaged_quarantine_stock` without inflating sellable website stock, and logs `ONLINE_ORDER_RTO_QUARANTINE`.
+
+### 3.4. Single Unified Inventory (Online + Offline POS Sync) & Multi-Warehouse Readiness
+* There is **one unified main inventory** (`warehouse_id = 1`, `Bhumivera Flagship Hub — Asansol`).
+* `products.quantity` (live website stock) and `inventory_product_meta.physical_stock` (minus optional `safety_buffer_stock`) are locked in a 2-way atomic transaction via `atomicAdjustProductStock()` in `models/inventorySoftwareModel.js`.
+* Whenever an offline sale is completed in `/inventorysoftware` POS (`POST /api/inventory-software/pos/checkout`), it atomically deducts `products.quantity`, recalculates all 3 Regimen Bundles (`recalculateAllBundleStocks`), and flushes the Redis public catalog cache so `bhumivera.com` reflects the new stock within milliseconds.
+* Both `inventory_product_meta` and `inventory_storage_bins` include `warehouse_id INT NOT NULL DEFAULT 1` so future multi-warehouse expansion requires zero breaking schema changes.
+
+## 4. Unique Product QR Codes & Future Android QR Scanner App API Specification
+
+Every Bhumivera product has a unique QR code (`inventory_product_meta.qr_code_payload`, SKU, EAN-13 Barcode, and bottle-level serials in `product_serials`). The backend and frontend in `/inventorysoftware` are **100% pre-integrated** for the upcoming Android Mobile QR Scanner App.
+
+### 4.1. How Mobile QR Scanning Works (`?view=scanner` & `?view=sale`)
+1. **Authentication**: The Android Scanner App authenticates using the `x-scanner-api-key` header (or `scannerApiKey` in JSON body). The pairing QR code in `/inventorysoftware?view=scanner` encodes:
+   ```json
+   {
+     "app": "BHUMIVERA_ANDROID_QR_SCANNER",
+     "endpoint": "https://service.bhumivera.com/api/inventory-software/scanner/scan",
+     "queueEndpoint": "https://service.bhumivera.com/api/inventory-software/scanner/queue",
+     "scannerApiKey": "BV-SCAN-...",
+     "sessionCode": "DEFAULT-POS-TERMINAL"
+   }
+   ```
+2. **Scanning Items from Mobile (`POST /api/inventory-software/scanner/scan`)**:
+   * **Single Scan Payload** (e.g. scanning 1 soap or 10 soaps at once):
+     ```json
+     {
+       "qrCode": "https://www.bhumivera.com/verify?sku=BV-LUX-CSOAP-04&batch=BV-BATCH-2026-CS04",
+       "quantity": 10,
+       "sessionCode": "DEFAULT-POS-TERMINAL",
+       "deviceName": "Akash Android Scanner"
+     }
+     ```
+   * **Batch Scan Payload**:
+     ```json
+     {
+       "items": [
+         { "qrCode": "BV-LUX-CSOAP-04", "quantity": 10 },
+         { "qrCode": "BV-LUX-CFW-01", "quantity": 2 }
+       ],
+       "sessionCode": "DEFAULT-POS-TERMINAL"
+     }
+     ```
+   * **Resolution Logic (`resolveProductByQrOrCode` in `models/inventorySoftwareModel.js`)**: Automatically resolves full verification URLs (`https://www.bhumivera.com/verify?serial=...` or `?sku=...`), product page URLs (`/product/...`), bottle genuinity serial numbers (`product_serials.serial_number`), SKUs (`BV-LUX-CSOAP-04`), or EAN-13 barcodes (`8908020260046`), validates live available stock, and inserts/increments the item in `inventory_scanner_queue`.
+3. **Syncing into POS Billing (`GET /api/inventory-software/scanner/queue` & `POST /api/inventory-software/scanner/queue/consume`)**:
+   * In `/inventorysoftware?view=sale`, clicking **"Sync Mobile Scanned Items"** (or scanning directly in the POS scan bar) pulls all queued items into `posCart` and marks them consumed upon POS invoice generation (`POST /api/inventory-software/pos/checkout`).
+
+## 5. Daily SQL & Snapshot Disaster Recovery Backup Engine (Vercel + Railway Sync)
+
+To protect against database erasure, hacking, or accidental table drops on Railway:
+
+1. **Database Table (`system_daily_backups`)**: Stores rolling daily backups containing both a standard MySQL dump (`sql_dump` with `CREATE TABLE IF NOT EXISTS` and `INSERT INTO ... ON DUPLICATE KEY UPDATE` across all 27 core tables) and a structured JSON snapshot (`snapshot_json`), signed with a 512-bit quantum SHA-512 checksum.
+2. **Automated Daily Triggers**:
+   * **Vercel Cron (`Bhumivera_Backend/vercel.json`)**: Scheduled daily at `02:00 UTC` via `GET /api/inventory-software/backup/cron-daily`.
+   * **Bootstrap Auto-Guard (`ensureDailyAutoBackup`)**: Every time `/inventorysoftware` loads, the backend verifies whether today's backup (`CURDATE()`) exists in `system_daily_backups`; if not, it generates it automatically in the background.
+   * **Local Browser Emergency Mirror**: Whenever a manual backup is created in `/inventorysoftware?view=backup`, an offline copy is cached in `localStorage['BV_DAILY_EMERGENCY_SQL_BACKUP']`.
+3. **1-Click Disaster Recovery Restore (`POST /api/inventory-software/backup/restore`)**:
+   * Accepts a `backupId` from the vault, an uploaded `.sql` file, or an uploaded `.avbak.json` file.
+   * Disables foreign-key checks inside a transaction, restores all tables and rows, re-runs `syncWebsiteProductsToInventoryMeta()` and `recalculateAllBundleStocks()`, and flushes the Redis/Vercel catalog cache so both **Railway** and **Vercel** recover immediately.
+
+## 6. Complete Manifest of Upgraded & Deleted Files (Current Release)
+
+### 6.1. Upgraded / Modified Files
+* **Backend (`Bhumivera_Backend`)**:
+  1. `models/inventorySoftwareModel.js` — Added `calculateEstimatedDeliveryDate`, `resolveProductByQrOrCode`, `generateFullDatabaseBackup`, `ensureDailyAutoBackup`, `restoreFullDatabaseBackup`, `inventory_scanner_queue` table, `system_daily_backups` table, and `orders` lifecycle/RTO columns.
+  2. `routes/inventorySoftwareRoutes.js` — Added full online order lifecycle endpoints (`/online-orders/:orderId/dispatch-status`, `/online-orders/:orderId/edit`, `/online-orders/mark-labels-printed`, `/online-orders/:orderId/book-carrier-label`), RTO return/restock endpoint (`/returns/rto-process`), shipping zone/carrier endpoints (`/shipping/*`), mobile QR scanner endpoints (`/scanner/*`), and daily SQL backup/restore endpoints (`/backup/*`).
+  3. `routes/orderRoutes.js` — Automatically computes `estimated_delivery_date`, sets `current_location_checkpoint`, syncs `inventory_product_meta`, and logs `ONLINE_ORDER_PLACED` in `inventory_stock_movements` on every customer checkout.
+  4. `server.js` — Increased `/api/inventory-software` payload limit to `50mb` for full SQL/JSON disaster recovery restores.
+  5. `vercel.json` — Added daily cron job (`/api/inventory-software/backup/cron-daily`).
+  6. `test/inventorySoftware.test.js` — Added unit tests for `calculateEstimatedDeliveryDate` and RBAC permissions.
+  7. `CODEBASE_MEMORY.md` — Synced with this master blueprint.
+
+* **Frontend (`Bhumivera_Frontend`)**:
+  1. `src/App.jsx` — Routed `/admin/dashboard/orders`, `/admin/dashboard/returns`, `/admin/dashboard/shipping`, `/admin/dashboard/warehouse`, and `/admin/dashboard/inventory` directly to `/inventorysoftware` (`?view=online`, `?view=ret`, `?view=labels`, `?view=keeper`, `?view=inv`).
+  2. `src/pages/AdminDashboard.jsx` — Isolated `/admin` strictly to Website & Marketing Governance (Spins, Referrals, Brand Ambassadors, Customer CRM, Product Catalog, Reviews, GST, Loyalty, Settings) and removed ported Order, Return, and Shipping tabs.
+  3. `src/pages/admin/DashboardOverview.jsx` — Updated quick-access cards to link Order Lifecycle, Labels, RTO, and Master Stock directly to `/inventorysoftware`.
+  4. `src/pages/admin/ProductManagement.jsx` — Locked stock editing on existing products to `/inventorysoftware?view=inv` so stock has a single source of truth.
+  5. `src/pages/InventorySoftware.jsx` — Added Full Online Order Lifecycle & Tracking Editor (`?view=online`), Auto-Fetched Customer Shipping Label Studio (`?view=labels`), Undelivered Order RTO Restock Studio (`?view=ret`), Mobile QR Scanner App API Pairing & Live POS Cart Bridge (`?view=scanner` + `?view=sale`), and Daily SQL Backup & 1-Click Restore Center (`?view=backup`), while removing bloated offline Customer CRM/Khata.
+  6. `CODEBASE_MEMORY.md` — Synced with this master blueprint.
+
+### 6.2. Obsolete / Duplicate Files Deleted
+To prevent dead code or duplicate panel confusion, the following legacy/ported files must be deleted (and have been removed from the complete ZIP archives):
+* **Frontend (`Bhumivera_Frontend`)**:
+  * `src/Warehouse.jsx`
+  * `src/WarehouseManagement.jsx`
+  * `src/pages/Warehouse.jsx`
+  * `src/pages/WarehouseAdminLogin.jsx`
+  * `src/pages/admin/InventoryManagement.jsx`
+  * `src/pages/admin/WarehouseAdmin.jsx`
+  * `src/pages/admin/WarehouseManagement.jsx`
+  * `src/pages/admin/OrderManagement.jsx`
+  * `src/pages/admin/OrderManagement.test.jsx`
+  * `src/pages/admin/ReturnManagement.jsx`
+  * `src/pages/admin/ReturnManagement.test.jsx`
+  * `src/pages/admin/ShippingManagement.jsx`
+* **Backend (`Bhumivera_Backend`)**:
+  * `public/warehouse.html`
+  * `public/warehouseadmin.html`
+
+## 7. Chronological Upgrade Ledger (AI Resume Point)
+
+* **Migrations `v1`–`v74`**: Core e-commerce tables, 6 flagship formulations (`seedLuxuryCatalog`), 3 Maison Regimen Bundles (`seedMaisonRegimenBundles`), 108-module RBAC matrix, and 1,500 authentic pan-India customer reviews (2020–2026).
+* **Migration `v75`**: Traceable product-batch and expiry-backed authenticity-label schema (`product_batches`, `product_serials`).
+* **Upgrade `v76` (2026-11-03 — Panel Bifurcation, Order Lifecycle, RTO Engine, QR Scanner API & Daily SQL Backup)**:
+  * Bifurcated `/admin` (Website, Spins, Referrals, Brand Ambassadors, Customer CRM, Catalog, GST) and `/inventorysoftware` (Order Lifecycle, Auto Shipping Labels, RTO Returns, Unified Online+Offline Stock, POS Billing, Mobile QR Scanner API, Daily SQL Backup).
+  * **Next Planned Milestone (`v77` — Standalone Android QR Scanner App)**: Build the lightweight Android camera scanner app that scans the pairing QR in `/inventorysoftware?view=scanner` and POSTs scanned product QR codes to `POST /api/inventory-software/scanner/scan` with `x-scanner-api-key`. The backend and frontend endpoints for `v77` are already 100% live and tested in `v76`.
