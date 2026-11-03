@@ -1474,7 +1474,7 @@ router.post('/pos/checkout', authenticateScannerOrStaff, requirePermission('can_
       items = [],
       extraCharges = [],
       discount = 0,
-      taxRate = 18,
+      taxRate = 0,
       paidAmount = 0,
       paymentMode = 'Cash',
       upiReference = '',
@@ -2642,7 +2642,7 @@ router.get('/scanner/catalog', authenticateScannerOrStaff, async (_req, res) => 
              p.category,
              COALESCE(p.price, m.selling_price) AS mrp,
              COALESCE(p.discount_price, m.selling_price) AS price,
-             COALESCE(m.gst_rate, 18) AS gst_rate,
+             COALESCE(m.gst_rate, 0) AS gst_rate,
              COALESCE(m.gst_hsn_code, '33049990') AS gst_hsn_code,
              COALESCE(p.quantity, m.physical_stock, 0) AS available_stock,
              m.bin_code,
@@ -2858,7 +2858,7 @@ router.get('/scanner/queue', authenticateScannerOrStaff, async (req, res) => {
   }
 });
 
-router.post('/scanner/queue/consume', authenticateInventoryStaff, async (req, res) => {
+router.post('/scanner/queue/consume', authenticateScannerOrStaff, async (req, res) => {
   try {
     const { ids = [], clearAll = false, sessionCode = 'DEFAULT-POS-TERMINAL' } = req.body || {};
     if (clearAll) {
@@ -2871,6 +2871,147 @@ router.post('/scanner/queue/consume', authenticateInventoryStaff, async (req, re
       await pool.query(`UPDATE inventory_scanner_queue SET status = 'consumed' WHERE id IN (${ph})`, ids);
     }
     res.json({ success: true, message: 'Scanner queue synced with POS cart.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// REAL-TIME 2-WAY SYNC: Add or Update single item quantity in active session queue
+router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const {
+      sessionCode = 'DEFAULT-POS-TERMINAL',
+      sku,
+      metaId,
+      quantity,
+      delta,
+      price,
+      name,
+      availableStock,
+    } = req.body || {};
+
+    if (!sku && !metaId) {
+      return res.status(400).json({ success: false, message: 'SKU or metaId required' });
+    }
+
+    const [existingRows] = await pool.query(
+      `SELECT * FROM inventory_scanner_queue
+       WHERE session_code = ? AND status = 'queued' AND (sku = ? OR (meta_id = ? AND meta_id IS NOT NULL))
+       LIMIT 1`,
+      [sessionCode, sku || '', metaId || 0]
+    );
+
+    if (existingRows.length > 0) {
+      const existing = existingRows[0];
+      let newQty = Number(existing.quantity);
+      if (delta !== undefined && delta !== null) {
+        newQty += Number(delta);
+      } else if (quantity !== undefined && quantity !== null) {
+        newQty = Number(quantity);
+      }
+
+      if (newQty <= 0) {
+        await pool.query('DELETE FROM inventory_scanner_queue WHERE id = ?', [existing.id]);
+      } else {
+        const maxStock = existing.available_stock > 0 ? existing.available_stock : 9999;
+        newQty = Math.min(newQty, maxStock);
+        await pool.query(
+          'UPDATE inventory_scanner_queue SET quantity = ? WHERE id = ?',
+          [newQty, existing.id]
+        );
+      }
+    } else {
+      const reqQty = delta !== undefined && delta !== null ? Number(delta) : Number(quantity || 1);
+      if (reqQty > 0) {
+        let item = await resolveProductByQrOrCode(pool, sku || String(metaId));
+        if (!item && metaId) {
+          const [metaRows] = await pool.query('SELECT * FROM inventory_product_meta WHERE id = ?', [metaId]);
+          if (metaRows.length > 0) {
+            const m = metaRows[0];
+            item = {
+              metaId: m.id,
+              productId: m.product_id,
+              sku: m.sku,
+              barcode: m.barcode,
+              serialNumber: null,
+              name: m.custom_name || name || 'Product',
+              price: Number(m.selling_price || price || 0),
+              mrp: Number(m.selling_price || 0),
+              gstHsnCode: m.gst_hsn_code || '33049990',
+              gstRate: 0,
+              uom: m.uom || 'Pcs',
+              availableStock: Number(m.physical_stock || availableStock || 99),
+            };
+          }
+        }
+
+        if (item) {
+          await pool.query(
+            `INSERT INTO inventory_scanner_queue
+              (session_code, qr_payload, meta_id, product_id, sku, barcode, serial_number, product_name,
+               unit_price, mrp, gst_hsn_code, gst_rate, uom, quantity, available_stock, scanned_by, device_name, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.00, ?, ?, ?, ?, 'POS Sync', 'queued')`,
+            [
+              sessionCode,
+              item.sku,
+              item.metaId,
+              item.productId,
+              item.sku,
+              item.barcode,
+              item.serialNumber,
+              item.name,
+              item.price,
+              item.mrp,
+              item.gstHsnCode,
+              item.uom,
+              reqQty,
+              item.availableStock,
+              req.invUser?.username || 'sync-agent',
+            ]
+          );
+        }
+      }
+    }
+
+    const [updatedQueue] = await pool.query(
+      "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
+      [sessionCode]
+    );
+
+    res.json({ success: true, queue: updatedQueue });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// REAL-TIME 2-WAY SYNC: Remove item from active session queue
+router.post('/scanner/queue/remove', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const { sessionCode = 'DEFAULT-POS-TERMINAL', id, sku, metaId } = req.body || {};
+    if (id) {
+      await pool.query("DELETE FROM inventory_scanner_queue WHERE session_code = ? AND id = ?", [sessionCode, id]);
+    } else if (sku) {
+      await pool.query("DELETE FROM inventory_scanner_queue WHERE session_code = ? AND sku = ? AND status = 'queued'", [sessionCode, sku]);
+    } else if (metaId) {
+      await pool.query("DELETE FROM inventory_scanner_queue WHERE session_code = ? AND meta_id = ? AND status = 'queued'", [sessionCode, metaId]);
+    }
+
+    const [updatedQueue] = await pool.query(
+      "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
+      [sessionCode]
+    );
+    res.json({ success: true, queue: updatedQueue });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// REAL-TIME 2-WAY SYNC: Clear active session queue
+router.post('/scanner/queue/clear', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const { sessionCode = 'DEFAULT-POS-TERMINAL' } = req.body || {};
+    await pool.query("DELETE FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued'", [sessionCode]);
+    res.json({ success: true, message: 'Queue cleared', queue: [] });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
