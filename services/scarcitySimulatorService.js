@@ -11,7 +11,7 @@ const {
 const SETTINGS_KEY = 'scarcity_simulator_config';
 const SETTINGS_GROUP = 'scarcity_simulator';
 const MAX_PUBLIC_PRODUCT_IDS = 100;
-const RECENT_ACTIVITY_CACHE_MS = 5 * 60 * 1000;
+const RECENT_ACTIVITY_CACHE_MS = 30 * 60 * 1000;
 const PURCHASE_STATUS_SQL = `o.status NOT IN ('cancelled', 'returned', 'archived')
   AND (o.payment_status = 'paid' OR o.payment_mode = 'COD')`;
 const recentActivityCache = new Map();
@@ -101,9 +101,57 @@ const withConfig = async mutate => {
   }
 };
 
-const getAdminConfig = () => withConfig(() => false);
+// Public reads are served from memory so a sleeping/paused DB is not woken on every request.
+const PUBLIC_CACHE_MS = 15 * 60 * 1000;
+let configCache = null;
+const activeIdsCache = new Map();
 
-const saveAdminConfig = nextConfig => withConfig(current => {
+const rememberConfig = config => {
+  configCache = { config: JSON.parse(JSON.stringify(config)), expiresAt: Date.now() + PUBLIC_CACHE_MS };
+  return config;
+};
+
+const getCachedConfig = async () => {
+  if (configCache && configCache.expiresAt > Date.now()) return configCache.config;
+  try {
+    return rememberConfig(await withConfig(() => false));
+  } catch (error) {
+    if (configCache) {
+      // DB unreachable: keep serving last known config and retry in a minute.
+      configCache.expiresAt = Date.now() + 60 * 1000;
+      return configCache.config;
+    }
+    return createDefaultConfig();
+  }
+};
+
+const getActiveIds = async requestedIds => {
+  const now = Date.now();
+  const unknown = requestedIds.filter(id => !(activeIdsCache.get(id)?.expiresAt > now));
+  if (unknown.length) {
+    try {
+      const placeholders = unknown.map(() => '?').join(', ');
+      const [rows] = await pool.query(
+        `SELECT id FROM products WHERE status = 'active' AND id IN (${placeholders})`,
+        unknown
+      );
+      const active = new Set(rows.map(row => String(row.id)));
+      for (const id of unknown) {
+        activeIdsCache.set(id, { active: active.has(id), expiresAt: now + PUBLIC_CACHE_MS });
+      }
+    } catch {
+      for (const id of unknown) {
+        if (!activeIdsCache.has(id)) activeIdsCache.set(id, { active: true, expiresAt: now + 60 * 1000 });
+      }
+    }
+    if (activeIdsCache.size > 2000) activeIdsCache.clear();
+  }
+  return requestedIds.filter(id => activeIdsCache.get(id)?.active);
+};
+
+const getAdminConfig = async () => rememberConfig(await withConfig(() => false));
+
+const saveAdminConfig = async nextConfig => rememberConfig(await withConfig(current => {
   const products = {};
   for (const [productId, item] of Object.entries(nextConfig.products)) {
     const currentProduct = current.products[productId] || createDefaultProduct(productId);
@@ -116,30 +164,20 @@ const saveAdminConfig = nextConfig => withConfig(current => {
   current.sampleActivityEnabled = nextConfig.sampleActivityEnabled;
   current.products = products;
   return true;
-});
+}));
 
 const getPublicSnapshots = async productIds => {
   const requestedIds = parseProductIds(productIds);
-  let ids = requestedIds;
-  if (requestedIds.length) {
-    const placeholders = requestedIds.map(() => '?').join(', ');
-    const [rows] = await pool.query(
-      `SELECT id FROM products WHERE status = 'active' AND id IN (${placeholders})`,
-      requestedIds
-    );
-    ids = rows.map(row => String(row.id));
+  const ids = requestedIds.length ? await getActiveIds(requestedIds) : requestedIds;
+  const config = await getCachedConfig();
+  rotateConfigDay(config, new Date());
+  let activityProfiles = {};
+  try {
+    activityProfiles = await getRecentActivityProfiles(ids);
+  } catch {
+    const stale = recentActivityCache.get(ids.slice().sort().join(','));
+    activityProfiles = stale?.profiles || {};
   }
-  const config = await withConfig(current => {
-    let changed = false;
-    for (const productId of ids) {
-      if (!current.products[productId]) {
-        current.products[productId] = createDefaultProduct(productId);
-        changed = true;
-      }
-    }
-    return changed;
-  });
-  const activityProfiles = await getRecentActivityProfiles(ids);
   return {
     enabled: config.enabled,
     sampleActivityEnabled: config.sampleActivityEnabled,

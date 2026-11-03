@@ -1623,10 +1623,12 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
   let transactionStarted = false;
   try {
     const providedIdempotencyKey = String(req.get('Idempotency-Key') || req.body?.idempotencyKey || '').trim();
-    const idempotencyKey =
-      providedIdempotencyKey || (req.invUser.scannerSessionCode ? `legacy-${crypto.randomUUID()}` : '');
+    let idempotencyKey = providedIdempotencyKey;
     const sessionCode = normalizePosSessionCode(req.body?.sessionCode || req.invUser.scannerSessionCode);
-    if (!/^[A-Za-z0-9_-]{8,80}$/.test(idempotencyKey)) {
+    if (!providedIdempotencyKey && !req.invUser.scannerSessionCode) {
+      return res.status(400).json({ success: false, message: 'A valid Idempotency-Key is required for checkout.' });
+    }
+    if (providedIdempotencyKey && !/^[A-Za-z0-9_-]{8,80}$/.test(providedIdempotencyKey)) {
       return res.status(400).json({ success: false, message: 'A valid Idempotency-Key is required for checkout.' });
     }
     if (!sessionCode) {
@@ -1663,6 +1665,16 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       .createHash('sha256')
       .update(JSON.stringify({ sessionCode, customer, items, extraCharges, discount, taxRate, paidAmount, paymentMode, upiReference, notes }))
       .digest('hex');
+    if (!idempotencyKey) {
+      // Scanner builds that send no key: treat an identical bill retried within 30s as the same checkout.
+      const [[recent]] = await pool.query(
+        `SELECT idempotency_key FROM inventory_pos_checkout_requests
+         WHERE request_hash = ? AND idempotency_key LIKE 'legacy-%' AND created_at > (NOW() - INTERVAL 30 SECOND)
+         ORDER BY created_at DESC LIMIT 1`,
+        [requestHash]
+      );
+      idempotencyKey = recent?.idempotency_key || `legacy-${crypto.randomUUID()}`;
+    }
     await conn.beginTransaction();
     transactionStarted = true;
     try {
@@ -1693,7 +1705,9 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
 
     const [[config]] = await conn.query('SELECT default_tax_rate FROM inventory_store_config WHERE id = 1 FOR UPDATE');
     const safeTaxRate = Math.max(0, Number(config?.default_tax_rate ?? 18) || 0);
+    // Scanner devices cannot refresh the store tax rate, so the server rate always wins for them.
     if (
+      !req.invUser.scannerSessionCode &&
       taxRate !== undefined &&
       (!Number.isFinite(Number(taxRate)) || Math.abs(Number(taxRate) - safeTaxRate) > 0.001)
     ) {
