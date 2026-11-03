@@ -125,6 +125,7 @@ const supportRoutes = require("./routes/supportRoutes");
 
 const { normalizeErrorResponses, requestErrorHandler } = require("./utils/errorReporting");
 const { createPublicSwrCache } = require("./middleware/publicSwrCache");
+const { createRequestDeduplication } = require("./middleware/requestDeduplication");
 
 const app = express();
 app.disable("x-powered-by");
@@ -175,6 +176,7 @@ const corsOptions = {
     "X-Client-Platform",
     "X-SuperAdmin-Action-Passcode",
     "X-CSRF-Token",
+    "X-Idempotency-Key",
     "Accept",
     "Origin"
   ],
@@ -367,6 +369,7 @@ app.use(async (req, res, next) => {
 
 app.set("trust proxy", 1);
 app.use("/api/webhooks/razorpay", createRazorpayWebhookRouter({ pool }));
+app.use("/api", createRequestDeduplication());
 app.use("/api/inventory-software", express.json({ limit: "50mb" }), express.urlencoded({ extended: true, limit: "50mb" }), normalizeErrorResponses, inventorySoftwareRoutes);
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
