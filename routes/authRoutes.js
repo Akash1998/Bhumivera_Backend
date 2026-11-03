@@ -3,8 +3,7 @@ const express = require("express"),
   crypto = require("crypto"),
   jwt = require("jsonwebtoken"),
   bcrypt = require("bcryptjs"),
-  { OAuth2Client } = require('google-auth-library'),
-qrcode = require('qrcode'),
+qrcode = { toDataURL: (...args) => require('qrcode').toDataURL(...args) },
 { generateSecret, generateURI, verify } = require('otplib'),
   pool = require('../config/db'),
   { sendMail } = require('../utils/mail'),
@@ -63,7 +62,16 @@ const TERMS_VERSION = '2026-10-14';
 const AD_PERSONALIZATION_CONSENT_VERSION = 'product-recommendations-v2';
 const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_OAUTH_WEB_CLIENT_ID ||
   '445526551634-kr5t8oq6p1stodd8hf2mdmcpep201j9l.apps.googleusercontent.com';
-const googleOAuthClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
+let googleOAuthClientInstance;
+const googleOAuthClient = {
+  verifyIdToken: (...args) => {
+    if (!googleOAuthClientInstance) {
+      const { OAuth2Client } = require('google-auth-library');
+      googleOAuthClientInstance = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
+    }
+    return googleOAuthClientInstance.verifyIdToken(...args);
+  },
+};
 
 const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
 const hashAdminOtp = (adminId, otp) => hashOtp('admin-login', adminId, otp);

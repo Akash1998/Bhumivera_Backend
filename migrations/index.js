@@ -31,7 +31,6 @@ const { initAiSupportTables } = require('../models/aiSupportModel');
 const { initSuperAdminFortressTables } = require('../models/superAdminVaultModel');
 const { initInventorySoftwareTables } = require('../models/inventorySoftwareModel');
 const { correctOutdatedSiteMetadata } = require('../utils/siteMetadataMigration');
-const { seedLuxuryCatalog, seedMaisonRegimenBundles } = require('../scripts/seedLuxuryCatalog');
 const { generateOrderNumber } = require('../services/orderNumber');
 const {
   DEFAULT_ORDER_SPIN_REWARDS,
@@ -785,7 +784,7 @@ const migrations = [
     version: 66,
     name: 'purge legacy catalog artifacts and seed luxury geo catalog',
     previousNames: ['purge legacy anritvox artifacts and seed luxury geo catalog'],
-    up: () => seedLuxuryCatalog(pool),
+    up: async () => {},
   },
   {
     version: 67,
@@ -844,7 +843,7 @@ const migrations = [
   {
     version: 72,
     name: 'add reservable maison regimen bundle products',
-    up: () => seedMaisonRegimenBundles(pool),
+    up: async () => {},
   },
   {
     version: 73,
@@ -855,10 +854,7 @@ const migrations = [
   {
     version: 74,
     name: 'purge repetitive reviews and seed 1500 authentic pan-India customer reviews v6 (2020-2026)',
-    up: async () => {
-      const { seed1500AuthenticReviews } = require('../models/reviewModel');
-      return seed1500AuthenticReviews(pool);
-    },
+    up: async () => {},
   },
   {
     version: 75,

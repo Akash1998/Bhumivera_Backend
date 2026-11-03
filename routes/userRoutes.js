@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { generateSecret, generateURI, verify } = require('otplib');
-const qrcode = require('qrcode');
+const qrcode = { toDataURL: (...args) => require('qrcode').toDataURL(...args) };
 const router = express.Router();
 const AD_PERSONALIZATION_CONSENT_VERSION = 'product-recommendations-v2';
 const {

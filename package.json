@@ -7,7 +7,7 @@
     "node": "22.x"
   },
   "scripts": {
-    "start": "node server",
+    "start": "node --max-semi-space-size=1 --optimize-for-size --max-old-space-size=96 server",
     "dev": "nodemon server",
     "lint": "eslint .",
     "test": "node --test",
@@ -15,8 +15,7 @@
     "veo:list": "node scripts/generateConciergeVeoVideos.js --list",
     "veo:dry-run": "node scripts/generateConciergeVeoVideos.js --dry-run --all",
     "veo:generate": "node scripts/generateConciergeVeoVideos.js --all",
-    "seed:luxury": "node scripts/seedLuxuryCatalog.js",
-    "seed:reviews": "node scripts/seedReviews.js"
+    "veo:generate": "node scripts/generateConciergeVeoVideos.js --all"
   },
   "keywords": [
     "ecommerce",

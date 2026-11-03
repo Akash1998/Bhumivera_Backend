@@ -1,4 +1,3 @@
-const { Pinecone } = require('@pinecone-database/pinecone');
 const pool = require('../config/db');
 
 const indexName = 'Bhumivera-products';
@@ -7,6 +6,7 @@ function getPinecone() {
   if (pinecone) return pinecone;
   try {
     if (process.env.PINECONE_API_KEY) {
+      const { Pinecone } = require('@pinecone-database/pinecone');
       pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
     }
   } catch (e) {
@@ -17,22 +17,50 @@ function getPinecone() {
 }
 
 // Singleton pattern to load the AI model once in memory
-let extractorPipeline;
+let extractorPromise;
 
-async function getExtractor() {
-  if (!extractorPipeline) {
-    // Dynamically import the local AI model
-    const { pipeline } = await import('@huggingface/transformers');
-    // Using MiniLM: extremely fast, lightweight, and 100% free
-    extractorPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+// Cache the promise so concurrent first calls don't each load a separate copy of the model.
+function getExtractor() {
+  if (!extractorPromise) {
+    extractorPromise = import('@huggingface/transformers')
+      .then(({ pipeline }) => pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2'))
+      .catch(err => {
+        extractorPromise = null;
+        throw err;
+      });
   }
-  return extractorPipeline;
+  return extractorPromise;
+}
+
+const HF_EMBED_URL = 'https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction';
+
+// Same all-MiniLM-L6-v2 model, hosted: identical vectors to the local model, without ~150MB+ of RAM.
+async function generateRemoteEmbedding(text) {
+  const res = await fetch(HF_EMBED_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.HF_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs: text, options: { wait_for_model: true } }),
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error(`HF embedding failed: ${res.status}`);
+  let vec = await res.json();
+  if (Array.isArray(vec[0])) vec = vec[0];
+  if (vec.length !== 384) throw new Error('HF embedding returned unexpected shape');
+  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
+  return vec.map(v => v / norm);
 }
 
 /**
- * Generates an embedding vector locally (Free)
+ * Generates an embedding vector (hosted when HF_TOKEN is set, otherwise local)
  */
 async function generateEmbedding(text) {
+  if (process.env.HF_TOKEN) {
+    try {
+      return await generateRemoteEmbedding(text);
+    } catch (e) {
+      console.warn('[vectorService] Hosted embedding failed, using local model:', e.message);
+    }
+  }
   const extractor = await getExtractor();
   // Generate the 384-dimensional vector
   const output = await extractor(text, { pooling: 'mean', normalize: true });

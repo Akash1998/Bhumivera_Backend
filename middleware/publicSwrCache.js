@@ -4,7 +4,9 @@ const http = require('node:http');
 const MINUTE = 60 * 1000;
 const FRESH_MS = Number(process.env.PUBLIC_CACHE_FRESH_MS) || 30 * MINUTE;
 const MAX_STALE_MS = Number(process.env.PUBLIC_CACHE_MAX_STALE_MS) || 7 * 24 * 60 * MINUTE;
-const MAX_ENTRIES = 1000;
+const MAX_ENTRIES = 300;
+// Total byte budget: keys include query strings, so unique URLs could otherwise fill ~1 GB.
+const MAX_TOTAL_BYTES = Number(process.env.PUBLIC_CACHE_MAX_BYTES) || 24 * 1024 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const REFRESH_FAILURE_COOLDOWN_MS = MINUTE;
 const BROWSER_CACHE_CONTROL = 'public, max-age=60, stale-while-revalidate=600';
@@ -67,10 +69,22 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
   const refreshCooldown = new Map();
   const stats = { hits: 0, stale: 0, misses: 0, refreshes: 0, refreshFailures: 0, invalidations: 0 };
 
-  const remember = (key, entry) => {
+  let totalBytes = 0;
+  const drop = key => {
+    const old = store.get(key);
+    if (old) totalBytes -= old.size;
     store.delete(key);
+  };
+  const remember = (key, entry) => {
+    drop(key);
+    entry.size = Buffer.byteLength(entry.body);
     store.set(key, entry);
-    while (store.size > MAX_ENTRIES) store.delete(store.keys().next().value);
+    totalBytes += entry.size;
+    while (store.size > MAX_ENTRIES || totalBytes > MAX_TOTAL_BYTES) drop(store.keys().next().value);
+  };
+  const clearStore = () => {
+    store.clear();
+    totalBytes = 0;
   };
 
   const refresh = (req, key) => {
@@ -80,6 +94,7 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
     stats.refreshes += 1;
     const fail = () => {
       stats.refreshFailures += 1;
+      if (refreshCooldown.size >= MAX_ENTRIES) refreshCooldown.delete(refreshCooldown.keys().next().value);
       refreshCooldown.set(key, Date.now() + REFRESH_FAILURE_COOLDOWN_MS);
     };
     const request = http.request({
@@ -115,7 +130,7 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
       if (path.startsWith('/api/') && !NON_INVALIDATING_PREFIXES.some(prefix => path.startsWith(prefix))) {
         res.on('finish', () => {
           if (res.statusCode < 400 && store.size) {
-            store.clear();
+            clearStore();
             refreshCooldown.clear();
             stats.invalidations += 1;
           }
@@ -142,7 +157,7 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
         refresh(req, key);
         return sendEntry(res, entry, 'STALE');
       }
-      store.delete(key);
+      drop(key);
     }
 
     if (!forcedRefresh) stats.misses += 1;
@@ -172,8 +187,8 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
       refresh({ originalUrl: path, get: () => '' }, path);
     }
   };
-  middleware.clear = () => store.clear();
-  middleware.stats = () => ({ ...stats, entries: store.size });
+  middleware.clear = clearStore;
+  middleware.stats = () => ({ ...stats, entries: store.size, bytes: totalBytes });
   return middleware;
 };
 

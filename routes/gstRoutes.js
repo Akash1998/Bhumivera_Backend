@@ -1,5 +1,5 @@
 const express = require('express');
-const ExcelJS = require('exceljs');
+const loadExcelJS = () => require('exceljs');
 const pool = require('../config/db');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
 const {
@@ -1611,7 +1611,7 @@ router.get('/reports/export.json', asyncRoute(async (req, res) => {
  */
 router.get('/reports/export.xlsx', asyncRoute(async (req, res) => {
   const { from, to } = dateRange(req.query);
-  const workbook = new ExcelJS.Workbook();
+  const workbook = new (loadExcelJS().Workbook)();
   workbook.creator = 'Bhumivera Admin';
   workbook.created = new Date();
 

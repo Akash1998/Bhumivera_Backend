@@ -1,5 +1,3 @@
-const { applicationDefault, cert, getApps, initializeApp } = require('firebase-admin/app');
-const { getMessaging } = require('firebase-admin/messaging');
 const { existsSync } = require('node:fs');
 const { resolve } = require('node:path');
 const {
@@ -36,6 +34,8 @@ const getMessagingClient = () => {
   const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (!projectId || (!serviceAccountValue && !credentialsPath)) return null;
 
+  const { applicationDefault, cert, getApps, initializeApp } = require('firebase-admin/app');
+  const { getMessaging } = require('firebase-admin/messaging');
   let credential;
   if (serviceAccountValue) {
     let serviceAccount;
