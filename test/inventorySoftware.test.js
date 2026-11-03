@@ -49,3 +49,50 @@ test('calculateEstimatedDeliveryDate computes automatic delivery date by destina
   assert.equal(delhiDate, '2026-11-07'); // +4 days for Metro Delhi
   assert.equal(delhiExpress, '2026-11-06'); // +3 days for Express Metro Delhi
 });
+
+test('resolveProductByQrOrCode correctly extracts SKU, Serial, and Slug from website URLs', async () => {
+  const fakeDb = {
+    query: async (sql, params) => {
+      if (sql.includes('product_serials')) return [[]];
+      if (sql.includes('inventory_product_meta')) {
+        return [[
+          {
+            id: 1,
+            product_id: 10,
+            sku: 'BV-LUX-CFW-01',
+            barcode: '8908020260015',
+            custom_name: 'Bhumivera Activated Charcoal Purifying Luxury Face Wash',
+            physical_stock: 249,
+            selling_price: 299,
+            mrp: 699,
+            gst_rate: 18,
+            gst_hsn_code: '33049990',
+            bin_code: 'ASN-SHOP-R1-B01',
+            batch_no: 'BV-BATCH-2026-CF01',
+            uom: 'Pcs',
+          }
+        ]];
+      }
+      return [[]];
+    }
+  };
+
+  const { resolveProductByQrOrCode } = require('../models/inventorySoftwareModel');
+
+  // Test 1: Full verification link with ?sku=
+  const res1 = await resolveProductByQrOrCode(fakeDb, 'https://www.bhumivera.com/verify?sku=BV-LUX-CFW-01&batch=BV-BATCH-2026-CF01');
+  assert.ok(res1);
+  assert.equal(res1.sku, 'BV-LUX-CFW-01');
+  assert.equal(res1.price, 299);
+  assert.equal(res1.availableStock, 249);
+
+  // Test 2: Website product page URL
+  const res2 = await resolveProductByQrOrCode(fakeDb, 'https://www.bhumivera.com/product/activated-charcoal-luxury-face-wash');
+  assert.ok(res2);
+  assert.equal(res2.sku, 'BV-LUX-CFW-01');
+
+  // Test 3: Raw SKU scan
+  const res3 = await resolveProductByQrOrCode(fakeDb, 'BV-LUX-CFW-01');
+  assert.ok(res3);
+  assert.equal(res3.barcode, '8908020260015');
+});

@@ -1465,7 +1465,7 @@ router.post('/stock/adjust', authenticateInventoryStaff, requirePermission('can_
 });
 
 // 5. OFFLINE SHOP POS BILLING ENGINE (ATOMIC WEBSITE STOCK DEDUCTION!)
-router.post('/pos/checkout', authenticateInventoryStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+router.post('/pos/checkout', authenticateScannerOrStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -2621,6 +2621,86 @@ router.put('/shipping/carriers/:provider', authenticateInventoryStaff, requirePe
 });
 
 // 11. MOBILE QR CODE SCANNER API & LIVE POS CART BRIDGE (FOR ANDROID SCANNER APP)
+router.get('/scanner/ping', authenticateScannerOrStaff, async (_req, res) => {
+  res.json({
+    success: true,
+    status: 'ONLINE',
+    serverTime: new Date().toISOString(),
+    service: 'BhumiVera Ultra-Fast Scanner API (10x Accelerated)',
+  });
+});
+
+router.get('/scanner/catalog', authenticateScannerOrStaff, async (_req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT m.id AS meta_id,
+             m.product_id,
+             COALESCE(p.name, m.custom_name) AS name,
+             m.sku,
+             m.barcode,
+             p.slug,
+             p.category,
+             COALESCE(p.price, m.selling_price) AS mrp,
+             COALESCE(p.discount_price, m.selling_price) AS price,
+             COALESCE(m.gst_rate, 18) AS gst_rate,
+             COALESCE(m.gst_hsn_code, '33049990') AS gst_hsn_code,
+             COALESCE(p.quantity, m.physical_stock, 0) AS available_stock,
+             m.bin_code,
+             m.rack_location,
+             m.batch_no,
+             m.uom,
+             CONCAT('https://www.bhumivera.com/verify?sku=', m.sku, '&batch=', COALESCE(m.batch_no, 'BV-BATCH-2026')) AS verify_url,
+             CONCAT('https://www.bhumivera.com/product/', COALESCE(p.slug, '')) AS product_url
+      FROM inventory_product_meta m
+      LEFT JOIN products p ON m.product_id = p.id
+      ORDER BY m.id ASC
+    `);
+
+    const lookupMap = {};
+    rows.forEach(item => {
+      if (item.sku) lookupMap[item.sku.toLowerCase()] = item;
+      if (item.barcode) lookupMap[item.barcode.toLowerCase()] = item;
+      if (item.slug) lookupMap[item.slug.toLowerCase()] = item;
+      if (item.batch_no) lookupMap[item.batch_no.toLowerCase()] = item;
+    });
+
+    res.json({
+      success: true,
+      count: rows.length,
+      syncedAt: new Date().toISOString(),
+      items: rows,
+      lookupMap,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/scanner/lookup', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const { code, qrCode } = req.body || {};
+    const queryCode = code || qrCode || req.query.code;
+    if (!queryCode) {
+      return res.status(400).json({ success: false, message: 'Missing code or qrCode parameter.' });
+    }
+    const item = await resolveProductByQrOrCode(pool, queryCode);
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        code: 'NOT_FOUND',
+        message: `No Bhumivera product matched "${queryCode}".`,
+      });
+    }
+    res.json({
+      success: true,
+      item,
+      message: `Resolved "${item.name}" (Live Stock: ${item.availableStock}).`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.get('/scanner/config', authenticateInventoryStaff, async (_req, res) => {
   try {
     const [[cfg]] = await pool.query('SELECT scanner_api_key, store_name FROM inventory_store_config WHERE id = 1');
