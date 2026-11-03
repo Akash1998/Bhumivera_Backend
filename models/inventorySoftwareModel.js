@@ -618,6 +618,43 @@ async function initInventorySoftwareTables(db = pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_scanner_devices (
+      session_code VARCHAR(64) NOT NULL PRIMARY KEY,
+      api_key_hash CHAR(64) NOT NULL UNIQUE,
+      device_name VARCHAR(120) NOT NULL,
+      paired_by VARCHAR(80) DEFAULT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_pos_drafts (
+      session_code VARCHAR(64) NOT NULL PRIMARY KEY,
+      draft_json LONGTEXT NOT NULL,
+      updated_by VARCHAR(80) DEFAULT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_pos_checkout_requests (
+      idempotency_key VARCHAR(80) NOT NULL PRIMARY KEY,
+      request_hash CHAR(64) NOT NULL,
+      invoice_id INT DEFAULT NULL,
+      response_json LONGTEXT DEFAULT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_pos_checkout_invoice (invoice_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_pos_invoice_sequences (
+      invoice_year SMALLINT UNSIGNED NOT NULL PRIMARY KEY,
+      last_number INT UNSIGNED NOT NULL DEFAULT 0
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
   // Daily SQL & Full Database Disaster Recovery Vault (Synced with Vercel & Railway)
   await db.query(`
     CREATE TABLE IF NOT EXISTS system_daily_backups (

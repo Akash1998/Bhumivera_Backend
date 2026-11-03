@@ -201,16 +201,56 @@ async function authenticateScannerOrStaff(req, res, next) {
       req.query?.scannerApiKey;
 
     if (scannerKey) {
+      const keyHash = crypto.createHash('sha256').update(String(scannerKey).trim()).digest('hex');
+      const [[device]] = await pool.query(
+        'SELECT session_code, device_name FROM inventory_scanner_devices WHERE api_key_hash = ?',
+        [keyHash]
+      );
+      const requestedSessionCode = req.body?.sessionCode || req.query?.sessionCode;
+      const requiresSession = [
+        '/scanner/scan',
+        '/scanner/queue',
+        '/scanner/queue/consume',
+        '/scanner/queue/item',
+        '/scanner/queue/remove',
+        '/scanner/queue/clear',
+        '/pos/checkout',
+      ].includes(req.path);
+
+      if (device) {
+        if (requiresSession && !requestedSessionCode) {
+          return res.status(400).json({ success: false, message: 'A paired terminal session is required.' });
+        }
+        if (requestedSessionCode && requestedSessionCode !== device.session_code) {
+          return res.status(403).json({ success: false, message: 'This scanner key is paired to a different terminal.' });
+        }
+        req.invUser = {
+          id: 1,
+          username: req.body?.scannedBy || 'mobile-qr-scanner',
+          fullName: req.body?.deviceName || device.device_name,
+          role: 'cashier',
+          assignedHub: 'Bhumivera Flagship Hub — Asansol',
+          permissions: { can_use_pos_billing: true },
+          fullAllAccess: false,
+          scannerSessionCode: device.session_code,
+        };
+        return next();
+      }
+
       const [[cfg]] = await pool.query('SELECT scanner_api_key FROM inventory_store_config WHERE id = 1');
       if (cfg && cfg.scanner_api_key && String(scannerKey).trim() === String(cfg.scanner_api_key).trim()) {
+        if (requestedSessionCode && requestedSessionCode !== 'DEFAULT-POS-TERMINAL') {
+          return res.status(403).json({ success: false, message: 'The legacy scanner key can only access the default terminal. Re-pair this device.' });
+        }
         req.invUser = {
           id: 1,
           username: req.body?.scannedBy || 'mobile-qr-scanner',
           fullName: req.body?.deviceName || 'Bhumivera Android QR Scanner App',
           role: 'cashier',
           assignedHub: 'Bhumivera Flagship Hub — Asansol',
-          permissions: resolveInventoryPermissions('admin'),
-          fullAllAccess: true,
+          permissions: { can_use_pos_billing: true },
+          fullAllAccess: false,
+          scannerSessionCode: 'DEFAULT-POS-TERMINAL',
         };
         return next();
       }
@@ -225,6 +265,11 @@ async function authenticateScannerOrStaff(req, res, next) {
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
+}
+
+function normalizePosSessionCode(value) {
+  const sessionCode = String(value || '').trim();
+  return /^[A-Za-z0-9_-]{1,64}$/.test(sessionCode) ? sessionCode : null;
 }
 
 function requireIamAdmin(req, res, next) {
@@ -806,12 +851,14 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
   try {
     await ensureInventorySoftwareTables(pool);
     await syncWebsiteProductsToInventoryMeta(pool);
+    const scannerSessionCode = normalizePosSessionCode(req.query.sessionCode) || 'DEFAULT-POS-TERMINAL';
     // Trigger daily auto-backup non-blockingly so today's SQL backup is always guaranteed
     void ensureDailyAutoBackup(pool, req.invUser.username || 'auto-daily').catch(() => {});
 
     const [
       [itemRows],
       [binRows],
+      [customerRows],
       [saleRows],
       [supRows],
       [grnRows],
@@ -839,6 +886,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         ORDER BY COALESCE(p.id, m.id) ASC
       `),
       pool.query('SELECT * FROM inventory_storage_bins ORDER BY zone_name ASC, rack_no ASC'),
+      pool.query('SELECT * FROM inventory_customers ORDER BY name ASC'),
       pool.query('SELECT * FROM inventory_pos_invoices ORDER BY created_at DESC LIMIT 300'),
       pool.query('SELECT * FROM inventory_suppliers ORDER BY name ASC'),
       pool.query('SELECT * FROM inventory_grn_entries ORDER BY created_at DESC LIMIT 150'),
@@ -869,10 +917,10 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       `).catch(() => [[]]),
       pool.query(`
         SELECT * FROM inventory_scanner_queue
-        WHERE status = 'queued'
+        WHERE session_code = ? AND status = 'queued'
         ORDER BY created_at ASC
         LIMIT 100
-      `).catch(() => [[]]),
+      `, [scannerSessionCode]).catch(() => [[]]),
       pool.query(`
         SELECT id, backup_code, backup_date, trigger_type, tables_count, rows_count,
                size_bytes, checksum_sha512, created_by, created_at
@@ -1009,11 +1057,24 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       total: Number(s.subtotal) || 0,
       billTotal: Number(s.bill_total) || 0,
       paid: Number(s.paid_amount) || 0,
+      prevBal: Number(s.prev_khata_balance) || 0,
+      newBal: Number(s.new_khata_balance) || 0,
       paymentMode: s.payment_mode || 'Cash',
       upiReference: s.upi_reference || '',
       status: s.status || 'completed',
       cashier: s.cashier_username || 'admin',
       hubName: s.hub_name || 'Bhumivera Flagship Hub — Asansol',
+    }));
+    const customers = customerRows.map(customer => ({
+      id: customer.id,
+      name: customer.name,
+      phone: customer.phone,
+      gstin: customer.gstin || '',
+      wallet: Number(customer.wallet_balance) || 0,
+      creditLimit: Number(customer.credit_limit) || 0,
+      totalPurchases: Number(customer.total_purchases) || 0,
+      visitCount: Number(customer.visit_count) || 0,
+      type: customer.customer_type || 'Walk-in',
     }));
 
     const cfgRow = configRows[0] || {};
@@ -1028,7 +1089,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       cin: cfgRow.cin || 'U20237WB2026PTC295842',
       upiId: cfgRow.upi_id || 'bhumivera@okhdfcbank',
       scannerApiKey: cfgRow.scanner_api_key || 'BV-SCAN-DEFAULT',
-      taxRate: Number(cfgRow.default_tax_rate) || 18,
+      taxRate: cfgRow.default_tax_rate == null ? 18 : Number(cfgRow.default_tax_rate),
       autoSyncWebsite: Boolean(cfgRow.auto_sync_website ?? 1),
       posHoldReservation: Boolean(cfgRow.pos_hold_reservation ?? 1),
       cats: parseJsonSafe(cfgRow.categories_json, [
@@ -1162,6 +1223,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       viewer: req.invUser,
       items,
       bins: binRows,
+      customers,
       sales,
       suppliers: supRows,
       grnEntries: grnRows,
@@ -1464,64 +1526,291 @@ router.post('/stock/adjust', authenticateInventoryStaff, requirePermission('can_
   }
 });
 
+router.get('/pos/draft', authenticateInventoryStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+  try {
+    const sessionCode = normalizePosSessionCode(req.query.sessionCode || 'DEFAULT-POS-TERMINAL');
+    const [[row]] = await pool.query('SELECT draft_json, updated_at FROM inventory_pos_drafts WHERE session_code = ?', [
+      sessionCode,
+    ]);
+    res.json({
+      success: true,
+      draft: row ? parseJsonSafe(row.draft_json, null) : null,
+      updatedAt: row?.updated_at || null,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/pos/draft', authenticateInventoryStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+  try {
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode);
+    const draft = req.body?.draft;
+    if (!sessionCode || !draft || typeof draft !== 'object' || Array.isArray(draft)) {
+      return res.status(400).json({ success: false, message: 'A valid terminal session and draft are required.' });
+    }
+    if (!Array.isArray(draft.items) || draft.items.length > 100) {
+      return res.status(400).json({ success: false, message: 'Draft must contain no more than 100 bill items.' });
+    }
+    const draftJson = JSON.stringify(draft);
+    if (Buffer.byteLength(draftJson, 'utf8') > 256 * 1024) {
+      return res.status(413).json({ success: false, message: 'POS draft is too large to save.' });
+    }
+    await pool.query(
+      `INSERT INTO inventory_pos_drafts (session_code, draft_json, updated_by)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE draft_json = VALUES(draft_json), updated_by = VALUES(updated_by)`,
+      [sessionCode, draftJson, req.invUser.username]
+    );
+    res.json({ success: true, message: 'POS draft saved.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.delete('/pos/draft', authenticateInventoryStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+  try {
+    const sessionCode = normalizePosSessionCode(req.query.sessionCode);
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+    await pool.query('DELETE FROM inventory_pos_drafts WHERE session_code = ?', [sessionCode]);
+    res.json({ success: true, message: 'POS draft cleared.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // 5. OFFLINE SHOP POS BILLING ENGINE (ATOMIC WEBSITE STOCK DEDUCTION!)
 router.post('/pos/checkout', authenticateScannerOrStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
   const conn = await pool.getConnection();
+  let transactionStarted = false;
   try {
-    await conn.beginTransaction();
+    const providedIdempotencyKey = String(req.get('Idempotency-Key') || req.body?.idempotencyKey || '').trim();
+    const idempotencyKey =
+      providedIdempotencyKey || (req.invUser.scannerSessionCode ? `legacy-${crypto.randomUUID()}` : '');
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || req.invUser.scannerSessionCode);
+    if (!/^[A-Za-z0-9_-]{8,80}$/.test(idempotencyKey)) {
+      return res.status(400).json({ success: false, message: 'A valid Idempotency-Key is required for checkout.' });
+    }
+    if (!sessionCode) {
+      return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+    }
+
     const {
       customer,
       items = [],
       extraCharges = [],
       discount = 0,
-      taxRate = 0,
-      paidAmount = 0,
+      taxRate,
+      paidAmount,
       paymentMode = 'Cash',
       upiReference = '',
       notes = '',
       scannerQueueIds = [],
     } = req.body || {};
-
-    if (!Array.isArray(items) || items.length === 0) {
-      await conn.rollback();
-      return res.status(400).json({ success: false, message: 'POS Cart cannot be empty.' });
+    if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
+      return res.status(400).json({ success: false, message: 'POS bill must contain between 1 and 100 items.' });
+    }
+    if (
+      !Array.isArray(extraCharges) ||
+      extraCharges.length > 20 ||
+      extraCharges.some(charge => !charge || typeof charge !== 'object' || Array.isArray(charge)) ||
+      !Array.isArray(scannerQueueIds) ||
+      scannerQueueIds.length > 100 ||
+      items.some(item => !item || typeof item !== 'object' || Array.isArray(item))
+    ) {
+      return res.status(400).json({ success: false, message: 'Invalid POS bill details.' });
     }
 
+    const requestHash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify({ sessionCode, customer, items, extraCharges, discount, taxRate, paidAmount, paymentMode, upiReference, notes }))
+      .digest('hex');
+    await conn.beginTransaction();
+    transactionStarted = true;
+    try {
+      await conn.query(
+         'INSERT INTO inventory_pos_checkout_requests (idempotency_key, request_hash) VALUES (?, ?)',
+         [idempotencyKey, requestHash]
+      );
+    } catch (err) {
+      if (err.code !== 'ER_DUP_ENTRY') throw err;
+      await conn.rollback();
+      transactionStarted = false;
+      const [[previousRequest]] = await pool.query(
+         'SELECT request_hash, response_json FROM inventory_pos_checkout_requests WHERE idempotency_key = ?',
+         [idempotencyKey]
+      );
+      if (!previousRequest || previousRequest.request_hash !== requestHash) {
+         return res.status(409).json({
+           success: false,
+           code: 'IDEMPOTENCY_KEY_REUSED',
+           message: 'This checkout key was already used for a different bill. Restore the original bill or start a new one.',
+         });
+      }
+      if (!previousRequest.response_json) {
+         return res.status(409).json({ success: false, message: 'The previous checkout is still being finalized. Retry shortly.' });
+      }
+      return res.status(200).json(parseJsonSafe(previousRequest.response_json, {}));
+    }
+
+    const [[config]] = await conn.query('SELECT default_tax_rate FROM inventory_store_config WHERE id = 1 FOR UPDATE');
+    const safeTaxRate = Math.max(0, Number(config?.default_tax_rate ?? 18) || 0);
+    if (
+      taxRate !== undefined &&
+      (!Number.isFinite(Number(taxRate)) || Math.abs(Number(taxRate) - safeTaxRate) > 0.001)
+    ) {
+      await conn.rollback();
+      transactionStarted = false;
+      return res.status(409).json({
+         success: false,
+         code: 'TAX_RATE_MISMATCH',
+         message: 'The store tax rate changed. Refresh the POS before completing this bill.',
+      });
+    }
+
+    const normalizedItems = [];
     const stockDeductions = [];
     for (const cartItem of items) {
-      const requestedQty = Math.max(1, Math.trunc(Number(cartItem.q || cartItem.quantity || 1)));
+      const requestedQty = Number(cartItem.q ?? cartItem.quantity);
+      if (!Number.isSafeInteger(requestedQty) || requestedQty < 1) {
+         await conn.rollback();
+         transactionStarted = false;
+         return res.status(400).json({ success: false, message: 'Each bill item must have a positive whole-number quantity.' });
+      }
+      const metaId = Number(cartItem.id) || null;
+      const sku = String(cartItem.sku || '').trim();
+      const [[catalogItem]] = await conn.query(
+         `SELECT m.id AS meta_id, m.product_id, m.sku, m.custom_name, m.selling_price, m.gst_hsn_code, m.gst_rate, m.uom,
+                 p.name AS product_name, p.price, p.discount_price
+          FROM inventory_product_meta m
+          LEFT JOIN products p ON p.id = m.product_id
+          WHERE (? IS NOT NULL AND m.id = ?) OR (? <> '' AND m.sku = ?)
+          ORDER BY (m.id = ?) DESC
+          LIMIT 1 FOR UPDATE`,
+         [metaId, metaId, sku, sku, metaId]
+      );
+      if (!catalogItem) {
+         await conn.rollback();
+         transactionStarted = false;
+         return res.status(404).json({ success: false, message: `Product "${sku || metaId || ''}" is no longer in the inventory catalog.` });
+      }
+      if (metaId && Number(catalogItem.meta_id) !== metaId && sku !== catalogItem.sku) {
+         await conn.rollback();
+         transactionStarted = false;
+         return res.status(409).json({ success: false, message: 'A bill item no longer matches the current inventory catalog.' });
+      }
+      const catalogPrice = Number(catalogItem.discount_price) > 0
+         ? Number(catalogItem.discount_price)
+         : Number(catalogItem.price) > 0
+         ? Number(catalogItem.price)
+         : Number(catalogItem.selling_price) || 0;
+      const requestedPrice = cartItem.p === undefined && cartItem.price === undefined
+         ? catalogPrice
+         : Number(cartItem.p ?? cartItem.price);
+      if (!Number.isFinite(requestedPrice) || requestedPrice < 0) {
+         await conn.rollback();
+         transactionStarted = false;
+         return res.status(400).json({ success: false, message: `Invalid unit price for "${catalogItem.product_name || catalogItem.custom_name}".` });
+      }
+      if (req.invUser.permissions?.can_give_discounts && requestedPrice > catalogPrice) {
+         await conn.rollback();
+         transactionStarted = false;
+         return res.status(400).json({ success: false, message: `Unit price cannot exceed the current catalog price for "${catalogItem.product_name || catalogItem.custom_name}".` });
+      }
+      const finalUnitPrice = req.invUser.permissions?.can_give_discounts ? requestedPrice : catalogPrice;
+      const normalizedItem = {
+         id: catalogItem.meta_id,
+         productId: catalogItem.product_id,
+         sku: catalogItem.sku,
+         name: catalogItem.product_name || catalogItem.custom_name || 'Product',
+         q: requestedQty,
+         p: finalUnitPrice,
+         uom: catalogItem.uom || 'Pcs',
+         gstHsnCode: catalogItem.gst_hsn_code || '33049990',
+         gstRate: Number(catalogItem.gst_rate) || safeTaxRate,
+      };
       const deduction = await atomicAdjustProductStock(
-        {
-          metaId: cartItem.id,
-          productId: cartItem.productId,
-          sku: cartItem.sku,
-          operation: 'subtract',
-          quantity: requestedQty,
-          movementType: 'OFFLINE_POS_SALE',
-          reason: `Offline Shop POS Sale to ${customer?.name || 'Walk-in Shopper'}`,
-          operatorUsername: req.invUser.username,
-        },
-        conn
+         {
+           metaId: normalizedItem.id,
+           productId: normalizedItem.productId,
+           sku: normalizedItem.sku,
+           operation: 'subtract',
+           quantity: requestedQty,
+           movementType: 'OFFLINE_POS_SALE',
+           reason: `Offline Shop POS Sale to ${customer?.name || 'Walk-in Shopper'}`,
+           operatorUsername: req.invUser.username,
+         },
+         conn
       );
       stockDeductions.push(deduction);
+      normalizedItems.push(normalizedItem);
     }
 
-    const subTotal = items.reduce((sum, i) => sum + (Number(i.p || i.price || 0) * Number(i.q || i.quantity || 1)), 0);
-    const extraTotal = (extraCharges || []).reduce((sum, x) => sum + (Number(x.a || x.amount || 0)), 0);
-    const discAmt = Math.max(0, Number(discount) || 0);
+    const subTotal = normalizedItems.reduce((sum, item) => sum + item.p * item.q, 0);
+    const safeExtraCharges = extraCharges.map(charge => {
+      const amount = Number(charge.a ?? charge.amount);
+      if (!Number.isFinite(amount) || amount < 0) throw Object.assign(new Error('Extra charges must be valid non-negative amounts.'), { status: 400 });
+      return { n: String(charge.n || charge.name || 'Extra charge').slice(0, 120), a: amount };
+    });
+    const extraTotal = safeExtraCharges.reduce((sum, charge) => sum + charge.a, 0);
+    const discAmt = Number(discount);
+    if (!Number.isFinite(discAmt) || discAmt < 0 || discAmt > subTotal + extraTotal) {
+      throw Object.assign(new Error('Discount must be between zero and the bill subtotal.'), { status: 400 });
+    }
+    if (discAmt > 0 && !req.invUser.permissions?.can_give_discounts) {
+      throw Object.assign(new Error('Your account cannot apply POS discounts.'), { status: 403 });
+    }
     const taxableAmount = Math.max(0, subTotal + extraTotal - discAmt);
-    const safeTaxRate = Math.max(0, Number(taxRate) || 0);
     const taxAmount = Math.round((taxableAmount * safeTaxRate) / 100);
     const billTotal = taxableAmount + taxAmount;
 
     const custName = String(customer?.name || 'Walk-in Retail Shopper').trim();
     const custPhone = String(customer?.phone || '-').trim();
     const custGstin = String(customer?.gstin || '').trim();
-    const paid = paidAmount === '' || paidAmount === undefined ? billTotal : Math.max(0, Number(paidAmount) || 0);
+    const paid = paidAmount === '' || paidAmount === undefined ? billTotal : Number(paidAmount);
+    if (!Number.isFinite(paid) || paid < 0) {
+      throw Object.assign(new Error('Paid amount must be a valid non-negative amount.'), { status: 400 });
+    }
 
-    const [[countRow]] = await conn.query('SELECT COUNT(*) AS cnt FROM inventory_pos_invoices');
-    const seq = Number(countRow?.cnt || 0) + 1;
-    const invoiceNo = `BV-POS-${new Date().getFullYear()}-${String(seq).padStart(5, '0')}`;
+    let customerId = null;
+    let previousBalance = 0;
+    if (custPhone && custPhone !== '-') {
+      const [[existingCustomer]] = await conn.query(
+         'SELECT id, wallet_balance FROM inventory_customers WHERE phone = ? ORDER BY id ASC LIMIT 1 FOR UPDATE',
+         [custPhone]
+      );
+      if (existingCustomer) {
+         customerId = existingCustomer.id;
+         previousBalance = Number(existingCustomer.wallet_balance) || 0;
+      } else {
+         const [customerInsert] = await conn.query(
+           `INSERT INTO inventory_customers (name, phone, gstin, customer_type)
+            VALUES (?, ?, ?, 'Walk-in')`,
+           [custName, custPhone, custGstin || null]
+         );
+         customerId = customerInsert.insertId;
+      }
+    }
+    const newBalance = previousBalance - billTotal + paid;
+
+    const invoiceYear = new Date().getFullYear();
+    await conn.query(
+      `INSERT IGNORE INTO inventory_pos_invoice_sequences (invoice_year, last_number)
+       SELECT ?, COALESCE(MAX(CAST(SUBSTRING_INDEX(invoice_no, '-', -1) AS UNSIGNED)), 0)
+       FROM inventory_pos_invoices
+       WHERE invoice_no LIKE ?`,
+      [invoiceYear, `BV-POS-${invoiceYear}-%`]
+    );
+    const [[sequence]] = await conn.query(
+      'SELECT last_number FROM inventory_pos_invoice_sequences WHERE invoice_year = ? FOR UPDATE',
+      [invoiceYear]
+    );
+    const nextInvoiceNumber = Number(sequence.last_number) + 1;
+    await conn.query('UPDATE inventory_pos_invoice_sequences SET last_number = ? WHERE invoice_year = ?', [
+      nextInvoiceNumber,
+      invoiceYear,
+    ]);
+    const invoiceNo = `BV-POS-${invoiceYear}-${String(nextInvoiceNumber).padStart(5, '0')}`;
 
     const [invRes] = await conn.query(
       `INSERT INTO inventory_pos_invoices
@@ -1530,48 +1819,124 @@ router.post('/pos/checkout', authenticateScannerOrStaff, requirePermission('can_
          taxable_amount, tax_rate, tax_amount, bill_total, prev_khata_balance,
          paid_amount, new_khata_balance, payment_mode, upi_reference, status,
          cashier_username, hub_name, notes)
-       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, 'completed', ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
       [
-        invoiceNo,
-        custName,
-        custPhone,
-        custGstin,
-        JSON.stringify(items),
-        JSON.stringify(extraCharges || []),
-        subTotal,
-        extraTotal,
-        discAmt,
-        taxableAmount,
-        safeTaxRate,
-        taxAmount,
-        billTotal,
-        paid,
-        paymentMode || 'Cash',
-        upiReference || null,
-        req.invUser.username,
+         invoiceNo,
+         customerId,
+         custName,
+         custPhone,
+         custGstin,
+         JSON.stringify(normalizedItems),
+         JSON.stringify(safeExtraCharges),
+         subTotal,
+         extraTotal,
+         discAmt,
+         taxableAmount,
+         safeTaxRate,
+         taxAmount,
+         billTotal,
+         previousBalance,
+         paid,
+         newBalance,
+         paymentMode || 'Cash',
+         upiReference || null,
+         req.invUser.username,
         req.invUser.assignedHub || 'Bhumivera Flagship Hub — Asansol',
         notes || null,
       ]
     );
 
-    await conn.query(
-      'UPDATE inventory_stock_movements SET reference_id = ? WHERE reference_id IS NULL AND operator_username = ? ORDER BY id DESC LIMIT ?',
-      [invoiceNo, req.invUser.username, items.length]
-    );
-
-    // Mark any mobile-scanned items as consumed
-    if (Array.isArray(scannerQueueIds) && scannerQueueIds.length > 0) {
-      const ph = scannerQueueIds.map(() => '?').join(',');
-      await conn
-        .query(`UPDATE inventory_scanner_queue SET status = 'consumed' WHERE id IN (${ph})`, scannerQueueIds)
-        .catch(() => {});
-    } else {
-      await conn
-        .query("UPDATE inventory_scanner_queue SET status = 'consumed' WHERE status = 'queued'")
-        .catch(() => {});
+    if (customerId) {
+      await conn.query(
+        `UPDATE inventory_customers
+         SET name = ?, gstin = ?, wallet_balance = ?, total_purchases = total_purchases + ?, visit_count = visit_count + 1
+         WHERE id = ?`,
+        [custName, custGstin || null, newBalance, billTotal, customerId]
+      );
+      await conn.query(
+        `INSERT INTO inventory_khata_transactions
+         (customer_id, customer_name, transaction_type, amount, balance_after, payment_mode, reference_note, recorded_by)
+         VALUES (?, ?, 'SALE_BILL', ?, ?, ?, ?, ?)`,
+        [customerId, custName, -billTotal, previousBalance - billTotal, paymentMode, invoiceNo, req.invUser.username]
+      );
+      if (paid > 0) {
+        await conn.query(
+          `INSERT INTO inventory_khata_transactions
+           (customer_id, customer_name, transaction_type, amount, balance_after, payment_mode, reference_note, recorded_by)
+           VALUES (?, ?, 'PAYMENT_RECEIVED', ?, ?, ?, ?, ?)`,
+          [customerId, custName, paid, newBalance, paymentMode, invoiceNo, req.invUser.username]
+        );
+      }
     }
 
-    for (const item of items) {
+    await conn.query(
+      'UPDATE inventory_stock_movements SET reference_id = ? WHERE reference_id IS NULL AND operator_username = ? ORDER BY id DESC LIMIT ?',
+      [invoiceNo, req.invUser.username, normalizedItems.length]
+    );
+
+    if (Array.isArray(scannerQueueIds) && scannerQueueIds.length > 0) {
+      const uniqueIds = [...new Set(scannerQueueIds.map(id => Number(id)).filter(Number.isSafeInteger))];
+      if (uniqueIds.length !== scannerQueueIds.length) {
+        throw Object.assign(new Error('Invalid scanner queue references.'), { status: 400 });
+      }
+      const placeholders = uniqueIds.map(() => '?').join(',');
+      const [queueRows] = await conn.query(
+        `SELECT id, sku, quantity FROM inventory_scanner_queue
+         WHERE session_code = ? AND status = 'queued' AND id IN (${placeholders}) FOR UPDATE`,
+        [sessionCode, ...uniqueIds]
+      );
+      if (queueRows.length !== uniqueIds.length) {
+        throw Object.assign(new Error('Some scanned items are no longer queued for this terminal. Refresh the bill and retry.'), { status: 409 });
+      }
+      const soldQuantityBySku = new Map();
+      for (const item of normalizedItems) {
+        soldQuantityBySku.set(item.sku, (soldQuantityBySku.get(item.sku) || 0) + item.q);
+      }
+      const queuedQuantityBySku = new Map();
+      for (const row of queueRows) {
+        queuedQuantityBySku.set(row.sku, (queuedQuantityBySku.get(row.sku) || 0) + Number(row.quantity));
+      }
+      if ([...queuedQuantityBySku].some(([sku, quantity]) => (soldQuantityBySku.get(sku) || 0) < quantity)) {
+        throw Object.assign(new Error('The bill quantity does not include all linked scanner scans.'), { status: 409 });
+      }
+      await conn.query(
+        `UPDATE inventory_scanner_queue SET status = 'consumed'
+         WHERE session_code = ? AND status = 'queued' AND id IN (${placeholders})`,
+        [sessionCode, ...uniqueIds]
+      );
+    } else if (req.invUser.scannerSessionCode) {
+      const skuList = [...new Set(normalizedItems.map(item => item.sku))];
+      const placeholders = skuList.map(() => '?').join(',');
+      const [queueRows] = await conn.query(
+        `SELECT id, sku, quantity FROM inventory_scanner_queue
+         WHERE session_code = ? AND status = 'queued' AND sku IN (${placeholders})
+         ORDER BY created_at ASC FOR UPDATE`,
+        [sessionCode, ...skuList]
+      );
+      const remainingBySku = new Map();
+      for (const item of normalizedItems) {
+        remainingBySku.set(item.sku, (remainingBySku.get(item.sku) || 0) + item.q);
+      }
+      for (const row of queueRows) {
+        const remaining = remainingBySku.get(row.sku) || 0;
+        const consumed = Math.min(remaining, Number(row.quantity));
+        if (consumed <= 0) continue;
+        remainingBySku.set(row.sku, remaining - consumed);
+        if (consumed === Number(row.quantity)) {
+          await conn.query(
+            "UPDATE inventory_scanner_queue SET status = 'consumed' WHERE session_code = ? AND id = ? AND status = 'queued'",
+            [sessionCode, row.id]
+          );
+        } else {
+          await conn.query(
+            "UPDATE inventory_scanner_queue SET quantity = quantity - ? WHERE session_code = ? AND id = ? AND status = 'queued'",
+            [consumed, sessionCode, row.id]
+          );
+        }
+      }
+    }
+
+    for (const item of normalizedItems) {
       await conn
         .query(
           `INSERT INTO warehouse_sales_log (user_id, store_name, product_name, quantity, sale_price, customer_type, customer_name)
@@ -1580,8 +1945,8 @@ router.post('/pos/checkout', authenticateScannerOrStaff, requirePermission('can_
             req.invUser.id || 1,
             req.invUser.assignedHub || 'Bhumivera Flagship Hub',
             item.name,
-            Number(item.q || item.quantity || 1),
-            Number(item.p || item.price || 0),
+            item.q,
+            item.p,
             custName.toLowerCase().includes('walk-in') ? 'walkin' : 'registered',
             custName,
           ]
@@ -1603,16 +1968,13 @@ router.post('/pos/checkout', authenticateScannerOrStaff, requirePermission('can_
       details: { invoiceNo, billTotal, paid, stockDeductions },
     });
 
-    await conn.commit();
-    await invalidatePublicCatalogCache();
-
     const saleRecord = {
       id: invRes.insertId,
       invoiceNo,
       date: new Date().toISOString(),
-      cust: { name: custName, phone: custPhone, gstin: custGstin },
-      items,
-      extra: extraCharges || [],
+      cust: { id: customerId, name: custName, phone: custPhone, gstin: custGstin },
+      items: normalizedItems,
+      extra: safeExtraCharges,
       subTotal,
       extraTotal,
       discount: discAmt,
@@ -1622,18 +1984,29 @@ router.post('/pos/checkout', authenticateScannerOrStaff, requirePermission('can_
       total: subTotal,
       billTotal,
       paid,
+      prevBal: previousBalance,
+      newBal: newBalance,
       paymentMode: paymentMode || 'Cash',
       cashier: req.invUser.username,
       stockDeductions,
     };
 
-    res.status(201).json({
+    const responseBody = {
       success: true,
       message: `Invoice #${invoiceNo} generated & live website stock updated immediately!`,
       sale: saleRecord,
-    });
+    };
+    await conn.query(
+      'UPDATE inventory_pos_checkout_requests SET invoice_id = ?, response_json = ? WHERE idempotency_key = ?',
+      [invRes.insertId, JSON.stringify(responseBody), idempotencyKey]
+    );
+    await conn.query('DELETE FROM inventory_pos_drafts WHERE session_code = ?', [sessionCode]);
+    await conn.commit();
+    transactionStarted = false;
+    await invalidatePublicCatalogCache();
+    res.status(201).json(responseBody);
   } catch (err) {
-    await conn.rollback();
+    if (transactionStarted) await conn.rollback();
     res.status(err.status || 500).json({ success: false, message: err.message });
   } finally {
     conn.release();
@@ -1672,6 +2045,43 @@ router.post('/pos/:invoiceId/cancel', authenticateInventoryStaff, requirePermiss
         },
         conn
       );
+    }
+
+    if (sale.customer_id) {
+      const [[customerRow]] = await conn.query(
+        'SELECT id, wallet_balance FROM inventory_customers WHERE id = ? FOR UPDATE',
+        [sale.customer_id]
+      );
+      if (customerRow) {
+        const restoredBalance =
+          (Number(customerRow.wallet_balance) || 0) +
+          (Number(sale.bill_total) || 0) -
+          (Number(sale.paid_amount) || 0);
+        await conn.query(
+          `UPDATE inventory_customers
+           SET wallet_balance = ?, total_purchases = GREATEST(0, total_purchases - ?)
+           WHERE id = ?`,
+          [restoredBalance, Number(sale.bill_total) || 0, customerRow.id]
+        );
+        await conn.query(
+          `INSERT INTO inventory_khata_transactions
+           (customer_id, customer_name, transaction_type, amount, balance_after, payment_mode, reference_note, recorded_by)
+           VALUES (?, ?, 'VOID_REVERSAL', ?, ?, ?, ?, ?)`,
+          [
+            customerRow.id,
+            sale.customer_name,
+            (Number(sale.bill_total) || 0) - (Number(sale.paid_amount) || 0),
+            restoredBalance,
+            sale.payment_mode,
+            sale.invoice_no,
+            req.invUser.username,
+          ]
+        );
+        await conn.query('UPDATE inventory_pos_invoices SET new_khata_balance = ? WHERE id = ?', [
+          restoredBalance,
+          sale.id,
+        ]);
+      }
     }
 
     await conn.query('UPDATE inventory_pos_invoices SET status = "cancelled" WHERE id = ?', [sale.id]);
@@ -2621,6 +3031,38 @@ router.put('/shipping/carriers/:provider', authenticateInventoryStaff, requirePe
 });
 
 // 11. MOBILE QR CODE SCANNER API & LIVE POS CART BRIDGE (FOR ANDROID SCANNER APP)
+router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+  try {
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode);
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+    const scannerApiKey = `BV-SCAN-${crypto.randomBytes(24).toString('hex').toUpperCase()}`;
+    const deviceName = String(req.body?.deviceName || 'Bhumivera POS Scanner').trim().slice(0, 120);
+    const apiKeyHash = crypto.createHash('sha256').update(scannerApiKey).digest('hex');
+    await pool.query(
+      `INSERT INTO inventory_scanner_devices (session_code, api_key_hash, device_name, paired_by)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE api_key_hash = VALUES(api_key_hash), device_name = VALUES(device_name),
+                               paired_by = VALUES(paired_by), created_at = CURRENT_TIMESTAMP`,
+      [sessionCode, apiKeyHash, deviceName, req.invUser.username]
+    );
+    await appendInventoryAuditLog(pool, {
+      actorUsername: req.invUser.username,
+      actorRole: req.invUser.role,
+      actionCode: 'SCANNER_DEVICE_PAIRED',
+      summary: `Paired mobile scanner "${deviceName}" to POS terminal ${sessionCode}.`,
+    });
+    res.json({
+      success: true,
+      scannerApiKey,
+      sessionCode,
+      deviceName,
+      message: 'Scanner paired to this POS terminal. Re-pair to revoke this key.',
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.get('/scanner/ping', authenticateScannerOrStaff, async (_req, res) => {
   res.json({
     success: true,
@@ -2701,15 +3143,19 @@ router.post('/scanner/lookup', authenticateScannerOrStaff, async (req, res) => {
   }
 });
 
-router.get('/scanner/config', authenticateInventoryStaff, async (_req, res) => {
+router.get('/scanner/config', authenticateInventoryStaff, async (req, res) => {
   try {
     const [[cfg]] = await pool.query('SELECT scanner_api_key, store_name FROM inventory_store_config WHERE id = 1');
+    const sessionCode = normalizePosSessionCode(req.query.sessionCode || 'DEFAULT-POS-TERMINAL');
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
     const [queueRows] = await pool.query(
-      "SELECT * FROM inventory_scanner_queue WHERE status = 'queued' ORDER BY created_at ASC"
+      "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
+      [sessionCode]
     );
     res.json({
       success: true,
-      scannerApiKey: cfg?.scanner_api_key || 'BV-SCAN-DEFAULT',
+      scannerApiKey: sessionCode === 'DEFAULT-POS-TERMINAL' ? cfg?.scanner_api_key || 'BV-SCAN-DEFAULT' : '',
+      sessionCode,
       scanEndpoint: '/api/inventory-software/scanner/scan',
       queueEndpoint: '/api/inventory-software/scanner/queue',
       queue: queueRows,
@@ -2762,6 +3208,10 @@ router.post('/scanner/scan', authenticateScannerOrStaff, async (req, res) => {
       Array.isArray(batchScanItems) && batchScanItems.length > 0
         ? batchScanItems
         : [{ qrCode: qrCode || serialNumber || barcode || sku, quantity }];
+    const safeSessionCode = normalizePosSessionCode(sessionCode);
+    if (!safeSessionCode) {
+      return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+    }
 
     const resolvedList = [];
     for (const entry of rawEntries) {
@@ -2788,7 +3238,7 @@ router.post('/scanner/scan', authenticateScannerOrStaff, async (req, res) => {
         `SELECT * FROM inventory_scanner_queue
          WHERE session_code = ? AND sku = ? AND status = 'queued'
          LIMIT 1`,
-        [sessionCode, item.sku]
+        [safeSessionCode, item.sku]
       );
 
       if (existingRows.length > 0) {
@@ -2806,7 +3256,7 @@ router.post('/scanner/scan', authenticateScannerOrStaff, async (req, res) => {
              unit_price, mrp, gst_hsn_code, gst_rate, uom, quantity, available_stock, scanned_by, device_name, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
           [
-            sessionCode,
+            safeSessionCode,
             String(code).slice(0, 255),
             item.metaId,
             item.productId,
@@ -2831,7 +3281,7 @@ router.post('/scanner/scan', authenticateScannerOrStaff, async (req, res) => {
 
     const [updatedQueue] = await pool.query(
       "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
-      [sessionCode]
+      [safeSessionCode]
     );
 
     res.status(201).json({
@@ -2847,7 +3297,8 @@ router.post('/scanner/scan', authenticateScannerOrStaff, async (req, res) => {
 
 router.get('/scanner/queue', authenticateScannerOrStaff, async (req, res) => {
   try {
-    const sessionCode = String(req.query.sessionCode || 'DEFAULT-POS-TERMINAL');
+    const sessionCode = normalizePosSessionCode(req.query.sessionCode);
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
     const [rows] = await pool.query(
       "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
       [sessionCode]
@@ -2860,7 +3311,9 @@ router.get('/scanner/queue', authenticateScannerOrStaff, async (req, res) => {
 
 router.post('/scanner/queue/consume', authenticateScannerOrStaff, async (req, res) => {
   try {
-    const { ids = [], clearAll = false, sessionCode = 'DEFAULT-POS-TERMINAL' } = req.body || {};
+    const { ids = [], clearAll = false } = req.body || {};
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || 'DEFAULT-POS-TERMINAL');
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
     if (clearAll) {
       await pool.query(
         "UPDATE inventory_scanner_queue SET status = 'consumed' WHERE session_code = ? AND status = 'queued'",
@@ -2868,7 +3321,11 @@ router.post('/scanner/queue/consume', authenticateScannerOrStaff, async (req, re
       );
     } else if (Array.isArray(ids) && ids.length > 0) {
       const ph = ids.map(() => '?').join(',');
-      await pool.query(`UPDATE inventory_scanner_queue SET status = 'consumed' WHERE id IN (${ph})`, ids);
+      await pool.query(
+        `UPDATE inventory_scanner_queue SET status = 'consumed'
+         WHERE session_code = ? AND status = 'queued' AND id IN (${ph})`,
+        [sessionCode, ...ids]
+      );
     }
     res.json({ success: true, message: 'Scanner queue synced with POS cart.' });
   } catch (err) {
@@ -2880,7 +3337,7 @@ router.post('/scanner/queue/consume', authenticateScannerOrStaff, async (req, re
 router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) => {
   try {
     const {
-      sessionCode = 'DEFAULT-POS-TERMINAL',
+      sessionCode: requestedSessionCode = 'DEFAULT-POS-TERMINAL',
       sku,
       metaId,
       quantity,
@@ -2889,6 +3346,8 @@ router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) 
       name,
       availableStock,
     } = req.body || {};
+    const sessionCode = normalizePosSessionCode(requestedSessionCode);
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
 
     if (!sku && !metaId) {
       return res.status(400).json({ success: false, message: 'SKU or metaId required' });
@@ -2911,13 +3370,16 @@ router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) 
       }
 
       if (newQty <= 0) {
-        await pool.query('DELETE FROM inventory_scanner_queue WHERE id = ?', [existing.id]);
+        await pool.query(
+          "DELETE FROM inventory_scanner_queue WHERE session_code = ? AND id = ? AND status = 'queued'",
+          [sessionCode, existing.id]
+        );
       } else {
         const maxStock = existing.available_stock > 0 ? existing.available_stock : 9999;
         newQty = Math.min(newQty, maxStock);
         await pool.query(
-          'UPDATE inventory_scanner_queue SET quantity = ? WHERE id = ?',
-          [newQty, existing.id]
+          "UPDATE inventory_scanner_queue SET quantity = ? WHERE session_code = ? AND id = ? AND status = 'queued'",
+          [newQty, sessionCode, existing.id]
         );
       }
     } else {
@@ -2987,9 +3449,14 @@ router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) 
 // REAL-TIME 2-WAY SYNC: Remove item from active session queue
 router.post('/scanner/queue/remove', authenticateScannerOrStaff, async (req, res) => {
   try {
-    const { sessionCode = 'DEFAULT-POS-TERMINAL', id, sku, metaId } = req.body || {};
+    const { id, sku, metaId } = req.body || {};
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || 'DEFAULT-POS-TERMINAL');
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
     if (id) {
-      await pool.query("DELETE FROM inventory_scanner_queue WHERE session_code = ? AND id = ?", [sessionCode, id]);
+      await pool.query(
+        "DELETE FROM inventory_scanner_queue WHERE session_code = ? AND id = ? AND status = 'queued'",
+        [sessionCode, id]
+      );
     } else if (sku) {
       await pool.query("DELETE FROM inventory_scanner_queue WHERE session_code = ? AND sku = ? AND status = 'queued'", [sessionCode, sku]);
     } else if (metaId) {
@@ -3009,7 +3476,8 @@ router.post('/scanner/queue/remove', authenticateScannerOrStaff, async (req, res
 // REAL-TIME 2-WAY SYNC: Clear active session queue
 router.post('/scanner/queue/clear', authenticateScannerOrStaff, async (req, res) => {
   try {
-    const { sessionCode = 'DEFAULT-POS-TERMINAL' } = req.body || {};
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || 'DEFAULT-POS-TERMINAL');
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
     await pool.query("DELETE FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued'", [sessionCode]);
     res.json({ success: true, message: 'Queue cleared', queue: [] });
   } catch (err) {
