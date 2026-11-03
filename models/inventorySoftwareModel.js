@@ -769,8 +769,6 @@ async function initInventorySoftwareTables(db = pool) {
       );
     }
   }
-
-  await syncWebsiteProductsToInventoryMeta(db);
 }
 
 async function ensureInventorySoftwareTables(db = pool) {

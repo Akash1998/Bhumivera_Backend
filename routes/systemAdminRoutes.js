@@ -3,6 +3,7 @@ const { authenticateAdmin } = require('../middleware/authMiddleware');
 const pool = require('../config/db');
 const { getMailMetrics } = require('../utils/mail');
 const { getRequestMetrics } = require('../middleware/requestObservability');
+const { getWakeReport } = require('../utils/wakeTracker');
 const { getRateLimitStoreStatus } = require('../middleware/rateLimiter');
 const { getResponseCacheStatus } = require('../middleware/redisResponseCache');
 const {
@@ -51,6 +52,11 @@ const moduleApiPrefixes = {
 };
 
 const pathMatchesPrefix = (path, prefix) => path === prefix || path.startsWith(`${prefix}/`);
+
+// Answers "what woke the database?" from memory only, so checking it never wakes anything.
+router.get('/wake-sources', authenticateAdmin, (_req, res) => {
+  res.json({ success: true, ...getWakeReport() });
+});
 
 router.get('/health', authenticateAdmin, async (_req, res) => {
   let database = { status: 'healthy' };

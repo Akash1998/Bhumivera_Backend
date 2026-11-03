@@ -106,7 +106,7 @@ function createSystemDiagnostics(pool, { logger = console, now = Date.now } = {}
       );
       return rows;
     },
-    close: () => clearInterval(retentionTimer),
+    close: () => {},
   };
 }
 

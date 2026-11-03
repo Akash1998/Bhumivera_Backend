@@ -167,7 +167,15 @@ const createRequestObservability = ({
     }
   });
 
-  requestContext.run({ requestId, method: req.method, path: req.path }, next);
+  requestContext.run({
+    requestId,
+    method: req.method,
+    path: req.path,
+    userAgent: String(req.get('user-agent') || '').slice(0, 200),
+    ip: req.ip || req.socket?.remoteAddress || '',
+    origin: req.get('origin') || req.get('referer') || '',
+    hasAuth: Boolean(req.get('authorization')),
+  }, next);
 };
 
 const getCurrentRequestContext = () => requestContext.getStore();

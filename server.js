@@ -14,7 +14,8 @@ const {
   connectResponseCache,
   closeResponseCache,
 } = require("./middleware/redisResponseCache");
-const { createRequestObservability } = require("./middleware/requestObservability");
+const { createRequestObservability, getCurrentRequestContext } = require("./middleware/requestObservability");
+const { recordWake, countRequest } = require("./utils/wakeTracker");
 const { createSystemDiagnostics } = require("./utils/systemDiagnostics");
 const { clientContextMiddleware, ALLOWED_NATIVE_ORIGINS } = require("./middleware/clientContext");
 const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailability");
@@ -350,9 +351,12 @@ const publicSwrCache = createPublicSwrCache({
 if (!isVercelRuntime) app.use(publicSwrCache);
 
 app.use(async (req, res, next) => {
+  if (req.path.startsWith("/api")) countRequest(req);
   if (databaseReady) return next();
   // Uptime probes must never wake the sleeping database.
   if (req.method === "GET" && req.path === "/") return next();
+  // Preflights, bot scans and non-API paths never need the database, so they must not wake it.
+  if (req.method === "OPTIONS" || req.method === "HEAD" || !req.path.startsWith("/api")) return next();
   if (databaseInitializationPromise) {
     await databaseInitializationPromise;
   } else if (Date.now() >= databaseRetryAfter) {
@@ -443,6 +447,7 @@ const httpServer = isVercelRuntime
 
 const initializeDatabase = () => {
   if (databaseInitializationPromise) return databaseInitializationPromise;
+  recordWake(getCurrentRequestContext() || { path: "(no request: internal)" });
   databaseInitializationPromise = initializeDatabaseOnce().finally(() => {
     databaseInitializationPromise = null;
   });
@@ -459,7 +464,7 @@ const initializeDatabaseOnce = async () => {
     }
     await pool.query('SELECT 1');
     await runMigrations(pool, migrations);
-    await ensureInventorySoftwareTables(pool).catch(err => console.warn("[INVENTORY_SCHEMA_INIT_WARN]", err.message));
+    // Inventory tables are created by migration and ensured lazily by the inventory routes, so a cold start no longer re-runs them.
     if (!systemDiagnostics) {
       systemDiagnostics = createSystemDiagnostics(pool);
       app.locals.systemDiagnostics = systemDiagnostics;
@@ -496,7 +501,6 @@ const shutdown = signal => {
   httpServer.close(async error => {
     clearTimeout(forceCloseTimer);
     const shutdownTasks = [
-      Promise.resolve().then(() => clearInterval(referralApprovalTimer)),
       Promise.resolve().then(() => systemDiagnostics?.close()),
       pool.end(),
       closeRateLimitStore(),

@@ -57,6 +57,7 @@ const setModuleEnabled = async (moduleId, enabled) => {
      ON DUPLICATE KEY UPDATE value = VALUES(value), group_name = VALUES(group_name)`,
     [`module_${moduleId}_enabled`, enabled ? '1' : '0']
   );
+  invalidateModuleCache();
   console.info(JSON.stringify({
     event: 'system.module_availability_changed',
     module: moduleId,
@@ -66,15 +67,38 @@ const setModuleEnabled = async (moduleId, enabled) => {
   return true;
 };
 
+// One shared query answers every module check; without this each API request ran its own settings query.
+const PAUSED_CACHE_TTL_MS = Number(process.env.MODULE_STATE_CACHE_MS) || 30000;
+let pausedModules = null;
+let pausedModulesExpiresAt = 0;
+let pausedModulesLoad = null;
+
+const loadPausedModules = () => {
+  if (pausedModules && Date.now() < pausedModulesExpiresAt) return Promise.resolve(pausedModules);
+  if (!pausedModulesLoad) {
+    pausedModulesLoad = pool
+      .query("SELECT key_name FROM settings WHERE group_name = 'system_modules' AND value = '0'")
+      .then(([rows]) => {
+        pausedModules = new Set(rows.map(row => row.key_name));
+        pausedModulesExpiresAt = Date.now() + PAUSED_CACHE_TTL_MS;
+        return pausedModules;
+      })
+      .finally(() => { pausedModulesLoad = null; });
+  }
+  return pausedModulesLoad;
+};
+
+const invalidateModuleCache = () => {
+  pausedModules = null;
+  pausedModulesExpiresAt = 0;
+};
+
 const createModuleAvailabilityMiddleware = (moduleId, shouldCheck = () => true) =>
   async (req, res, next) => {
     if (!shouldCheck(req)) return next();
     try {
-      const [rows] = await pool.query(
-        'SELECT value FROM settings WHERE key_name = ? LIMIT 1',
-        [`module_${moduleId}_enabled`]
-      );
-      if (rows[0]?.value === '0') {
+      const paused = await loadPausedModules();
+      if (paused.has(`module_${moduleId}_enabled`)) {
         res.setHeader('Retry-After', '60');
         return res.status(503).json({
           success: false,
