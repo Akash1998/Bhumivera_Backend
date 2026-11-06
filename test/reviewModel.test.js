@@ -3,7 +3,12 @@ const { after, describe, it } = require('node:test');
 const pool = require('../config/db');
 const {
   archiveReview,
+  deleteReviewPermanently,
+  getAllReviews,
+  getReviewsByProduct,
   getReviewsByComboName,
+  getProductRatingSummary,
+  getPublicCustomerStories,
   createReviewAsAdmin,
   updateReviewAsAdmin,
 } = require('../models/reviewModel');
@@ -12,7 +17,53 @@ after(async () => {
   await pool.end();
 });
 
-describe('database-backed review retention & 1500+ authentic pan-India reviews (2020-2026)', () => {
+describe('database-backed review retention', () => {
+  it('preserves empty review results and reports database errors', async () => {
+    const originalQuery = pool.query;
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      pool.query = async () => [[], []];
+      assert.deepEqual(await getAllReviews(), []);
+      assert.deepEqual(await getReviewsByProduct(1), []);
+      assert.deepEqual(await getReviewsByComboName('Regimen'), []);
+      assert.equal((await getProductRatingSummary(1)).total, 0);
+      const failure = new Error('Database unavailable');
+      pool.query = async () => { throw failure; };
+      for (const load of [getAllReviews, () => getReviewsByProduct(1), () => getReviewsByComboName('Regimen'), getPublicCustomerStories]) {
+        await assert.rejects(load(), failure);
+      }
+    } finally {
+      pool.query = originalQuery;
+      console.error = originalError;
+    }
+  });
+
+  it('deletes only an existing review and propagates database failures', async () => {
+    const originalQuery = pool.query;
+    const statements = [];
+    try {
+      pool.query = async (sql, params) => {
+        statements.push({ sql, params });
+        if (sql.startsWith('SELECT id, product_id')) return [[{ id: 21, product_id: 1 }], []];
+        return [{ affectedRows: 1 }, []];
+      };
+      assert.equal(await deleteReviewPermanently(21), true);
+      assert.match(statements[1].sql, /^DELETE FROM reviews WHERE id = \?$/);
+      assert.deepEqual(statements[1].params, [21]);
+      assert.match(statements[2].sql, /IFNULL\(ROUND\(AVG\(rating\), 2\), 0\)/);
+      pool.query = async () => [[], []];
+      assert.equal(await deleteReviewPermanently(999), false);
+      const failure = new Error('Delete failed');
+      pool.query = async sql => {
+        if (sql.startsWith('SELECT')) return [[{ id: 21, product_id: 1 }], []];
+        throw failure;
+      };
+      await assert.rejects(deleteReviewPermanently(21), failure);
+    } finally {
+      pool.query = originalQuery;
+    }
+  });
   it('loads only approved reviews matching the selected regimen', async () => {
     const originalQuery = pool.query;
     let query;
@@ -109,6 +160,25 @@ describe('database-backed review retention & 1500+ authentic pan-India reviews (
       assert.equal(await updateReviewAsAdmin(999, { rating: 3 }), false);
     } finally {
       pool.query = originalQuery;
+    }
+  });
+
+  it('does not report an update as successful when the database write fails', async () => {
+    const originalQuery = pool.query;
+    const originalError = console.error;
+    const failure = new Error('Update failed');
+    console.error = () => {};
+    pool.query = async sql => {
+      if (sql.startsWith('SELECT * FROM reviews WHERE id')) {
+        return [[{ id: 7, product_id: 1, rating: 5, is_approved: 1 }], []];
+      }
+      throw failure;
+    };
+    try {
+      await assert.rejects(updateReviewAsAdmin(7, { rating: 4 }), failure);
+    } finally {
+      pool.query = originalQuery;
+      console.error = originalError;
     }
   });
 });

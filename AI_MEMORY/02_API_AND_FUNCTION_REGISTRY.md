@@ -1,8 +1,8 @@
 # ⚙️ Bhumivera Backend — API & Function Registry Manifest
 
-> **Master Backend Inventory**: 41 Route Files | 457 REST API Endpoints | 38 Database Models | 352 Model Functions | 79 Migrations
+> **Master Backend Inventory**: 41 Route Files | 458 REST API Endpoints | 38 Database Models | 352 Model Functions | 80 Migrations
 > **Framework**: Express 5.3 + Node.js 22.x | MySQL 8.0 (`mysql2/promise`) | Redis 7.x  
-> **Last Verified Audit**: 2026-11-03 (Migration v79 Baseline)
+> **Last Verified Audit**: 2026-11-06 (Migration v80)
 
 ---
 
@@ -15,10 +15,10 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 | BACKEND METRIC                   | CURRENT VERIFIED COUNT    |
 +----------------------------------+---------------------------+
 | Total Route Files                | 41 files                  |
-| Total Registered Endpoints       | 459 endpoints             |
+| Total Registered Endpoints       | 458 endpoints             |
 | Total Model Files                | 38 files                  |
 | Total Model Exported Entities    | 352 functions/constants   |
-| Database Migrations Executed     | 79 migrations (v1 - v79)  |
+| Database Migrations Defined      | 80 migrations (v1 - v80)  |
 +----------------------------------+---------------------------+
 ```
 
@@ -39,7 +39,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 | **9** | `adminUserRoutes.js` | **16** | Website Admin User Management, Admin Roles, Permissions Matrix | `GET /users`, `PUT /users/:id/role`, `PUT /users/:id/status`, `GET /audit-log` |
 | **10** | `warehouseRoutes.js` | **16** | Legacy Warehouse Management, Multi-bin Allocation, Storage Bins | `GET /bins`, `POST /bins/allocate`, `GET /movements` |
 | **11** | `notificationRoutes.js` | **15** | Push Notifications, FCM Tokens, Order Alerts, Marketing Broadcasts | `GET /`, `POST /subscribe`, `POST /send`, `PUT /:id/read` |
-| **12** | `reviewRoutes.js` | **14** | Customer Reviews & Stories, Rating Moderation, Multilingual Review Seed | `GET /product/:id`, `GET /combo/:slug`, `POST /`, `PUT /:id/approve`, `DELETE /:id` |
+| **12** | `reviewRoutes.js` | **14** | Database-backed customer reviews, stories and moderation; failed reads and deletes return errors | `GET /product/:id`, `GET /combo/:slug`, `POST /`, `PUT /:id/approve`, `DELETE /:id` |
 | **13** | `orderRoutes.js` | **13** | Online Checkout, Delivery Calculation, Razorpay Webhook, Order Checkpoints | `POST /`, `GET /user`, `GET /:id`, `POST /verify-payment`, `POST /cancel` |
 | **14** | `couponRoutes.js` | **11** | Promotional Coupons, Cart Discounts, Usage Tracking, First-order Codes | `POST /validate`, `GET /active`, `POST /`, `PUT /:id`, `DELETE /:id` |
 | **15** | `returnRoutes.js` | **10** | Customer Return Requests & Courier Tracking Validation | `POST /request`, `GET /status/:id`, `GET /history` |

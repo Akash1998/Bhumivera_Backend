@@ -215,11 +215,13 @@ const syncProductStats = async (productId, customPool = null) => {
   try {
     await db.query(`
       UPDATE products p
-      SET rating = (SELECT IFNULL(ROUND(AVG(rating), 2), 4.65) FROM reviews WHERE (product_id = p.id OR product_slug = p.slug OR combo_name = p.name) AND is_approved = 1),
+      SET rating = (SELECT IFNULL(ROUND(AVG(rating), 2), 0) FROM reviews WHERE (product_id = p.id OR product_slug = p.slug OR combo_name = p.name) AND is_approved = 1),
           review_count = (SELECT COUNT(*) FROM reviews WHERE (product_id = p.id OR product_slug = p.slug OR combo_name = p.name) AND is_approved = 1)
       WHERE p.id = ?
     `, [productId]);
-  } catch (_) {}
+  } catch (error) {
+    console.error('[REVIEW_PRODUCT_STATS_SYNC]', error);
+  }
 };
 
 const createReview = async (data) => {
@@ -402,8 +404,9 @@ const getPublicCustomerStories = async () => {
       const review = parseReview(r);
       return { ...review, first_name: String(review.user_name || 'Patron').split(' ')[0] };
     });
-  } catch (_) {
-    return [];
+  } catch (error) {
+    console.error('[PUBLIC_CUSTOMER_STORIES_LOAD]', error);
+    throw error;
   }
 };
 
@@ -439,7 +442,10 @@ const getReviewsByProduct = async (productIdOrSlug, approvedOnly = true) => {
       [resolvedId || -1, resolvedSlug || '', resolvedSlug || '', comboMatch?.name || '', comboMatch?.name || '']
     );
     dbRows = (rows || []).map(parseReview);
-  } catch (_) {}
+  } catch (error) {
+    console.error('[PRODUCT_REVIEWS_LOAD]', error);
+    throw error;
+  }
 
   return dbRows;
 };
@@ -457,8 +463,9 @@ const getReviewsByComboName = async comboName => {
       [comboName]
     );
     return (rows || []).map(parseReview);
-  } catch (_) {
-    return [];
+  } catch (error) {
+    console.error('[COMBO_REVIEWS_LOAD]', error);
+    throw error;
   }
 };
 
@@ -473,7 +480,7 @@ const getProductRatingSummary = async (productIdOrSlug) => {
   const comboMatches = reviews.filter(r => r.is_combo_review || r.category_tag === 'Combo Pack Ritual');
   const comboAverage = comboMatches.length > 0
     ? Number((comboMatches.reduce((a, r) => a + (Number(r.rating) || 5), 0) / comboMatches.length).toFixed(2))
-    : 4.80;
+    : 0;
 
   const categories = {};
   for (const r of reviews) {
@@ -515,7 +522,10 @@ const getAllReviews = async (approved = null) => {
     query += ' ORDER BY r.created_at DESC';
     const [rows] = await pool.query(query, params);
     dbRows = (rows || []).map(parseReview);
-  } catch (_) {}
+  } catch (error) {
+    console.error('[ADMIN_REVIEWS_LOAD]', error);
+    throw error;
+  }
 
   return dbRows;
 };
@@ -527,7 +537,10 @@ const updateReviewAsAdmin = async (id, data) => {
   try {
     const [existingRows] = await pool.query('SELECT * FROM reviews WHERE id = ?', [id]);
     if (existingRows?.[0]) existing = parseReview(existingRows[0]);
-  } catch (_) {}
+  } catch (error) {
+    console.error('[ADMIN_REVIEW_LOOKUP]', error);
+    throw error;
+  }
   if (!existing) return false;
 
   const nextProductId = data.product_id !== undefined ? Number(data.product_id) : undefined;
@@ -622,7 +635,10 @@ const updateReviewAsAdmin = async (id, data) => {
     if (updatedRecord?.product_id) await syncProductStats(updatedRecord.product_id);
     else if (nextProductId) await syncProductStats(nextProductId);
     if (nextProductId && Number(existing.product_id) !== nextProductId) await syncProductStats(existing.product_id);
-  } catch (_) {}
+  } catch (error) {
+    console.error('[ADMIN_REVIEW_UPDATE]', error);
+    throw error;
+  }
 
   return { review: updatedRecord, removedImages };
 };
@@ -658,18 +674,11 @@ const getUserReviews = async (userId) => {
 };
 
 const deleteReviewPermanently = async (id) => {
-  let targetProductId = null;
-  try {
-    const [rows] = await pool.query('SELECT id, product_id FROM reviews WHERE id = ?', [id]);
-    if (rows?.[0]) {
-      targetProductId = rows[0].product_id;
-    }
-    await pool.query('DELETE FROM reviews WHERE id = ?', [id]);
-  } catch (_) {}
-
-  if (targetProductId) {
-    await syncProductStats(targetProductId);
-  }
+  const [rows] = await pool.query('SELECT id, product_id FROM reviews WHERE id = ?', [id]);
+  if (!rows?.[0]) return false;
+  const [result] = await pool.query('DELETE FROM reviews WHERE id = ?', [id]);
+  if (!result.affectedRows) return false;
+  await syncProductStats(rows[0].product_id);
   return true;
 };
 

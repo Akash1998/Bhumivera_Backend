@@ -158,7 +158,7 @@ describe('runMigrations', () => {
     };
 
     try {
-      for (const migration of migrations.filter(({ version }) => version >= 69 && version <= 71)) {
+      for (const migration of migrations.filter(({ version }) => [69, 70, 71, 73, 74].includes(version))) {
         await migration.up();
       }
     } finally {

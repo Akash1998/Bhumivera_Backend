@@ -245,7 +245,7 @@ router.post('/admin/upload-url', authenticateAdmin, async (req, res) => {
   }
 });
 
-// GET /api/reviews - admin: all 1,500+ reviews
+// GET /api/reviews - admin: all database reviews
 router.get('/', authenticateAdmin, async (req, res) => {
   try {
     const approved = req.query.approved !== undefined ? parseInt(req.query.approved, 10) : null;
@@ -409,7 +409,8 @@ router.delete('/admin/:id', authenticateAdmin, async (req, res) => {
   try {
     const isPermanent = req.query.permanent !== 'false';
     if (isPermanent) {
-      await deleteReviewPermanently(req.params.id);
+      const deleted = await deleteReviewPermanently(req.params.id);
+      if (!deleted) return res.status(404).json({ message: 'Review not found.' });
       return res.json({ message: 'Review permanently deleted from database.', deleted: true });
     }
     const archived = await archiveReview(req.params.id);
