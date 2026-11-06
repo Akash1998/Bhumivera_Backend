@@ -17,7 +17,7 @@
 | Document | Purpose | Core Contents |
 | :--- | :--- | :--- |
 | **[`01_BACKEND_ARCHITECTURE.md`](./01_BACKEND_ARCHITECTURE.md)** | **Architecture Blueprint** | Node.js 22, Express 5.3, MySQL pool (`mysql2/promise`), Redis cache invalidation, Railway deployment, Vercel cron, and 5-panel backend routing. |
-| **[`02_API_AND_FUNCTION_REGISTRY.md`](./02_API_AND_FUNCTION_REGISTRY.md)** | **Backend Manifest** | **41 Route Files \| 456 API Endpoints \| 38 Models \| 354 Exported Entities \| 79 Migrations**. Exact counts and signatures per file. |
+| **[`02_API_AND_FUNCTION_REGISTRY.md`](./02_API_AND_FUNCTION_REGISTRY.md)** | **Backend Manifest** | **41 Route Files \| 458 API Endpoints \| 38 Models \| 352 Exported Entities \| 80 Migrations**. Exact counts and signatures per file. |
 | **[`03_BOT_STATE_LEDGER.md`](./03_BOT_STATE_LEDGER.md)** | **Living State & Bot Relay** | **The delta ledger**. Chronological log of bot edits, previous count vs new count, exact changes made, and instructions for next bot. |
 | **[`04_BOT_SELF_UPDATE_PROTOCOL.md`](./04_BOT_SELF_UPDATE_PROTOCOL.md)** | **Bot Operating Manual** | Step-by-step instructions and templates for bots to maintain this memory system autonomously. |
 
@@ -32,10 +32,10 @@
   BHUMIVERA BACKEND METRIC BASELINE
 ======================================================================
 • Total Route Files:          41 files
-• Total API Endpoints:        459 endpoints
+• Total API Endpoints:        458 endpoints
 • Total Model Files:          38 files
 • Total Model Exported Items: 352 functions & constants
-• Sequential Migrations:      79 (Current: v79)
+• Sequential Migrations:      80 (Current: v80)
 • Main Framework:             Node.js 22.x / Express 5.3
 • Database Engine:            MySQL 8.0 (Railway)
 • Cache / Rate Limit:         Redis 7.x

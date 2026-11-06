@@ -127,8 +127,8 @@ const validateProfile = body => {
     invoice_prefix: invoicePrefix,
     shipping_sac: String(body.shipping_sac || '').trim() || null,
     shipping_gst_rate: shippingRate,
-    default_hsn_code: String(body.default_hsn_code || '33049990').trim(),
-    default_gst_rate: Number.isFinite(defaultGstRate) ? defaultGstRate : 18,
+    default_hsn_code: String(body.default_hsn_code || '30049011').trim(),
+    default_gst_rate: Number.isFinite(defaultGstRate) ? defaultGstRate : 5,
     bank_name: String(body.bank_name || '').trim() || null,
     bank_account_no: String(body.bank_account_no || '').trim() || null,
     bank_ifsc: String(body.bank_ifsc || '').trim().toUpperCase() || null,
@@ -175,7 +175,7 @@ function renderLuxuryTaxInvoiceHtml(rawDoc) {
           <div class="item-title">${escapeHtml(line.description)}</div>
           ${line.sku ? `<div class="item-sku">SKU: ${escapeHtml(line.sku)}</div>` : ''}
         </td>
-        <td class="center mono">${escapeHtml(line.hsn_sac || '33049990')}</td>
+        <td class="center mono">${escapeHtml(line.hsn_sac || '30049011')}</td>
         <td class="center">${escapeHtml(line.quantity)} Nos</td>
         <td class="right mono">${fmtMoney(line.unit_price_inclusive || (Number(line.total || 0) / Math.max(1, Math.abs(Number(line.quantity || 1)))))}</td>
         <td class="right mono">${fmtMoney(line.taxable_value)}</td>
@@ -733,8 +733,8 @@ const issueInvoice = async (orderId, adminId, options = {}) => {
       throw Object.assign(new Error('The customer shipping address has no recognized Indian state; update the address before invoicing.'), { status: 409 });
     }
 
-    const defaultHsn = String(profile.default_hsn_code || '33049990').trim();
-    const defaultRate = Number.isFinite(Number(profile.default_gst_rate)) ? Number(profile.default_gst_rate) : 18;
+    const defaultHsn = String(profile.default_hsn_code || '30049011').trim();
+    const defaultRate = Number.isFinite(Number(profile.default_gst_rate)) ? Number(profile.default_gst_rate) : 5;
 
     for (const item of order.items) {
       if (useDefaultFallback) {
@@ -937,8 +937,8 @@ router.put('/products/:id/tax', asyncRoute(async (req, res) => {
 }));
 
 router.post('/products/bulk-tax', asyncRoute(async (req, res) => {
-  const hsn = String(req.body.gst_hsn_code || '33049990').trim();
-  const rate = req.body.gst_rate === '' || req.body.gst_rate === null ? null : Number(req.body.gst_rate ?? 18);
+  const hsn = String(req.body.gst_hsn_code || '30049011').trim();
+  const rate = req.body.gst_rate === '' || req.body.gst_rate === null ? null : Number(req.body.gst_rate ?? 5);
   const onlyUnset = Boolean(req.body.onlyUnset);
   const productIds = Array.isArray(req.body.productIds) ? req.body.productIds.map(Number).filter(Boolean) : [];
 
@@ -1316,9 +1316,9 @@ router.get('/reports', asyncRoute(async (req, res) => {
 
     // HSN aggregation
     for (const line of doc.line_items || []) {
-      const hsnKey = `${line.hsn_sac || '33049990'}|${Number(line.gst_rate || 0)}`;
+      const hsnKey = `${line.hsn_sac || '30049011'}|${Number(line.gst_rate || 0)}`;
       const hEntry = hsnMap.get(hsnKey) || {
-        hsn_sac: line.hsn_sac || '33049990',
+        hsn_sac: line.hsn_sac || '30049011',
         description: line.description || 'Botanical Formulation',
         uqc: 'NOS',
         gst_rate: Number(line.gst_rate || 0),

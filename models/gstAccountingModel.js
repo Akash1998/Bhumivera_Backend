@@ -156,7 +156,7 @@ function enrichGstDocument(doc) {
   const hsnMap = new Map();
   let totalQuantity = 0;
   for (const line of lines) {
-    const hsn = String(line.hsn_sac || line.hsn_code || '33049990');
+    const hsn = String(line.hsn_sac || line.hsn_code || '30049011');
     const rate = Number(line.gst_rate || 0);
     const key = `${hsn}|${rate}`;
     const current = hsnMap.get(key) || {
@@ -295,8 +295,8 @@ const initGstAccountingTables = async () => {
       next_invoice_number INT UNSIGNED NOT NULL DEFAULT 1,
       shipping_sac VARCHAR(8) DEFAULT '996812',
       shipping_gst_rate DECIMAL(5,2) DEFAULT 18.00,
-      default_hsn_code VARCHAR(8) DEFAULT '33049990',
-      default_gst_rate DECIMAL(5,2) DEFAULT 18.00,
+      default_hsn_code VARCHAR(8) DEFAULT '30049011',
+      default_gst_rate DECIMAL(5,2) DEFAULT 5.00,
       bank_name VARCHAR(120) DEFAULT NULL,
       bank_account_no VARCHAR(60) DEFAULT NULL,
       bank_ifsc VARCHAR(20) DEFAULT NULL,
@@ -315,8 +315,8 @@ const initGstAccountingTables = async () => {
     ['pan_number', 'VARCHAR(15) DEFAULT NULL'],
     ['cin_number', 'VARCHAR(30) DEFAULT NULL'],
     ['lut_number', 'VARCHAR(60) DEFAULT NULL'],
-    ['default_hsn_code', "VARCHAR(8) DEFAULT '33049990'"],
-    ['default_gst_rate', 'DECIMAL(5,2) DEFAULT 18.00'],
+    ['default_hsn_code', "VARCHAR(8) DEFAULT '30049011'"],
+    ['default_gst_rate', 'DECIMAL(5,2) DEFAULT 5.00'],
     ['bank_name', 'VARCHAR(120) DEFAULT NULL'],
     ['bank_account_no', 'VARCHAR(60) DEFAULT NULL'],
     ['bank_ifsc', 'VARCHAR(20) DEFAULT NULL'],

@@ -387,8 +387,8 @@ async function initInventorySoftwareTables(db = pool) {
       cost_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
       mrp DECIMAL(10,2) NOT NULL DEFAULT 0.00,
       selling_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-      gst_hsn_code VARCHAR(20) DEFAULT '33049990',
-      gst_rate DECIMAL(5,2) NOT NULL DEFAULT 18.00,
+      gst_hsn_code VARCHAR(20) DEFAULT '30049011',
+      gst_rate DECIMAL(5,2) NOT NULL DEFAULT 5.00,
       physical_stock INT NOT NULL DEFAULT 0,
       shop_display_stock INT NOT NULL DEFAULT 0,
       warehouse_vault_stock INT NOT NULL DEFAULT 0,
@@ -605,8 +605,8 @@ async function initInventorySoftwareTables(db = pool) {
       product_name VARCHAR(255) NOT NULL,
       unit_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
       mrp DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-      gst_hsn_code VARCHAR(20) DEFAULT '33049990',
-      gst_rate DECIMAL(5,2) NOT NULL DEFAULT 18.00,
+      gst_hsn_code VARCHAR(20) DEFAULT '30049011',
+      gst_rate DECIMAL(5,2) NOT NULL DEFAULT 5.00,
       uom VARCHAR(30) DEFAULT 'Pcs',
       quantity INT NOT NULL DEFAULT 1,
       available_stock INT NOT NULL DEFAULT 0,
@@ -756,6 +756,7 @@ async function initInventorySoftwareTables(db = pool) {
   const [[supCountRow]] = await db.query('SELECT COUNT(*) AS cnt FROM inventory_suppliers');
   if (Number(supCountRow?.cnt || 0) === 0) {
     const seedSuppliers = [
+      ['SUP-MFG-001', 'Sitashi Herbal Industry', 'Sitashi Herbal Industry', '+91 141 2770000', 'info@sitashiherbal.com', '08AEQFS1102P1ZM', 'Jaipur, Rajasthan', 'Licensed Ayurvedic & Botanical Formulations (FSSAI: 12222999000145)', 0.00, 7, 5.00, 'Primary Licensed Ayurvedic & Herbal Products Manufacturer (Invoice #MGP/26-27/02)'],
       ['SUP-BOT-001', 'Himalayan Phyto-Actives & Cold-Press Labs', 'Himalayan Phyto-Actives Pvt. Ltd.', '+91 98110 44556', 'supply@himalayanphyto.in', '02AABCH1234F1Z2', 'Kullu, Himachal Pradesh', 'Cold-Pressed Botanical Extracts (Sea Buckthorn, Tulsi, Reetha)', 0.00, 5, 4.95, 'Primary COA-certified botanical extract partner'],
       ['SUP-ACT-002', 'Vedic Bio-Ferment & Niacinamide Sciences', 'Vedic Bio-Sciences India Ltd.', '+91 98201 77889', 'orders@vedicbiosciences.com', '27AABCV5678G1Z9', 'Mumbai, Maharashtra', 'Cosmetic Actives (Hyaluronic Acid, Niacinamide, Activated Carbon)', 0.00, 4, 4.90, 'Pharmaceutical-grade active ingredients'],
       ['SUP-PKG-003', 'Maison Glassware & Luxury Rigid Packaging', 'Maison Packaging Craft Pvt. Ltd.', '+91 98302 99001', 'dispatch@maisonglass.in', '19AABCM9012H1Z4', 'Kolkata, West Bengal', 'Luxury Packaging, UV Bottles & Gold-Foil Cartons', 0.00, 3, 4.88, 'Serialized micro-batch packaging supplier'],
@@ -782,16 +783,16 @@ async function ensureInventorySoftwareTables(db = pool) {
 }
 
 const DEFAULT_PRODUCT_KEEPER_CONFIG = {
-  'BV-LUX-CFW-01': { barcode: '8908020260015', uom: '100 ML', costPrice: 85.00, mrp: 699.00, binCode: 'ASN-SHOP-R1-B01', rackLocation: 'Zone A • Rack 01 • Shelf A • Bin 01', batchNo: 'BV-BATCH-2026-CFW01', mfgDate: '2026-08-01', expiryDate: '2028-07-31', minStock: 20, reorderQty: 100 },
-  'BV-LUX-SBFW-02': { barcode: '8908020260022', uom: '100 ML', costPrice: 85.00, mrp: 799.00, binCode: 'ASN-SHOP-R1-B01', rackLocation: 'Zone A • Rack 01 • Shelf A • Bin 02', batchNo: 'BV-BATCH-2026-SBFW02', mfgDate: '2026-08-01', expiryDate: '2028-07-31', minStock: 20, reorderQty: 100 },
-  'BV-LUX-SH2IN1-03': { barcode: '8908020260039', uom: '200 ML', costPrice: 120.00, mrp: 899.00, binCode: 'ASN-SHOP-R1-B02', rackLocation: 'Zone A • Rack 01 • Shelf B • Bin 01', batchNo: 'BV-BATCH-2026-SH03', mfgDate: '2026-08-05', expiryDate: '2028-08-04', minStock: 15, reorderQty: 100 },
-  'BV-LUX-CSOAP-04': { barcode: '8908020260046', uom: '100 GM', costPrice: 35.00, mrp: 399.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 01', batchNo: 'BV-BATCH-2026-CS04', mfgDate: '2026-08-10', expiryDate: '2028-08-09', minStock: 25, reorderQty: 150 },
-  'BV-LUX-ASOAP-05': { barcode: '8908020260053', uom: '100 GM', costPrice: 35.00, mrp: 349.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 02', batchNo: 'BV-BATCH-2026-AS05', mfgDate: '2026-08-10', expiryDate: '2028-08-09', minStock: 25, reorderQty: 150 },
-  'BV-LUX-TULSI-06': { barcode: '8908020260060', uom: '30 ML', costPrice: 70.00, mrp: 499.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 03', batchNo: 'BV-BATCH-2026-TL06', mfgDate: '2026-08-12', expiryDate: '2028-08-11', minStock: 20, reorderQty: 120 },
-  'BV-BND-DAILY-01': { barcode: '8908020260077', uom: 'Combo', costPrice: 410.00, mrp: 2596.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-D01', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50 },
-  'BV-BND-ROYAL-03': { barcode: '8908020260107', uom: 'Combo', costPrice: 340.00, mrp: 2047.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-R03', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50 },
-  'BV-BND-INSIDEOUT-02': { barcode: '8908020260084', uom: 'Combo', costPrice: 290.00, mrp: 1597.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-IO02', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50 },
-  'BV-BND-VAULT-06': { barcode: '8908020260091', uom: 'Vault', costPrice: 530.00, mrp: 3644.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Vault Bay', batchNo: 'BV-BND-2026-V06', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 40 },
+  'BV-LUX-CFW-01': { barcode: '8908020260015', uom: '100 ML', costPrice: 60.00, mrp: 699.00, binCode: 'ASN-SHOP-R1-B01', rackLocation: 'Zone A • Rack 01 • Shelf A • Bin 01', batchNo: 'SCFW26H', mfgDate: '2026-08-01', expiryDate: '2028-07-31', minStock: 20, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-SBFW-02': { barcode: '8908020260022', uom: '100 ML', costPrice: 62.00, mrp: 799.00, binCode: 'ASN-SHOP-R1-B01', rackLocation: 'Zone A • Rack 01 • Shelf A • Bin 02', batchNo: 'SFW26H', mfgDate: '2026-08-01', expiryDate: '2028-07-31', minStock: 20, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-SH2IN1-03': { barcode: '8908020260039', uom: '200 ML', costPrice: 85.00, mrp: 899.00, binCode: 'ASN-SHOP-R1-B02', rackLocation: 'Zone A • Rack 01 • Shelf B • Bin 01', batchNo: 'SHS26H', mfgDate: '2026-08-01', expiryDate: '2028-07-31', minStock: 15, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-CSOAP-04': { barcode: '8908020260046', uom: '100 GM', costPrice: 24.00, mrp: 399.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 01', batchNo: 'SACHS26I', mfgDate: '2026-09-01', expiryDate: '2028-08-31', minStock: 25, reorderQty: 150, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-ASOAP-05': { barcode: '8908020260053', uom: '100 GM', costPrice: 24.00, mrp: 349.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 02', batchNo: 'SANTS26I', mfgDate: '2026-09-01', expiryDate: '2028-08-31', minStock: 25, reorderQty: 150, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-TULSI-06': { barcode: '8908020260060', uom: '30 ML', costPrice: 40.00, mrp: 499.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 03', batchNo: 'SPTD26I', mfgDate: '2026-09-01', expiryDate: '2028-08-31', minStock: 20, reorderQty: 120, gstHsnCode: '20099000', gstRate: 5.00 },
+  'BV-BND-DAILY-01': { barcode: '8908020260077', uom: 'Combo', costPrice: 193.00, mrp: 2596.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-D01', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-BND-ROYAL-03': { barcode: '8908020260107', uom: 'Combo', costPrice: 169.00, mrp: 2047.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-R03', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-BND-INSIDEOUT-02': { barcode: '8908020260084', uom: 'Combo', costPrice: 124.00, mrp: 1597.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-IO02', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-BND-VAULT-06': { barcode: '8908020260091', uom: 'Vault', costPrice: 295.00, mrp: 3644.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Vault Bay', batchNo: 'BV-BND-2026-V06', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 40, gstHsnCode: '30049011', gstRate: 5.00 },
 };
 
 async function syncWebsiteProductsToInventoryMeta(db = pool) {
@@ -830,6 +831,8 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
       const vaultStock = Math.max(0, qty - shopDisplay);
       const qrPayload = `https://www.bhumivera.com/verify?sku=${encodeURIComponent(sku)}&batch=${encodeURIComponent(preset.batchNo || `BV-BATCH-2026-${prod.id}`)}`;
       const onlineSold = onlineSoldMap.get(Number(prod.id)) || 0;
+      const hsnCode = prod.gst_hsn_code || preset.gstHsnCode || '30049011';
+      const gstRate = Number(prod.gst_rate) > 0 ? Number(prod.gst_rate) : (preset.gstRate || 5.00);
 
       await db.query(
         `INSERT INTO inventory_product_meta
@@ -841,6 +844,12 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
          ON DUPLICATE KEY UPDATE
            custom_name = VALUES(custom_name),
            selling_price = VALUES(selling_price),
+           cost_price = VALUES(cost_price),
+           gst_hsn_code = VALUES(gst_hsn_code),
+           gst_rate = VALUES(gst_rate),
+           batch_no = VALUES(batch_no),
+           mfg_date = VALUES(mfg_date),
+           expiry_date = VALUES(expiry_date),
            physical_stock = VALUES(physical_stock),
            sold_online_qty = GREATEST(sold_online_qty, VALUES(sold_online_qty)),
            qr_code_payload = COALESCE(qr_code_payload, VALUES(qr_code_payload)),
@@ -856,8 +865,8 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
           costPrice,
           mrp,
           sellingPrice,
-          prod.gst_hsn_code || '33049990',
-          Number(prod.gst_rate) || 18.00,
+          hsnCode,
+          gstRate,
           qty,
           shopDisplay,
           vaultStock,
@@ -1259,8 +1268,8 @@ function formatResolvedScannerItem(r, serialNumber = null) {
     uom: r.uom || 'Pcs',
     price: sellingPrice,
     mrp: Number(r.mrp) || sellingPrice,
-    gstHsnCode: r.gst_hsn_code || '33049990',
-    gstRate: Number(r.gst_rate) || 18,
+    gstHsnCode: r.gst_hsn_code || '30049011',
+    gstRate: Number(r.gst_rate) || 5,
     availableStock: liveQty,
     binCode: r.bin_code || 'ASN-SHOP-R1-B01',
     batchNo: r.batch_no || '',

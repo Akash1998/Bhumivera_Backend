@@ -959,6 +959,76 @@ const migrations = [
     name: 'initialize 10x omnichannel inventory software, storage keeper, pos billing, and staff iam schema',
     up: () => initInventorySoftwareTables(pool),
   },
+  {
+    version: 80,
+    name: 'sync manufacturer ayurvedic hsn codes 30049011 and 20099000 at 5 percent gst and update product meta',
+    up: async () => {
+      await pool.query(`
+        UPDATE gst_business_profile
+        SET default_hsn_code = '30049011',
+            default_gst_rate = 5.00
+        WHERE id = 1
+      `).catch(() => {});
+
+      await pool.query(`
+        UPDATE products
+        SET gst_hsn_code = '20099000', gst_rate = 5.00
+        WHERE sku = 'BV-LUX-TULSI-06' OR slug LIKE '%tulsi%'
+      `).catch(() => {});
+
+      await pool.query(`
+        UPDATE products
+        SET gst_hsn_code = '30049011', gst_rate = 5.00
+        WHERE gst_hsn_code IS NULL
+           OR gst_hsn_code = ''
+           OR gst_hsn_code = '33049990'
+           OR sku IN ('BV-LUX-CFW-01', 'BV-LUX-SBFW-02', 'BV-LUX-SH2IN1-03', 'BV-LUX-CSOAP-04', 'BV-LUX-ASOAP-05', 'BV-BND-DAILY-01', 'BV-BND-ROYAL-03', 'BV-BND-INSIDEOUT-02', 'BV-BND-VAULT-06')
+      `).catch(() => {});
+
+      const invoiceUpdates = [
+        { sku: 'BV-LUX-CFW-01', hsn: '30049011', rate: 5.00, cost: 60.00, batch: 'SCFW26H', mfg: '2026-08-01' },
+        { sku: 'BV-LUX-SBFW-02', hsn: '30049011', rate: 5.00, cost: 62.00, batch: 'SFW26H', mfg: '2026-08-01' },
+        { sku: 'BV-LUX-SH2IN1-03', hsn: '30049011', rate: 5.00, cost: 85.00, batch: 'SHS26H', mfg: '2026-08-01' },
+        { sku: 'BV-LUX-CSOAP-04', hsn: '30049011', rate: 5.00, cost: 24.00, batch: 'SACHS26I', mfg: '2026-09-01' },
+        { sku: 'BV-LUX-ASOAP-05', hsn: '30049011', rate: 5.00, cost: 24.00, batch: 'SANTS26I', mfg: '2026-09-01' },
+        { sku: 'BV-LUX-TULSI-06', hsn: '20099000', rate: 5.00, cost: 40.00, batch: 'SPTD26I', mfg: '2026-09-01' },
+        { sku: 'BV-BND-DAILY-01', hsn: '30049011', rate: 5.00, cost: 193.00, batch: 'BV-BND-2026-D01', mfg: '2026-08-15' },
+        { sku: 'BV-BND-ROYAL-03', hsn: '30049011', rate: 5.00, cost: 169.00, batch: 'BV-BND-2026-R03', mfg: '2026-08-15' },
+        { sku: 'BV-BND-INSIDEOUT-02', hsn: '30049011', rate: 5.00, cost: 124.00, batch: 'BV-BND-2026-IO02', mfg: '2026-08-15' },
+        { sku: 'BV-BND-VAULT-06', hsn: '30049011', rate: 5.00, cost: 295.00, batch: 'BV-BND-2026-V06', mfg: '2026-08-15' },
+      ];
+
+      for (const item of invoiceUpdates) {
+        await pool.query(`
+          UPDATE inventory_product_meta
+          SET gst_hsn_code = ?,
+              gst_rate = ?,
+              cost_price = ?,
+              batch_no = ?,
+              mfg_date = ?
+          WHERE sku = ?
+        `, [item.hsn, item.rate, item.cost, item.batch, item.mfg, item.sku]).catch(() => {});
+      }
+
+      await pool.query(`
+        UPDATE inventory_product_meta
+        SET gst_hsn_code = '30049011', gst_rate = 5.00
+        WHERE gst_hsn_code = '33049990' OR gst_hsn_code IS NULL
+      `).catch(() => {});
+
+      await pool.query(`
+        INSERT INTO inventory_suppliers
+          (supplier_code, name, company_name, phone, email, gstin, city, supply_category, payable_balance, lead_time_days, rating, notes)
+        VALUES
+          ('SUP-MFG-001', 'Sitashi Herbal Industry', 'Sitashi Herbal Industry', '+91 141 2770000', 'info@sitashiherbal.com', '08AEQFS1102P1ZM', 'Jaipur, Rajasthan', 'Licensed Ayurvedic & Botanical Formulations (FSSAI: 12222999000145)', 0.00, 7, 5.00, 'Primary Licensed Ayurvedic & Herbal Products Manufacturer (Invoice #MGP/26-27/02)')
+        ON DUPLICATE KEY UPDATE
+          company_name = VALUES(company_name),
+          gstin = VALUES(gstin),
+          city = VALUES(city),
+          supply_category = VALUES(supply_category)
+      `).catch(() => {});
+    },
+  },
 ];
 
 module.exports = migrations;
