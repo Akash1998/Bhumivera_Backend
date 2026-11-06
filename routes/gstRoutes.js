@@ -44,9 +44,13 @@ const STATE_CODES = new Map([
 
 const roundMoney = value => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
-const dateRange = query => {
-  const from = query.from;
-  const to = query.to;
+const dateRange = (query = {}) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  d.setDate(d.getDate() - 30);
+  const defaultFrom = d.toISOString().slice(0, 10);
+  const from = query.from || defaultFrom;
+  const to = query.to || today;
   if (!validDate(from) || !validDate(to) || from > to) {
     throw Object.assign(new Error('Provide a valid date range using YYYY-MM-DD.'), { status: 400 });
   }
@@ -894,6 +898,7 @@ const issueInvoice = async (orderId, adminId, options = {}) => {
 };
 
 router.get('/profile', asyncRoute(async (req, res) => res.json(await getBusinessProfile())));
+router.get('/settings', asyncRoute(async (req, res) => res.json(await getBusinessProfile())));
 
 router.put('/profile', asyncRoute(async (req, res) => {
   const profile = validateProfile(req.body || {});
@@ -1339,8 +1344,21 @@ router.get('/reports', asyncRoute(async (req, res) => {
   const outwardTax = roundMoney(Number(sales.cgst || 0) + Number(sales.sgst || 0) + Number(sales.igst || 0));
   const eligibleItc = roundMoney(Number(expenseTotals.eligible_itc || 0));
   const netGstPayable = roundMoney(outwardTax - eligibleItc);
+  const estimatedProfitLoss = roundMoney(Number(sales.taxable_sales) - Number(expenseTotals.profit_and_loss_expenses));
 
   res.json({
+    summary: {
+      sales: {
+        ...sales,
+        total_tax: outwardTax,
+      },
+      expenses: {
+        ...expenseTotals,
+        expense_count: expenses.length,
+      },
+      pnl: estimatedProfitLoss,
+    },
+    pnl: estimatedProfitLoss,
     period: { from, to },
     sales: {
       ...sales,
@@ -1373,7 +1391,7 @@ router.get('/reports', asyncRoute(async (req, res) => {
       hsn_summary: Array.from(hsnMap.values()),
       state_summary: Array.from(stateMap.values()),
     },
-    estimated_profit_loss: roundMoney(Number(sales.taxable_sales) - Number(expenseTotals.profit_and_loss_expenses)),
+    estimated_profit_loss: estimatedProfitLoss,
     monthly,
     notes: [
       'Credit notes are included as negative sales values.',

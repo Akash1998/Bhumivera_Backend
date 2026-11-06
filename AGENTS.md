@@ -14,9 +14,9 @@ Do NOT guess or analyze the backend codebase from scratch.
 
 ## 📊 CURRENT SYSTEM BASELINE COUNTERS
 * **Backend Route Files**: 41 files
-* **Backend Total Endpoints**: 456 endpoints
+* **Backend Total Endpoints**: 458 endpoints
 * **Backend Model Files**: 38 files
-* **Backend Exported Entities**: 354 functions & constants
+* **Backend Exported Entities**: 352 functions & constants
 * **Database Migrations**: 79 migrations (`v1` to `v79`)
 
 ---

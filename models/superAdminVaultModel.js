@@ -123,7 +123,7 @@ const PLATFORM_MODULES_CATALOG = Object.freeze([
   // ── 10. CLIENTELE PRIVILEGE & TIERS (9 Modules) ─────────────────────────────
   { key: 'privilege.tier_architecture', title: 'Clientele Privilege & Tiers Configuration', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-tiers', apiPrefixes: ['/api/users/loyalty/tiers'] },
   { key: 'privilege.member_directory', title: 'Privilege Member Balances & Tier Progression', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-members', apiPrefixes: ['/api/admin/users'] },
-  { key: 'privilege.redemption_cap_policy', title: 'Points Earning Multipliers & Redemption Cap', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-matrix', apiPrefixes: ['/api/settings/cart-rules/loyalty-tiers'] },
+  { key: 'privilege.redemption_cap_policy', title: 'Points Earning Multipliers & Redemption Cap', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-matrix', apiPrefixes: ['/api/settings/cart-rules/loyalty-tiers', '/api/users/loyalty', '/api/loyalty-tiers'] },
   { key: 'privilege.tier_cashback_rules', title: 'Gold & Platinum Tier Discount & Cashback Rules', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-tiers', apiPrefixes: ['/api/users/loyalty/tiers'] },
   { key: 'privilege.points_ledger_audit', title: 'Client Loyalty Points Transaction Audit', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'loyalty-members', apiPrefixes: ['/api/admin/users'] },
   { key: 'privilege.post_order_ritual_wheel', title: 'Post-Purchase Privilege Reward Wheel', category: 'Clientele Privilege & Tiers', portal: 'admin', adminTab: 'gamification', apiPrefixes: ['/api/gamification'], pauseKey: 'gamification' },
@@ -163,7 +163,7 @@ const PLATFORM_MODULES_CATALOG = Object.freeze([
   { key: 'governance.staff_rbac_matrix', title: 'Staff Accounts & 109-Module Permission Matrix', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'support-agents', apiPrefixes: ['/api/superadmin/controlcentre/staff'] },
   { key: 'governance.security_vault_config', title: 'SuperAdmin Dual-Password, 3-Q&A & Passcode Vault', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'settings', apiPrefixes: ['/api/superadmin/controlcentre/vault'] },
   { key: 'governance.module_pause_switchboard', title: 'Live Platform Module Pause & Maintenance Switchboard', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'system-health', apiPrefixes: ['/api/admin/system/modules'] },
-  { key: 'governance.realtime_api_telemetry', title: 'Real-Time API Latency, HTTP Status & F12 Crash Monitor', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'system-health', apiPrefixes: ['/api/superadmin/controlcentre/telemetry', '/api/admin/system/health'] },
+  { key: 'governance.realtime_api_telemetry', title: 'Real-Time API Latency, HTTP Status & F12 Crash Monitor', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'system-health', apiPrefixes: ['/api/superadmin/controlcentre/telemetry', '/api/admin/system/health', '/api/system/health'] },
   { key: 'governance.infrastructure_logs', title: 'Vercel Edge, Railway Uptime & MySQL Pool Diagnostics', category: 'Client Directory & Security', portal: 'controlcentre', adminTab: 'logs', apiPrefixes: ['/api/admin/system/logs', '/api/logs/client'] },
 ]);
 

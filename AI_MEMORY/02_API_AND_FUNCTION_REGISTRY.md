@@ -15,7 +15,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 | BACKEND METRIC                   | CURRENT VERIFIED COUNT    |
 +----------------------------------+---------------------------+
 | Total Route Files                | 41 files                  |
-| Total Registered Endpoints       | 457 endpoints             |
+| Total Registered Endpoints       | 458 endpoints             |
 | Total Model Files                | 38 files                  |
 | Total Model Exported Entities    | 352 functions/constants   |
 | Database Migrations Executed     | 79 migrations (v1 - v79)  |
@@ -32,7 +32,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 | **2** | `supportRoutes.js` | **50** | L1–L3 Customer Support Desk, Live Chat, Ticket Resolution, Courtesy Coupons | `GET /tickets`, `POST /chat/reply`, `POST /coupons/issue-courtesy`, `POST /rescue-password` |
 | **3** | `authRoutes.js` | **32** | User Authentication, OTP Verification, Password Reset, JWT Token Refresh | `POST /register`, `POST /login`, `POST /verify-otp`, `POST /refresh-token`, `POST /logout` |
 | **4** | `userRoutes.js` | **22** | Customer Profiles, Address Defaults, User Audit, Profile Preferences | `GET /profile`, `PUT /profile`, `GET /orders`, `PUT /change-password`, `DELETE /account` |
-| **5** | `gstRoutes.js` | **21** | GST Ledger, Tax Invoices, B2B/B2C Compliance, GSTR Reports | `GET /invoices`, `POST /generate-invoice`, `GET /reports/monthly`, `GET /export-gstr1` |
+| **5** | `gstRoutes.js` | **22** | GST Ledger, Tax Invoices, B2B/B2C Compliance, GSTR Reports | `GET /profile`, `GET /settings`, `GET /reports`, `POST /products/bulk-tax` |
 | **6** | `serialRoutes.js` | **19** | Product Authenticity Verification, Serial QR Generation, Batch Serials | `GET /verify/:serial`, `POST /batch/generate`, `GET /batch/:id/serials`, `POST /claim-box-gift` |
 | **7** | `productRoutes.js` | **17** | Public Product Catalog, Slug Resolution, Batch CoA, Potency Tables | `GET /`, `GET /:id`, `GET /slug/:slug`, `POST /`, `PUT /:id`, `DELETE /:id` |
 | **8** | `settingsRoutes.js` | **17** | Global System Settings, Shipping Thresholds, Gamification Odds, Site Metadata | `GET /`, `GET /group/:group`, `PUT /`, `POST /cache/flush` |

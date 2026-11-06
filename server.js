@@ -429,6 +429,16 @@ app.use("/api/inventory", createModuleAvailabilityMiddleware('inventory'), inven
 app.use("/api/warehouse", createModuleAvailabilityMiddleware('warehouse'), warehouseRoutes);
 app.use("/api/gst", createModuleAvailabilityMiddleware('gst'), gstRoutes);
 
+// Telemetry & Loyalty alias endpoints for administrative health audit suites
+app.get("/api/system/health", (req, res, next) => {
+  req.url = "/health";
+  systemAdminRoutes(req, res, next);
+});
+app.get("/api/loyalty-tiers/matrix", (req, res, next) => {
+  req.url = "/loyalty/matrix";
+  userRoutes(req, res, next);
+});
+
 app.get("/", (req, res) =>
   res.json({
     status: "ok",

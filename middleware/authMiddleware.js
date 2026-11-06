@@ -49,6 +49,8 @@ const ADMIN_PERMISSION_ROUTES = [
   { pattern: /^\/api\/shipping\/zones(?:\/|$)/, permission: 'shipping.manage' },
   { pattern: /^\/api\/gst(?:\/|$)/, permission: 'accounting.read', methods: ['GET', 'HEAD'] },
   { pattern: /^\/api\/gst(?:\/|$)/, permission: 'gst.issue' },
+  { pattern: /^\/api\/(?:admin\/)?system\/health$/, permission: 'logs.read', methods: ['GET', 'HEAD'] },
+  { pattern: /^\/api\/(?:users\/loyalty|loyalty-tiers)(?:\/|$)/, permission: 'gamification.manage', methods: ['GET', 'HEAD'] },
   { pattern: /^\/api\/analytics(?:\/|$)/, permission: 'analytics.read' },
   { pattern: /^\/api\/products(?:\/|$)/, permission: 'products.manage' },
   { pattern: /^\/api\/categories(?:\/|$)/, permission: 'categories.manage' },
