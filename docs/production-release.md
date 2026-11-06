@@ -39,6 +39,8 @@ On Vercel, `/health/live` is intentionally a lightweight process-liveness check 
 
 The frontend build must point at the deployed backend origin with `VITE_BASE_URL` (without `/api`). The backend must allow the deployed storefront origin through `FRONTEND_ORIGINS`. Customer email OTP requires `MAILRELAY_API_KEY`; configure it in Vercel along with `MAILRELAY_DOMAIN` and `EMAIL_FROM`. OTP messages are sent by email through Mailrelay; SMS delivery is not configured.
 
+After deploying the backend, verify an OPTIONS preflight to `/api/inventory-software/pos/checkout` from the storefront origin permits `authorization`, `content-type`, and `idempotency-key`. The POS checkout uses `Idempotency-Key`; the separate `X-Idempotency-Key` header remains allowed for request deduplication.
+
 Checkout shows Razorpay first, Wallet second, and COD third. COD remains visible with an explanation, but is selectable only after two of the customer's orders have been recorded as delivered (`delivered_at` set); the order transaction rechecks this rule on the server. Wallet checkout debits the wallet and records its ledger transaction atomically with order creation. Razorpay remains the recommended payment option.
 
 The Orders admin page can compare up to 25 online payments on the visible page with Razorpay. This is a read-only diagnostic: discrepancies and provider lookup failures are reported but never auto-corrected. Normal online checkout captures the payment before creating the order; pending orders also include legitimate COD orders, so do not automatically expire pending orders or release their stock without an approved fulfillment policy.

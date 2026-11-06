@@ -8,6 +8,8 @@
 
 ## 1. Global Backend Counters
 
+The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkout and `X-Idempotency-Key` for request deduplication; this does not change route or model counts.
+
 ```
 +-------------------------------------------------------------+
 | BACKEND METRIC                   | CURRENT VERIFIED COUNT    |

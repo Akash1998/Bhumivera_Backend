@@ -180,6 +180,7 @@ const corsOptions = {
     "X-Client-Platform",
     "X-SuperAdmin-Action-Passcode",
     "X-CSRF-Token",
+    "Idempotency-Key",
     "X-Idempotency-Key",
     "Accept",
     "Origin"
