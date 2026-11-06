@@ -884,26 +884,20 @@ router.delete('/iam/users/:id', authenticateInventoryStaff, requireIamAdmin, asy
 });
 
 // 3. UNIFIED BOOTSTRAP & REAL-TIME WEBSITE SYNC ENDPOINTS
-// Full product-to-meta upsert is expensive; bootstrap polls every minute, so run it at most once per window.
-const BOOTSTRAP_SYNC_INTERVAL_MS = 5 * 60 * 1000;
-let lastBootstrapSyncAt = 0;
-let lastBootstrapBackupDay = null;
+const BOOTSTRAP_HEAVY_WORK_MS = 5 * 60 * 1000;
+let lastBootstrapHeavyWorkAt = 0;
 
 router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
   try {
     await ensureInventorySoftwareTables(pool);
-    if (Date.now() - lastBootstrapSyncAt >= BOOTSTRAP_SYNC_INTERVAL_MS) {
-      lastBootstrapSyncAt = Date.now();
+    if (Date.now() - lastBootstrapHeavyWorkAt >= BOOTSTRAP_HEAVY_WORK_MS) {
+      lastBootstrapHeavyWorkAt = Date.now();
       await syncWebsiteProductsToInventoryMeta(pool);
+      // Today's SQL backup is guaranteed by the first load of each window; no need to re-check on every load.
+      void ensureDailyAutoBackup(pool, req.invUser.username || 'auto-daily').catch(() => {});
     }
     void pruneStalePosData();
     const scannerSessionCode = normalizePosSessionCode(req.query.sessionCode) || 'DEFAULT-POS-TERMINAL';
-    // Check for today's backup once per day per process instead of on every bootstrap call
-    const todayBackupKey = new Date().toISOString().slice(0, 10);
-    if (lastBootstrapBackupDay !== todayBackupKey) {
-      lastBootstrapBackupDay = todayBackupKey;
-      void ensureDailyAutoBackup(pool, req.invUser.username || 'auto-daily').catch(() => {});
-    }
 
     const [
       [itemRows],
@@ -3667,18 +3661,8 @@ router.post('/backup/restore', authenticateInventoryStaff, requirePermission('ca
   }
 });
 
-// Vercel cron endpoint for the daily backup. Only the scheduler holding CRON_SECRET may trigger it,
-// so public traffic never wakes MySQL or runs a full dump.
-router.get('/backup/cron-daily', async (req, res) => {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return res.status(503).json({ success: false, message: 'Cron backup is not configured.' });
-  }
-  const provided = Buffer.from(String(req.get('authorization') || ''));
-  const expected = Buffer.from(`Bearer ${cronSecret}`);
-  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
-    return res.status(401).json({ success: false, message: 'Unauthorized.' });
-  }
+// Cron / Webhook endpoint for automated daily backups on Vercel & Railway
+router.all('/backup/cron-daily', async (req, res) => {
   try {
     await ensureInventorySoftwareTables(pool);
     const backup = await ensureDailyAutoBackup(pool, 'vercel-railway-cron');

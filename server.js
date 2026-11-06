@@ -276,9 +276,9 @@ app.use(createSeoPrerenderMiddleware({
   distIndexHtmlPath: path.join(__dirname, "..", "client", "dist", "index.html"),
 }));
 
-// Health probes report state only; they must not call initializeDatabase(), or every uptime ping wakes MySQL.
 app.use("/health", createHealthRouter(
-  () => ({ databaseReady, failure: startupFailure })
+  () => ({ databaseReady, failure: startupFailure }),
+  isVercelRuntime ? () => initializeDatabase() : null
 ));
 
 // --- SEO: DYNAMIC XML SITEMAP GENERATOR (Google, Bing & AI Crawlers) ---
