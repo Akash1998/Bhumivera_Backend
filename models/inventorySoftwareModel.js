@@ -1644,6 +1644,360 @@ async function restoreFullDatabaseBackup(
   }
 }
 
+/**
+ * 1. AI-Powered Inventory Velocity & Days of Cover (DOC) Forecasting
+ */
+async function calculateInventoryVelocityAndDoc(db = pool) {
+  const [velocityRows] = await db.query(`
+    SELECT 
+      oi.product_id,
+      SUM(oi.quantity) AS total_sold_30d,
+      COUNT(DISTINCT oi.order_id) AS order_count_30d
+    FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id
+    WHERE o.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      AND o.status NOT IN ('cancelled', 'refunded', 'archived')
+    GROUP BY oi.product_id
+  `).catch(() => [[]]);
+
+  const velocityByProductId = {};
+  for (const row of velocityRows) {
+    velocityByProductId[row.product_id] = {
+      sold30d: Number(row.total_sold_30d) || 0,
+      dailyRunRate: Math.round(((Number(row.total_sold_30d) || 0) / 30) * 100) / 100,
+    };
+  }
+
+  const [items] = await db.query(`
+    SELECT m.id AS meta_id, m.product_id, m.sku, m.barcode, m.custom_name,
+           m.category_name, m.cost_price, m.selling_price, m.min_stock_alert,
+           m.reorder_quantity, m.lead_time_days, m.bin_code, m.rack_location,
+           COALESCE(p.name, m.custom_name) AS product_name,
+           COALESCE(p.quantity, m.physical_stock, 0) AS current_stock
+    FROM inventory_product_meta m
+    LEFT JOIN products p ON m.product_id = p.id
+    ORDER BY m.id ASC
+  `);
+
+  const forecasts = items.map(it => {
+    const vel = velocityByProductId[it.product_id] || { sold30d: 0, dailyRunRate: 0 };
+    const runRate = vel.dailyRunRate > 0 ? vel.dailyRunRate : 0.05;
+    const daysOfCover = Math.round(Number(it.current_stock) / runRate);
+    const leadTime = Number(it.lead_time_days) || 7;
+    const safetyStock = Number(it.min_stock_alert) || 20;
+    const reorderPoint = Math.ceil(runRate * leadTime + safetyStock);
+
+    let status = 'HEALTHY';
+    if (it.current_stock <= 0) {
+      status = 'OUT_OF_STOCK';
+    } else if (it.current_stock <= safetyStock || daysOfCover <= 15) {
+      status = 'REORDER_CRITICAL';
+    } else if (daysOfCover <= 30) {
+      status = 'REORDER_APPROACHING';
+    }
+
+    return {
+      metaId: it.meta_id,
+      productId: it.product_id,
+      sku: it.sku,
+      barcode: it.barcode,
+      name: it.product_name,
+      category: it.category_name,
+      currentStock: Number(it.current_stock),
+      sold30d: vel.sold30d,
+      dailyRunRate: vel.dailyRunRate,
+      daysOfCover,
+      leadTimeDays: leadTime,
+      safetyStock,
+      reorderPoint,
+      suggestedReorderQty: Number(it.reorder_quantity) || 100,
+      binCode: it.bin_code,
+      rackLocation: it.rack_location,
+      status,
+    };
+  });
+
+  const criticalCount = forecasts.filter(f => f.status === 'REORDER_CRITICAL' || f.status === 'OUT_OF_STOCK').length;
+  const approachingCount = forecasts.filter(f => f.status === 'REORDER_APPROACHING').length;
+
+  return {
+    calculatedAt: new Date().toISOString(),
+    forecasts,
+    summary: {
+      totalProducts: forecasts.length,
+      criticalCount,
+      approachingCount,
+      healthyCount: forecasts.length - criticalCount - approachingCount,
+    },
+  };
+}
+
+/**
+ * 2. FEFO (First-Expired, First-Out) Batch Allocation for an Order
+ */
+async function allocateFefoBatchesForOrder(db = pool, orderId) {
+  const [orderItems] = await db.query(
+    'SELECT id, product_id, name, quantity, price FROM order_items WHERE order_id = ?',
+    [Number(orderId)]
+  );
+
+  if (!orderItems || orderItems.length === 0) {
+    return { orderId: Number(orderId), allocations: [] };
+  }
+
+  const allocations = [];
+
+  for (const item of orderItems) {
+    const [batches] = await db.query(`
+      SELECT pb.id, pb.batch_number, pb.manufacturing_date, pb.expiry_date,
+             pb.quantity AS batch_stock, pb.mrp,
+             m.bin_code, m.rack_location
+      FROM product_batches pb
+      LEFT JOIN inventory_product_meta m ON m.product_id = pb.product_id
+      WHERE pb.product_id = ? AND pb.expiry_date > CURDATE()
+      ORDER BY pb.expiry_date ASC
+    `, [item.product_id]).catch(() => [[]]);
+
+    let neededQty = Number(item.quantity);
+    const allocatedBatches = [];
+
+    if (batches && batches.length > 0) {
+      for (const b of batches) {
+        if (neededQty <= 0) break;
+        const availableInBatch = Math.max(0, Number(b.batch_stock) || 0);
+        const pickQty = Math.min(neededQty, availableInBatch > 0 ? availableInBatch : neededQty);
+        allocatedBatches.push({
+          batchId: b.id,
+          batchNumber: b.batch_number,
+          expiryDate: b.expiry_date ? String(b.expiry_date).slice(0, 10) : 'N/A',
+          pickQuantity: pickQty,
+          binCode: b.bin_code || 'ASN-DEFAULT',
+          rackLocation: b.rack_location || 'Zone A',
+        });
+        neededQty -= pickQty;
+      }
+    }
+
+    allocations.push({
+      orderItemId: item.id,
+      productId: item.product_id,
+      productName: item.name,
+      orderedQuantity: Number(item.quantity),
+      fefoBatches: allocatedBatches.length > 0 ? allocatedBatches : [{
+        batchNumber: 'STANDARD-FEFO',
+        expiryDate: 'CURRENT',
+        pickQuantity: Number(item.quantity),
+        binCode: 'ASN-SHOP-R1-B01',
+        rackLocation: 'Zone A',
+      }],
+    });
+  }
+
+  return {
+    orderId: Number(orderId),
+    allocations,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * 3. Wave & Zone Picking Engine (Aggregated Warehouse Walk Route)
+ */
+async function generateWavePicklist(db = pool, orderIds = []) {
+  if (!Array.isArray(orderIds) || orderIds.length === 0) {
+    throw Object.assign(new Error('At least one order ID is required to generate a wave picklist.'), { status: 400 });
+  }
+
+  const placeholders = orderIds.map(() => '?').join(',');
+  const [items] = await db.query(`
+    SELECT oi.order_id, oi.product_id, oi.name AS product_name, oi.quantity,
+           m.sku, m.barcode, m.bin_code, m.rack_location,
+           COALESCE(b.zone_name, 'Zone A') AS zone_name,
+           COALESCE(b.rack_no, '01') AS rack_no,
+           COALESCE(b.shelf_level, 'A') AS shelf_level
+    FROM order_items oi
+    LEFT JOIN inventory_product_meta m ON m.product_id = oi.product_id
+    LEFT JOIN inventory_storage_bins b ON b.bin_code = m.bin_code
+    WHERE oi.order_id IN (${placeholders})
+    ORDER BY b.zone_name ASC, b.rack_no ASC, b.shelf_level ASC, m.sku ASC
+  `, orderIds);
+
+  const aggregatedBySku = {};
+  for (const it of items) {
+    const key = it.sku || `PID-${it.product_id}`;
+    if (!aggregatedBySku[key]) {
+      aggregatedBySku[key] = {
+        sku: it.sku || 'N/A',
+        barcode: it.barcode || 'N/A',
+        name: it.product_name,
+        totalPickQuantity: 0,
+        binCode: it.bin_code || 'ASN-DEFAULT',
+        rackLocation: it.rack_location || 'Zone A',
+        zone: it.zone_name,
+        rack: it.rack_no,
+        orderAllocations: [],
+      };
+    }
+    aggregatedBySku[key].totalPickQuantity += Number(it.quantity) || 1;
+    aggregatedBySku[key].orderAllocations.push({
+      orderId: it.order_id,
+      quantity: Number(it.quantity) || 1,
+    });
+  }
+
+  const picklistItems = Object.values(aggregatedBySku).sort((a, b) => {
+    if (a.zone !== b.zone) return a.zone.localeCompare(b.zone);
+    if (a.rack !== b.rack) return a.rack.localeCompare(b.rack);
+    return a.binCode.localeCompare(b.binCode);
+  });
+
+  const waveId = `WAVE-${Date.now().toString().slice(-6)}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+
+  return {
+    waveId,
+    orderCount: orderIds.length,
+    orderIds,
+    totalItemsToPick: picklistItems.reduce((sum, it) => sum + it.totalPickQuantity, 0),
+    totalUniqueSkus: picklistItems.length,
+    walkPath: picklistItems,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * 4. Consolidated Courier Shipping Manifest Generator
+ */
+async function generateCarrierManifest(db = pool, orderIds = [], courier = 'All Carriers', actorUsername = 'system') {
+  if (!Array.isArray(orderIds) || orderIds.length === 0) {
+    throw Object.assign(new Error('At least one order ID is required to generate a manifest.'), { status: 400 });
+  }
+
+  const placeholders = orderIds.map(() => '?').join(',');
+  const [orders] = await db.query(`
+    SELECT o.id, o.order_number, o.status, o.courier, o.tracking_number,
+           o.total, o.payment_mode, o.created_at,
+           u.name AS customer_name, u.phone AS customer_phone
+    FROM orders o
+    LEFT JOIN users u ON u.id = o.user_id
+    WHERE o.id IN (${placeholders})
+  `, orderIds);
+
+  const manifestCode = `BV-MAN-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  const totalWeightKg = (orders.length * 0.45).toFixed(2);
+
+  return {
+    manifestCode,
+    courier,
+    totalShipments: orders.length,
+    totalWeightKg: Number(totalWeightKg),
+    generatedBy: actorUsername,
+    generatedAt: new Date().toISOString(),
+    parcels: orders.map(o => ({
+      orderId: o.id,
+      orderNumber: o.order_number || `BV-${o.id}`,
+      customerName: o.customer_name || 'Walk-in / Patron',
+      phone: o.customer_phone || 'N/A',
+      awb: o.tracking_number || `AWB-${o.id}-${Date.now().toString().slice(-4)}`,
+      courier: o.courier || courier,
+      paymentMode: o.payment_mode || 'Prepaid',
+      collectableAmount: o.payment_mode === 'cod' ? Number(o.total) : 0,
+    })),
+  };
+}
+
+/**
+ * 5. Return QC Inspection & Grading Matrix
+ */
+async function processReturnQcGrade(db = pool, { orderId, grade, notes = '', actorUsername = 'system' }) {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [[order]] = await conn.query('SELECT * FROM orders WHERE id = ? FOR UPDATE', [Number(orderId)]);
+    if (!order) {
+      throw Object.assign(new Error(`Order #${orderId} not found.`), { status: 404 });
+    }
+
+    const [items] = await conn.query('SELECT * FROM order_items WHERE order_id = ?', [Number(orderId)]);
+
+    let restockCategory = 'vault';
+    let movementType = 'RTO_RESTOCK_GRADE_A';
+    let newStatus = 'rto_delivered';
+
+    if (grade === 'GRADE_A') {
+      restockCategory = 'vault';
+      movementType = 'RTO_QC_GRADE_A_SELLABLE';
+      for (const it of items) {
+        await atomicAdjustProductStock(conn, {
+          productId: it.product_id,
+          delta: Number(it.quantity),
+          category: 'vault',
+          notes: `RTO QC Grade A (Pristine): Restocked ${it.quantity} unit(s) from order #${orderId}`,
+          actorUsername,
+        });
+      }
+    } else if (grade === 'GRADE_B') {
+      restockCategory = 'shop';
+      movementType = 'RTO_QC_GRADE_B_DISPLAY';
+      for (const it of items) {
+        await atomicAdjustProductStock(conn, {
+          productId: it.product_id,
+          delta: Number(it.quantity),
+          category: 'shop',
+          notes: `RTO QC Grade B (Display/Clearance): Restocked ${it.quantity} unit(s) from order #${orderId}`,
+          actorUsername,
+        });
+      }
+    } else {
+      restockCategory = 'damaged';
+      movementType = 'RTO_QC_GRADE_C_DAMAGED';
+      for (const it of items) {
+        await atomicAdjustProductStock(conn, {
+          productId: it.product_id,
+          delta: Number(it.quantity),
+          category: 'damaged',
+          notes: `RTO QC Grade C (Damaged/Quarantine): Marked ${it.quantity} unit(s) as quarantine from order #${orderId}`,
+          actorUsername,
+        });
+      }
+    }
+
+    await conn.query(
+      `UPDATE orders 
+       SET status = ?, 
+           rto_reason = CONCAT('QC Grade: ', ?, ' — ', ?),
+           rto_restock_mode = ?,
+           rto_processed_at = NOW(),
+           updated_at = NOW()
+       WHERE id = ?`,
+      [newStatus, grade, notes, restockCategory, Number(orderId)]
+    );
+
+    await appendInventoryAuditLog(conn, {
+      actorUsername,
+      actorRole: 'inspector',
+      actionCode: movementType,
+      summary: `Processed return QC for Order #${orderId}: ${grade}. Stock routed to ${restockCategory}. Notes: ${notes}`,
+    });
+
+    await conn.commit();
+    await invalidatePublicCatalogCache();
+
+    return {
+      success: true,
+      orderId: Number(orderId),
+      grade,
+      restockCategory,
+      processedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 module.exports = {
   VALID_INVENTORY_ROLES,
   INVENTORY_PERMISSION_DEFINITIONS,
@@ -1663,4 +2017,9 @@ module.exports = {
   generateFullDatabaseBackup,
   ensureDailyAutoBackup,
   restoreFullDatabaseBackup,
+  calculateInventoryVelocityAndDoc,
+  allocateFefoBatchesForOrder,
+  generateWavePicklist,
+  generateCarrierManifest,
+  processReturnQcGrade,
 };

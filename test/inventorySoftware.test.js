@@ -96,3 +96,43 @@ test('resolveProductByQrOrCode correctly extracts SKU, Serial, and Slug from web
   assert.ok(res3);
   assert.equal(res3.barcode, '8908020260015');
 });
+
+test('generateWavePicklist groups orders and aggregates items by bin walk path', async () => {
+  const { generateWavePicklist } = require('../models/inventorySoftwareModel');
+  const fakeDb = {
+    query: async () => [
+      [
+        { order_id: 101, product_id: 1, product_name: 'Face Wash', quantity: 2, sku: 'BV-FW-01', barcode: '111', bin_code: 'ASN-R1-B01', zone_name: 'Zone A', rack_no: '01', shelf_level: 'A' },
+        { order_id: 102, product_id: 1, product_name: 'Face Wash', quantity: 3, sku: 'BV-FW-01', barcode: '111', bin_code: 'ASN-R1-B01', zone_name: 'Zone A', rack_no: '01', shelf_level: 'A' },
+        { order_id: 102, product_id: 2, product_name: 'Shampoo', quantity: 1, sku: 'BV-SH-02', barcode: '222', bin_code: 'ASN-R2-B01', zone_name: 'Zone B', rack_no: '02', shelf_level: 'B' },
+      ],
+    ],
+  };
+
+  const picklist = await generateWavePicklist(fakeDb, [101, 102]);
+  assert.ok(picklist.waveId.startsWith('WAVE-'));
+  assert.equal(picklist.orderCount, 2);
+  assert.equal(picklist.totalItemsToPick, 6); // 2 + 3 + 1 = 6
+  assert.equal(picklist.totalUniqueSkus, 2);
+  assert.equal(picklist.walkPath[0].sku, 'BV-FW-01');
+  assert.equal(picklist.walkPath[0].totalPickQuantity, 5);
+});
+
+test('generateCarrierManifest compiles shipment manifest with code and weight calculation', async () => {
+  const { generateCarrierManifest } = require('../models/inventorySoftwareModel');
+  const fakeDb = {
+    query: async () => [
+      [
+        { id: 201, order_number: 'BV-ORD-201', status: 'packed', courier: 'shiprocket', tracking_number: 'AWB-201', total: 1299, payment_mode: 'prepaid', customer_name: 'Alice', customer_phone: '9876543210' },
+        { id: 202, order_number: 'BV-ORD-202', status: 'packed', courier: 'shiprocket', tracking_number: 'AWB-202', total: 1499, payment_mode: 'cod', customer_name: 'Bob', customer_phone: '9876543211' },
+      ],
+    ],
+  };
+
+  const manifest = await generateCarrierManifest(fakeDb, [201, 202], 'shiprocket', 'dispatcher_raj');
+  assert.ok(manifest.manifestCode.startsWith('BV-MAN-'));
+  assert.equal(manifest.totalShipments, 2);
+  assert.equal(manifest.courier, 'shiprocket');
+  assert.equal(manifest.generatedBy, 'dispatcher_raj');
+  assert.equal(manifest.parcels[1].collectableAmount, 1499);
+});

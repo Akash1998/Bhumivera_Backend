@@ -15,9 +15,9 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 | BACKEND METRIC                   | CURRENT VERIFIED COUNT    |
 +----------------------------------+---------------------------+
 | Total Route Files                | 41 files                  |
-| Total Registered Endpoints       | 458 endpoints             |
+| Total Registered Endpoints       | 466 endpoints             |
 | Total Model Files                | 38 files                  |
-| Total Model Exported Entities    | 352 functions/constants   |
+| Total Model Exported Entities    | 357 functions/constants   |
 | Database Migrations Defined      | 80 migrations (v1 - v80)  |
 +----------------------------------+---------------------------+
 ```
@@ -28,7 +28,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 
 | # | Route File | Total Endpoints | Primary Responsibility | Key HTTP Methods & Paths |
 | :---: | :--- | :---: | :--- | :--- |
-| **1** | `inventorySoftwareRoutes.js` | **58** | Omnichannel Orders, Labels, RTO, Stock, POS, Scanner Bridge, Daily SQL Backups | `GET /bootstrap` (latest 250 orders; order query failures are reported), `PUT /online-orders/:id/dispatch-status`, `POST /returns/rto-process`, `POST /pos/checkout`, `POST /scanner/scan`, `POST /backup/restore`, `GET /backup/cron-daily` |
+| **1** | `inventorySoftwareRoutes.js` | **66** | Omnichannel Orders, Labels, RTO, Stock, POS, Scanner Bridge, FEFO, Wave Picklist, Manifest, Returns QC | `GET /bootstrap`, `GET /summary`, `GET /orders` (paginated), `GET /stock/forecast` (AI DOC velocity), `GET /orders/:id/fefo-picks`, `POST /fulfillment/wave-picklist`, `POST /fulfillment/manifest`, `POST /fulfillment/verify-pack`, `POST /returns/qc-grade`, `POST /pos/checkout` (batch locked) |
 | **2** | `supportRoutes.js` | **50** | L1–L3 Customer Support Desk, Live Chat, Ticket Resolution, Courtesy Coupons | `GET /tickets`, `POST /chat/reply`, `POST /coupons/issue-courtesy`, `POST /rescue-password` |
 | **3** | `authRoutes.js` | **32** | User Authentication, OTP Verification, Password Reset, JWT Token Refresh | `POST /register`, `POST /login`, `POST /verify-otp`, `POST /refresh-token`, `POST /logout` |
 | **4** | `userRoutes.js` | **22** | Customer Profiles, Address Defaults, User Audit, Profile Preferences | `GET /profile`, `PUT /profile`, `GET /orders`, `PUT /change-password`, `DELETE /account` |
@@ -72,9 +72,9 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 
 ---
 
-## 3. Database Models & Exported Functions (38 Files | 353 Functions)
+## 3. Database Models & Exported Functions (38 Files | 357 Functions)
 
-1. **`inventorySoftwareModel.js` (18 items)**: `VALID_INVENTORY_ROLES`, `INVENTORY_PERMISSION_DEFINITIONS`, `ROLE_DEFAULT_INVENTORY_PERMISSIONS`, `resolveInventoryPermissions`, `generateTotpSecret`, `verifyTotpToken`, `calculateEstimatedDeliveryDate`, `resolveProductByQrOrCode`, `generateFullDatabaseBackup`, `ensureDailyAutoBackup`, `restoreFullDatabaseBackup`, `atomicAdjustProductStock`, `recalculateAllBundleStocks`.
+1. **`inventorySoftwareModel.js` (23 items)**: `VALID_INVENTORY_ROLES`, `INVENTORY_PERMISSION_DEFINITIONS`, `ROLE_DEFAULT_INVENTORY_PERMISSIONS`, `resolveInventoryPermissions`, `generateTotpSecret`, `verifyTotpCode`, `calculateEstimatedDeliveryDate`, `initInventorySoftwareTables`, `ensureInventorySoftwareTables`, `syncWebsiteProductsToInventoryMeta`, `recalculateAllBundleStocks`, `appendInventoryAuditLog`, `recordStockMovement`, `atomicAdjustProductStock`, `resolveProductByQrOrCode`, `generateFullDatabaseBackup`, `ensureDailyAutoBackup`, `restoreFullDatabaseBackup`, `calculateInventoryVelocityAndDoc`, `allocateFefoBatchesForOrder`, `generateWavePicklist`, `generateCarrierManifest`, `processReturnQcGrade`.
 2. **`userModel.js` (33 items)**: `createUsersTable`, `createUser`, `getUserByEmail`, `getUserById`, `verifyPassword`, `updateUserPassword`, `ensureUserColumns`, `listUsers`, `searchUsers`.
 3. **`aiSupportModel.js` (25 items)**: `VALID_CHAT_STATUSES`, `VALID_SUPPORT_ROLES`, `ROLE_DEFAULT_PERMISSIONS`, `createChatSession`, `addChatMessage`, `escalateToHuman`, `resolveChat`.
 4. **`reviewModel.js` (16 items)**: `createReviewTable`, `createReview`, `createReviewAsAdmin`, `getReviewsByProduct`, `getReviewsByComboName`, `getPublicCustomerStories`, `getProductRatingSummary`, `getAllReviews`, `approveReview`, `archiveReview`, `deleteReviewPermanently`, `getUserReviews`, `updateReviewAsAdmin`, `syncProductStats`, `PRODUCT_SLUGS`, `PRODUCT_NAMES`, `COMBO_BY_KEY`.

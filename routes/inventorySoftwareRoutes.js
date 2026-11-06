@@ -42,6 +42,11 @@ const {
   generateFullDatabaseBackup,
   ensureDailyAutoBackup,
   restoreFullDatabaseBackup,
+  calculateInventoryVelocityAndDoc,
+  allocateFefoBatchesForOrder,
+  generateWavePicklist,
+  generateCarrierManifest,
+  processReturnQcGrade,
 } = require('../models/inventorySoftwareModel');
 
 const router = express.Router();
@@ -1294,6 +1299,303 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
   }
 });
 
+// 3B. HIGH-VELOCITY SUMMARY & PAGINATED PERFORMANCE ENDPOINTS
+router.get('/summary', authenticateInventoryStaff, async (_req, res) => {
+  try {
+    const [
+      [[orderCounts]],
+      [[lowStockCount]],
+      [[posRevToday]],
+      [[queueCount]],
+    ] = await Promise.all([
+      pool.query(`
+        SELECT 
+          COUNT(CASE WHEN status IN ('pending', 'confirmed') THEN 1 END) AS pendingCount,
+          COUNT(CASE WHEN status = 'packed' THEN 1 END) AS packedCount,
+          COUNT(CASE WHEN status = 'shipped' THEN 1 END) AS shippedCount,
+          COUNT(CASE WHEN status = 'delivered' THEN 1 END) AS deliveredCount,
+          COUNT(CASE WHEN status IN ('cancelled', 'rto_delivered') THEN 1 END) AS rtoCount,
+          COUNT(*) AS totalOrders
+        FROM orders
+        WHERE status <> 'archived'
+      `),
+      pool.query(`
+        SELECT COUNT(*) AS count
+        FROM inventory_product_meta m
+        LEFT JOIN products p ON p.id = m.product_id
+        WHERE COALESCE(p.quantity, m.physical_stock, 0) <= COALESCE(m.min_stock_alert, 20)
+      `),
+      pool.query(`
+        SELECT COALESCE(SUM(bill_total), 0) AS total
+        FROM inventory_pos_invoices
+        WHERE status <> 'cancelled' AND DATE(created_at) = CURDATE()
+      `),
+      pool.query(`
+        SELECT COUNT(*) AS count
+        FROM inventory_scanner_queue
+        WHERE status = 'queued'
+      `),
+    ]);
+
+    res.json({
+      success: true,
+      summary: {
+        pendingOrders: Number(orderCounts?.pendingCount) || 0,
+        packedOrders: Number(orderCounts?.packedCount) || 0,
+        shippedOrders: Number(orderCounts?.shippedCount) || 0,
+        deliveredOrders: Number(orderCounts?.deliveredCount) || 0,
+        rtoOrders: Number(orderCounts?.rtoCount) || 0,
+        totalOrders: Number(orderCounts?.totalOrders) || 0,
+        lowStockItems: Number(lowStockCount?.count) || 0,
+        posRevenueToday: Number(posRevToday?.total) || 0,
+        scannerQueueCount: Number(queueCount?.count) || 0,
+      },
+      syncedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get('/orders', authenticateInventoryStaff, async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+    const offset = (page - 1) * limit;
+    const status = String(req.query.status || 'ALL').trim();
+    const search = String(req.query.q || req.query.search || '').trim().toLowerCase();
+    const date = String(req.query.date || '').trim();
+
+    let whereClause = "WHERE o.status <> 'archived'";
+    const params = [];
+
+    if (status !== 'ALL') {
+      if (status === 'DISPATCH') {
+        whereClause += " AND o.status IN ('pending', 'confirmed', 'packed')";
+      } else {
+        whereClause += " AND o.status = ?";
+        params.push(status);
+      }
+    }
+
+    if (date) {
+      whereClause += " AND DATE(o.created_at) = ?";
+      params.push(date);
+    }
+
+    if (search) {
+      whereClause += ` AND (
+        o.order_number LIKE ? OR
+        o.id = ? OR
+        u.name LIKE ? OR
+        u.phone LIKE ? OR
+        o.tracking_number LIKE ? OR
+        o.courier LIKE ?
+      )`;
+      const wild = `%${search}%`;
+      const numSearch = Number(search) || 0;
+      params.push(wild, numSearch, wild, wild, wild, wild);
+    }
+
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) AS total
+       FROM orders o
+       LEFT JOIN users u ON o.user_id = u.id
+       ${whereClause}`,
+      params
+    );
+
+    const [orders] = await pool.query(
+      `SELECT o.id, o.order_number, o.user_id, o.status, o.delivery_type,
+              o.payment_mode, o.payment_status, o.payment_id,
+              o.subtotal, o.discount, o.tier_discount, o.referral_wallet_amount,
+              o.shipping_cost, o.total, o.courier, o.tracking_number,
+              o.notes, o.cancel_reason, o.created_at, o.updated_at, o.delivered_at,
+              o.estimated_delivery_date, o.current_location_checkpoint,
+              o.rto_reason, o.rto_restock_mode, o.rto_processed_at, o.label_printed_at,
+              o.address_snapshot,
+              u.name AS customer_name, u.email AS customer_email, u.phone AS customer_phone
+       FROM orders o
+       LEFT JOIN users u ON o.user_id = u.id
+       ${whereClause}
+       ORDER BY o.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    const orderIds = orders.map(o => o.id);
+    const orderItemsByOrder = {};
+    const shippingLabelsByOrder = {};
+    if (orderIds.length > 0) {
+      const placeholders = orderIds.map(() => '?').join(',');
+      const [oItems] = await pool.query(
+        `SELECT * FROM order_items WHERE order_id IN (${placeholders})`,
+        orderIds
+      );
+      for (const it of oItems) {
+        if (!orderItemsByOrder[it.order_id]) orderItemsByOrder[it.order_id] = [];
+        orderItemsByOrder[it.order_id].push(it);
+      }
+
+      const [sLabels] = await pool.query(
+        `SELECT * FROM shipping_labels WHERE order_id IN (${placeholders}) ORDER BY id DESC`,
+        orderIds
+      ).catch(() => [[]]);
+      for (const lb of sLabels) {
+        if (!shippingLabelsByOrder[lb.order_id]) shippingLabelsByOrder[lb.order_id] = [];
+        shippingLabelsByOrder[lb.order_id].push(lb);
+      }
+    }
+
+    const formattedOrders = orders.map(o => {
+      let addr = o.address_snapshot;
+      if (typeof addr === 'string') {
+        try { addr = JSON.parse(addr); } catch { addr = null; }
+      }
+      return {
+        id: o.id,
+        orderNumber: o.order_number || `BV-${o.id}`,
+        userId: o.user_id,
+        status: o.status,
+        deliveryType: o.delivery_type,
+        paymentMode: o.payment_mode,
+        paymentStatus: o.payment_status,
+        total: Number(o.total) || 0,
+        courier: o.courier || '',
+        trackingNumber: o.tracking_number || '',
+        currentLocationCheckpoint: o.current_location_checkpoint || '',
+        labelPrintedAt: o.label_printed_at || null,
+        rtoReason: o.rto_reason || '',
+        rtoRestockMode: o.rto_restock_mode || '',
+        rtoProcessedAt: o.rto_processed_at || null,
+        customerName: o.customer_name || addr?.full_name || 'Patron',
+        customerPhone: o.customer_phone || addr?.phone || 'N/A',
+        city: addr?.city || '',
+        state: addr?.state || '',
+        pincode: addr?.pincode || '',
+        addressLine1: addr?.address_line1 || '',
+        createdAt: o.created_at,
+        updatedAt: o.updated_at,
+        items: (orderItemsByOrder[o.id] || []).map(it => ({
+          id: it.id,
+          productId: it.product_id,
+          name: it.name,
+          quantity: it.quantity,
+          price: Number(it.price) || 0,
+        })),
+        shippingLabels: shippingLabelsByOrder[o.id] || [],
+      };
+    });
+
+    res.json({
+      success: true,
+      orders: formattedOrders,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+      syncedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get('/stock/forecast', authenticateInventoryStaff, async (_req, res) => {
+  try {
+    const forecastData = await calculateInventoryVelocityAndDoc(pool);
+    res.json({ success: true, ...forecastData });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get('/orders/:orderId/fefo-picks', authenticateInventoryStaff, async (req, res) => {
+  try {
+    const allocations = await allocateFefoBatchesForOrder(pool, req.params.orderId);
+    res.json({ success: true, ...allocations });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/fulfillment/wave-picklist', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  try {
+    const { orderIds = [] } = req.body || {};
+    const picklist = await generateWavePicklist(pool, orderIds);
+    res.json({ success: true, picklist });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/fulfillment/manifest', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  try {
+    const { orderIds = [], courier = 'All Carriers' } = req.body || {};
+    const manifest = await generateCarrierManifest(pool, orderIds, courier, req.invUser.username);
+    res.json({ success: true, manifest });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/fulfillment/verify-pack', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  try {
+    const { orderId, barcode } = req.body || {};
+    if (!orderId || !barcode) {
+      return res.status(400).json({ success: false, message: 'orderId and barcode are required.' });
+    }
+    const cleanBarcode = String(barcode).trim();
+    const resolved = await resolveProductByQrOrCode(pool, cleanBarcode);
+    if (!resolved) {
+      return res.status(404).json({ success: false, message: `Barcode "${cleanBarcode}" did not match any catalog SKU or EAN-13.` });
+    }
+    const [orderItems] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [Number(orderId)]);
+    const matchingItem = orderItems.find(it => it.product_id === resolved.productId || it.name.toLowerCase().includes(resolved.sku.toLowerCase()));
+    if (!matchingItem) {
+      return res.status(400).json({
+        success: false,
+        verified: false,
+        message: `SKU "${resolved.sku}" (${resolved.name}) is NOT in Order #${orderId}! Dispatch rejected.`,
+      });
+    }
+
+    res.json({
+      success: true,
+      verified: true,
+      product: {
+        productId: resolved.productId,
+        sku: resolved.sku,
+        name: resolved.name,
+        barcode: resolved.barcode,
+      },
+      message: `Verified: ${resolved.name} matches Order #${orderId}.`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/returns/qc-grade', authenticateInventoryStaff, requirePermission('can_process_returns'), async (req, res) => {
+  try {
+    const { orderId, grade = 'GRADE_A', notes = '' } = req.body || {};
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId is required.' });
+    }
+    const result = await processReturnQcGrade(pool, {
+      orderId,
+      grade,
+      notes,
+      actorUsername: req.invUser.username,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
 // 4. MASTER INVENTORY CRUD & REAL-TIME WEBSITE STOCK SYNC
 router.post('/items/save', authenticateInventoryStaff, requirePermission('can_manage_inventory'), async (req, res) => {
   const conn = await pool.getConnection();
@@ -1727,6 +2029,41 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
 
     const normalizedItems = [];
     const stockDeductions = [];
+
+    // High-performance batch prefetch under FOR UPDATE lock (reduces N DB round trips to 1)
+    const metaIds = items.map(i => Number(i.id)).filter(Boolean);
+    const skus = items.map(i => String(i.sku || '').trim()).filter(Boolean);
+    let catalogItems = [];
+    if (metaIds.length > 0 || skus.length > 0) {
+      const conditions = [];
+      const queryParams = [];
+      if (metaIds.length > 0) {
+        conditions.push(`m.id IN (${metaIds.map(() => '?').join(',')})`);
+        queryParams.push(...metaIds);
+      }
+      if (skus.length > 0) {
+        conditions.push(`m.sku IN (${skus.map(() => '?').join(',')})`);
+        queryParams.push(...skus);
+      }
+      const [rows] = await conn.query(
+        `SELECT m.id AS meta_id, m.product_id, m.sku, m.custom_name, m.selling_price, m.gst_hsn_code, m.gst_rate, m.uom,
+                p.name AS product_name, p.price, p.discount_price
+         FROM inventory_product_meta m
+         LEFT JOIN products p ON p.id = m.product_id
+         WHERE ${conditions.join(' OR ')}
+         FOR UPDATE`,
+        queryParams
+      );
+      catalogItems = rows;
+    }
+
+    const catalogByMetaId = new Map();
+    const catalogBySku = new Map();
+    for (const c of catalogItems) {
+      if (c.meta_id) catalogByMetaId.set(Number(c.meta_id), c);
+      if (c.sku) catalogBySku.set(String(c.sku).trim(), c);
+    }
+
     for (const cartItem of items) {
       const requestedQty = Number(cartItem.q ?? cartItem.quantity);
       if (!Number.isSafeInteger(requestedQty) || requestedQty < 1) {
@@ -1736,16 +2073,8 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       }
       const metaId = Number(cartItem.id) || null;
       const sku = String(cartItem.sku || '').trim();
-      const [[catalogItem]] = await conn.query(
-         `SELECT m.id AS meta_id, m.product_id, m.sku, m.custom_name, m.selling_price, m.gst_hsn_code, m.gst_rate, m.uom,
-                 p.name AS product_name, p.price, p.discount_price
-          FROM inventory_product_meta m
-          LEFT JOIN products p ON p.id = m.product_id
-          WHERE (? IS NOT NULL AND m.id = ?) OR (? <> '' AND m.sku = ?)
-          ORDER BY (m.id = ?) DESC
-          LIMIT 1 FOR UPDATE`,
-         [metaId, metaId, sku, sku, metaId]
-      );
+      const catalogItem = (metaId && catalogByMetaId.get(metaId)) || (sku && catalogBySku.get(sku));
+
       if (!catalogItem) {
          await conn.rollback();
          transactionStarted = false;
