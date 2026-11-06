@@ -120,7 +120,8 @@ describe('order model', () => {
     const components = [
       { slug: 'himalayan-seabuckthorn-luxury-face-wash', id: 12, name: 'Sea Buckthorn Wash', sku: 'BV-SB', price: 799, discount_price: 0, quantity: 4 },
       { slug: 'luxury-2-in-1-botanical-shampoo-conditioner', id: 13, name: 'Botanical Shampoo', sku: 'BV-SH', price: 899, discount_price: 0, quantity: 4 },
-      { slug: 'artisanal-aloe-vera-handmade-soap', id: 15, name: 'Aloe Neem Soap', sku: 'BV-AN', price: 349, discount_price: 0, quantity: 4 },
+      { slug: 'artisanal-charcoal-handmade-soap', id: 14, name: 'Charcoal Soap', sku: 'BV-CS', price: 399, discount_price: 0, quantity: 4 },
+      { slug: 'kalpvriksh-satva-tulsi-7-tulsi-extract', id: 16, name: 'Tulsi Drops', sku: 'BV-TL', price: 499, discount_price: 0, quantity: 4 },
     ];
     const stock = new Map(components.map(component => [component.slug, component.quantity]));
     bundleScenario = {
@@ -149,7 +150,7 @@ describe('order model', () => {
       bundleScenario = null;
     }
 
-    assert.equal(insertedOrderItems.length, 3);
+    assert.equal(insertedOrderItems.length, 4);
     assert.equal(insertedOrderItems.reduce((total, values) => total + Number(values[4]), 0), 1499);
     assert.ok(components.every(component => stock.get(component.slug) === 3));
   });

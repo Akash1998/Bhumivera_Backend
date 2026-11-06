@@ -952,7 +952,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         WHERE o.status <> 'archived'
         ORDER BY o.created_at DESC
         LIMIT 250
-      `).catch(() => [[]]),
+      `),
       pool.query(`
         SELECT * FROM inventory_scanner_queue
         WHERE session_code = ? AND status = 'queued'
@@ -975,8 +975,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
     if (onlineOrderIds.length > 0) {
       const placeholders = onlineOrderIds.map(() => '?').join(',');
       const [oItems] = await pool
-        .query(`SELECT * FROM order_items WHERE order_id IN (${placeholders})`, onlineOrderIds)
-        .catch(() => [[]]);
+        .query(`SELECT * FROM order_items WHERE order_id IN (${placeholders})`, onlineOrderIds);
       for (const it of oItems) {
         if (!orderItemsByOrder[it.order_id]) orderItemsByOrder[it.order_id] = [];
         orderItemsByOrder[it.order_id].push(it);

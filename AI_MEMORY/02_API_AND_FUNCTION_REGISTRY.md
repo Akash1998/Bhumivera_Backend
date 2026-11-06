@@ -1,6 +1,6 @@
 # ⚙️ Bhumivera Backend — API & Function Registry Manifest
 
-> **Master Backend Inventory**: 41 Route Files | 456 REST API Endpoints | 38 Database Models | 354 Model Functions | 79 Migrations  
+> **Master Backend Inventory**: 41 Route Files | 457 REST API Endpoints | 38 Database Models | 352 Model Functions | 79 Migrations
 > **Framework**: Express 5.3 + Node.js 22.x | MySQL 8.0 (`mysql2/promise`) | Redis 7.x  
 > **Last Verified Audit**: 2026-11-03 (Migration v79 Baseline)
 
@@ -13,9 +13,9 @@
 | BACKEND METRIC                   | CURRENT VERIFIED COUNT    |
 +----------------------------------+---------------------------+
 | Total Route Files                | 41 files                  |
-| Total Registered Endpoints       | 456 endpoints             |
+| Total Registered Endpoints       | 457 endpoints             |
 | Total Model Files                | 38 files                  |
-| Total Model Exported Entities    | 354 functions/constants   |
+| Total Model Exported Entities    | 352 functions/constants   |
 | Database Migrations Executed     | 79 migrations (v1 - v79)  |
 +----------------------------------+---------------------------+
 ```
@@ -26,7 +26,7 @@
 
 | # | Route File | Total Endpoints | Primary Responsibility | Key HTTP Methods & Paths |
 | :---: | :--- | :---: | :--- | :--- |
-| **1** | `inventorySoftwareRoutes.js` | **57** | Omnichannel Orders, Labels, RTO, Stock, POS, Scanner Bridge, Daily SQL Backups | `GET /online-orders`, `PUT /online-orders/:id/dispatch-status`, `POST /returns/rto-process`, `POST /pos/checkout`, `POST /scanner/scan`, `POST /backup/restore` |
+| **1** | `inventorySoftwareRoutes.js` | **57** | Omnichannel Orders, Labels, RTO, Stock, POS, Scanner Bridge, Daily SQL Backups | `GET /bootstrap` (latest 250 orders; order query failures are reported), `PUT /online-orders/:id/dispatch-status`, `POST /returns/rto-process`, `POST /pos/checkout`, `POST /scanner/scan`, `POST /backup/restore` |
 | **2** | `supportRoutes.js` | **50** | L1–L3 Customer Support Desk, Live Chat, Ticket Resolution, Courtesy Coupons | `GET /tickets`, `POST /chat/reply`, `POST /coupons/issue-courtesy`, `POST /rescue-password` |
 | **3** | `authRoutes.js` | **32** | User Authentication, OTP Verification, Password Reset, JWT Token Refresh | `POST /register`, `POST /login`, `POST /verify-otp`, `POST /refresh-token`, `POST /logout` |
 | **4** | `userRoutes.js` | **22** | Customer Profiles, Address Defaults, User Audit, Profile Preferences | `GET /profile`, `PUT /profile`, `GET /orders`, `PUT /change-password`, `DELETE /account` |
@@ -70,7 +70,7 @@
 
 ---
 
-## 3. Database Models & Exported Functions (38 Files | 354 Functions)
+## 3. Database Models & Exported Functions (38 Files | 352 Functions)
 
 1. **`inventorySoftwareModel.js` (18 items)**: `VALID_INVENTORY_ROLES`, `INVENTORY_PERMISSION_DEFINITIONS`, `ROLE_DEFAULT_INVENTORY_PERMISSIONS`, `resolveInventoryPermissions`, `generateTotpSecret`, `verifyTotpToken`, `calculateEstimatedDeliveryDate`, `resolveProductByQrOrCode`, `generateFullDatabaseBackup`, `ensureDailyAutoBackup`, `restoreFullDatabaseBackup`, `atomicAdjustProductStock`, `recalculateAllBundleStocks`.
 2. **`userModel.js` (33 items)**: `createUsersTable`, `createUser`, `getUserByEmail`, `getUserById`, `verifyPassword`, `updateUserPassword`, `ensureUserColumns`, `listUsers`, `searchUsers`.

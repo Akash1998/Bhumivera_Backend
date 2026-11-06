@@ -64,6 +64,21 @@ const COMBO_BY_KEY = {
     sku: 'BV-BND-DAILY-01',
     name: 'The Complete Botanical Daily Regimen',
   },
+  'bundle-royal-crown-trio': {
+    id: 'bundle-royal-crown-trio',
+    sku: 'BV-BND-ROYAL-03',
+    name: 'The Royal Skin & Scalp Stewardship Trio',
+  },
+  'BV-BND-ROYAL-03': {
+    id: 'bundle-royal-crown-trio',
+    sku: 'BV-BND-ROYAL-03',
+    name: 'The Royal Skin & Scalp Stewardship Trio',
+  },
+  'The Royal Skin & Scalp Stewardship Trio': {
+    id: 'bundle-royal-crown-trio',
+    sku: 'BV-BND-ROYAL-03',
+    name: 'The Royal Skin & Scalp Stewardship Trio',
+  },
   'bundle-inside-out-ritual': {
     id: 'bundle-inside-out-ritual',
     sku: 'BV-BND-INSIDEOUT-02',

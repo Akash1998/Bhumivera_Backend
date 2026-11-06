@@ -412,20 +412,44 @@ const MAISON_REGIMEN_BUNDLES = [
     reviews: 160,
     review_count: 160,
     sku: 'BV-BND-DAILY-01',
-    name: 'The Complete Botanical Daily Regimen',
-    badge: 'Flagship AOV Hero · Save ₹548',
-    tagline: 'Morning Omega-7 Radiance + 8-Herb Saponin Hair Ritual + Soothing Barrier Bar',
+    name: 'The Grand Maison 4-Piece Daily Apothecary',
+    badge: 'Flagship 4-Piece Hero · Save ₹1,097 (42% Off)',
+    tagline: 'Complete 4-Step Regimen: 4% Sea Buckthorn Face Wash + Royal 2-in-1 Saponin Shampoo + Charcoal Deep Cleansing Bar + Kalpvriksh 7-Tulsi Drops',
+    items: [
+      { id: 2, name: 'Himalayan Sea Buckthorn Cellular Radiance Face Wash (100 ml)', price: 799, active: '4% Sea Buckthorn + 5% Glycerin + 0.1% HA & Niacinamide' },
+      { id: 3, name: 'Royal Botanical 2-in-1 Luxury Shampoo with Conditioner (200 ml)', price: 899, active: '25mg Reetha + 20mg Amla + 10mg Rosemary Oil + 10mg Bhringraj' },
+      { id: 4, name: 'Charcoal Deep Cleansing Bar with Aloe Vera (100 g)', price: 399, active: 'Microporous Carbon + Soothing Aloe Cushion' },
+      { id: 6, name: 'Kalpvriksh Satva 7-Tulsi Ingestible Skin & Cortisol Adaptogen (30 ml)', price: 499, active: '9.0ml / 10ml Seven-Tulsi Phyto-Extract (Eugenol & Rosmarinic Acid)' }
+    ],
+    mrpTotal: 2596,
+    bundlePrice: 1499,
+    savings: 1097,
+    phWindow: 'pH 5.0 – 5.5 Acid-Mantle Calibrated',
+    batchAllocation: 'Batch 04/26 · 42 Regimen Sets Remaining',
+    image_url: '/images/products/bhumivera-seabuckthorn-luxury-face-wash.webp',
+    packaging: 'Includes Maison Rigid Magnetic Gift Box + Custom Precision EPE Foam Shell (₹100 Value) + Free All-India Express Courier'
+  },
+  {
+    id: 'bundle-royal-crown-trio',
+    rating: 4.82,
+    reviews: 145,
+    review_count: 145,
+    sku: 'BV-BND-ROYAL-03',
+    name: 'The Royal Skin & Scalp Stewardship Trio',
+    badge: 'Hair & Skin Essential · Save ₹748 (37% Off)',
+    tagline: 'Daily Phyto-Cleansing: Himalayan Sea Buckthorn Face Wash + Royal 2-in-1 Saponin Shampoo + Soothing Ayurvedic Bar',
     items: [
       { id: 2, name: 'Himalayan Sea Buckthorn Cellular Radiance Face Wash (100 ml)', price: 799, active: '4% Sea Buckthorn + 5% Glycerin' },
       { id: 3, name: 'Royal Botanical 2-in-1 Luxury Shampoo with Conditioner (200 ml)', price: 899, active: '25mg Reetha + 20mg Amla + 10mg Rosemary' },
       { id: 5, name: 'Soothing Bar — Aloe Vera, Neem & Tulsi (100 g)', price: 349, active: 'Aloe + Neem + Sacred Tulsi' }
     ],
     mrpTotal: 2047,
-    bundlePrice: 1499,
-    savings: 548,
+    bundlePrice: 1299,
+    savings: 748,
     phWindow: 'pH 5.0 – 5.5 Calibrated',
-    batchAllocation: 'Batch 04/26 · 42 Regimen Sets Remaining',
-    image_url: '/images/products/bhumivera-seabuckthorn-luxury-face-wash.webp'
+    batchAllocation: 'Batch 04/26 · 38 Regimen Sets Remaining',
+    image_url: '/images/products/bhumivera-royal-botanical-2in1-shampoo.webp',
+    packaging: 'Includes Maison Rigid Magnetic Gift Box + Custom Precision EPE Foam Shell (₹100 Value) + Free All-India Express Courier'
   },
   {
     id: 'bundle-inside-out-ritual',
@@ -434,19 +458,20 @@ const MAISON_REGIMEN_BUNDLES = [
     review_count: 160,
     sku: 'BV-BND-INSIDEOUT-02',
     name: 'The Inside-Out Skin-Clearing & Cortisol Ritual',
-    badge: 'Gut-Skin-Cortisol Axis · Save ₹298',
-    tagline: 'Topical 3% Microporous Carbon Purification + Internal 7-Tulsi Cellular Adaptogen',
+    badge: 'Gut-Skin-Cortisol Axis · Save ₹398 (25% Off)',
+    tagline: 'Topical 3% Microporous Carbon Purification + Internal 7-Tulsi Cellular Adaptogen + Charcoal Cleansing Bar',
     items: [
       { id: 1, name: 'Activated Charcoal Purifying Luxury Face Wash (100 ml)', price: 699, active: '3% Charcoal + 5% Glycerin + 0.5% Manjistha' },
       { id: 6, name: 'Kalpvriksh Satva 7-Tulsi Ingestible Skin & Cortisol Adaptogen (30 ml)', price: 499, active: '9.0ml / 10ml Seven-Tulsi Phyto-Extract' },
       { id: 4, name: 'Charcoal Deep Cleansing Bar with Aloe Vera (100 g)', price: 399, active: 'Activated Carbon + Aloe Cushion' }
     ],
     mrpTotal: 1597,
-    bundlePrice: 1299,
-    savings: 298,
+    bundlePrice: 1199,
+    savings: 398,
     phWindow: 'pH 5.4 Topical + 90% Internal Distillate',
     batchAllocation: 'Batch 04/26 · 37 Ritual Sets Remaining',
-    image_url: '/images/products/bhumivera-kalpvriksh-satva-tulsi-drops.webp'
+    image_url: '/images/products/bhumivera-kalpvriksh-satva-tulsi-drops.webp',
+    packaging: 'Includes Maison Rigid Magnetic Gift Box + Custom Precision EPE Foam Shell (₹100 Value) + Free All-India Express Courier'
   },
   {
     id: 'bundle-grand-maison-vault',
@@ -470,7 +495,8 @@ const MAISON_REGIMEN_BUNDLES = [
     savings: 845,
     phWindow: 'Full pH 5.0–5.5 Assay Certificates Included',
     batchAllocation: 'Batch 04/26 · 19 Collector Vaults Remaining',
-    image_url: '/assets/images/Promo7.webp'
+    image_url: '/assets/images/Promo7.webp',
+    packaging: 'Artisanal Wax-Sealed Master Vault + Velvet Liner + Signed Certificate of Extraction'
   }
 ];
 
