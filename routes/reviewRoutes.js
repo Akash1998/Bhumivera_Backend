@@ -22,8 +22,7 @@ const {
   deleteReviewPermanently,
   getUserReviews,
   updateReviewAsAdmin,
-  syncProductStats,
-  importBundledPendingReviews
+  syncProductStats
 } = require('../models/reviewModel');
 
 const MAX_REVIEW_IMAGES = 5;
@@ -402,18 +401,6 @@ router.put('/:id/approve', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to approve review' });
-  }
-});
-
-// POST /api/reviews/admin/import-bundled-pending - admin: one-time import of 1500 pending reviews
-router.post('/admin/import-bundled-pending', authenticateAdmin, async (req, res) => {
-  try {
-    const result = await importBundledPendingReviews();
-    if (!result.imported) return res.status(409).json({ message: result.reason, imported: 0 });
-    res.json({ message: `${result.imported} reviews imported as pending.`, imported: result.imported });
-  } catch (err) {
-    console.error('[ADMIN_REVIEW_IMPORT]', err);
-    res.status(500).json({ message: 'Import failed. Nothing was saved.' });
   }
 });
 

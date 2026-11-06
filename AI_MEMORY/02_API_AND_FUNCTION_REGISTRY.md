@@ -1,6 +1,6 @@
 # ⚙️ Bhumivera Backend — API & Function Registry Manifest
 
-> **Master Backend Inventory**: 41 Route Files | 459 REST API Endpoints | 38 Database Models | 353 Model Functions | 80 Migrations
+> **Master Backend Inventory**: 41 Route Files | 458 REST API Endpoints | 38 Database Models | 352 Model Functions | 80 Migrations
 > **Framework**: Express 5.3 + Node.js 22.x | MySQL 8.0 (`mysql2/promise`) | Redis 7.x  
 > **Last Verified Audit**: 2026-11-06 (Migration v80)
 
@@ -15,9 +15,9 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 | BACKEND METRIC                   | CURRENT VERIFIED COUNT    |
 +----------------------------------+---------------------------+
 | Total Route Files                | 41 files                  |
-| Total Registered Endpoints       | 459 endpoints             |
+| Total Registered Endpoints       | 458 endpoints             |
 | Total Model Files                | 38 files                  |
-| Total Model Exported Entities    | 353 functions/constants   |
+| Total Model Exported Entities    | 352 functions/constants   |
 | Database Migrations Defined      | 80 migrations (v1 - v80)  |
 +----------------------------------+---------------------------+
 ```
@@ -39,7 +39,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 | **9** | `adminUserRoutes.js` | **16** | Website Admin User Management, Admin Roles, Permissions Matrix | `GET /users`, `PUT /users/:id/role`, `PUT /users/:id/status`, `GET /audit-log` |
 | **10** | `warehouseRoutes.js` | **16** | Legacy Warehouse Management, Multi-bin Allocation, Storage Bins | `GET /bins`, `POST /bins/allocate`, `GET /movements` |
 | **11** | `notificationRoutes.js` | **15** | Push Notifications, FCM Tokens, Order Alerts, Marketing Broadcasts | `GET /`, `POST /subscribe`, `POST /send`, `PUT /:id/read` |
-| **12** | `reviewRoutes.js` | **15** | Database-backed customer reviews, stories and moderation; failed reads and deletes return errors | `GET /product/:id`, `GET /combo/:slug`, `POST /`, `PUT /:id/approve`, `DELETE /:id` |
+| **12** | `reviewRoutes.js` | **14** | Database-backed customer reviews, stories and moderation; failed reads and deletes return errors | `GET /product/:id`, `GET /combo/:slug`, `POST /`, `PUT /:id/approve`, `DELETE /:id` |
 | **13** | `orderRoutes.js` | **13** | Online Checkout, Delivery Calculation, Razorpay Webhook, Order Checkpoints | `POST /`, `GET /user`, `GET /:id`, `POST /verify-payment`, `POST /cancel` |
 | **14** | `couponRoutes.js` | **11** | Promotional Coupons, Cart Discounts, Usage Tracking, First-order Codes | `POST /validate`, `GET /active`, `POST /`, `PUT /:id`, `DELETE /:id` |
 | **15** | `returnRoutes.js` | **10** | Customer Return Requests & Courier Tracking Validation | `POST /request`, `GET /status/:id`, `GET /history` |
@@ -77,7 +77,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 1. **`inventorySoftwareModel.js` (18 items)**: `VALID_INVENTORY_ROLES`, `INVENTORY_PERMISSION_DEFINITIONS`, `ROLE_DEFAULT_INVENTORY_PERMISSIONS`, `resolveInventoryPermissions`, `generateTotpSecret`, `verifyTotpToken`, `calculateEstimatedDeliveryDate`, `resolveProductByQrOrCode`, `generateFullDatabaseBackup`, `ensureDailyAutoBackup`, `restoreFullDatabaseBackup`, `atomicAdjustProductStock`, `recalculateAllBundleStocks`.
 2. **`userModel.js` (33 items)**: `createUsersTable`, `createUser`, `getUserByEmail`, `getUserById`, `verifyPassword`, `updateUserPassword`, `ensureUserColumns`, `listUsers`, `searchUsers`.
 3. **`aiSupportModel.js` (25 items)**: `VALID_CHAT_STATUSES`, `VALID_SUPPORT_ROLES`, `ROLE_DEFAULT_PERMISSIONS`, `createChatSession`, `addChatMessage`, `escalateToHuman`, `resolveChat`.
-4. **`reviewModel.js` (19 items)**: `createReviewTable`, `createReview`, `createReviewAsAdmin`, `getReviewsByProduct`, `getReviewsByComboName`, `seed1500AuthenticReviews`, `updateReviewRatingSummary`, `importBundledPendingReviews` (one-time guarded admin import via `POST /admin/import-bundled-pending`).
+4. **`reviewModel.js` (16 items)**: `createReviewTable`, `createReview`, `createReviewAsAdmin`, `getReviewsByProduct`, `getReviewsByComboName`, `getPublicCustomerStories`, `getProductRatingSummary`, `getAllReviews`, `approveReview`, `archiveReview`, `deleteReviewPermanently`, `getUserReviews`, `updateReviewAsAdmin`, `syncProductStats`, `PRODUCT_SLUGS`, `PRODUCT_NAMES`, `COMBO_BY_KEY`.
 5. **`productModel.js` (19 items)**: `initProductsTable`, `getAllProducts`, `getActiveProducts`, `getProductById`, `getProductBySlug`, `createProduct`, `updateProduct`, `deleteProduct`.
 6. **`couponModel.js` (17 items)**: `createCouponTable`, `sanitizeCouponCode`, `validateCouponCode`, `getUserCouponRedemptionCount`, `recordCouponUsage`.
 7. **`gstAccountingModel.js` (16 items)**: `enrichGstDocument`, `numberToIndianRupeeWords`, `initGstAccountingTables`, `generateTaxInvoiceNumber`, `recordGstInvoice`.
