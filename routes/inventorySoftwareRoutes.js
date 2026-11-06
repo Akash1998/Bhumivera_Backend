@@ -934,7 +934,14 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         LEFT JOIN products p ON m.product_id = p.id
         ORDER BY COALESCE(p.id, m.id) ASC
       `),
-      pool.query('SELECT * FROM inventory_storage_bins ORDER BY zone_name ASC, rack_no ASC'),
+      pool.query(`
+        SELECT b.id, b.bin_code, b.hub_name, b.zone_name, b.rack_no, b.shelf_level,
+               b.bin_label, b.temperature_target, b.capacity_units, b.keeper_name,
+               b.status, b.notes, b.warehouse_id, b.updated_at,
+               COALESCE((SELECT SUM(m.physical_stock) FROM inventory_product_meta m WHERE m.bin_code = b.bin_code), 0) AS occupied_units
+        FROM inventory_storage_bins b
+        ORDER BY b.zone_name ASC, b.rack_no ASC
+      `),
       pool.query('SELECT * FROM inventory_customers ORDER BY name ASC'),
       pool.query('SELECT * FROM inventory_pos_invoices ORDER BY created_at DESC LIMIT 300'),
       pool.query('SELECT * FROM inventory_suppliers ORDER BY name ASC'),

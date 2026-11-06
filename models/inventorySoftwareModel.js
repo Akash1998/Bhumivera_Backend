@@ -735,12 +735,12 @@ async function initInventorySoftwareTables(db = pool) {
   const [[binCountRow]] = await db.query('SELECT COUNT(*) AS cnt FROM inventory_storage_bins');
   if (Number(binCountRow?.cnt || 0) === 0) {
     const seedBins = [
-      ['ASN-SHOP-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone A: Retail Shop Front Counter', 'Rack-01', 'Shelf-A', 'Facial Cleansers Display Bay', '22°C - 25°C', 400, 120, 'Rahul Sharma', 'active', 'Direct walk-in POS counter stock for Facial Cleansers'],
-      ['ASN-SHOP-R1-B02', 'Bhumivera Flagship Hub — Asansol', 'Zone A: Retail Shop Front Counter', 'Rack-01', 'Shelf-B', 'Royal Hair Care & Shampoo Counter', '22°C - 25°C', 350, 80, 'Rahul Sharma', 'active', 'Direct walk-in POS counter stock for 2-in-1 Botanical Shampoo'],
-      ['ASN-SHOP-R2-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone A: Retail Shop Front Counter', 'Rack-02', 'Shelf-A', 'Artisanal Cleansing Bars & Tulsi Drops', '22°C - 25°C', 600, 200, 'Rahul Sharma', 'active', 'Charcoal Bar, Aloe-Neem-Tulsi Bar & Kalpvriksh 7-Tulsi Drops'],
-      ['ASN-COLD-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone B: Cold-Pressed Botanical Vault (<28°C)', 'Rack-C1', 'Shelf-01', 'Climate-Controlled Master Reserve Vault', '18°C - 24°C', 1500, 850, 'Vikram Rathore', 'active', 'Sub-28°C climate-controlled reserve for micro-batch formulations'],
-      ['ASN-DISPATCH-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone C: Online Order Dispatch & CCTV Weighing Bay', 'Rack-D1', 'Shelf-01', 'E-Commerce Pick, Pack & Scale #02 Bay', '22°C - 26°C', 500, 180, 'Vikram Rathore', 'active', 'Dedicated online order staging & regimen bundle assembly bay'],
-      ['ASN-PACK-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone D: Luxury Glass & Packaging Vault', 'Rack-P1', 'Shelf-01', 'Amber Apothecary Bottles & Gold Foiled Boxes', 'Ambient', 2000, 650, 'Karan Verma', 'active', 'UV-protective containers, pumps, tamper seals & shipping cartons'],
+      ['ASN-SHOP-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone A: Retail Shop Front Counter', 'Rack-01', 'Shelf-A', 'Facial Cleansers Display Bay', '22°C - 25°C', 400, 0, 'Rahul Sharma', 'active', 'Direct walk-in POS counter stock for Facial Cleansers'],
+      ['ASN-SHOP-R1-B02', 'Bhumivera Flagship Hub — Asansol', 'Zone A: Retail Shop Front Counter', 'Rack-01', 'Shelf-B', 'Royal Hair Care & Shampoo Counter', '22°C - 25°C', 350, 0, 'Rahul Sharma', 'active', 'Direct walk-in POS counter stock for 2-in-1 Botanical Shampoo'],
+      ['ASN-SHOP-R2-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone A: Retail Shop Front Counter', 'Rack-02', 'Shelf-A', 'Artisanal Cleansing Bars & Tulsi Drops', '22°C - 25°C', 600, 0, 'Rahul Sharma', 'active', 'Charcoal Bar, Aloe-Neem-Tulsi Bar & Kalpvriksh 7-Tulsi Drops'],
+      ['ASN-COLD-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone B: Cold-Pressed Botanical Vault (<28°C)', 'Rack-C1', 'Shelf-01', 'Climate-Controlled Master Reserve Vault', '18°C - 24°C', 1500, 0, 'Vikram Rathore', 'active', 'Sub-28°C climate-controlled reserve for micro-batch formulations'],
+      ['ASN-DISPATCH-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone C: Online Order Dispatch & CCTV Weighing Bay', 'Rack-D1', 'Shelf-01', 'E-Commerce Pick, Pack & Scale #02 Bay', '22°C - 26°C', 500, 0, 'Vikram Rathore', 'active', 'Dedicated online order staging & regimen bundle assembly bay'],
+      ['ASN-PACK-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone D: Luxury Glass & Packaging Vault', 'Rack-P1', 'Shelf-01', 'Amber Apothecary Bottles & Gold Foiled Boxes', 'Ambient', 2000, 0, 'Karan Verma', 'active', 'UV-protective containers, pumps, tamper seals & shipping cartons'],
       ['ASN-QUAR-R1-B01', 'Bhumivera Flagship Hub — Asansol', 'Zone Q: Quarantine & Damaged Stock Bay', 'Rack-Q1', 'Shelf-01', 'RMA / Transit Damage Quarantine', 'Ambient', 200, 0, 'Nisha Gupta', 'quarantine', 'Isolated bay for damaged or expired stock — excluded from live website stock'],
     ];
     for (const b of seedBins) {
@@ -783,16 +783,16 @@ async function ensureInventorySoftwareTables(db = pool) {
 }
 
 const DEFAULT_PRODUCT_KEEPER_CONFIG = {
-  'BV-LUX-CFW-01': { barcode: '8908020260015', uom: '100 ML', costPrice: 60.00, mrp: 699.00, binCode: 'ASN-SHOP-R1-B01', rackLocation: 'Zone A • Rack 01 • Shelf A • Bin 01', batchNo: 'SCFW26H', mfgDate: '2026-08-01', expiryDate: '2028-07-31', minStock: 20, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
-  'BV-LUX-SBFW-02': { barcode: '8908020260022', uom: '100 ML', costPrice: 62.00, mrp: 799.00, binCode: 'ASN-SHOP-R1-B01', rackLocation: 'Zone A • Rack 01 • Shelf A • Bin 02', batchNo: 'SFW26H', mfgDate: '2026-08-01', expiryDate: '2028-07-31', minStock: 20, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
-  'BV-LUX-SH2IN1-03': { barcode: '8908020260039', uom: '200 ML', costPrice: 85.00, mrp: 899.00, binCode: 'ASN-SHOP-R1-B02', rackLocation: 'Zone A • Rack 01 • Shelf B • Bin 01', batchNo: 'SHS26H', mfgDate: '2026-08-01', expiryDate: '2028-07-31', minStock: 15, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
-  'BV-LUX-CSOAP-04': { barcode: '8908020260046', uom: '100 GM', costPrice: 24.00, mrp: 399.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 01', batchNo: 'SACHS26I', mfgDate: '2026-09-01', expiryDate: '2028-08-31', minStock: 25, reorderQty: 150, gstHsnCode: '30049011', gstRate: 5.00 },
-  'BV-LUX-ASOAP-05': { barcode: '8908020260053', uom: '100 GM', costPrice: 24.00, mrp: 349.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 02', batchNo: 'SANTS26I', mfgDate: '2026-09-01', expiryDate: '2028-08-31', minStock: 25, reorderQty: 150, gstHsnCode: '30049011', gstRate: 5.00 },
-  'BV-LUX-TULSI-06': { barcode: '8908020260060', uom: '30 ML', costPrice: 40.00, mrp: 499.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 03', batchNo: 'SPTD26I', mfgDate: '2026-09-01', expiryDate: '2028-08-31', minStock: 20, reorderQty: 120, gstHsnCode: '20099000', gstRate: 5.00 },
-  'BV-BND-DAILY-01': { barcode: '8908020260077', uom: 'Combo', costPrice: 193.00, mrp: 2596.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-D01', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
-  'BV-BND-ROYAL-03': { barcode: '8908020260107', uom: 'Combo', costPrice: 169.00, mrp: 2047.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-R03', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
-  'BV-BND-INSIDEOUT-02': { barcode: '8908020260084', uom: 'Combo', costPrice: 124.00, mrp: 1597.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: 'BV-BND-2026-IO02', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
-  'BV-BND-VAULT-06': { barcode: '8908020260091', uom: 'Vault', costPrice: 295.00, mrp: 3644.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Vault Bay', batchNo: 'BV-BND-2026-V06', mfgDate: '2026-08-15', expiryDate: '2028-07-31', minStock: 10, reorderQty: 40, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-CFW-01': { barcode: '8908020260015', uom: '100 ML', costPrice: 60.00, mrp: 699.00, binCode: 'ASN-SHOP-R1-B01', rackLocation: 'Zone A • Rack 01 • Shelf A • Bin 01', batchNo: null, mfgDate: null, expiryDate: null, minStock: 20, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-SBFW-02': { barcode: '8908020260022', uom: '100 ML', costPrice: 62.00, mrp: 799.00, binCode: 'ASN-SHOP-R1-B01', rackLocation: 'Zone A • Rack 01 • Shelf A • Bin 02', batchNo: null, mfgDate: null, expiryDate: null, minStock: 20, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-SH2IN1-03': { barcode: '8908020260039', uom: '200 ML', costPrice: 85.00, mrp: 899.00, binCode: 'ASN-SHOP-R1-B02', rackLocation: 'Zone A • Rack 01 • Shelf B • Bin 01', batchNo: null, mfgDate: null, expiryDate: null, minStock: 15, reorderQty: 100, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-CSOAP-04': { barcode: '8908020260046', uom: '100 GM', costPrice: 24.00, mrp: 399.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 01', batchNo: null, mfgDate: null, expiryDate: null, minStock: 25, reorderQty: 150, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-ASOAP-05': { barcode: '8908020260053', uom: '100 GM', costPrice: 24.00, mrp: 349.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 02', batchNo: null, mfgDate: null, expiryDate: null, minStock: 25, reorderQty: 150, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-LUX-TULSI-06': { barcode: '8908020260060', uom: '30 ML', costPrice: 40.00, mrp: 499.00, binCode: 'ASN-SHOP-R2-B01', rackLocation: 'Zone A • Rack 02 • Shelf A • Bin 03', batchNo: null, mfgDate: null, expiryDate: null, minStock: 20, reorderQty: 120, gstHsnCode: '20099000', gstRate: 5.00 },
+  'BV-BND-DAILY-01': { barcode: '8908020260077', uom: 'Combo', costPrice: 193.00, mrp: 2596.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: null, mfgDate: null, expiryDate: null, minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-BND-ROYAL-03': { barcode: '8908020260107', uom: 'Combo', costPrice: 169.00, mrp: 2047.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: null, mfgDate: null, expiryDate: null, minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-BND-INSIDEOUT-02': { barcode: '8908020260084', uom: 'Combo', costPrice: 124.00, mrp: 1597.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Regimen Bay', batchNo: null, mfgDate: null, expiryDate: null, minStock: 10, reorderQty: 50, gstHsnCode: '30049011', gstRate: 5.00 },
+  'BV-BND-VAULT-06': { barcode: '8908020260091', uom: 'Vault', costPrice: 295.00, mrp: 3644.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Vault Bay', batchNo: null, mfgDate: null, expiryDate: null, minStock: 10, reorderQty: 40, gstHsnCode: '30049011', gstRate: 5.00 },
 };
 
 async function syncWebsiteProductsToInventoryMeta(db = pool) {
@@ -829,7 +829,7 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
       const qty = Math.max(0, Number(prod.quantity) || 0);
       const shopDisplay = Math.min(qty, Math.ceil(qty * 0.3));
       const vaultStock = Math.max(0, qty - shopDisplay);
-      const qrPayload = `https://www.bhumivera.com/verify?sku=${encodeURIComponent(sku)}&batch=${encodeURIComponent(preset.batchNo || `BV-BATCH-2026-${prod.id}`)}`;
+      const qrPayload = `https://www.bhumivera.com/verify?sku=${encodeURIComponent(sku)}`;
       const onlineSold = onlineSoldMap.get(Number(prod.id)) || 0;
       const hsnCode = prod.gst_hsn_code || preset.gstHsnCode || '30049011';
       const gstRate = Number(prod.gst_rate) > 0 ? Number(prod.gst_rate) : (preset.gstRate || 5.00);
@@ -847,9 +847,9 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
            cost_price = VALUES(cost_price),
            gst_hsn_code = VALUES(gst_hsn_code),
            gst_rate = VALUES(gst_rate),
-           batch_no = VALUES(batch_no),
-           mfg_date = VALUES(mfg_date),
-           expiry_date = VALUES(expiry_date),
+           batch_no = COALESCE(inventory_product_meta.batch_no, VALUES(batch_no)),
+           mfg_date = COALESCE(inventory_product_meta.mfg_date, VALUES(mfg_date)),
+           expiry_date = COALESCE(inventory_product_meta.expiry_date, VALUES(expiry_date)),
            physical_stock = VALUES(physical_stock),
            sold_online_qty = GREATEST(sold_online_qty, VALUES(sold_online_qty)),
            qr_code_payload = COALESCE(qr_code_payload, VALUES(qr_code_payload)),
@@ -874,9 +874,9 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
           preset.reorderQty || 50,
           preset.binCode || 'ASN-SHOP-R1-B01',
           preset.rackLocation || 'Zone A • Rack 01 • Shelf A',
-          preset.batchNo || `BV-BATCH-2026-${prod.id}`,
-          preset.mfgDate || '2026-08-01',
-          preset.expiryDate || '2028-07-31',
+          preset.batchNo || null,
+          preset.mfgDate || null,
+          preset.expiryDate || null,
           onlineSold,
         ]
       );
@@ -1113,6 +1113,30 @@ async function atomicAdjustProductStock(
           metaRow.id,
         ]
       );
+    }
+
+    // Strict FIFO / FEFO Batch Allocation deduction from physical batches
+    if (prodRow?.id && operation === 'subtract' && rawVal > 0) {
+      try {
+        const [batches] = await conn.query(
+          `SELECT id, unit_count FROM product_batches
+           WHERE product_id = ? AND unit_count > 0
+           ORDER BY COALESCE(expiry_date, '2099-12-31') ASC, COALESCE(manufacture_date, '1970-01-01') ASC, id ASC
+           FOR UPDATE`,
+          [prodRow.id]
+        );
+        let rem = rawVal;
+        for (const b of batches) {
+          if (rem <= 0) break;
+          const deductFromBatch = Math.min(rem, Number(b.unit_count) || 0);
+          if (deductFromBatch > 0) {
+            await conn.query('UPDATE product_batches SET unit_count = GREATEST(0, unit_count - ?) WHERE id = ?', [deductFromBatch, b.id]);
+            rem -= deductFromBatch;
+          }
+        }
+      } catch (batchErr) {
+        // Non-blocking fallback if product_batches table is not used
+      }
     }
 
     await recalculateAllBundleStocks(conn);
@@ -1668,23 +1692,30 @@ async function calculateInventoryVelocityAndDoc(db = pool) {
     };
   }
 
-  const [items] = await db.query(`
-    SELECT m.id AS meta_id, m.product_id, m.sku, m.barcode, m.custom_name,
-           m.category_name, m.cost_price, m.selling_price, m.min_stock_alert,
-           m.reorder_quantity, m.lead_time_days, m.bin_code, m.rack_location,
-           COALESCE(p.name, m.custom_name) AS product_name,
-           COALESCE(p.quantity, m.physical_stock, 0) AS current_stock
-    FROM inventory_product_meta m
-    LEFT JOIN products p ON m.product_id = p.id
-    ORDER BY m.id ASC
-  `);
+  let items = [];
+  try {
+    const [rows] = await db.query(`
+      SELECT m.id AS meta_id, m.product_id, m.sku, m.barcode, m.custom_name,
+             m.category_name, m.cost_price, m.selling_price, m.min_stock_alert,
+             m.reorder_qty, m.bin_code, m.rack_location, m.gst_hsn_code, m.gst_rate,
+             COALESCE(p.name, m.custom_name) AS product_name,
+             COALESCE(p.quantity, m.physical_stock, 0) AS current_stock
+      FROM inventory_product_meta m
+      LEFT JOIN products p ON m.product_id = p.id
+      ORDER BY m.id ASC
+    `);
+    items = rows || [];
+  } catch (err) {
+    console.error('[FORECAST_QUERY_FALLBACK]', err);
+    items = [];
+  }
 
   const forecasts = items.map(it => {
     const vel = velocityByProductId[it.product_id] || { sold30d: 0, dailyRunRate: 0 };
     const runRate = vel.dailyRunRate > 0 ? vel.dailyRunRate : 0.05;
     const daysOfCover = Math.round(Number(it.current_stock) / runRate);
-    const leadTime = Number(it.lead_time_days) || 7;
-    const safetyStock = Number(it.min_stock_alert) || 20;
+    const leadTime = 7;
+    const safetyStock = Number(it.min_stock_alert) || 15;
     const reorderPoint = Math.ceil(runRate * leadTime + safetyStock);
 
     let status = 'HEALTHY';
@@ -1703,6 +1734,8 @@ async function calculateInventoryVelocityAndDoc(db = pool) {
       barcode: it.barcode,
       name: it.product_name,
       category: it.category_name,
+      gstHsnCode: it.gst_hsn_code || '30049011',
+      gstRate: Number(it.gst_rate) || 5,
       currentStock: Number(it.current_stock),
       sold30d: vel.sold30d,
       dailyRunRate: vel.dailyRunRate,
@@ -1710,7 +1743,7 @@ async function calculateInventoryVelocityAndDoc(db = pool) {
       leadTimeDays: leadTime,
       safetyStock,
       reorderPoint,
-      suggestedReorderQty: Number(it.reorder_quantity) || 100,
+      suggestedReorderQty: Number(it.reorder_qty) || 50,
       binCode: it.bin_code,
       rackLocation: it.rack_location,
       status,
@@ -1733,7 +1766,8 @@ async function calculateInventoryVelocityAndDoc(db = pool) {
 }
 
 /**
- * 2. FEFO (First-Expired, First-Out) Batch Allocation for an Order
+ * 2. FEFO (First-Expired, First-Out) & FIFO Batch Allocation for an Order
+ * Earliest expiry dates are strictly picked first so older products never age on shelves.
  */
 async function allocateFefoBatchesForOrder(db = pool, orderId) {
   const [orderItems] = await db.query(
@@ -1749,13 +1783,14 @@ async function allocateFefoBatchesForOrder(db = pool, orderId) {
 
   for (const item of orderItems) {
     const [batches] = await db.query(`
-      SELECT pb.id, pb.batch_number, pb.manufacturing_date, pb.expiry_date,
-             pb.quantity AS batch_stock, pb.mrp,
+      SELECT pb.id, pb.batch_number,
+             COALESCE(pb.expiry_date, pb.manufacture_date) AS expiry_date,
+             COALESCE(pb.unit_count, 0) AS batch_stock,
              m.bin_code, m.rack_location
       FROM product_batches pb
       LEFT JOIN inventory_product_meta m ON m.product_id = pb.product_id
-      WHERE pb.product_id = ? AND pb.expiry_date > CURDATE()
-      ORDER BY pb.expiry_date ASC
+      WHERE pb.product_id = ? AND COALESCE(pb.unit_count, 0) > 0
+      ORDER BY COALESCE(pb.expiry_date, '2099-12-31') ASC, COALESCE(pb.manufacture_date, '1970-01-01') ASC, pb.id ASC
     `, [item.product_id]).catch(() => [[]]);
 
     let neededQty = Number(item.quantity);
@@ -1784,8 +1819,8 @@ async function allocateFefoBatchesForOrder(db = pool, orderId) {
       productName: item.name,
       orderedQuantity: Number(item.quantity),
       fefoBatches: allocatedBatches.length > 0 ? allocatedBatches : [{
-        batchNumber: 'STANDARD-FEFO',
-        expiryDate: 'CURRENT',
+        batchNumber: 'FIFO-DISPATCH',
+        expiryDate: 'ACTIVE',
         pickQuantity: Number(item.quantity),
         binCode: 'ASN-SHOP-R1-B01',
         rackLocation: 'Zone A',
