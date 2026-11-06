@@ -19,9 +19,9 @@
 | Metric | Baseline Count | Target Registry File |
 | :--- | :---: | :--- |
 | **Backend Route Files** | `41` | [`AI_MEMORY/02_API_AND_FUNCTION_REGISTRY.md`](./02_API_AND_FUNCTION_REGISTRY.md) |
-| **Backend Total Endpoints** | `458` | [`AI_MEMORY/02_API_AND_FUNCTION_REGISTRY.md`](./02_API_AND_FUNCTION_REGISTRY.md) |
+| **Backend Total Endpoints** | `459` | [`AI_MEMORY/02_API_AND_FUNCTION_REGISTRY.md`](./02_API_AND_FUNCTION_REGISTRY.md) |
 | **Backend Model Files** | `38` | [`AI_MEMORY/02_API_AND_FUNCTION_REGISTRY.md`](./02_API_AND_FUNCTION_REGISTRY.md) |
-| **Backend Exported Entities** | `352` | [`AI_MEMORY/02_API_AND_FUNCTION_REGISTRY.md`](./02_API_AND_FUNCTION_REGISTRY.md) |
+| **Backend Exported Entities** | `353` | [`AI_MEMORY/02_API_AND_FUNCTION_REGISTRY.md`](./02_API_AND_FUNCTION_REGISTRY.md) |
 | **Database Migrations** | `80` (`v1` to `v80`) | [`migrations/index.js`](../migrations/index.js) |
 
 ---
@@ -40,6 +40,7 @@
 | **#008** | `2026-11-06 20:42 IST` | Copilot | `routes/inventorySoftwareRoutes.js`, `Bhumivera_Frontend/src/pages/InventorySoftware.jsx` | MODIFIED | 458 -> 458 endpoints | Reduced MySQL wake-ups: `GET /bootstrap` runs the product-meta sync and daily-backup check at most once per 5 minutes per process (reads still run every load); cashier queue poll slowed from 1.5s to 4s and paused while the tab is hidden. | NEXT BOT: Do not put write-heavy work back on every `/bootstrap` call; `GET /scanner/queue` is still a DB read per poll. |
 | **#009** | `2026-11-06 21:15 IST` | Antigravity AI | `data/luxuryCatalog.js`, `data/bhumiveraCatalog.js`, `models/inventorySoftwareModel.js`, `models/gstAccountingModel.js`, `routes/gstRoutes.js`, `routes/inventorySoftwareRoutes.js`, `migrations/index.js`, `test/inventorySoftware.test.js` | MODIFIED | Migrations: 79 -> 80 | Replaced all legacy cosmetic HSN `33049990` fallbacks with official manufacturer Ayurvedic drug license HSN `30049011` (and `20099000` for Kalpvriksh Satva Tulsi extract) at statutory 5% GST rate from manufacturer invoice #MGP/26-27/02 (Sitashi Herbal Industry, Jaipur, GSTIN: `08AEQFS1102P1ZM`). Updated product keeper configurations, cost prices (Sea Buckthorn ₹62, Charcoal FW ₹60, Shampoo ₹85, Soaps ₹24, Tulsi ₹40), manufacturer batch codes (`SFW26H`, `SCFW26H`, `SHS26H`, `SACHS26I`, `SANTS26I`, `SPTD26I`), supplier registry seeds, and added Migration v80. | **NEXT BOT DIRECTIVE**: All new products and bundles default to Ayurvedic HSN `30049011` @ 5% GST unless categorized as edible extract (`20099000`). Maintain `DEFAULT_PRODUCT_KEEPER_CONFIG` synchronization with `inventory_product_meta`. |
 | **#010** | `2026-11-06 21:51 IST` | Copilot | `models/reviewModel.js`, `routes/reviewRoutes.js`, `test/reviewModel.test.js`, `test/migrationRunner.test.js` | FIXED | 458 -> 458 endpoints; 352 -> 352 model exports; 80 -> 80 migrations | Review list failures now propagate; permanent deletion reports missing rows or SQL failures rather than success; admin updates propagate SQL failures; empty product ratings sync to zero. Regression tests cover deletion, empty/error reads and retired review seed migrations 69–71 and 73–74. | NEXT BOT: Review seed migrations are no-ops; never repopulate deleted reviews from bundled data. Existing database records are not modified by this fix. |
+| **#011** | `2026-11-06 22:20 IST` | Copilot | `models/reviewModel.js`, `routes/reviewRoutes.js`, `data/bundledPendingReviews.json`, `test/reviewImport.test.js` | ADDED | 458 -> 459 endpoints; 352 -> 353 model exports | Added admin-only `POST /api/reviews/admin/import-bundled-pending`: transactional, locked, one-time import of 1500 bundled reviews as pending (is_approved=0, no media consent); refuses if reviews table is non-empty, marker `bundled_pending_reviews_v1` exists, or any product slug is not matched exactly once. | NEXT BOT: Do not re-run or auto-trigger this import; marker table `bhumivera_review_import_runs` prevents repeats. |
 
 ---
 

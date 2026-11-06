@@ -682,7 +682,90 @@ const deleteReviewPermanently = async (id) => {
   return true;
 };
 
+const IMPORT_KEY = 'bundled_pending_reviews_v1';
+
+const toSqlDateTime = (value) => new Date(value).toISOString().slice(0, 19).replace('T', ' ');
+
+// One-time admin import of the bundled review set as pending (is_approved = 0) rows.
+const importBundledPendingReviews = async (sourceReviews = require('../data/bundledPendingReviews.json')) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.query(
+      `CREATE TABLE IF NOT EXISTS bhumivera_review_import_runs (
+        import_key VARCHAR(100) NOT NULL PRIMARY KEY,
+        imported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB`
+    );
+    await connection.beginTransaction();
+
+    const [[lock]] = await connection.query('SELECT GET_LOCK(?, 10) AS acquired', [IMPORT_KEY]);
+    if (Number(lock.acquired) !== 1) {
+      await connection.rollback();
+      return { imported: 0, reason: 'Another import is running. Try again.' };
+    }
+
+    try {
+      const [[marker]] = await connection.query(
+        'SELECT COUNT(*) AS total FROM bhumivera_review_import_runs WHERE import_key = ?', [IMPORT_KEY]
+      );
+      if (marker.total > 0) {
+        await connection.rollback();
+        return { imported: 0, reason: 'This import was already run once and will not run again.' };
+      }
+      const [[existing]] = await connection.query('SELECT COUNT(*) AS total FROM reviews');
+      if (existing.total > 0) {
+        await connection.rollback();
+        return { imported: 0, reason: `Reviews table is not empty (${existing.total} rows). Nothing imported.` };
+      }
+
+      const [products] = await connection.query('SELECT id, slug FROM products');
+      const idsBySlug = new Map();
+      for (const product of products) {
+        idsBySlug.set(product.slug, [...(idsBySlug.get(product.slug) || []), product.id]);
+      }
+      const unmatched = [...new Set(sourceReviews.map(r => r.product_slug))]
+        .filter(slug => (idsBySlug.get(slug) || []).length !== 1);
+      if (unmatched.length) {
+        await connection.rollback();
+        return { imported: 0, reason: `Product slugs not found exactly once: ${unmatched.join(', ')}` };
+      }
+
+      const columns = `product_id, product_slug, product_name, user_id, order_id, order_number,
+        reviewer_name, reviewer_location, category_tag, is_combo_review, combo_name, rating, title, body,
+        images, videos, helpful_count, public_story_consent, is_approved, created_at, updated_at`;
+      let imported = 0;
+      for (let i = 0; i < sourceReviews.length; i += 250) {
+        const chunk = sourceReviews.slice(i, i + 250);
+        const values = chunk.map(r => [
+          idsBySlug.get(r.product_slug)[0], r.product_slug, r.product_name, null, null, r.order_number,
+          r.reviewer_name, r.reviewer_location, r.category_tag, r.is_combo_review ? 1 : 0, r.combo_name,
+          r.rating, r.title, r.body, JSON.stringify(r.images || []), JSON.stringify(r.videos || []),
+          r.helpful_count || 0, 0, 0, toSqlDateTime(r.created_at), toSqlDateTime(r.updated_at || r.created_at)
+        ]);
+        const [result] = await connection.query(`INSERT INTO reviews (${columns}) VALUES ?`, [values]);
+        imported += result.affectedRows;
+      }
+
+      if (imported !== sourceReviews.length) {
+        await connection.rollback();
+        return { imported: 0, reason: 'Row count mismatch. Nothing was saved.' };
+      }
+      await connection.query('INSERT INTO bhumivera_review_import_runs (import_key) VALUES (?)', [IMPORT_KEY]);
+      await connection.commit();
+      return { imported, reason: null };
+    } finally {
+      await connection.query('DO RELEASE_LOCK(?)', [IMPORT_KEY]).catch(() => {});
+    }
+  } catch (err) {
+    await connection.rollback().catch(() => {});
+    throw err;
+  } finally {
+    connection.release();
+  }
+};
+
 module.exports = {
+  importBundledPendingReviews,
   createReviewTable,
   createReview,
   createReviewAsAdmin,
