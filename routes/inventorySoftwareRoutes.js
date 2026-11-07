@@ -238,7 +238,7 @@ async function authenticateScannerOrStaff(req, res, next) {
     if (scannerKey) {
       const keyHash = crypto.createHash('sha256').update(String(scannerKey).trim()).digest('hex');
       const [[device]] = await pool.query(
-        'SELECT session_code, device_name FROM inventory_scanner_devices WHERE api_key_hash = ?',
+        'SELECT session_code, device_name, expires_at FROM inventory_scanner_devices WHERE api_key_hash = ?',
         [keyHash]
       );
       const requestedSessionCode = req.body?.sessionCode || req.query?.sessionCode;
@@ -253,6 +253,13 @@ async function authenticateScannerOrStaff(req, res, next) {
       ].includes(req.path);
 
       if (device) {
+        if (device.expires_at && new Date(device.expires_at).getTime() < Date.now()) {
+          return res.status(401).json({
+            success: false,
+            code: 'SCANNER_KEY_EXPIRED',
+            message: 'Scanner session has expired (90 days limit reached). Please scan the Station Dock QR on the desktop to renew.',
+          });
+        }
         if (requiresSession && !requestedSessionCode) {
           return res.status(400).json({ success: false, message: 'A paired terminal session is required.' });
         }
@@ -3428,28 +3435,62 @@ router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_
   try {
     const sessionCode = normalizePosSessionCode(req.body?.sessionCode);
     if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+    const rotate = req.body?.rotate === true || req.body?.rotate === 'true';
+
+    // Check if unexpired pairing already exists for this sessionCode and caller is not rotating
+    const [[existing]] = await pool.query(
+      `SELECT session_code, api_key, device_name, created_at, expires_at 
+       FROM inventory_scanner_devices 
+       WHERE session_code = ?`,
+      [sessionCode]
+    );
+
+    const now = Date.now();
+    const isStillValid = existing && existing.api_key && (!existing.expires_at || new Date(existing.expires_at).getTime() > now);
+
+    if (isStillValid && !rotate) {
+      const expiresAt = existing.expires_at ? new Date(existing.expires_at).toISOString() : new Date(now + 90 * 86400 * 1000).toISOString();
+      const daysRemaining = Math.max(1, Math.round((new Date(expiresAt).getTime() - now) / (86400 * 1000)));
+      return res.json({
+        success: true,
+        scannerApiKey: existing.api_key,
+        sessionCode,
+        deviceName: existing.device_name,
+        expiresAt,
+        daysRemaining,
+        isExisting: true,
+        message: `Persistent 90-day scanner pairing active (${daysRemaining} days remaining).`,
+      });
+    }
+
     const scannerApiKey = `BV-SCAN-${crypto.randomBytes(24).toString('hex').toUpperCase()}`;
     const deviceName = String(req.body?.deviceName || 'Bhumivera POS Scanner').trim().slice(0, 120);
     const apiKeyHash = crypto.createHash('sha256').update(scannerApiKey).digest('hex');
+    const expiresAt = new Date(now + 90 * 86400 * 1000); // 90 days persistent validity
+
     await pool.query(
-      `INSERT INTO inventory_scanner_devices (session_code, api_key_hash, device_name, paired_by)
-       VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE api_key_hash = VALUES(api_key_hash), device_name = VALUES(device_name),
-                               paired_by = VALUES(paired_by), created_at = CURRENT_TIMESTAMP`,
-      [sessionCode, apiKeyHash, deviceName, req.invUser.username]
+      `INSERT INTO inventory_scanner_devices (session_code, api_key_hash, api_key, device_name, paired_by, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+       ON DUPLICATE KEY UPDATE api_key_hash = VALUES(api_key_hash), api_key = VALUES(api_key),
+                               device_name = VALUES(device_name), paired_by = VALUES(paired_by),
+                               created_at = CURRENT_TIMESTAMP, expires_at = VALUES(expires_at)`,
+      [sessionCode, apiKeyHash, scannerApiKey, deviceName, req.invUser.username, expiresAt]
     );
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
       actionCode: 'SCANNER_DEVICE_PAIRED',
-      summary: `Paired mobile scanner "${deviceName}" to POS terminal ${sessionCode}.`,
+      summary: `Paired mobile scanner "${deviceName}" to POS terminal ${sessionCode} with 90-day validity.`,
     });
     res.json({
       success: true,
       scannerApiKey,
       sessionCode,
       deviceName,
-      message: 'Scanner paired to this POS terminal. Re-pair to revoke this key.',
+      expiresAt: expiresAt.toISOString(),
+      daysRemaining: 90,
+      isExisting: false,
+      message: 'Scanner paired with 90-day validity. Re-scan or print Dock Placard for warehouse staff.',
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -3541,14 +3582,32 @@ router.get('/scanner/config', authenticateInventoryStaff, async (req, res) => {
     const [[cfg]] = await pool.query('SELECT scanner_api_key, store_name FROM inventory_store_config WHERE id = 1');
     const sessionCode = normalizePosSessionCode(req.query.sessionCode || 'DEFAULT-POS-TERMINAL');
     if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+
+    const [[dev]] = await pool.query(
+      'SELECT api_key, device_name, created_at, expires_at FROM inventory_scanner_devices WHERE session_code = ?',
+      [sessionCode]
+    );
+
+    const now = Date.now();
+    let activeKey = dev?.api_key || '';
+    let expiresAt = dev?.expires_at ? new Date(dev.expires_at).toISOString() : null;
+    let daysRemaining = dev?.expires_at ? Math.max(0, Math.round((new Date(dev.expires_at).getTime() - now) / (86400 * 1000))) : 90;
+
+    if (!activeKey && sessionCode === 'DEFAULT-POS-TERMINAL') {
+      activeKey = cfg?.scanner_api_key || 'BV-SCAN-DEFAULT';
+    }
+
     const [queueRows] = await pool.query(
       "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
       [sessionCode]
     );
     res.json({
       success: true,
-      scannerApiKey: sessionCode === 'DEFAULT-POS-TERMINAL' ? cfg?.scanner_api_key || 'BV-SCAN-DEFAULT' : '',
+      scannerApiKey: activeKey,
       sessionCode,
+      deviceName: dev?.device_name || 'Bhumivera POS Scanner',
+      expiresAt,
+      daysRemaining,
       scanEndpoint: '/api/inventory-software/scanner/scan',
       queueEndpoint: '/api/inventory-software/scanner/queue',
       queue: queueRows,

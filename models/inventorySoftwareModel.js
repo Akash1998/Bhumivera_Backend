@@ -622,11 +622,23 @@ async function initInventorySoftwareTables(db = pool) {
     CREATE TABLE IF NOT EXISTS inventory_scanner_devices (
       session_code VARCHAR(64) NOT NULL PRIMARY KEY,
       api_key_hash CHAR(64) NOT NULL UNIQUE,
+      api_key VARCHAR(128) DEFAULT NULL,
       device_name VARCHAR(120) NOT NULL,
       paired_by VARCHAR(80) DEFAULT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      expires_at TIMESTAMP NULL DEFAULT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  try {
+    await db.query(`ALTER TABLE inventory_scanner_devices ADD COLUMN api_key VARCHAR(128) DEFAULT NULL AFTER api_key_hash`);
+  } catch (_) {}
+  try {
+    await db.query(`ALTER TABLE inventory_scanner_devices ADD COLUMN expires_at TIMESTAMP NULL DEFAULT NULL AFTER created_at`);
+  } catch (_) {}
+  try {
+    await db.query(`UPDATE inventory_scanner_devices SET expires_at = DATE_ADD(created_at, INTERVAL 90 DAY) WHERE expires_at IS NULL`);
+  } catch (_) {}
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS inventory_pos_drafts (
@@ -1190,12 +1202,31 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
   let extractedSku = null;
   let extractedSerial = null;
   let extractedSlug = null;
+  let extractedBatch = null;
+
+  // Handle standard Bhumivera Batch QR: BV:<SKU>:<BATCH> or BV|<SKU>|<BATCH>
+  if (/^BV[:|]/i.test(raw)) {
+    const parts = raw.split(/[:|]/).map(p => p.trim());
+    if (parts.length >= 2) {
+      extractedSku = parts[1];
+      if (parts[2]) extractedBatch = parts[2];
+    }
+  } else if (raw.startsWith('{') && raw.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.sku) extractedSku = parsed.sku;
+      if (parsed.code && !extractedSku) extractedSku = parsed.code;
+      if (parsed.batch) extractedBatch = parsed.batch;
+      if (parsed.serial) extractedSerial = parsed.serial;
+    } catch (_) {}
+  }
 
   if (raw.startsWith('http://') || raw.startsWith('https://') || raw.includes('bhumivera.com')) {
     try {
       const urlObj = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
       extractedSku = urlObj.searchParams.get('sku') || null;
       extractedSerial = urlObj.searchParams.get('serial') || urlObj.searchParams.get('code') || null;
+      extractedBatch = urlObj.searchParams.get('batch') || extractedBatch;
       const parts = urlObj.pathname.split('/').filter(Boolean);
       const prodIdx = parts.findIndex(p => p === 'product' || p === 'products' || p === 'combo');
       if (prodIdx !== -1 && parts[prodIdx + 1]) {
@@ -1231,7 +1262,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
         [serialRows[0].product_id]
       );
       if (metaRows?.[0]) {
-        return formatResolvedScannerItem(metaRows[0], matchedSerialNumber);
+        return formatResolvedScannerItem(metaRows[0], matchedSerialNumber, extractedBatch);
       }
     }
   } catch {
@@ -1264,12 +1295,37 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
   );
 
   if (rows?.[0]) {
-    return formatResolvedScannerItem(rows[0], matchedSerialNumber);
+    return formatResolvedScannerItem(rows[0], matchedSerialNumber, extractedBatch);
   }
+
+  // 3. Fallback: match by product_batches table if a batch QR was scanned directly
+  try {
+    const [batchRows] = await db.query(
+      `SELECT pb.product_id, pb.batch_number 
+       FROM product_batches pb 
+       WHERE LOWER(pb.batch_number) = LOWER(?) 
+       LIMIT 1`,
+      [lookupToken]
+    );
+    if (batchRows?.[0]?.product_id) {
+      const [metaByBatch] = await db.query(
+        `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
+         FROM inventory_product_meta m
+         LEFT JOIN products p ON m.product_id = p.id
+         WHERE m.product_id = ?
+         LIMIT 1`,
+        [batchRows[0].product_id]
+      );
+      if (metaByBatch?.[0]) {
+        return formatResolvedScannerItem(metaByBatch[0], null, batchRows[0].batch_number);
+      }
+    }
+  } catch (_) {}
+
   return null;
 }
 
-function formatResolvedScannerItem(r, serialNumber = null) {
+function formatResolvedScannerItem(r, serialNumber = null, batchNumber = null) {
   const liveQty =
     r.product_id && r.web_quantity !== null && r.web_quantity !== undefined
       ? Number(r.web_quantity)
@@ -1296,7 +1352,7 @@ function formatResolvedScannerItem(r, serialNumber = null) {
     gstRate: Number(r.gst_rate) || 5,
     availableStock: liveQty,
     binCode: r.bin_code || 'ASN-SHOP-R1-B01',
-    batchNo: r.batch_no || '',
+    batchNo: batchNumber || r.batch_no || '',
   };
 }
 
