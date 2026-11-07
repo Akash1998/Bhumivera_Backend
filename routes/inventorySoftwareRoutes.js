@@ -1562,7 +1562,22 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
     if (!orderId || !inputCode) {
       return res.status(400).json({ success: false, message: 'orderId and barcode/qrCode are required.' });
     }
-    const cleanOrderId = Number(String(orderId).replace(/\D/g, ''));
+    const rawOrderParam = String(orderId).trim().replace(/^ORD:/i, '').replace(/^#/i, '').trim();
+    const numericCandidate = Number(rawOrderParam.replace(/\D/g, '')) || 0;
+    let orderRecord = null;
+    if (numericCandidate > 0) {
+      const [[foundOrder]] = await pool.query('SELECT id, order_number FROM orders WHERE id = ? OR order_number = ? LIMIT 1', [numericCandidate, rawOrderParam]);
+      orderRecord = foundOrder;
+    }
+    if (!orderRecord) {
+      const [[foundByText]] = await pool.query('SELECT id, order_number FROM orders WHERE order_number = ? LIMIT 1', [rawOrderParam]);
+      orderRecord = foundByText;
+    }
+    if (!orderRecord) {
+      return res.status(404).json({ success: false, message: `Order "${orderId}" was not found.` });
+    }
+    const realOrderId = orderRecord.id;
+
     let cleanBarcode = String(inputCode).trim();
     if (cleanBarcode.includes("code=")) {
       const m = cleanBarcode.match(/code=([^&]+)/);
@@ -1573,14 +1588,14 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
     if (!resolved) {
       return res.status(404).json({ success: false, message: `Scanned code "${cleanBarcode}" did not match any catalog SKU or batch.` });
     }
-    const [orderItems] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [cleanOrderId]);
+    const [orderItems] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [realOrderId]);
     const matchingItem = orderItems.find(it => it.product_id === resolved.productId || it.name.toLowerCase().includes(resolved.sku.toLowerCase()) || (resolved.sku && it.sku && it.sku.toLowerCase() === resolved.sku.toLowerCase()));
     if (!matchingItem) {
       return res.status(400).json({
         success: false,
         verified: false,
         code: 'ITEM_NOT_IN_ORDER',
-        message: `⛔ REJECTED: "${resolved.name}" is NOT in Order #${cleanOrderId}! Dispatch blocked.`,
+        message: `⛔ REJECTED: "${resolved.name}" is NOT in Order #${orderRecord.order_number || realOrderId}! Dispatch blocked.`,
       });
     }
 
@@ -1594,7 +1609,7 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
         barcode: resolved.barcode,
         batchNo: resolved.batchNo,
       },
-      message: `✔ Verified: "${resolved.name}" matches Order #${cleanOrderId}.`,
+      message: `✔ Verified: "${resolved.name}" matches Order #${orderRecord.order_number || realOrderId}.`,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -1604,25 +1619,47 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
 // GET /api/inventory-software/orders/:id/manifest - Guided Packing Manifest
 router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) => {
   try {
-    const rawId = req.params.id;
-    const orderId = Number(String(rawId).replace(/\D/g, ''));
-    if (!orderId) return res.status(400).json({ success: false, message: 'Invalid Order ID format.' });
+    const rawParam = String(req.params.id || '').trim().replace(/^ORD:/i, '').replace(/^#/i, '').trim();
+    if (!rawParam) return res.status(400).json({ success: false, message: 'Invalid Order ID format.' });
 
-    const [[order]] = await pool.query(
-      `SELECT o.*, 
-              COALESCE(o.customer_name, u.name, 'Valued Patron') AS resolved_customer_name,
-              COALESCE(o.customer_phone, u.phone, '') AS resolved_customer_phone,
-              COALESCE(o.customer_email, u.email, '') AS resolved_customer_email,
-              o.shipping_address, o.shipping_city, o.shipping_state, o.shipping_pincode,
-              o.status, o.total_amount, o.tracking_number, o.created_at
-       FROM orders o
-       LEFT JOIN users u ON o.user_id = u.id
-       WHERE o.id = ?`,
-      [orderId]
-    );
+    const numericCandidate = Number(rawParam.replace(/\D/g, '')) || 0;
+    let order = null;
+    if (numericCandidate > 0) {
+      const [[foundOrder]] = await pool.query(
+        `SELECT o.*, 
+                COALESCE(o.customer_name, u.name, 'Valued Patron') AS resolved_customer_name,
+                COALESCE(o.customer_phone, u.phone, '') AS resolved_customer_phone,
+                COALESCE(o.customer_email, u.email, '') AS resolved_customer_email,
+                o.shipping_address, o.shipping_city, o.shipping_state, o.shipping_pincode,
+                o.status, o.total_amount, o.tracking_number, o.created_at
+         FROM orders o
+         LEFT JOIN users u ON o.user_id = u.id
+         WHERE o.id = ? OR o.order_number = ?
+         LIMIT 1`,
+        [numericCandidate, rawParam]
+      );
+      order = foundOrder;
+    }
 
     if (!order) {
-      return res.status(404).json({ success: false, message: `Order #${orderId} was not found.` });
+      const [[foundByText]] = await pool.query(
+        `SELECT o.*, 
+                COALESCE(o.customer_name, u.name, 'Valued Patron') AS resolved_customer_name,
+                COALESCE(o.customer_phone, u.phone, '') AS resolved_customer_phone,
+                COALESCE(o.customer_email, u.email, '') AS resolved_customer_email,
+                o.shipping_address, o.shipping_city, o.shipping_state, o.shipping_pincode,
+                o.status, o.total_amount, o.tracking_number, o.created_at
+         FROM orders o
+         LEFT JOIN users u ON o.user_id = u.id
+         WHERE o.order_number = ?
+         LIMIT 1`,
+        [rawParam]
+      );
+      order = foundByText;
+    }
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: `Order "${rawParam}" was not found.` });
     }
 
     const [items] = await pool.query(
@@ -1634,7 +1671,7 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
        LEFT JOIN inventory_product_meta m ON oi.product_id = m.product_id
        WHERE oi.order_id = ?
        ORDER BY oi.id ASC`,
-      [orderId]
+      [order.id]
     );
 
     res.json({
@@ -1680,11 +1717,11 @@ router.put('/orders/:id/items', authenticateInventoryStaff, requirePermission('c
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const rawId = req.params.id;
-    const orderId = Number(String(rawId).replace(/\D/g, ''));
+    const rawParam = String(req.params.id || '').trim().replace(/^ORD:/i, '').replace(/^#/i, '').trim();
+    const numericCandidate = Number(rawParam.replace(/\D/g, '')) || 0;
     const { items = [] } = req.body || {};
 
-    if (!orderId) {
+    if (!rawParam) {
       await conn.rollback();
       return res.status(400).json({ success: false, message: 'Invalid Order ID format.' });
     }
@@ -1693,17 +1730,26 @@ router.put('/orders/:id/items', authenticateInventoryStaff, requirePermission('c
       return res.status(400).json({ success: false, message: 'At least one order line item is required.' });
     }
 
-    const [[order]] = await conn.query('SELECT id, status, total_amount FROM orders WHERE id = ? FOR UPDATE', [orderId]);
+    let order = null;
+    if (numericCandidate > 0) {
+      const [[foundOrder]] = await conn.query('SELECT id, status, total_amount, order_number FROM orders WHERE id = ? OR order_number = ? FOR UPDATE', [numericCandidate, rawParam]);
+      order = foundOrder;
+    }
+    if (!order) {
+      const [[foundByText]] = await conn.query('SELECT id, status, total_amount, order_number FROM orders WHERE order_number = ? FOR UPDATE', [rawParam]);
+      order = foundByText;
+    }
     if (!order) {
       await conn.rollback();
-      return res.status(404).json({ success: false, message: `Order #${orderId} does not exist.` });
+      return res.status(404).json({ success: false, message: `Order "${rawParam}" does not exist.` });
     }
+    const realOrderId = order.id;
     if (order.status === 'cancelled' || order.status === 'delivered') {
       await conn.rollback();
       return res.status(400).json({ success: false, message: `Cannot modify items for an order with status "${order.status}".` });
     }
 
-    await conn.query('DELETE FROM order_items WHERE order_id = ?', [orderId]);
+    await conn.query('DELETE FROM order_items WHERE order_id = ?', [realOrderId]);
 
     let newTotal = 0;
     for (const item of items) {
@@ -1716,25 +1762,26 @@ router.put('/orders/:id/items', authenticateInventoryStaff, requirePermission('c
       await conn.query(
         `INSERT INTO order_items (order_id, product_id, name, price, quantity)
          VALUES (?, ?, ?, ?, ?)`,
-        [orderId, pid, nm, prc, qty]
+        [realOrderId, pid, nm, prc, qty]
       );
     }
 
-    await conn.query('UPDATE orders SET total_amount = ? WHERE id = ?', [newTotal, orderId]);
+    await conn.query('UPDATE orders SET total_amount = ? WHERE id = ?', [newTotal, realOrderId]);
     await conn.commit();
 
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
       actionCode: 'ADMIN_ORDER_ITEMS_MODIFIED',
-      summary: `Admin modified line items for Order #${orderId} (New Total: ₹${newTotal}, Items: ${items.length}).`,
+      summary: `Admin modified line items for Order #${order.order_number || realOrderId} (New Total: ₹${newTotal}, Items: ${items.length}).`,
     });
 
     res.json({
       success: true,
-      orderId,
+      orderId: realOrderId,
+      orderNumber: order.order_number || realOrderId,
       newTotal,
-      message: `Order #${orderId} items updated successfully. Total recalculated to ₹${newTotal}.`,
+      message: `Order #${order.order_number || realOrderId} items updated successfully. Total recalculated to ₹${newTotal}.`,
     });
   } catch (err) {
     await conn.rollback();
