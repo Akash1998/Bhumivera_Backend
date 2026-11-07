@@ -630,15 +630,27 @@ async function initInventorySoftwareTables(db = pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_order_pack_progress (
+      order_item_id INT NOT NULL PRIMARY KEY,
+      order_id INT NOT NULL,
+      verified_quantity INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_order_pack_progress_order (order_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
   try {
     await db.query(`ALTER TABLE inventory_scanner_devices ADD COLUMN api_key VARCHAR(128) DEFAULT NULL AFTER api_key_hash`);
   } catch (_) {}
   try {
     await db.query(`ALTER TABLE inventory_scanner_devices ADD COLUMN expires_at TIMESTAMP NULL DEFAULT NULL AFTER created_at`);
   } catch (_) {}
-  try {
-    await db.query(`UPDATE inventory_scanner_devices SET expires_at = DATE_ADD(created_at, INTERVAL 90 DAY) WHERE expires_at IS NULL`);
-  } catch (_) {}
+  await db.query(
+    `UPDATE inventory_scanner_devices
+     SET expires_at = DATE_ADD(NOW(), INTERVAL 12 HOUR)
+     WHERE expires_at IS NULL OR expires_at > DATE_ADD(NOW(), INTERVAL 12 HOUR)`
+  );
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS inventory_pos_drafts (
@@ -1367,6 +1379,7 @@ const BACKUP_TABLES_ORDER = [
   'addresses',
   'orders',
   'order_items',
+  'inventory_order_pack_progress',
   'coupons',
   'coupon_redemptions',
   'wallets',

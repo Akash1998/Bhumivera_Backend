@@ -250,14 +250,15 @@ async function authenticateScannerOrStaff(req, res, next) {
         '/scanner/queue/remove',
         '/scanner/queue/clear',
         '/pos/checkout',
+        '/fulfillment/verify-pack',
       ].includes(req.path);
 
       if (device) {
-        if (device.expires_at && new Date(device.expires_at).getTime() < Date.now()) {
+        if (device.expires_at && new Date(device.expires_at).getTime() <= Date.now()) {
           return res.status(401).json({
             success: false,
             code: 'SCANNER_KEY_EXPIRED',
-            message: 'Scanner session has expired (90 days limit reached). Please scan the Station Dock QR on the desktop to renew.',
+            message: 'This scanner pairing expired after 12 hours. Scan the current Station Dock QR to reconnect.',
           });
         }
         if (requiresSession && !requestedSessionCode) {
@@ -1556,27 +1557,44 @@ router.post('/fulfillment/manifest', authenticateInventoryStaff, requirePermissi
 });
 
 router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, res) => {
+  const conn = await pool.getConnection();
   try {
     const { orderId, barcode, qrCode, code } = req.body || {};
     const inputCode = barcode || qrCode || code;
     if (!orderId || !inputCode) {
       return res.status(400).json({ success: false, message: 'orderId and barcode/qrCode are required.' });
     }
+    await conn.beginTransaction();
     const rawOrderParam = String(orderId).trim().replace(/^ORD:/i, '').replace(/^#/i, '').trim();
     const numericCandidate = Number(rawOrderParam.replace(/\D/g, '')) || 0;
     let orderRecord = null;
     if (numericCandidate > 0) {
-      const [[foundOrder]] = await pool.query('SELECT id, order_number FROM orders WHERE id = ? OR order_number = ? LIMIT 1', [numericCandidate, rawOrderParam]);
+      const [[foundOrder]] = await conn.query(
+        'SELECT id, order_number, status FROM orders WHERE id = ? OR order_number = ? LIMIT 1 FOR UPDATE',
+        [numericCandidate, rawOrderParam]
+      );
       orderRecord = foundOrder;
     }
     if (!orderRecord) {
-      const [[foundByText]] = await pool.query('SELECT id, order_number FROM orders WHERE order_number = ? LIMIT 1', [rawOrderParam]);
+      const [[foundByText]] = await conn.query(
+        'SELECT id, order_number, status FROM orders WHERE order_number = ? LIMIT 1 FOR UPDATE',
+        [rawOrderParam]
+      );
       orderRecord = foundByText;
     }
     if (!orderRecord) {
+      await conn.rollback();
       return res.status(404).json({ success: false, message: `Order "${orderId}" was not found.` });
     }
     const realOrderId = orderRecord.id;
+    if (['cancelled', 'delivered', 'shipped', 'returned', 'archived'].includes(String(orderRecord.status).toLowerCase())) {
+      await conn.rollback();
+      return res.status(409).json({
+        success: false,
+        code: 'ORDER_NOT_PACKABLE',
+        message: `Order #${orderRecord.order_number || realOrderId} cannot be packed while its status is "${orderRecord.status}".`,
+      });
+    }
 
     let cleanBarcode = String(inputCode).trim();
     if (cleanBarcode.includes("code=")) {
@@ -1584,13 +1602,29 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
       if (m && m[1]) cleanBarcode = decodeURIComponent(m[1]);
     }
 
-    const resolved = await resolveProductByQrOrCode(pool, cleanBarcode);
+    const resolved = await resolveProductByQrOrCode(conn, cleanBarcode);
     if (!resolved) {
+      await conn.rollback();
       return res.status(404).json({ success: false, message: `Scanned code "${cleanBarcode}" did not match any catalog SKU or batch.` });
     }
-    const [orderItems] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [realOrderId]);
-    const matchingItem = orderItems.find(it => it.product_id === resolved.productId || it.name.toLowerCase().includes(resolved.sku.toLowerCase()) || (resolved.sku && it.sku && it.sku.toLowerCase() === resolved.sku.toLowerCase()));
-    if (!matchingItem) {
+    const [orderItems] = await conn.query(
+      `SELECT oi.id, oi.product_id, oi.name, oi.quantity,
+              COALESCE(m.sku, p.sku) AS sku, m.barcode
+       FROM order_items oi
+       LEFT JOIN products p ON p.id = oi.product_id
+       LEFT JOIN inventory_product_meta m ON m.product_id = oi.product_id
+       WHERE oi.order_id = ?
+       ORDER BY oi.id ASC
+       FOR UPDATE`,
+      [realOrderId]
+    );
+    const matchingItems = orderItems.filter(it =>
+      (Number(it.product_id) > 0 && Number(it.product_id) === Number(resolved.productId)) ||
+      (resolved.sku && String(it.sku || '').toLowerCase() === String(resolved.sku).toLowerCase()) ||
+      (resolved.barcode && String(it.barcode || '').toLowerCase() === String(resolved.barcode).toLowerCase())
+    );
+    if (matchingItems.length === 0) {
+      await conn.rollback();
       return res.status(400).json({
         success: false,
         verified: false,
@@ -1599,9 +1633,85 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
       });
     }
 
+    let matchingItem = null;
+    let verifiedCount = 0;
+    let itemQuantity = 0;
+    let lastMatchingItem = null;
+    let lastVerifiedCount = 0;
+    let lastItemQuantity = 0;
+    for (const candidate of matchingItems) {
+      await conn.query(
+        `INSERT IGNORE INTO inventory_order_pack_progress (order_item_id, order_id, verified_quantity)
+         VALUES (?, ?, 0)`,
+        [candidate.id, realOrderId]
+      );
+      const [[progressRow]] = await conn.query(
+        'SELECT verified_quantity FROM inventory_order_pack_progress WHERE order_item_id = ? FOR UPDATE',
+        [candidate.id]
+      );
+      const candidateCount = Number(progressRow?.verified_quantity) || 0;
+      const candidateQuantity = Number(candidate.quantity) || 1;
+      lastMatchingItem = candidate;
+      lastVerifiedCount = candidateCount;
+      lastItemQuantity = candidateQuantity;
+      if (candidateCount < candidateQuantity) {
+        matchingItem = candidate;
+        verifiedCount = candidateCount;
+        itemQuantity = candidateQuantity;
+        break;
+      }
+    }
+    if (!matchingItem) {
+      await conn.rollback();
+      return res.status(409).json({
+        success: false,
+        verified: false,
+        code: 'ITEM_ALREADY_VERIFIED',
+        progress: {
+          orderItemId: lastMatchingItem.id,
+          verifiedCount: lastVerifiedCount,
+          quantity: lastItemQuantity,
+        },
+        message: `"${lastMatchingItem.name}" is already fully scanned (${lastVerifiedCount}/${lastItemQuantity}).`,
+      });
+    }
+
+    await conn.query(
+      'UPDATE inventory_order_pack_progress SET verified_quantity = ? WHERE order_item_id = ?',
+      [verifiedCount + 1, matchingItem.id]
+    );
+    const [updatedItems] = await conn.query(
+      `SELECT oi.id AS order_item_id, oi.quantity,
+              COALESCE(pp.verified_quantity, 0) AS verified_count
+       FROM order_items oi
+       LEFT JOIN inventory_order_pack_progress pp ON pp.order_item_id = oi.id
+       WHERE oi.order_id = ?
+       ORDER BY oi.id ASC`,
+      [realOrderId]
+    );
+    const totalUnits = updatedItems.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0);
+    const totalVerified = updatedItems.reduce((sum, item) => sum + (Number(item.verified_count) || 0), 0);
+    const orderComplete = totalUnits > 0 && totalVerified >= totalUnits;
+    const orderStatus = orderComplete ? 'packed' : orderRecord.status;
+    if (orderStatus !== orderRecord.status) {
+      await conn.query('UPDATE orders SET status = ? WHERE id = ?', [orderStatus, realOrderId]);
+    }
+    await conn.commit();
+
     res.json({
       success: true,
       verified: true,
+      orderId: realOrderId,
+      orderNumber: orderRecord.order_number || realOrderId,
+      orderStatus,
+      orderComplete,
+      progress: {
+        orderItemId: matchingItem.id,
+        verifiedCount: verifiedCount + 1,
+        quantity: itemQuantity,
+        totalVerified,
+        totalUnits,
+      },
       product: {
         productId: resolved.productId,
         sku: resolved.sku,
@@ -1609,10 +1719,15 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
         barcode: resolved.barcode,
         batchNo: resolved.batchNo,
       },
-      message: `✔ Verified: "${resolved.name}" matches Order #${orderRecord.order_number || realOrderId}.`,
+      message: orderComplete
+        ? `All ${totalUnits} units for Order #${orderRecord.order_number || realOrderId} are scanned. The order is packed and ready for dispatch.`
+        : `Verified "${resolved.name}" for Order #${orderRecord.order_number || realOrderId} (${totalVerified}/${totalUnits} units scanned).`,
     });
   } catch (err) {
+    await conn.rollback();
     res.status(500).json({ success: false, message: err.message });
+  } finally {
+    conn.release();
   }
 });
 
@@ -1665,10 +1780,12 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
     const [items] = await pool.query(
       `SELECT oi.id AS order_item_id, oi.product_id, oi.name, oi.price, oi.quantity,
               COALESCE(m.sku, p.sku, CONCAT('SKU-', oi.product_id)) AS sku,
-              m.barcode, m.bin_code, m.batch_no, m.gst_hsn_code, m.gst_rate
+              m.barcode, m.bin_code, m.batch_no, m.gst_hsn_code, m.gst_rate,
+              COALESCE(pp.verified_quantity, 0) AS verified_count
        FROM order_items oi
        LEFT JOIN products p ON oi.product_id = p.id
        LEFT JOIN inventory_product_meta m ON oi.product_id = m.product_id
+       LEFT JOIN inventory_order_pack_progress pp ON pp.order_item_id = oi.id
        WHERE oi.order_id = ?
        ORDER BY oi.id ASC`,
       [order.id]
@@ -1704,8 +1821,23 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
           batchNo: it.batch_no || '',
           gstHsnCode: it.gst_hsn_code || '30049011',
           gstRate: Number(it.gst_rate) || 5,
+          verifiedCount: Number(it.verified_count) || 0,
         })),
       },
+      items: items.map(it => ({
+        orderItemId: it.order_item_id,
+        productId: it.product_id,
+        name: it.name,
+        sku: it.sku,
+        barcode: it.barcode || it.sku,
+        price: Number(it.price) || 0,
+        quantity: Number(it.quantity) || 1,
+        binCode: it.bin_code || 'ASN-SHOP-R1-B01',
+        batchNo: it.batch_no || '',
+        gstHsnCode: it.gst_hsn_code || '30049011',
+        gstRate: Number(it.gst_rate) || 5,
+        verifiedCount: Number(it.verified_count) || 0,
+      })),
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -1749,20 +1881,67 @@ router.put('/orders/:id/items', authenticateInventoryStaff, requirePermission('c
       return res.status(400).json({ success: false, message: `Cannot modify items for an order with status "${order.status}".` });
     }
 
+    const normalizedItems = [];
+    for (const [index, item] of items.entries()) {
+      const requestedProductId = Number(item?.productId);
+      const quantity = Number(item?.quantity);
+      const price = Number(item?.price);
+      if (!Number.isInteger(quantity) || quantity < 1 || !Number.isFinite(price) || price < 0) {
+        await conn.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Item ${index + 1} must have a positive whole-number quantity and a valid non-negative price.`,
+        });
+      }
+
+      let productId = Number.isInteger(requestedProductId) && requestedProductId > 0
+        ? requestedProductId
+        : null;
+      if (productId) {
+        const [[product]] = await conn.query('SELECT id FROM products WHERE id = ? LIMIT 1', [productId]);
+        if (!product) productId = null;
+      }
+
+      if (!productId && item?.sku) {
+        const [[product]] = await conn.query(
+          `SELECT p.id
+           FROM products p
+           LEFT JOIN inventory_product_meta m ON m.product_id = p.id
+           WHERE LOWER(p.sku) = LOWER(?) OR LOWER(m.sku) = LOWER(?)
+           ORDER BY p.id ASC
+           LIMIT 1`,
+          [String(item.sku).trim(), String(item.sku).trim()]
+        );
+        productId = product?.id || null;
+      }
+
+      if (!productId) {
+        await conn.rollback();
+        return res.status(400).json({
+          success: false,
+          code: 'ORDER_ITEM_PRODUCT_NOT_FOUND',
+          message: `Item "${String(item?.name || item?.sku || index + 1).trim()}" must match an existing catalog product. Enter its exact product SKU before saving.`,
+        });
+      }
+      normalizedItems.push({
+        productId,
+        quantity,
+        price,
+        name: String(item?.name || 'Bhumivera Product').trim(),
+      });
+    }
+
     await conn.query('DELETE FROM order_items WHERE order_id = ?', [realOrderId]);
+    await conn.query('DELETE FROM inventory_order_pack_progress WHERE order_id = ?', [realOrderId]);
 
     let newTotal = 0;
-    for (const item of items) {
-      const pid = Number(item.productId);
-      const qty = Math.max(1, Number(item.quantity) || 1);
-      const prc = Number(item.price) || 0;
-      const nm = String(item.name || 'Bhumivera Product').trim();
-      newTotal += prc * qty;
+    for (const item of normalizedItems) {
+      newTotal += item.price * item.quantity;
 
       await conn.query(
         `INSERT INTO order_items (order_id, product_id, name, price, quantity)
          VALUES (?, ?, ?, ?, ?)`,
-        [realOrderId, pid, nm, prc, qty]
+        [realOrderId, item.productId, item.name, item.price, item.quantity]
       );
     }
 
@@ -1781,6 +1960,7 @@ router.put('/orders/:id/items', authenticateInventoryStaff, requirePermission('c
       orderId: realOrderId,
       orderNumber: order.order_number || realOrderId,
       newTotal,
+      items: normalizedItems,
       message: `Order #${order.order_number || realOrderId} items updated successfully. Total recalculated to ₹${newTotal}.`,
     });
   } catch (err) {
@@ -3742,7 +3922,7 @@ router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_
     if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
     const rotate = req.body?.rotate === true || req.body?.rotate === 'true';
 
-    // Check if unexpired pairing already exists for this sessionCode and caller is not rotating
+    // Keep the pairing within its 12-hour window unless an administrator rotates the key.
     const [[existing]] = await pool.query(
       `SELECT session_code, api_key, device_name, created_at, expires_at 
        FROM inventory_scanner_devices 
@@ -3754,25 +3934,24 @@ router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_
     const isStillValid = existing && existing.api_key && (!existing.expires_at || new Date(existing.expires_at).getTime() > now);
 
     if (isStillValid && !rotate) {
-      const expiresAt = existing.expires_at ? new Date(existing.expires_at).toISOString() : new Date(now + 90 * 86400 * 1000).toISOString();
-      const daysRemaining = Math.max(1, Math.round((new Date(expiresAt).getTime() - now) / (86400 * 1000)));
+      const expiresAt = existing.expires_at ? new Date(existing.expires_at).toISOString() : new Date(now + 12 * 60 * 60 * 1000).toISOString();
+      const hoursRemaining = Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / (60 * 60 * 1000)));
       return res.json({
         success: true,
         scannerApiKey: existing.api_key,
         sessionCode,
         deviceName: existing.device_name,
         expiresAt,
-        daysRemaining,
+        hoursRemaining,
         isExisting: true,
-        message: `Persistent 90-day scanner pairing active (${daysRemaining} days remaining).`,
+        message: `Scanner pairing active (${hoursRemaining} hours remaining).`,
       });
     }
 
     const scannerApiKey = `BV-SCAN-${crypto.randomBytes(24).toString('hex').toUpperCase()}`;
     const deviceName = String(req.body?.deviceName || 'Bhumivera POS Scanner').trim().slice(0, 120);
     const apiKeyHash = crypto.createHash('sha256').update(scannerApiKey).digest('hex');
-    const expiresAt = new Date(now + 90 * 86400 * 1000); // 90 days persistent validity
-
+    const expiresAt = new Date(now + 12 * 60 * 60 * 1000);
     await pool.query(
       `INSERT INTO inventory_scanner_devices (session_code, api_key_hash, api_key, device_name, paired_by, created_at, expires_at)
        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
@@ -3785,7 +3964,7 @@ router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
       actionCode: 'SCANNER_DEVICE_PAIRED',
-      summary: `Paired mobile scanner "${deviceName}" to POS terminal ${sessionCode} with 90-day validity.`,
+      summary: `Paired mobile scanner "${deviceName}" to POS terminal ${sessionCode} for 12 hours.`,
     });
     res.json({
       success: true,
@@ -3793,9 +3972,9 @@ router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_
       sessionCode,
       deviceName,
       expiresAt: expiresAt.toISOString(),
-      daysRemaining: 90,
+      hoursRemaining: 12,
       isExisting: false,
-      message: 'Scanner paired with 90-day validity. Re-scan or print Dock Placard for warehouse staff.',
+      message: 'Scanner paired for 12 hours. Re-scan the dock QR to establish a new session after expiry.',
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -3893,12 +4072,14 @@ router.get('/scanner/config', authenticateInventoryStaff, async (req, res) => {
       [sessionCode]
     );
 
-    const now = Date.now();
-    let activeKey = dev?.api_key || '';
-    let expiresAt = dev?.expires_at ? new Date(dev.expires_at).toISOString() : null;
-    let daysRemaining = dev?.expires_at ? Math.max(0, Math.round((new Date(dev.expires_at).getTime() - now) / (86400 * 1000))) : 90;
+    const pairingExpired = Boolean(dev?.expires_at && new Date(dev.expires_at).getTime() <= Date.now());
+    let activeKey = pairingExpired ? '' : (dev?.api_key || '');
+    const expiresAt = pairingExpired ? null : (dev?.expires_at ? new Date(dev.expires_at).toISOString() : null);
+    const hoursRemaining = expiresAt
+      ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / (60 * 60 * 1000)))
+      : 0;
 
-    if (!activeKey && sessionCode === 'DEFAULT-POS-TERMINAL') {
+    if (!activeKey && !pairingExpired && sessionCode === 'DEFAULT-POS-TERMINAL') {
       activeKey = cfg?.scanner_api_key || 'BV-SCAN-DEFAULT';
     }
 
@@ -3912,7 +4093,8 @@ router.get('/scanner/config', authenticateInventoryStaff, async (req, res) => {
       sessionCode,
       deviceName: dev?.device_name || 'Bhumivera POS Scanner',
       expiresAt,
-      daysRemaining,
+      hoursRemaining,
+      pairingExpired,
       scanEndpoint: '/api/inventory-software/scanner/scan',
       queueEndpoint: '/api/inventory-software/scanner/queue',
       queue: queueRows,

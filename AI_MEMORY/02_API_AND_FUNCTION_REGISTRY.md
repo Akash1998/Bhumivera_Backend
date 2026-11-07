@@ -1,8 +1,8 @@
 # ⚙️ Bhumivera Backend — API & Function Registry Manifest
 
-> **Master Backend Inventory**: 41 Route Files | 458 REST API Endpoints | 38 Database Models | 352 Model Functions | 80 Migrations
+> **Master Backend Inventory**: 41 Route Files | 469 REST API Endpoints | 38 Database Models | 357 Model Functions | 80 Migrations
 > **Framework**: Express 5.3 + Node.js 22.x | MySQL 8.0 (`mysql2/promise`) | Redis 7.x  
-> **Last Verified Audit**: 2026-11-06 (Migration v80)
+> **Last Verified Audit**: 2026-11-07 (Migration v80)
 
 ---
 
@@ -28,7 +28,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 
 | # | Route File | Total Endpoints | Primary Responsibility | Key HTTP Methods & Paths |
 | :---: | :--- | :---: | :--- | :--- |
-| **1** | `inventorySoftwareRoutes.js` | **69** | Omnichannel Orders, Labels, RTO, Stock, POS, Scanner Bridge, FEFO, Wave Picklist, Manifest, Returns QC, Live Order Item Editor, Package Finder | `GET /bootstrap`, `GET /summary`, `GET /orders` (paginated), `GET /stock/forecast` (AI DOC velocity), `GET /orders/:id/fefo-picks`, `GET /orders/:id/manifest`, `PUT /orders/:id/items`, `GET /package/lookup`, `POST /fulfillment/wave-picklist`, `POST /fulfillment/manifest`, `POST /fulfillment/verify-pack`, `POST /returns/qc-grade`, `POST /pos/checkout` (batch locked) |
+| **1** | `inventorySoftwareRoutes.js` | **69** | Omnichannel Orders, Labels, RTO, Stock, POS, Scanner Bridge, FEFO, Wave Picklist, Manifest, persistent pack progress, Returns QC, Live Order Item Editor, Package Finder | `GET /bootstrap`, `GET /summary`, `GET /orders` (paginated), `GET /stock/forecast` (AI DOC velocity), `GET /orders/:id/fefo-picks`, `GET /orders/:id/manifest`, `PUT /orders/:id/items`, `GET /package/lookup`, `POST /fulfillment/wave-picklist`, `POST /fulfillment/manifest`, `POST /fulfillment/verify-pack`, `POST /returns/qc-grade`, `POST /pos/checkout` (batch locked); scanner keys expire after 12 hours |
 | **2** | `supportRoutes.js` | **50** | L1–L3 Customer Support Desk, Live Chat, Ticket Resolution, Courtesy Coupons | `GET /tickets`, `POST /chat/reply`, `POST /coupons/issue-courtesy`, `POST /rescue-password` |
 | **3** | `authRoutes.js` | **32** | User Authentication, OTP Verification, Password Reset, JWT Token Refresh | `POST /register`, `POST /login`, `POST /verify-otp`, `POST /refresh-token`, `POST /logout` |
 | **4** | `userRoutes.js` | **22** | Customer Profiles, Address Defaults, User Audit, Profile Preferences | `GET /profile`, `PUT /profile`, `GET /orders`, `PUT /change-password`, `DELETE /account` |
