@@ -1555,24 +1555,32 @@ router.post('/fulfillment/manifest', authenticateInventoryStaff, requirePermissi
   }
 });
 
-router.post('/fulfillment/verify-pack', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, res) => {
   try {
-    const { orderId, barcode } = req.body || {};
-    if (!orderId || !barcode) {
-      return res.status(400).json({ success: false, message: 'orderId and barcode are required.' });
+    const { orderId, barcode, qrCode, code } = req.body || {};
+    const inputCode = barcode || qrCode || code;
+    if (!orderId || !inputCode) {
+      return res.status(400).json({ success: false, message: 'orderId and barcode/qrCode are required.' });
     }
-    const cleanBarcode = String(barcode).trim();
+    const cleanOrderId = Number(String(orderId).replace(/\D/g, ''));
+    let cleanBarcode = String(inputCode).trim();
+    if (cleanBarcode.includes("code=")) {
+      const m = cleanBarcode.match(/code=([^&]+)/);
+      if (m && m[1]) cleanBarcode = decodeURIComponent(m[1]);
+    }
+
     const resolved = await resolveProductByQrOrCode(pool, cleanBarcode);
     if (!resolved) {
-      return res.status(404).json({ success: false, message: `Barcode "${cleanBarcode}" did not match any catalog SKU or EAN-13.` });
+      return res.status(404).json({ success: false, message: `Scanned code "${cleanBarcode}" did not match any catalog SKU or batch.` });
     }
-    const [orderItems] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [Number(orderId)]);
-    const matchingItem = orderItems.find(it => it.product_id === resolved.productId || it.name.toLowerCase().includes(resolved.sku.toLowerCase()));
+    const [orderItems] = await pool.query('SELECT * FROM order_items WHERE order_id = ?', [cleanOrderId]);
+    const matchingItem = orderItems.find(it => it.product_id === resolved.productId || it.name.toLowerCase().includes(resolved.sku.toLowerCase()) || (resolved.sku && it.sku && it.sku.toLowerCase() === resolved.sku.toLowerCase()));
     if (!matchingItem) {
       return res.status(400).json({
         success: false,
         verified: false,
-        message: `SKU "${resolved.sku}" (${resolved.name}) is NOT in Order #${orderId}! Dispatch rejected.`,
+        code: 'ITEM_NOT_IN_ORDER',
+        message: `⛔ REJECTED: "${resolved.name}" is NOT in Order #${cleanOrderId}! Dispatch blocked.`,
       });
     }
 
@@ -1584,8 +1592,258 @@ router.post('/fulfillment/verify-pack', authenticateInventoryStaff, requirePermi
         sku: resolved.sku,
         name: resolved.name,
         barcode: resolved.barcode,
+        batchNo: resolved.batchNo,
       },
-      message: `Verified: ${resolved.name} matches Order #${orderId}.`,
+      message: `✔ Verified: "${resolved.name}" matches Order #${cleanOrderId}.`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/inventory-software/orders/:id/manifest - Guided Packing Manifest
+router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const rawId = req.params.id;
+    const orderId = Number(String(rawId).replace(/\D/g, ''));
+    if (!orderId) return res.status(400).json({ success: false, message: 'Invalid Order ID format.' });
+
+    const [[order]] = await pool.query(
+      `SELECT o.*, 
+              COALESCE(o.customer_name, u.name, 'Valued Patron') AS resolved_customer_name,
+              COALESCE(o.customer_phone, u.phone, '') AS resolved_customer_phone,
+              COALESCE(o.customer_email, u.email, '') AS resolved_customer_email,
+              o.shipping_address, o.shipping_city, o.shipping_state, o.shipping_pincode,
+              o.status, o.total_amount, o.tracking_number, o.created_at
+       FROM orders o
+       LEFT JOIN users u ON o.user_id = u.id
+       WHERE o.id = ?`,
+      [orderId]
+    );
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: `Order #${orderId} was not found.` });
+    }
+
+    const [items] = await pool.query(
+      `SELECT oi.id AS order_item_id, oi.product_id, oi.name, oi.price, oi.quantity,
+              COALESCE(m.sku, p.sku, CONCAT('SKU-', oi.product_id)) AS sku,
+              m.barcode, m.bin_code, m.batch_no, m.gst_hsn_code, m.gst_rate
+       FROM order_items oi
+       LEFT JOIN products p ON oi.product_id = p.id
+       LEFT JOIN inventory_product_meta m ON oi.product_id = m.product_id
+       WHERE oi.order_id = ?
+       ORDER BY oi.id ASC`,
+      [orderId]
+    );
+
+    res.json({
+      success: true,
+      order: {
+        id: order.id,
+        orderNumber: order.order_number || `#ORD-${order.id}`,
+        customerName: order.resolved_customer_name,
+        customerPhone: order.resolved_customer_phone,
+        customerEmail: order.resolved_customer_email,
+        shippingCity: order.shipping_city || 'Asansol',
+        shippingState: order.shipping_state || 'West Bengal',
+        shippingPincode: order.shipping_pincode || '',
+        shippingAddress: order.shipping_address || '',
+        status: order.status,
+        totalAmount: Number(order.total_amount) || 0,
+        trackingNumber: order.tracking_number || '',
+        carrier: order.carrier || '',
+        createdAt: order.created_at,
+        totalItemsCount: items.reduce((acc, it) => acc + (Number(it.quantity) || 1), 0),
+        items: items.map(it => ({
+          orderItemId: it.order_item_id,
+          productId: it.product_id,
+          name: it.name,
+          sku: it.sku,
+          barcode: it.barcode || it.sku,
+          price: Number(it.price) || 0,
+          quantity: Number(it.quantity) || 1,
+          binCode: it.bin_code || 'ASN-SHOP-R1-B01',
+          batchNo: it.batch_no || '',
+          gstHsnCode: it.gst_hsn_code || '30049011',
+          gstRate: Number(it.gst_rate) || 5,
+        })),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// PUT /api/inventory-software/orders/:id/items - Admin Live Order Item Modifier
+router.put('/orders/:id/items', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const rawId = req.params.id;
+    const orderId = Number(String(rawId).replace(/\D/g, ''));
+    const { items = [] } = req.body || {};
+
+    if (!orderId) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: 'Invalid Order ID format.' });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: 'At least one order line item is required.' });
+    }
+
+    const [[order]] = await conn.query('SELECT id, status, total_amount FROM orders WHERE id = ? FOR UPDATE', [orderId]);
+    if (!order) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, message: `Order #${orderId} does not exist.` });
+    }
+    if (order.status === 'cancelled' || order.status === 'delivered') {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: `Cannot modify items for an order with status "${order.status}".` });
+    }
+
+    await conn.query('DELETE FROM order_items WHERE order_id = ?', [orderId]);
+
+    let newTotal = 0;
+    for (const item of items) {
+      const pid = Number(item.productId);
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      const prc = Number(item.price) || 0;
+      const nm = String(item.name || 'Bhumivera Product').trim();
+      newTotal += prc * qty;
+
+      await conn.query(
+        `INSERT INTO order_items (order_id, product_id, name, price, quantity)
+         VALUES (?, ?, ?, ?, ?)`,
+        [orderId, pid, nm, prc, qty]
+      );
+    }
+
+    await conn.query('UPDATE orders SET total_amount = ? WHERE id = ?', [newTotal, orderId]);
+    await conn.commit();
+
+    await appendInventoryAuditLog(pool, {
+      actorUsername: req.invUser.username,
+      actorRole: req.invUser.role,
+      actionCode: 'ADMIN_ORDER_ITEMS_MODIFIED',
+      summary: `Admin modified line items for Order #${orderId} (New Total: ₹${newTotal}, Items: ${items.length}).`,
+    });
+
+    res.json({
+      success: true,
+      orderId,
+      newTotal,
+      message: `Order #${orderId} items updated successfully. Total recalculated to ₹${newTotal}.`,
+    });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ success: false, message: err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// GET /api/inventory-software/package/lookup - Package Finder & Lost Parcel Detective
+router.get('/package/lookup', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const rawCode = String(req.query.code || req.query.qrCode || '').trim();
+    if (!rawCode) {
+      return res.status(400).json({ success: false, message: 'Package barcode or Order ID is required.' });
+    }
+
+    let searchCode = rawCode;
+    try { searchCode = decodeURIComponent(searchCode); } catch (_) {}
+    if (searchCode.includes("code=")) {
+      const m = searchCode.match(/code=([^&]+)/);
+      if (m && m[1]) searchCode = decodeURIComponent(m[1]);
+    }
+
+    const numericCandidate = Number(searchCode.replace(/\D/g, ''));
+
+    let order = null;
+    if (numericCandidate > 0) {
+      const [[foundOrder]] = await pool.query(
+        `SELECT o.*, 
+                COALESCE(o.customer_name, u.name, 'Valued Patron') AS resolved_customer_name,
+                COALESCE(o.customer_phone, u.phone, '') AS resolved_customer_phone,
+                COALESCE(o.customer_email, u.email, '') AS resolved_customer_email,
+                o.shipping_address, o.shipping_city, o.shipping_state, o.shipping_pincode
+         FROM orders o
+         LEFT JOIN users u ON o.user_id = u.id
+         WHERE o.id = ? OR o.order_number = ? OR o.tracking_number = ?
+         LIMIT 1`,
+        [numericCandidate, searchCode, searchCode]
+      );
+      order = foundOrder;
+    }
+
+    if (!order) {
+      const [[foundByText]] = await pool.query(
+        `SELECT o.*, 
+                COALESCE(o.customer_name, u.name, 'Valued Patron') AS resolved_customer_name,
+                COALESCE(o.customer_phone, u.phone, '') AS resolved_customer_phone,
+                COALESCE(o.customer_email, u.email, '') AS resolved_customer_email,
+                o.shipping_address, o.shipping_city, o.shipping_state, o.shipping_pincode
+         FROM orders o
+         LEFT JOIN users u ON o.user_id = u.id
+         WHERE o.order_number = ? OR o.tracking_number = ?
+         LIMIT 1`,
+        [searchCode, searchCode]
+      );
+      order = foundByText;
+    }
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        code: 'PACKAGE_NOT_FOUND',
+        message: `No active warehouse package found matching code "${searchCode}".`,
+      });
+    }
+
+    const [items] = await pool.query(
+      `SELECT oi.id AS order_item_id, oi.product_id, oi.name, oi.price, oi.quantity,
+              COALESCE(m.sku, p.sku, CONCAT('SKU-', oi.product_id)) AS sku,
+              m.barcode, m.bin_code, m.batch_no, m.gst_hsn_code
+       FROM order_items oi
+       LEFT JOIN products p ON oi.product_id = p.id
+       LEFT JOIN inventory_product_meta m ON oi.product_id = m.product_id
+       WHERE oi.order_id = ?
+       ORDER BY oi.id ASC`,
+      [order.id]
+    );
+
+    res.json({
+      success: true,
+      package: {
+        orderId: order.id,
+        orderNumber: order.order_number || `#ORD-${order.id}`,
+        packageCode: `PKG:${order.id}`,
+        customerName: order.resolved_customer_name,
+        customerPhone: order.resolved_customer_phone,
+        customerEmail: order.resolved_customer_email,
+        shippingAddress: order.shipping_address,
+        shippingCity: order.shipping_city || 'Asansol',
+        shippingState: order.shipping_state || 'West Bengal',
+        shippingPincode: order.shipping_pincode || '713304',
+        status: order.status,
+        totalAmount: Number(order.total_amount) || 0,
+        trackingNumber: order.tracking_number || 'Unassigned',
+        courier: order.carrier || 'Bhumivera Express Dispatch',
+        createdAt: order.created_at,
+        itemsCount: items.reduce((acc, it) => acc + (Number(it.quantity) || 1), 0),
+        items: items.map(it => ({
+          name: it.name,
+          sku: it.sku,
+          quantity: Number(it.quantity) || 1,
+          price: Number(it.price) || 0,
+          binCode: it.bin_code || 'ASN-SHOP-R1-B01',
+          batchNo: it.batch_no || 'BV-BATCH-2026',
+          gstHsnCode: it.gst_hsn_code || '30049011',
+        })),
+      },
+      message: `Package identified for ${order.resolved_customer_name} (Order #${order.id}).`,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

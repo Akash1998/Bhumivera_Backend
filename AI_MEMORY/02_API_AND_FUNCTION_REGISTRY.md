@@ -15,7 +15,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 | BACKEND METRIC                   | CURRENT VERIFIED COUNT    |
 +----------------------------------+---------------------------+
 | Total Route Files                | 41 files                  |
-| Total Registered Endpoints       | 466 endpoints             |
+| Total Registered Endpoints       | 469 endpoints             |
 | Total Model Files                | 38 files                  |
 | Total Model Exported Entities    | 357 functions/constants   |
 | Database Migrations Defined      | 80 migrations (v1 - v80)  |
@@ -28,7 +28,7 @@ The `server.js` CORS configuration allows both `Idempotency-Key` for POS checkou
 
 | # | Route File | Total Endpoints | Primary Responsibility | Key HTTP Methods & Paths |
 | :---: | :--- | :---: | :--- | :--- |
-| **1** | `inventorySoftwareRoutes.js` | **66** | Omnichannel Orders, Labels, RTO, Stock, POS, Scanner Bridge, FEFO, Wave Picklist, Manifest, Returns QC | `GET /bootstrap`, `GET /summary`, `GET /orders` (paginated), `GET /stock/forecast` (AI DOC velocity), `GET /orders/:id/fefo-picks`, `POST /fulfillment/wave-picklist`, `POST /fulfillment/manifest`, `POST /fulfillment/verify-pack`, `POST /returns/qc-grade`, `POST /pos/checkout` (batch locked) |
+| **1** | `inventorySoftwareRoutes.js` | **69** | Omnichannel Orders, Labels, RTO, Stock, POS, Scanner Bridge, FEFO, Wave Picklist, Manifest, Returns QC, Live Order Item Editor, Package Finder | `GET /bootstrap`, `GET /summary`, `GET /orders` (paginated), `GET /stock/forecast` (AI DOC velocity), `GET /orders/:id/fefo-picks`, `GET /orders/:id/manifest`, `PUT /orders/:id/items`, `GET /package/lookup`, `POST /fulfillment/wave-picklist`, `POST /fulfillment/manifest`, `POST /fulfillment/verify-pack`, `POST /returns/qc-grade`, `POST /pos/checkout` (batch locked) |
 | **2** | `supportRoutes.js` | **50** | L1–L3 Customer Support Desk, Live Chat, Ticket Resolution, Courtesy Coupons | `GET /tickets`, `POST /chat/reply`, `POST /coupons/issue-courtesy`, `POST /rescue-password` |
 | **3** | `authRoutes.js` | **32** | User Authentication, OTP Verification, Password Reset, JWT Token Refresh | `POST /register`, `POST /login`, `POST /verify-otp`, `POST /refresh-token`, `POST /logout` |
 | **4** | `userRoutes.js` | **22** | Customer Profiles, Address Defaults, User Audit, Profile Preferences | `GET /profile`, `PUT /profile`, `GET /orders`, `PUT /change-password`, `DELETE /account` |
