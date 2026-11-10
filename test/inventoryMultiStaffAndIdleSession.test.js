@@ -25,6 +25,8 @@ function createMockRouter() {
 }
 
 let sqlQueryCount = 0;
+let failPwaWrite = false;
+const transactionEvents = [];
 const scannerKeyAkash = 'BV-SCAN-AKASH-KEY';
 const scannerKeyPriya = 'BV-SCAN-PRIYA-KEY';
 const hashAkash = crypto.createHash('sha256').update(scannerKeyAkash).digest('hex');
@@ -53,6 +55,9 @@ const fakePool = {
       }
       return [[]];
     }
+    if (/FROM inventory_staff_accounts WHERE id/.test(sql)) {
+      return [[{ id: 5, account_code: 'BV-IAM-005', username: 'priya', full_name: 'Priya C', role: 'cashier', status: 'active', password_hash: 'hashed:Priya@123' }]];
+    }
     if (/FROM inventory_scanner_queue/.test(sql)) {
       return [[{ id: 1, session_code: params[0], sku: 'BV-LUX-CFW-01', product_name: 'Charcoal Face Wash', quantity: 2, unit_price: 299, status: 'queued' }]];
     }
@@ -62,11 +67,18 @@ const fakePool = {
     if (/FROM inventory_pos_saved_drafts/.test(sql)) {
       return [[]];
     }
+    if (/FROM order_items oi/.test(sql)) {
+      return [[{ order_item_id: 1, product_id: 10, quantity: 2, sku: 'SKU-1', barcode: 'BAR-1' }]];
+    }
+    if (failPwaWrite && /INSERT INTO inventory_order_pack_progress/.test(sql)) {
+      throw new Error('forced PWA transaction failure');
+    }
     if (/INSERT INTO inventory_pos_saved_drafts/.test(sql)) {
       return [{ affectedRows: 1 }];
     }
     if (/FROM orders/.test(sql)) {
-      return [[{ id: 1234, order_number: '1234', status: 'pending', total: 598, address_snapshot: JSON.stringify({ full_name: 'Patron', phone: '9832000000' }) }]];
+      const id = Number(params[0]) || 1234;
+      return [[{ id, order_number: String(id), status: 'pending', total: 598, address_snapshot: JSON.stringify({ full_name: 'Patron', phone: '9832000000' }) }]];
     }
     if (/UPDATE orders SET status = "packed"/.test(sql)) {
       return [{ affectedRows: 1 }];
@@ -81,9 +93,9 @@ const fakePool = {
   },
   async getConnection() {
     return {
-      async beginTransaction() {},
-      async commit() {},
-      async rollback() {},
+      async beginTransaction() { transactionEvents.push('begin'); },
+      async commit() { transactionEvents.push('commit'); },
+      async rollback() { transactionEvents.push('rollback'); },
       release() {},
       query: (sql, params) => fakePool.query(sql, params),
     };
@@ -185,25 +197,28 @@ test('Staff Mobile Login with Username & Password without pairing QR', async () 
 });
 
 test('24x7 Workroom Presence ("Go On Work" radar) operates with 0 MySQL queries', async () => {
-  // Warm in-memory session cache
-  await invokeRoute("POST", "/scanner/connect", {
-    headers: { "x-scanner-api-key": scannerKeyAkash },
-    body: { sessionCode: "STAFF-AKASH", operatorUsername: "akash", operatorName: "Akash" },
+  const akashLogin = await invokeRoute('POST', '/scanner/auth/login', {
+    body: { username: 'akash', password: 'Admin@123', deviceName: 'Akash PWA' },
   });
-  await invokeRoute("POST", "/scanner/connect", {
-    headers: { "x-scanner-api-key": scannerKeyPriya },
-    body: { sessionCode: "STAFF-PRIYA", operatorUsername: "priya", operatorName: "Priya C" },
+  const priyaLogin = await invokeRoute('POST', '/scanner/auth/login', {
+    body: { username: 'priya', password: 'Priya@123', deviceName: 'Priya PWA' },
   });
+  assert.equal(akashLogin.status, 200);
+  assert.equal(priyaLogin.status, 200);
+  const akashHeaders = { authorization: `Bearer ${akashLogin.body.token}` };
+  const priyaHeaders = { authorization: `Bearer ${priyaLogin.body.token}` };
 
   const beforeSql = sqlQueryCount;
 
   // 1. Akash toggles "Go On Work" 
   const akashWork = await invokeRoute('POST', '/workroom/toggle-work', {
-    headers: { 'x-scanner-api-key': scannerKeyAkash },
+    headers: akashHeaders,
     body: {
+      sessionCode: akashLogin.body.sessionCode,
       onWork: true,
       mode: 'PACKING',
       activeOrder: '1234',
+      savedBulkOrders: [{ orderId: '1234', orderNumber: '1234' }],
       operatorUsername: 'akash',
       operatorName: 'Akash',
     },
@@ -214,8 +229,9 @@ test('24x7 Workroom Presence ("Go On Work" radar) operates with 0 MySQL queries'
 
   // 2. Priya toggles "Go On Work"
   const priyaWork = await invokeRoute('POST', '/workroom/toggle-work', {
-    headers: { 'x-scanner-api-key': scannerKeyPriya },
+    headers: priyaHeaders,
     body: {
+      sessionCode: priyaLogin.body.sessionCode,
       onWork: true,
       mode: 'BILLING',
       operatorUsername: 'priya',
@@ -226,16 +242,93 @@ test('24x7 Workroom Presence ("Go On Work" radar) operates with 0 MySQL queries'
 
   // 3. Query workroom presence -> reads directly from Node.js 24x7 memory!
   const presenceRes = await invokeRoute('GET', '/workroom/presence', {
-    headers: { 'x-scanner-api-key': scannerKeyAkash },
+    headers: akashHeaders,
   });
   assert.equal(presenceRes.status, 200);
   assert.equal(presenceRes.body.count, 2);
   const workers = presenceRes.body.activeWorkers;
   assert.ok(workers.some(w => w.username === 'akash' && w.mode === 'PACKING'));
+  assert.deepEqual(workers.find(w => w.username === 'akash').savedBulkOrders, [{ orderId: '1234', orderNumber: '1234' }]);
   assert.ok(workers.some(w => w.username === 'priya' && w.mode === 'BILLING'));
 
+  const heartbeatRes = await invokeRoute('POST', '/workroom/heartbeat', {
+    headers: akashHeaders,
+    body: {
+      sessionCode: akashLogin.body.sessionCode,
+      operatorUsername: 'akash',
+      mode: 'PACKING',
+      scannedUnits: 1,
+      expectedUnits: 2,
+      savedBulkOrders: [{ orderId: '1234', orderNumber: '1234' }, { orderId: '5678', orderNumber: '5678' }],
+    },
+  });
+  assert.equal(heartbeatRes.status, 200);
+  assert.equal(heartbeatRes.body.worker.scannedUnits, 1);
+  assert.equal(heartbeatRes.body.worker.expectedUnits, 2);
+
+  const allStaffRes = await invokeRoute('GET', '/workroom/presence', {
+    headers: akashHeaders,
+  });
+  assert.ok(allStaffRes.body.workers.some(w => w.username === 'akash' && w.savedBulkOrders.length === 2));
   // ZERO MySQL queries executed for workroom presence!
   assert.equal(sqlQueryCount - beforeSql, 0);
+});
+
+test('PWA fulfillment rollback preserves the packing lock, then successful commit completes it', async () => {
+  const loginRes = await invokeRoute('POST', '/scanner/auth/login', {
+    body: { username: 'priya', password: 'Priya@123', deviceName: 'PWA Test Device' },
+  });
+  assert.equal(loginRes.status, 200);
+  const token = loginRes.body.token;
+  const headers = { authorization: `Bearer ${token}` };
+  const commonBody = {
+    sessionCode: loginRes.body.sessionCode,
+    operatorUsername: 'priya',
+    operatorName: 'Priya C',
+  };
+
+  const manifestRes = await invokeRoute('GET', '/orders/:id/manifest', {
+    path: '/orders/9876/manifest',
+    params: { id: '9876' },
+    headers,
+    query: commonBody,
+  });
+  assert.equal(manifestRes.status, 200);
+
+  const packedOrder = {
+    orderId: 9876,
+    verifiedItems: [{
+      orderItemId: 1,
+      quantity: 2,
+      verifiedCount: 2,
+      scannedCodes: ['SKU-1', 'BAR-1'],
+    }],
+  };
+  transactionEvents.length = 0;
+  failPwaWrite = true;
+  const failedUpload = await invokeRoute('POST', '/fulfillment/pwa-batch', {
+    path: '/fulfillment/pwa-batch',
+    headers,
+    body: { ...commonBody, packedOrders: [packedOrder] },
+  });
+  failPwaWrite = false;
+  assert.equal(failedUpload.status, 500);
+  assert.ok(transactionEvents.includes('rollback'));
+  const lockAfterRollback = await invokeRoute('GET', '/orders/locks', { headers });
+  assert.ok(lockAfterRollback.body.locks.some(lock => lock.orderKey === '9876' && lock.status === 'LOCKED'));
+
+  transactionEvents.length = 0;
+  const successfulUpload = await invokeRoute('POST', '/fulfillment/pwa-batch', {
+    path: '/fulfillment/pwa-batch',
+    headers,
+    body: { ...commonBody, packedOrders: [packedOrder] },
+  });
+  assert.equal(successfulUpload.status, 200);
+  assert.equal(successfulUpload.body.success, true);
+  assert.ok(transactionEvents.indexOf('commit') >= 0);
+  assert.ok(transactionEvents.indexOf('commit') < transactionEvents.length);
+  const lockAfterCommit = await invokeRoute('GET', '/orders/locks', { headers });
+  assert.ok(lockAfterCommit.body.locks.some(lock => lock.orderKey === '9876' && lock.status === 'COMPLETED'));
 });
 
 test('Multi-staff Order ID mutex lock blocks Priya C when Akash is already billing Order #1234', async () => {

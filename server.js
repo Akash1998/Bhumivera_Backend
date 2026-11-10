@@ -358,6 +358,13 @@ if (!isVercelRuntime) app.use(publicSwrCache);
 app.use(async (req, res, next) => {
   if (req.path.startsWith("/api")) countRequest(req);
   if (databaseReady) return next();
+  const memoryOnlyWorkroomRoute =
+    (req.method === "GET" && req.path === "/api/inventory-software/workroom/presence") ||
+    (req.method === "POST" && [
+      "/api/inventory-software/workroom/heartbeat",
+      "/api/inventory-software/workroom/toggle-work",
+    ].includes(req.path));
+  if (memoryOnlyWorkroomRoute) return next();
   // Uptime probes must never wake the sleeping database.
   if (req.method === "GET" && req.path === "/") return next();
   // Preflights, bot scans and non-API paths never need the database, so they must not wake it.

@@ -448,6 +448,7 @@ async function initInventorySoftwareTables(db = pool) {
       customer_id INT DEFAULT NULL,
       customer_name VARCHAR(180) NOT NULL,
       customer_phone VARCHAR(40) DEFAULT NULL,
+      customer_address TEXT DEFAULT NULL,
       customer_gstin VARCHAR(30) DEFAULT NULL,
       items_json JSON NOT NULL,
       extra_charges_json JSON DEFAULT NULL,
@@ -470,6 +471,7 @@ async function initInventorySoftwareTables(db = pool) {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  await ensureColumnExists(db, 'inventory_pos_invoices', 'customer_address', 'TEXT DEFAULT NULL');
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS inventory_khata_transactions (

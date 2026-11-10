@@ -267,22 +267,6 @@ function markOrderLockCompleted(orderId, operatorUsername, operatorName, session
   return existing;
 }
 
-const STALE_QUEUE_HOURS = 24;
-const STALE_DRAFT_DAYS = 7;
-let lastPosPruneAt = 0;
-async function pruneStalePosData() {
-  if (Date.now() - lastPosPruneAt < 10 * 60 * 1000) return;
-  lastPosPruneAt = Date.now();
-  await pool
-    .query("DELETE FROM inventory_scanner_queue WHERE status = 'queued' AND created_at < (NOW() - INTERVAL ? HOUR)", [
-      STALE_QUEUE_HOURS,
-    ])
-    .catch(() => {});
-  await pool
-    .query('DELETE FROM inventory_pos_drafts WHERE updated_at < (NOW() - INTERVAL ? DAY)', [STALE_DRAFT_DAYS])
-    .catch(() => {});
-}
-
 function parseJsonSafe(val, fallback = null) {
   if (!val) return fallback;
   if (typeof val === 'object') return val;
@@ -541,6 +525,35 @@ async function authenticateScannerOrStaff(req, res, next) {
 function normalizePosSessionCode(value) {
   const sessionCode = String(value || '').trim();
   return /^[A-Za-z0-9_-]{1,64}$/.test(sessionCode) ? sessionCode : null;
+}
+
+function authenticateWorkroomMemory(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (!token) {
+    return res.status(401).json({ success: false, code: 'AUTH_TOKEN_MISSING', message: 'Sign in to the scanner to continue.' });
+  }
+
+  try {
+    const payload = jwt.verify(token, secret());
+    if (payload.scope !== 'inventory-software' || !payload.username || !payload.id) {
+      return res.status(401).json({ success: false, code: 'AUTH_TOKEN_INVALID', message: 'Sign in to the scanner to continue.' });
+    }
+
+    req.invUser = {
+      id: payload.id,
+      username: String(payload.username),
+      fullName: String(payload.fullName || payload.username),
+      role: String(payload.role || 'cashier'),
+      assignedHub: String(payload.assignedHub || ''),
+      permissions: {},
+      fullAllAccess: false,
+      scannerSessionCode: `STAFF-${String(payload.username).toUpperCase().replace(/[^A-Z0-9]/g, '-')}`,
+    };
+    return next();
+  } catch {
+    return res.status(401).json({ success: false, code: 'AUTH_TOKEN_INVALID', message: 'Sign in to the scanner to continue.' });
+  }
 }
 
 function requireIamAdmin(req, res, next) {
@@ -1130,22 +1143,15 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       // Today's SQL backup is guaranteed by the first load of each window; no need to re-check on every load.
       void ensureDailyAutoBackup(pool, req.invUser.username || 'auto-daily').catch(() => {});
     }
-    void pruneStalePosData();
-    const scannerSessionCode = normalizePosSessionCode(req.query.sessionCode) || 'DEFAULT-POS-TERMINAL';
-
     const [
       [itemRows],
-      [binRows],
       [customerRows],
       [saleRows],
-      [supRows],
-      [grnRows],
       [movementRows],
       [auditRows],
       [configRows],
       [batchRows],
       [onlineOrderRows],
-      [scannerQueueRows],
       [dailyBackupRows],
       [shippingZoneRows],
     ] = await Promise.all([
@@ -1163,18 +1169,8 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         LEFT JOIN products p ON m.product_id = p.id
         ORDER BY COALESCE(p.id, m.id) ASC
       `),
-      pool.query(`
-        SELECT b.id, b.bin_code, b.hub_name, b.zone_name, b.rack_no, b.shelf_level,
-               b.bin_label, b.temperature_target, b.capacity_units, b.keeper_name,
-               b.status, b.notes, b.warehouse_id, b.updated_at,
-               COALESCE((SELECT SUM(m.physical_stock) FROM inventory_product_meta m WHERE m.bin_code = b.bin_code), 0) AS occupied_units
-        FROM inventory_storage_bins b
-        ORDER BY b.zone_name ASC, b.rack_no ASC
-      `),
       pool.query('SELECT * FROM inventory_customers ORDER BY name ASC'),
       pool.query('SELECT * FROM inventory_pos_invoices ORDER BY created_at DESC LIMIT 300'),
-      pool.query('SELECT * FROM inventory_suppliers ORDER BY name ASC'),
-      pool.query('SELECT * FROM inventory_grn_entries ORDER BY created_at DESC LIMIT 150'),
       pool.query('SELECT * FROM inventory_stock_movements ORDER BY created_at DESC LIMIT 400'),
       pool.query('SELECT * FROM inventory_audit_logs ORDER BY created_at DESC LIMIT 400'),
       pool.query('SELECT * FROM inventory_store_config WHERE id = 1'),
@@ -1200,12 +1196,6 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         ORDER BY o.created_at DESC
         LIMIT 250
       `),
-      pool.query(`
-        SELECT * FROM inventory_scanner_queue
-        WHERE session_code = ? AND status = 'queued'
-        ORDER BY created_at ASC
-        LIMIT 100
-      `, [scannerSessionCode]).catch(() => [[]]),
       pool.query(`
         SELECT id, backup_code, backup_date, trigger_type, tables_count, rows_count,
                size_bytes, checksum_sha512, created_by, created_at
@@ -1330,6 +1320,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         id: s.customer_id,
         name: s.customer_name,
         phone: s.customer_phone || '-',
+        address: s.customer_address || '',
         gstin: s.customer_gstin || '',
       },
       items: parseJsonSafe(s.items_json, []) || [],
@@ -1355,6 +1346,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       id: customer.id,
       name: customer.name,
       phone: customer.phone,
+      address: customer.location || '',
       gstin: customer.gstin || '',
       wallet: Number(customer.wallet_balance) || 0,
       creditLimit: Number(customer.credit_limit) || 0,
@@ -1516,11 +1508,8 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       syncedAt: new Date().toISOString(),
       viewer: req.invUser,
       items,
-      bins: binRows,
       customers,
       sales,
-      suppliers: supRows,
-      grnEntries: grnRows,
       movements: movementRows,
       logs: auditRows.map(a => ({
         id: a.id,
@@ -1534,8 +1523,6 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       batches: batchRows,
       onlineOrders,
       orderLocks: Array.from(activeOrderLocksMemory.values()).filter(l => !l.expiresAt || l.expiresAt > Date.now()),
-      savedDrafts: Array.from(savedPosDraftsMemory.values()).filter(d => d.status !== 'completed'),
-      scannerQueue: scannerQueueRows,
       dailyBackups: dailyBackupRows,
       shippingZones: shippingZoneRows,
       carriers,
@@ -2730,16 +2717,20 @@ router.post('/scanner/auth/login', async (req, res) => {
     const sessionCode = `STAFF-${sessionSlug}`;
 
     // Register in 24x7 workroom memory (0 SQL queries on subsequent activity)
+    const previousWorker = activeStaffWorkroom.get(norm.username.toLowerCase());
     activeStaffWorkroom.set(norm.username.toLowerCase(), {
+      ...previousWorker,
       username: norm.username,
       fullName: norm.fullName,
       role: norm.role,
-      onWork: true,
+      onWork: false,
       mode: 'IDLE',
       activeOrder: '',
       deviceName: String(deviceName).slice(0, 80),
       sessionCode,
       lastSeenAt: Date.now(),
+      scannedUnits: 0,
+      expectedUnits: 0,
     });
 
     touchScannerSessionActivity(sessionCode, {
@@ -2765,7 +2756,7 @@ router.post('/scanner/auth/login', async (req, res) => {
           can_bill: Boolean(norm.permissions?.can_use_pos_billing || norm.role === 'admin' || norm.fullAllAccess),
         },
       },
-      message: `Welcome back, ${norm.fullName}! You are connected to warehouse hub.`,
+      message: `Welcome back, ${norm.fullName}! Tap Go to Work when you are ready to start.`,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -2777,7 +2768,7 @@ router.post('/scanner/auth/login', async (req, res) => {
  * Toggles staff "Go On Work" status and updates current activity mode (PACKING / BILLING / IDLE).
  * Tracked 100% in 24x7 Node.js memory -> ZERO SQL QUERIES.
  */
-router.post('/workroom/toggle-work', authenticateScannerOrStaff, async (req, res) => {
+router.post('/workroom/toggle-work', authenticateWorkroomMemory, (req, res) => {
   const operator = resolveRequestOperator(req);
   const { onWork = true, mode = 'IDLE', activeOrder = '', deviceName = 'Mobile Scanner' } = req.body || {};
   const userKey = operator.username.toLowerCase();
@@ -2793,7 +2784,19 @@ router.post('/workroom/toggle-work', authenticateScannerOrStaff, async (req, res
   current.mode = mode;
   current.activeOrder = String(activeOrder || '');
   current.deviceName = deviceName;
+  current.savedBulkOrders = Array.isArray(req.body?.savedBulkOrders)
+    ? req.body.savedBulkOrders.slice(0, 100).map(order => ({
+      orderId: String(order?.orderId || '').slice(0, 80),
+      orderNumber: String(order?.orderNumber || order?.orderId || '').slice(0, 80),
+    })).filter(order => order.orderId)
+    : current.savedBulkOrders || [];
   current.lastSeenAt = Date.now();
+  if (!current.onWork) {
+    current.mode = 'OFF_WORK';
+    current.activeOrder = '';
+    current.scannedUnits = 0;
+    current.expectedUnits = 0;
+  }
   activeStaffWorkroom.set(userKey, current);
 
   touchScannerSessionActivity(operator.sessionCode, {
@@ -2811,38 +2814,257 @@ router.post('/workroom/toggle-work', authenticateScannerOrStaff, async (req, res
   });
 });
 
+router.post('/workroom/heartbeat', authenticateWorkroomMemory, (req, res) => {
+  const operator = resolveRequestOperator(req);
+  const userKey = operator.username.toLowerCase();
+  const current = activeStaffWorkroom.get(userKey);
+  if (!current || !current.onWork) {
+    return res.status(409).json({
+      success: false,
+      code: 'WORKROOM_NOT_ACTIVE',
+      message: 'Tap Go to Work before sending scanner activity.',
+    });
+  }
+
+  const requestedMode = String(req.body?.mode || current.mode || 'IDLE').toUpperCase();
+  current.mode = ['IDLE', 'PACKING', 'BILLING'].includes(requestedMode) ? requestedMode : 'IDLE';
+  current.activeOrder = String(req.body?.activeOrder || '').trim().slice(0, 80);
+  current.deviceName = String(req.body?.deviceName || current.deviceName || 'Mobile Scanner').slice(0, 80);
+  current.scannedUnits = Math.max(0, Math.trunc(Number(req.body?.scannedUnits) || 0));
+  current.expectedUnits = Math.max(0, Math.trunc(Number(req.body?.expectedUnits) || 0));
+  current.savedBulkOrders = Array.isArray(req.body?.savedBulkOrders)
+    ? req.body.savedBulkOrders.slice(0, 100).map(order => ({
+      orderId: String(order?.orderId || '').slice(0, 80),
+      orderNumber: String(order?.orderNumber || order?.orderId || '').slice(0, 80),
+    })).filter(order => order.orderId)
+    : current.savedBulkOrders || [];
+  current.lastSeenAt = Date.now();
+  activeStaffWorkroom.set(userKey, current);
+
+  return res.json({
+    success: true,
+    worker: current,
+    serverTime: new Date(current.lastSeenAt).toISOString(),
+  });
+});
+
 /**
  * GET /api/inventory-software/workroom/presence
  * Returns real-time list of all staff members currently working in warehouse/shop.
  * Served directly from 24x7 Node.js RAM -> ZERO MySQL queries!
  */
-router.get('/workroom/presence', authenticateScannerOrStaff, async (_req, res) => {
+router.get('/workroom/presence', authenticateWorkroomMemory, (_req, res) => {
   const now = Date.now();
   const activeWorkers = [];
+  const workers = [];
   for (const [key, w] of activeStaffWorkroom.entries()) {
     // If no ping for 2 hours, auto-mark off work
     if (w.onWork && now - (w.lastSeenAt || 0) > 2 * 60 * 60 * 1000) {
       w.onWork = false;
     }
-    if (w.onWork) {
-      activeWorkers.push({
-        username: w.username,
-        fullName: w.fullName,
-        role: w.role,
-        mode: w.mode || 'IDLE',
-        activeOrder: w.activeOrder || '',
-        sessionCode: w.sessionCode || `STAFF-${w.username.toUpperCase()}`,
-        lastSeenAt: new Date(w.lastSeenAt || now).toISOString(),
-      });
-    }
+    const worker = {
+      username: w.username || key,
+      fullName: w.fullName || w.username || key,
+      role: w.role || 'cashier',
+      onWork: Boolean(w.onWork),
+      mode: w.mode || 'IDLE',
+      activeOrder: w.activeOrder || '',
+      sessionCode: w.sessionCode || `STAFF-${String(w.username || key).toUpperCase()}`,
+      scannedUnits: Number(w.scannedUnits) || 0,
+      expectedUnits: Number(w.expectedUnits) || 0,
+      packedOrders: Number(w.packedOrders) || 0,
+      packedItems: Number(w.packedItems) || 0,
+      savedBulkOrders: Array.isArray(w.savedBulkOrders) ? w.savedBulkOrders : [],
+      lastSeenAt: new Date(w.lastSeenAt || now).toISOString(),
+    };
+    workers.push(worker);
+    if (worker.onWork) activeWorkers.push(worker);
   }
 
   res.json({
     success: true,
     count: activeWorkers.length,
     activeWorkers,
+    workers,
     serverTime: new Date().toISOString(),
   });
+});
+
+router.post('/fulfillment/pwa-batch', authenticateScannerOrStaff, async (req, res) => {
+  const conn = await pool.getConnection();
+  let transactionStarted = false;
+  try {
+    const packedOrders = req.body?.packedOrders;
+    if (!Array.isArray(packedOrders) || packedOrders.length < 1 || packedOrders.length > 50) {
+      return res.status(400).json({ success: false, message: 'packedOrders must contain between 1 and 50 fully verified orders.' });
+    }
+
+    const operator = resolveRequestOperator(req);
+    await conn.beginTransaction();
+    transactionStarted = true;
+    const results = [];
+    let uploadedUnits = 0;
+
+    for (const packedOrder of packedOrders) {
+      const rawParam = String(packedOrder?.orderId || packedOrder?.orderNumber || '')
+        .trim()
+        .replace(/^ORD:/i, '')
+        .replace(/^#/i, '');
+      if (!rawParam || !Array.isArray(packedOrder?.verifiedItems) || packedOrder.verifiedItems.length === 0) {
+        throw Object.assign(new Error('Each packed order must include its order ID and scanned item details.'), { status: 400 });
+      }
+
+      const numericCandidate = Number(rawParam.replace(/\D/g, '')) || 0;
+      let orderRow = null;
+      if (numericCandidate > 0) {
+        const [[found]] = await conn.query(
+          'SELECT id, order_number, status FROM orders WHERE id = ? OR order_number = ? LIMIT 1 FOR UPDATE',
+          [numericCandidate, rawParam]
+        );
+        orderRow = found;
+      }
+      if (!orderRow) {
+        const [[found]] = await conn.query(
+          'SELECT id, order_number, status FROM orders WHERE order_number = ? LIMIT 1 FOR UPDATE',
+          [rawParam]
+        );
+        orderRow = found;
+      }
+      if (!orderRow) {
+        throw Object.assign(new Error(`Order "${rawParam}" was not found. No packed orders were uploaded.`), { status: 404 });
+      }
+
+      const [orderItems] = await conn.query(
+        `SELECT oi.id AS order_item_id, oi.quantity,
+                COALESCE(m.sku, p.sku, CONCAT('SKU-', oi.product_id)) AS sku,
+                m.barcode
+         FROM order_items oi
+         LEFT JOIN products p ON p.id = oi.product_id
+         LEFT JOIN inventory_product_meta m
+           ON m.id = (SELECT MIN(m2.id) FROM inventory_product_meta m2 WHERE m2.product_id = oi.product_id)
+         WHERE oi.order_id = ?
+         ORDER BY oi.id ASC
+         FOR UPDATE`,
+        [orderRow.id]
+      );
+      if (!orderItems.length) {
+        throw Object.assign(new Error(`Order #${orderRow.order_number || orderRow.id} has no packable items.`), { status: 409 });
+      }
+
+      const suppliedById = new Map();
+      for (const detail of packedOrder.verifiedItems) {
+        const itemId = Number(detail?.orderItemId);
+        if (!Number.isSafeInteger(itemId) || itemId < 1 || suppliedById.has(itemId)) {
+          throw Object.assign(new Error(`Order #${orderRow.order_number || orderRow.id} contains invalid or duplicate scan details.`), { status: 400 });
+        }
+        suppliedById.set(itemId, detail);
+      }
+      if (suppliedById.size !== orderItems.length) {
+        throw Object.assign(new Error(`Scanned items do not match every item in Order #${orderRow.order_number || orderRow.id}.`), { status: 409 });
+      }
+
+      let orderUnits = 0;
+      for (const expected of orderItems) {
+        const quantity = Math.max(1, Math.trunc(Number(expected.quantity) || 1));
+        const submitted = suppliedById.get(Number(expected.order_item_id));
+        const scannedCodes = Array.isArray(submitted?.scannedCodes) ? submitted.scannedCodes : [];
+        const acceptedCodes = new Set([expected.sku, expected.barcode].filter(Boolean).map(value => String(value).trim().toLowerCase()));
+        if (
+          !submitted ||
+          Number(submitted.quantity) !== quantity ||
+          Number(submitted.verifiedCount) !== quantity ||
+          scannedCodes.length !== quantity ||
+          scannedCodes.some(code => !acceptedCodes.has(String(code).trim().toLowerCase()))
+        ) {
+          throw Object.assign(new Error(`Scanned product codes or quantities do not match Order #${orderRow.order_number || orderRow.id}.`), { status: 409 });
+        }
+        orderUnits += quantity;
+      }
+
+      const currentStatus = String(orderRow.status || '').toLowerCase();
+      if (['cancelled', 'delivered', 'shipped', 'returned', 'archived'].includes(currentStatus)) {
+        throw Object.assign(new Error(`Order #${orderRow.order_number || orderRow.id} can no longer be packed (status: ${orderRow.status}).`), { status: 409 });
+      }
+      if (currentStatus === 'packed') {
+        const [[progress]] = await conn.query(
+          `SELECT COUNT(*) AS item_count, SUM(pp.verified_quantity) AS verified_units
+           FROM order_items oi
+           LEFT JOIN inventory_order_pack_progress pp ON pp.order_item_id = oi.id
+           WHERE oi.order_id = ?`,
+          [orderRow.id]
+        );
+        if (Number(progress?.item_count) === orderItems.length && Number(progress?.verified_units) >= orderUnits) {
+          results.push({ orderId: orderRow.id, orderNumber: orderRow.order_number || String(orderRow.id), status: 'packed', alreadyPacked: true });
+          uploadedUnits += orderUnits;
+          continue;
+        }
+        throw Object.assign(new Error(`Order #${orderRow.order_number || orderRow.id} is already marked packed, but its saved scan progress is incomplete.`), { status: 409 });
+      }
+
+      const operatorLock = acquireOrVerifyOrderLock({
+        orderId: orderRow.order_number || orderRow.id,
+        operatorUsername: operator.username,
+        operatorName: operator.name,
+        sessionCode: operator.sessionCode,
+        lockType: 'PACKING',
+      });
+      if (!operatorLock.allowed) {
+        throw Object.assign(new Error(operatorLock.message), { status: operatorLock.status || 409 });
+      }
+
+      for (const expected of orderItems) {
+        const submitted = suppliedById.get(Number(expected.order_item_id));
+        await conn.query(
+          `INSERT INTO inventory_order_pack_progress (order_item_id, order_id, verified_quantity)
+           VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE verified_quantity = VALUES(verified_quantity)`,
+          [expected.order_item_id, orderRow.id, Number(submitted.verifiedCount)]
+        );
+      }
+      await conn.query('UPDATE orders SET status = ? WHERE id = ?', ['packed', orderRow.id]);
+      results.push({ orderId: orderRow.id, orderNumber: orderRow.order_number || String(orderRow.id), status: 'packed' });
+      uploadedUnits += orderUnits;
+    }
+
+    await appendInventoryAuditLog(conn, {
+      actorUsername: operator.username,
+      actorRole: req.invUser?.role || 'cashier',
+      actionCode: 'PWA_ORDERS_PACKED',
+      summary: `${results.length} PWA-packed order(s) (${uploadedUnits} units) uploaded by ${operator.name}.`,
+      details: { orderIds: results.map(order => order.orderId), uploadedUnits },
+    });
+    await conn.commit();
+    transactionStarted = false;
+
+    for (const result of results.filter(order => !order.alreadyPacked)) {
+      for (const orderId of new Set([result.orderNumber, result.orderId])) {
+        markOrderLockCompleted(orderId, operator.username, operator.name, operator.sessionCode);
+      }
+    }
+
+    const worker = activeStaffWorkroom.get(operator.username.toLowerCase());
+    if (worker) {
+      worker.packedOrders = (Number(worker.packedOrders) || 0) + results.filter(order => !order.alreadyPacked).length;
+      worker.packedItems = (Number(worker.packedItems) || 0) + uploadedUnits;
+      worker.activeOrder = '';
+      worker.mode = 'IDLE';
+      worker.scannedUnits = 0;
+      worker.expectedUnits = 0;
+      worker.lastSeenAt = Date.now();
+    }
+    return res.json({
+      success: true,
+      count: results.length,
+      uploadedUnits,
+      orders: results,
+      message: `Uploaded ${results.length} packed order(s) and ${uploadedUnits} verified unit(s) to Inventory Software.`,
+    });
+  } catch (err) {
+    if (transactionStarted) await conn.rollback();
+    return res.status(err.status || 500).json({ success: false, message: err.message });
+  } finally {
+    conn.release();
+  }
 });
 
 /**
@@ -3706,7 +3928,11 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
 
     const custName = String(customer?.name || 'Walk-in Retail Shopper').trim();
     const custPhone = String(customer?.phone || '-').trim();
+    const custAddress = String(customer?.address || '').trim();
     const custGstin = String(customer?.gstin || '').trim();
+    if (custAddress.length > 500) {
+      throw Object.assign(new Error('Customer address must be 500 characters or fewer.'), { status: 400 });
+    }
     const paid = paidAmount === '' || paidAmount === undefined ? billTotal : Number(paidAmount);
     if (!Number.isFinite(paid) || paid < 0) {
       throw Object.assign(new Error('Paid amount must be a valid non-negative amount.'), { status: 400 });
@@ -3716,17 +3942,23 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
     let previousBalance = 0;
     if (custPhone && custPhone !== '-') {
       const [[existingCustomer]] = await conn.query(
-         'SELECT id, wallet_balance FROM inventory_customers WHERE phone = ? ORDER BY id ASC LIMIT 1 FOR UPDATE',
+         'SELECT id, wallet_balance, location FROM inventory_customers WHERE phone = ? ORDER BY id ASC LIMIT 1 FOR UPDATE',
          [custPhone]
       );
       if (existingCustomer) {
          customerId = existingCustomer.id;
          previousBalance = Number(existingCustomer.wallet_balance) || 0;
+         if (custAddress) {
+           await conn.query(
+             'UPDATE inventory_customers SET name = ?, gstin = ?, location = ? WHERE id = ?',
+             [custName, custGstin || null, custAddress, customerId]
+           );
+         }
       } else {
          const [customerInsert] = await conn.query(
-           `INSERT INTO inventory_customers (name, phone, gstin, customer_type)
-            VALUES (?, ?, ?, 'Walk-in')`,
-           [custName, custPhone, custGstin || null]
+           `INSERT INTO inventory_customers (name, phone, gstin, location, customer_type)
+            VALUES (?, ?, ?, ?, 'Walk-in')`,
+           [custName, custPhone, custGstin || null, custAddress || null]
          );
          customerId = customerInsert.insertId;
       }
@@ -3754,17 +3986,18 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
 
     const [invRes] = await conn.query(
       `INSERT INTO inventory_pos_invoices
-        (invoice_no, customer_id, customer_name, customer_phone, customer_gstin,
+        (invoice_no, customer_id, customer_name, customer_phone, customer_address, customer_gstin,
          items_json, extra_charges_json, subtotal, extra_total, discount_amount,
          taxable_amount, tax_rate, tax_amount, bill_total, prev_khata_balance,
          paid_amount, new_khata_balance, payment_mode, upi_reference, status,
          cashier_username, hub_name, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
       [
          invoiceNo,
          customerId,
          custName,
          custPhone,
+         custAddress || null,
          custGstin,
          JSON.stringify(normalizedItems),
          JSON.stringify(safeExtraCharges),
@@ -3912,7 +4145,7 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       id: invRes.insertId,
       invoiceNo,
       date: new Date().toISOString(),
-      cust: { id: customerId, name: custName, phone: custPhone, gstin: custGstin },
+      cust: { id: customerId, name: custName, phone: custPhone, address: custAddress, gstin: custGstin },
       items: normalizedItems,
       extra: safeExtraCharges,
       subTotal,
