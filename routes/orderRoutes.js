@@ -163,7 +163,7 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { status, trackingNumber, courier } = req.body;
-    const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled', 'returned', 'archived'];
+    const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'returned', 'archived'];
 
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, message: "A valid order status is required." });
@@ -213,7 +213,7 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
       [id]
     );
 
-    if (orderData.length > 0) {
+    if (orderData.length > 0 && ['shipped', 'out_for_delivery', 'delivered', 'returned', 'cancelled'].includes(String(status).toLowerCase())) {
       const { email, name } = orderData[0];
       sendOrderStatusEmail(email, name, id, status, trackingNumber, courier, orderData[0].order_number)
         .catch(err => console.error(`[Mailer] Failed to send email:`, err));

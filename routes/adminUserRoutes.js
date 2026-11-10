@@ -10,7 +10,7 @@ const {
 } = require('../models/userModel');
 const { getAllOrders, getOrdersByUser, updateOrderStatus, getOrderById } = require('../models/orderModel');
 const { getAllReviews } = require('../models/reviewModel');
-const { sendMail } = require('../utils/mail');
+const { sendMail, sendOrderStatusEmail } = require('../utils/mail');
 const { sendCustomerPasswordResetLink } = require('../services/customerPasswordResetLink');
 
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
@@ -268,7 +268,7 @@ router.get('/orders/:id', authenticateAdmin, async (req, res) => {
 router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
   try {
     const { status, tracking_number, courier } = req.body;
-    const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled', 'returned'];
+    const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'returned'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ message: 'Invalid status' });
     }
@@ -291,10 +291,33 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
         executedByEmail: req.user?.email || 'adminbhumivera27@gmail.com',
         razorpay: getRazorpayClient(),
       });
+      const cancelledOrder = await getOrderById(orderId);
+      let emailSent = false;
+      let emailError = null;
+      if (cancelledOrder?.user_email) {
+        try {
+          await sendOrderStatusEmail(
+            cancelledOrder.user_email,
+            cancelledOrder.user_name || 'Patron',
+            orderId,
+            'cancelled',
+            cancelledOrder.tracking_number,
+            cancelledOrder.courier,
+            cancelledOrder.order_number
+          );
+          emailSent = true;
+        } catch (emailFailure) {
+          console.error(`Cancellation email failed for order #${orderId}:`, emailFailure);
+          emailError = emailFailure.message || 'Email delivery failed.';
+        }
+      }
       return res.json({
+        success: true,
         message: 'Order cancelled and atomic refund/wallet ledger updated.',
         refundSummary: cancelRes.refundSummary,
         ledgerReference: cancelRes.ledgerReference,
+        emailSent,
+        emailError,
       });
     }
     const updated = await updateOrderStatus(orderId, status, req.body.cancel_reason, {
@@ -302,7 +325,27 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
       courier,
     });
     if (updated === false) return res.status(404).json({ message: 'Order not found' });
-    return res.json({ message: 'Order updated successfully' });
+    const updatedOrder = await getOrderById(orderId);
+    let emailSent = false;
+    let emailError = null;
+    if (updatedOrder?.user_email && previousOrder.status !== status && ['shipped', 'out_for_delivery', 'delivered', 'returned'].includes(status)) {
+      try {
+        await sendOrderStatusEmail(
+          updatedOrder.user_email,
+          updatedOrder.user_name || 'Patron',
+          orderId,
+          status,
+          updatedOrder.tracking_number,
+          updatedOrder.courier,
+          updatedOrder.order_number
+        );
+        emailSent = true;
+      } catch (emailFailure) {
+        console.error(`Order status email failed for #${orderId}:`, emailFailure);
+        emailError = emailFailure.message || 'Email delivery failed.';
+      }
+    }
+    return res.json({ success: true, message: 'Order updated successfully', emailSent, emailError });
   } catch (err) {
     console.error("Update Order Error:", err);
     if (err.status) return res.status(err.status).json({ code: err.code, message: err.message });

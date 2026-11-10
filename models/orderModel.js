@@ -34,7 +34,7 @@ const createOrdersTables = async () => {
         address_snapshot JSON NOT NULL,
         delivery_type ENUM('standard','express') DEFAULT 'standard',
         payment_mode ENUM('COD','online','WALLET') DEFAULT 'COD',
-        status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned','archived') DEFAULT 'pending',
+        status ENUM('pending','confirmed','packed','shipped','out_for_delivery','delivered','cancelled','returned','archived') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -54,7 +54,7 @@ const createOrdersTables = async () => {
     `);
 
     await pool.query("ALTER TABLE orders MODIFY COLUMN payment_mode ENUM('COD','online','WALLET') DEFAULT 'COD'");
-    await pool.query("ALTER TABLE orders MODIFY COLUMN status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned','archived') DEFAULT 'pending'");
+    await pool.query("ALTER TABLE orders MODIFY COLUMN status ENUM('pending','confirmed','packed','shipped','out_for_delivery','delivered','cancelled','returned','archived') DEFAULT 'pending'");
 
     const addCol = async (table, column, definition) => {
       const [cols] = await pool.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
@@ -833,21 +833,64 @@ const trackOrderByCustomer = async (orderReference, email) => {
 };
 
 const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) => {
-  const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled', 'returned', 'archived'];
-  const statusRank = { pending: 0, confirmed: 1, packed: 2, shipped: 3, delivered: 4, cancelled: 5, returned: 5, archived: 6 };
+  const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'returned', 'archived'];
+  const statusRank = { pending: 0, confirmed: 1, packed: 2, shipped: 3, out_for_delivery: 4, delivered: 5, cancelled: 6, returned: 6, archived: 7 };
   if (!validStatuses.includes(status)) throw { status: 400, message: 'Invalid order status.' };
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     const [orders] = await conn.query(
-      'SELECT id, order_number, user_id, status, payment_mode, payment_status, payment_id, total, referral_wallet_amount, coupon_code, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, shopping_wallet_reward_awarded_at FROM orders WHERE id = ? FOR UPDATE',
+      'SELECT id, order_number, user_id, status, payment_mode, payment_status, payment_id, tracking_number, courier, total, referral_wallet_amount, coupon_code, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, shopping_wallet_reward_awarded_at FROM orders WHERE id = ? FOR UPDATE',
       [orderId]
     );
     const order = orders?.[0];
     if (!order) {
       await conn.rollback();
       return false;
+    }
+    const allowedNextStatuses = {
+      pending: ['confirmed', 'cancelled'],
+      confirmed: ['packed', 'cancelled'],
+      packed: ['shipped'],
+      shipped: ['out_for_delivery', 'returned'],
+      out_for_delivery: ['delivered', 'returned'],
+      delivered: ['returned'],
+      cancelled: [],
+      returned: [],
+      archived: [],
+    };
+    if (status !== order.status && !allowedNextStatuses[order.status]?.includes(status)) {
+      await conn.rollback();
+      throw {
+        status: 409,
+        code: 'ORDER_STATUS_TRANSITION_INVALID',
+        message: `Order cannot move from ${order.status} to ${status}.`,
+      };
+    }
+    if (status === 'packed' && metadata.verifiedPackUpload !== true) {
+      await conn.rollback();
+      throw {
+        status: 409,
+        code: 'PACKING_UPLOAD_REQUIRED',
+        message: 'Packed status can only be set by a successful verified PWA upload.',
+      };
+    }
+    if (status === 'shipped' && !(metadata.trackingNumber || order.tracking_number) ) {
+      await conn.rollback();
+      throw {
+        status: 400,
+        code: 'SHIPMENT_TRACKING_REQUIRED',
+        message: 'Courier tracking details are required at shipment handover.',
+      };
+    }
+    if (status === 'shipped' && !(metadata.courier || order.courier)) {
+      await conn.rollback();
+      throw {
+        status: 400,
+        code: 'SHIPMENT_COURIER_REQUIRED',
+        message: 'Courier partner is required at shipment handover.',
+      };
     }
     assertOrderStatusTransition(order, status, metadata);
     if (statusRank[status] < statusRank[order.status]) {

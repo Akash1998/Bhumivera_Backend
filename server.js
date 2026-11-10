@@ -361,6 +361,7 @@ app.use(async (req, res, next) => {
   const memoryOnlyWorkroomRoute =
     (req.method === "GET" && req.path === "/api/inventory-software/workroom/presence") ||
     (req.method === "POST" && [
+      "/api/inventory-software/scanner/auth/login",
       "/api/inventory-software/workroom/heartbeat",
       "/api/inventory-software/workroom/toggle-work",
     ].includes(req.path));

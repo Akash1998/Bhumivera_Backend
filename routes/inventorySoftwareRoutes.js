@@ -7,7 +7,7 @@ const pool = require('../config/db');
 const { isSessionActive } = require('../utils/sessionStore');
 const { invalidatePublicCatalogCache } = require('../middleware/redisResponseCache');
 const { updateOrderStatus } = require('../models/orderModel');
-const { sendOrderStatusEmail, sendOrderModificationEmail } = require('../utils/mail');
+const { sendOrderStatusEmail } = require('../utils/mail');
 const { executeAtomicOrderCancellationAndRefund } = require('../services/walletRefundLedgerService');
 const { getRazorpayClient } = require('../services/razorpayService');
 const {
@@ -73,6 +73,9 @@ const scannerSessionsMemory = new Map(); // sessionCode -> { sessionCode, apiKey
 const savedPosDraftsMemory = new Map(); // draftId -> DraftObject
 const activeOrderLocksMemory = new Map(); // orderKey -> { orderKey, orderNumber, lockedByUsername, lockedByName, sessionCode, lockType, status, lockedAt, expiresAt, completedAt }
 const activeStaffWorkroom = new Map(); // username -> { username, fullName, role, onWork: true, mode: 'PACKING'|'BILLING'|'IDLE', activeOrder: '', deviceName: '', lastSeenAt }
+const scannerStaffCredentialsMemory = new Map();
+const scannerTokenIdsMemory = new Map();
+let scannerRosterLoaded = false;
 
 function getOrCreateScannerSessionState(sessionCode, defaults = {}) {
   const code = String(sessionCode || 'DEFAULT-POS-TERMINAL').trim();
@@ -311,6 +314,23 @@ function normalizeStaffAccount(row) {
   };
 }
 
+function cacheScannerStaffAccount(row) {
+  if (!row?.username) return;
+  scannerStaffCredentialsMemory.set(String(row.username).trim().toLowerCase(), row);
+}
+
+function revokeScannerSessions(username) {
+  const userKey = String(username || '').trim().toLowerCase();
+  if (!userKey) return;
+  scannerTokenIdsMemory.delete(userKey);
+  activeStaffWorkroom.delete(userKey);
+  for (const [sessionCode, session] of scannerSessionsMemory.entries()) {
+    if (String(session.staffUsername || '').trim().toLowerCase() === userKey) {
+      scannerSessionsMemory.delete(sessionCode);
+    }
+  }
+}
+
 function issueInventoryJwt(account) {
   return jwt.sign(
     {
@@ -337,6 +357,12 @@ async function authenticateInventoryStaff(req, res, next) {
   try {
     await ensureInventorySoftwareTables(pool);
     const payload = jwt.verify(token, secret());
+    if (payload.scannerAuth) {
+      const activeTokens = scannerTokenIdsMemory.get(String(payload.username || '').toLowerCase());
+      if (!payload.jti || !activeTokens?.has(payload.jti)) {
+        return res.status(401).json({ code: 'SCANNER_SESSION_REVOKED', message: 'Scanner session expired. Sign in again.' });
+      }
+    }
 
     if (payload.scope === 'inventory-software' && (payload.id || payload.username)) {
       const [rows] = payload.id
@@ -350,6 +376,15 @@ async function authenticateInventoryStaff(req, res, next) {
         return res.status(403).json({ message: 'This warehouse/inventory account has been suspended by SuperAdmin.' });
       }
       req.invUser = normalizeStaffAccount(row);
+      if (payload.scannerAuth) {
+        const requestedUser = String(req.body?.operatorUsername || '').trim().toLowerCase();
+        if (requestedUser && requestedUser !== String(req.invUser.username).toLowerCase()) {
+          return res.status(403).json({ message: 'Scanner activity must be recorded under the signed-in staff account.' });
+        }
+        req.body = req.body || {};
+        req.body.operatorUsername = req.invUser.username;
+        req.body.operatorName = req.invUser.fullName;
+      }
       return next();
     }
 
@@ -538,6 +573,19 @@ function authenticateWorkroomMemory(req, res, next) {
     const payload = jwt.verify(token, secret());
     if (payload.scope !== 'inventory-software' || !payload.username || !payload.id) {
       return res.status(401).json({ success: false, code: 'AUTH_TOKEN_INVALID', message: 'Sign in to the scanner to continue.' });
+    }
+    if (payload.scannerAuth) {
+      const activeTokens = scannerTokenIdsMemory.get(String(payload.username).toLowerCase());
+      if (!payload.jti || !activeTokens?.has(payload.jti)) {
+        return res.status(401).json({ success: false, code: 'SCANNER_SESSION_REVOKED', message: 'Scanner session expired. Sign in again.' });
+      }
+      const requestedUser = String(req.body?.operatorUsername || '').trim().toLowerCase();
+      if (requestedUser && requestedUser !== String(payload.username).toLowerCase()) {
+        return res.status(403).json({ success: false, message: 'Workroom activity must be recorded under the signed-in staff account.' });
+      }
+      req.body = req.body || {};
+      req.body.operatorUsername = payload.username;
+      req.body.operatorName = payload.fullName || payload.username;
     }
 
     req.invUser = {
@@ -918,6 +966,9 @@ router.post('/auth/change-password', authenticateInventoryStaff, async (req, res
 router.get('/iam/users', authenticateInventoryStaff, requireIamAdmin, async (_req, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM inventory_staff_accounts ORDER BY created_at DESC');
+    scannerStaffCredentialsMemory.clear();
+    rows.forEach(cacheScannerStaffAccount);
+    scannerRosterLoaded = true;
     const users = rows.map(normalizeStaffAccount);
     res.json({
       success: true,
@@ -945,9 +996,12 @@ router.post('/iam/users', authenticateInventoryStaff, requireIamAdmin, async (re
       requireOnboarding = true,
     } = req.body || {};
 
-    const cleanUsername = String(username || '').trim().toLowerCase().replace(/\s+/g, '');
+    const cleanUsername = String(username || '').trim().toLowerCase();
     if (!cleanUsername || !password) {
       return res.status(400).json({ success: false, message: 'Account ID (username) and password are required.' });
+    }
+    if (!/^[a-z0-9._-]{3,32}$/.test(cleanUsername)) {
+      return res.status(400).json({ success: false, message: 'Login ID must be 3–32 characters using letters, numbers, dots, underscores, or hyphens.' });
     }
 
     const [existing] = await pool.query(
@@ -965,14 +1019,12 @@ router.post('/iam/users', authenticateInventoryStaff, requireIamAdmin, async (re
     });
 
     const passwordHash = await bcrypt.hash(String(password), 10);
-    const accountCode = 'BV-IAM-' + String(Math.floor(1000 + Math.random() * 9000));
-
     const [result] = await pool.query(
       `INSERT INTO inventory_staff_accounts
         (account_code, username, full_name, email, phone, password_hash, role, assigned_hub, permissions, status, totp_enabled, totp_secret, passkeys, first_login, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, '[]', ?, ?)`,
       [
-        accountCode,
+        cleanUsername,
         cleanUsername,
         String(fullName || cleanUsername).trim(),
         String(email || '').trim(),
@@ -988,6 +1040,7 @@ router.post('/iam/users', authenticateInventoryStaff, requireIamAdmin, async (re
     );
 
     const [[createdRow]] = await pool.query('SELECT * FROM inventory_staff_accounts WHERE id = ?', [result.insertId]);
+    cacheScannerStaffAccount(createdRow);
     const userObj = normalizeStaffAccount(createdRow);
 
     await appendInventoryAuditLog(pool, {
@@ -1016,6 +1069,21 @@ router.patch('/iam/users/:id', authenticateInventoryStaff, requireIamAdmin, asyn
       return res.status(404).json({ success: false, message: 'Account not found.' });
     }
 
+    const nextUsername = req.body.username !== undefined
+      ? String(req.body.username).trim().toLowerCase()
+      : String(existing.username || '');
+    if (!/^[a-z0-9._-]{3,32}$/.test(nextUsername)) {
+      return res.status(400).json({ success: false, message: 'Login ID must be 3–32 characters using letters, numbers, dots, underscores, or hyphens.' });
+    }
+    if (nextUsername !== String(existing.username || '').toLowerCase()) {
+      const [[duplicate]] = await pool.query(
+        'SELECT id FROM inventory_staff_accounts WHERE (LOWER(username) = LOWER(?) OR LOWER(account_code) = LOWER(?)) AND id <> ? LIMIT 1',
+        [nextUsername, nextUsername, targetId]
+      );
+      if (duplicate) {
+        return res.status(409).json({ success: false, message: `Login ID "@${nextUsername}" already exists.` });
+      }
+    }
     const nextRole = req.body.role && VALID_INVENTORY_ROLES.includes(req.body.role) ? req.body.role : existing.role;
     const nextHub = req.body.assignedHub !== undefined ? String(req.body.assignedHub).trim() : existing.assigned_hub;
     const nextFullName = req.body.fullName !== undefined ? String(req.body.fullName).trim() : existing.full_name;
@@ -1035,12 +1103,24 @@ router.patch('/iam/users/:id', authenticateInventoryStaff, requireIamAdmin, asyn
 
     await pool.query(
       `UPDATE inventory_staff_accounts
-       SET full_name = ?, email = ?, phone = ?, role = ?, assigned_hub = ?, permissions = ?, status = ?
+       SET account_code = ?, username = ?, full_name = ?, email = ?, phone = ?, role = ?, assigned_hub = ?, permissions = ?, status = ?
        WHERE id = ?`,
-      [nextFullName, nextEmail, nextPhone, nextRole, nextHub, JSON.stringify(nextPerms), nextStatus, targetId]
+      [nextUsername, nextUsername, nextFullName, nextEmail, nextPhone, nextRole, nextHub, JSON.stringify(nextPerms), nextStatus, targetId]
     );
 
     const [[updatedRow]] = await pool.query('SELECT * FROM inventory_staff_accounts WHERE id = ?', [targetId]);
+    if (String(existing.username || '').toLowerCase() !== nextUsername) {
+      scannerStaffCredentialsMemory.delete(String(existing.username || '').toLowerCase());
+      revokeScannerSessions(existing.username);
+    } else if (
+      req.body.status !== undefined ||
+      req.body.role !== undefined ||
+      req.body.permissions !== undefined ||
+      req.body.fullAllAccess !== undefined
+    ) {
+      revokeScannerSessions(existing.username);
+    }
+    cacheScannerStaffAccount(updatedRow);
     const userObj = normalizeStaffAccount(updatedRow);
 
     await appendInventoryAuditLog(pool, {
@@ -1059,7 +1139,7 @@ router.patch('/iam/users/:id', authenticateInventoryStaff, requireIamAdmin, asyn
 router.post('/iam/users/:id/reset-password', authenticateInventoryStaff, requireIamAdmin, async (req, res) => {
   try {
     const targetId = Number(req.params.id);
-    const newPassword = String(req.body?.newPassword || 'TempPass@123').trim();
+    const newPassword = String(req.body?.newPassword || '');
     if (newPassword.length < 6) {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
     }
@@ -1069,6 +1149,9 @@ router.post('/iam/users/:id/reset-password', authenticateInventoryStaff, require
       [hash, targetId]
     );
     const [[row]] = await pool.query('SELECT * FROM inventory_staff_accounts WHERE id = ?', [targetId]);
+    if (!row) return res.status(404).json({ success: false, message: 'Account not found.' });
+    revokeScannerSessions(row.username);
+    cacheScannerStaffAccount(row);
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
@@ -1093,6 +1176,9 @@ router.post('/iam/users/:id/reset-security', authenticateInventoryStaff, require
       [generateTotpSecret(), targetId]
     );
     const [[row]] = await pool.query('SELECT * FROM inventory_staff_accounts WHERE id = ?', [targetId]);
+    if (!row) return res.status(404).json({ success: false, message: 'Account not found.' });
+    revokeScannerSessions(row.username);
+    cacheScannerStaffAccount(row);
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
@@ -1118,6 +1204,8 @@ router.delete('/iam/users/:id', authenticateInventoryStaff, requireIamAdmin, asy
       return res.status(400).json({ success: false, message: 'Cannot delete the primary master admin account.' });
     }
     await pool.query('DELETE FROM inventory_staff_accounts WHERE id = ?', [targetId]);
+    scannerStaffCredentialsMemory.delete(String(row.username || '').toLowerCase());
+    revokeScannerSessions(row.username);
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
@@ -1137,6 +1225,11 @@ let lastBootstrapHeavyWorkAt = 0;
 router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
   try {
     await ensureInventorySoftwareTables(pool);
+    if (!scannerRosterLoaded) {
+      const [staffRows] = await pool.query('SELECT * FROM inventory_staff_accounts');
+      staffRows.forEach(cacheScannerStaffAccount);
+      scannerRosterLoaded = true;
+    }
     if (Date.now() - lastBootstrapHeavyWorkAt >= BOOTSTRAP_HEAVY_WORK_MS) {
       lastBootstrapHeavyWorkAt = Date.now();
       await syncWebsiteProductsToInventoryMeta(pool);
@@ -1415,6 +1508,8 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
           ? `Delivered to Customer in ${city || state || 'Destination'}`
           : o.status === 'returned'
           ? `RTO Returned to Asansol Hub (${o.rto_reason || 'Undelivered'})`
+          : o.status === 'out_for_delivery'
+          ? `Out for Delivery in ${city || state || 'Destination'}`
           : o.status === 'shipped'
           ? `In Transit via ${o.courier || 'Courier'} → Destination: ${city || 'Customer City'}`
           : o.status === 'packed'
@@ -1434,6 +1529,8 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
           metaId: linkedInv?.id || null,
           name: it.name,
           sku: it.sku || linkedInv?.sku || '',
+          barcode: linkedInv?.barcode || it.sku || '',
+          mrp: Number(linkedInv?.mrp) || Number(it.price) || 0,
           gstHsnCode: it.gst_hsn_code || linkedInv?.gstHsnCode || '30049011',
           gstRate: Number(it.gst_rate || linkedInv?.gstRate || 5),
           quantity: Number(it.quantity) || 1,
@@ -1444,9 +1541,26 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         };
       });
 
+      const parsedCreatedAt = o.created_at ? new Date(o.created_at) : new Date();
+      const createdAt = Number.isNaN(parsedCreatedAt.getTime()) ? new Date() : parsedCreatedAt;
+      const indiaDateParts = new Intl.DateTimeFormat('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: 'numeric',
+      }).formatToParts(createdAt);
+      const indiaYear = Number(indiaDateParts.find(part => part.type === 'year')?.value) || createdAt.getFullYear();
+      const indiaMonth = Number(indiaDateParts.find(part => part.type === 'month')?.value) || createdAt.getMonth() + 1;
+      const fiscalYearStart = indiaMonth >= 4 ? indiaYear : indiaYear - 1;
+      const invoiceNumber = `BV/${String(fiscalYearStart).slice(-2)}-${String(fiscalYearStart + 1).slice(-2)}/${String(o.id).padStart(4, '0')}`;
+      const activeLock = [
+        activeOrderLocksMemory.get(normalizeOrderLockKey(o.order_number || o.id)),
+        activeOrderLocksMemory.get(normalizeOrderLockKey(o.id)),
+      ].find(lock => lock?.status === 'LOCKED' && (!lock.expiresAt || Date.now() < lock.expiresAt));
+
       return {
         id: o.id,
         orderNumber: o.order_number || String(o.id),
+        invoiceNumber,
         userId: o.user_id,
         status: o.status,
         deliveryType: o.delivery_type || 'standard',
@@ -1490,14 +1604,8 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         addressSnapshot: addr,
         items: mappedItems,
         shippingLabels: shippingLabelsByOrder[o.id] || [],
-        lockedBy:
-          activeOrderLocksMemory.get(normalizeOrderLockKey(o.order_number || o.id))?.lockedByName ||
-          activeOrderLocksMemory.get(normalizeOrderLockKey(o.id))?.lockedByName ||
-          null,
-        lockedBySession:
-          activeOrderLocksMemory.get(normalizeOrderLockKey(o.order_number || o.id))?.sessionCode ||
-          activeOrderLocksMemory.get(normalizeOrderLockKey(o.id))?.sessionCode ||
-          null,
+        lockedBy: activeLock?.lockedByName || null,
+        lockedBySession: activeLock?.sessionCode || null,
       };
     });
 
@@ -2655,64 +2763,49 @@ router.post('/stock/adjust', authenticateInventoryStaff, requirePermission('can_
  */
 router.post('/scanner/auth/login', async (req, res) => {
   try {
-    await ensureInventorySoftwareTables(pool);
     const { username = '', password = '', deviceName = 'Mobile Scanner' } = req.body || {};
-    const cleanUser = String(username).trim();
+    const cleanUser = String(username).trim().toLowerCase();
     if (!cleanUser || !password) {
       return res.status(400).json({ success: false, message: 'Username and password are required.' });
     }
 
-    const [rows] = await pool.query(
-      'SELECT * FROM inventory_staff_accounts WHERE username = ? OR account_code = ? LIMIT 1',
-      [cleanUser, cleanUser]
-    );
-
-    let accountRow = rows[0];
+    const accountRow = scannerStaffCredentialsMemory.get(cleanUser);
     if (!accountRow) {
-      // Seed fallback in case database was freshly initialized
-      const isKnown = ['admin', 'manager', 'keeper1', 'cashier1', 'priya'].includes(cleanUser.toLowerCase());
-      if (isKnown) {
-        accountRow = {
-          id: cleanUser === 'priya' ? 5 : 1,
-          account_code: `BV-IAM-${cleanUser.toUpperCase()}`,
-          username: cleanUser.toLowerCase(),
-          full_name: cleanUser.toLowerCase() === 'priya' ? 'Priya C' : cleanUser.toUpperCase(),
-          role: cleanUser === 'admin' ? 'admin' : 'cashier',
-          assigned_hub: 'Bhumivera Flagship Hub — Asansol',
-          permissions: JSON.stringify(resolveInventoryPermissions(cleanUser === 'admin' ? 'admin' : 'cashier')),
-          status: 'active',
-        };
-      }
-    }
-
-    if (!accountRow) {
-      return res.status(401).json({ success: false, message: `Account "${cleanUser}" was not found.` });
+      return res.status(503).json({
+        success: false,
+        code: 'SCANNER_ROSTER_NOT_LOADED',
+        message: 'Scanner staff accounts are not loaded in backend memory. An inventory administrator must open or refresh Workroom → Staff Accounts, then try again.',
+      });
     }
 
     if (accountRow.status === 'suspended') {
       return res.status(403).json({ success: false, message: 'This staff account has been suspended.' });
     }
 
-    if (accountRow.password_hash) {
-      const match = await bcrypt.compare(String(password), accountRow.password_hash).catch(() => false);
-      if (!match) {
-        // Allow fallback password for known staff if freshly created
-        const defaultPasswords = {
-          admin: 'Admin@123',
-          manager: 'Manager@123',
-          keeper1: 'Keeper@123',
-          cashier1: 'Cashier@123',
-          priya: 'Priya@123',
-        };
-        const expected = defaultPasswords[cleanUser.toLowerCase()];
-        if (!expected || expected !== String(password)) {
-          return res.status(401).json({ success: false, message: 'Invalid username or password.' });
-        }
-      }
+    const passwordMatches = accountRow.password_hash
+      ? await bcrypt.compare(String(password), accountRow.password_hash)
+      : false;
+    if (!passwordMatches) {
+      return res.status(401).json({ success: false, message: 'Invalid username or password.' });
     }
 
     const norm = normalizeStaffAccount(accountRow);
-    const token = issueInventoryJwt(norm);
+    const jti = crypto.randomUUID();
+    const activeTokens = scannerTokenIdsMemory.get(cleanUser) || new Set();
+    activeTokens.add(jti);
+    scannerTokenIdsMemory.set(cleanUser, activeTokens);
+    const token = jwt.sign({
+      id: norm.id,
+      sub: norm.id,
+      username: norm.username,
+      fullName: norm.fullName,
+      email: norm.email,
+      role: norm.role,
+      assignedHub: norm.assignedHub,
+      scope: 'inventory-software',
+      scannerAuth: true,
+      jti,
+    }, secret(), { expiresIn: '24h' });
     const sessionSlug = norm.username.toUpperCase().replace(/[^A-Z0-9]/g, '-');
     const sessionCode = `STAFF-${sessionSlug}`;
 
@@ -2731,6 +2824,9 @@ router.post('/scanner/auth/login', async (req, res) => {
       lastSeenAt: Date.now(),
       scannedUnits: 0,
       expectedUnits: 0,
+      activeOrderItems: [],
+      packedOrders: Number(previousWorker?.packedOrders) || 0,
+      packedItems: Number(previousWorker?.packedItems) || 0,
     });
 
     touchScannerSessionActivity(sessionCode, {
@@ -2784,6 +2880,15 @@ router.post('/workroom/toggle-work', authenticateWorkroomMemory, (req, res) => {
   current.mode = mode;
   current.activeOrder = String(activeOrder || '');
   current.deviceName = deviceName;
+  current.activeOrderItems = Array.isArray(req.body?.activeOrderItems)
+    ? req.body.activeOrderItems.slice(0, 40).map(item => ({
+      orderItemId: String(item?.orderItemId || '').slice(0, 40),
+      name: String(item?.name || 'Product').slice(0, 120),
+      sku: String(item?.sku || '').slice(0, 80),
+      expectedUnits: Math.max(0, Math.trunc(Number(item?.expectedUnits) || 0)),
+      scannedUnits: Math.max(0, Math.trunc(Number(item?.scannedUnits) || 0)),
+    }))
+    : current.activeOrderItems || [];
   current.savedBulkOrders = Array.isArray(req.body?.savedBulkOrders)
     ? req.body.savedBulkOrders.slice(0, 100).map(order => ({
       orderId: String(order?.orderId || '').slice(0, 80),
@@ -2794,6 +2899,7 @@ router.post('/workroom/toggle-work', authenticateWorkroomMemory, (req, res) => {
   if (!current.onWork) {
     current.mode = 'OFF_WORK';
     current.activeOrder = '';
+    current.activeOrderItems = [];
     current.scannedUnits = 0;
     current.expectedUnits = 0;
   }
@@ -2830,6 +2936,15 @@ router.post('/workroom/heartbeat', authenticateWorkroomMemory, (req, res) => {
   current.mode = ['IDLE', 'PACKING', 'BILLING'].includes(requestedMode) ? requestedMode : 'IDLE';
   current.activeOrder = String(req.body?.activeOrder || '').trim().slice(0, 80);
   current.deviceName = String(req.body?.deviceName || current.deviceName || 'Mobile Scanner').slice(0, 80);
+  current.activeOrderItems = Array.isArray(req.body?.activeOrderItems)
+    ? req.body.activeOrderItems.slice(0, 40).map(item => ({
+      orderItemId: String(item?.orderItemId || '').slice(0, 40),
+      name: String(item?.name || 'Product').slice(0, 120),
+      sku: String(item?.sku || '').slice(0, 80),
+      expectedUnits: Math.max(0, Math.trunc(Number(item?.expectedUnits) || 0)),
+      scannedUnits: Math.max(0, Math.trunc(Number(item?.scannedUnits) || 0)),
+    }))
+    : current.activeOrderItems || [];
   current.scannedUnits = Math.max(0, Math.trunc(Number(req.body?.scannedUnits) || 0));
   current.expectedUnits = Math.max(0, Math.trunc(Number(req.body?.expectedUnits) || 0));
   current.savedBulkOrders = Array.isArray(req.body?.savedBulkOrders)
@@ -2869,6 +2984,8 @@ router.get('/workroom/presence', authenticateWorkroomMemory, (_req, res) => {
       onWork: Boolean(w.onWork),
       mode: w.mode || 'IDLE',
       activeOrder: w.activeOrder || '',
+      activeOrderItems: Array.isArray(w.activeOrderItems) ? w.activeOrderItems : [],
+      recentUploads: Array.isArray(w.recentUploads) ? w.recentUploads : [],
       sessionCode: w.sessionCode || `STAFF-${String(w.username || key).toUpperCase()}`,
       scannedUnits: Number(w.scannedUnits) || 0,
       expectedUnits: Number(w.expectedUnits) || 0,
@@ -2982,7 +3099,7 @@ router.post('/fulfillment/pwa-batch', authenticateScannerOrStaff, async (req, re
       }
 
       const currentStatus = String(orderRow.status || '').toLowerCase();
-      if (['cancelled', 'delivered', 'shipped', 'returned', 'archived'].includes(currentStatus)) {
+      if (['cancelled', 'delivered', 'shipped', 'out_for_delivery', 'returned', 'archived'].includes(currentStatus)) {
         throw Object.assign(new Error(`Order #${orderRow.order_number || orderRow.id} can no longer be packed (status: ${orderRow.status}).`), { status: 409 });
       }
       if (currentStatus === 'packed') {
@@ -2994,11 +3111,14 @@ router.post('/fulfillment/pwa-batch', authenticateScannerOrStaff, async (req, re
           [orderRow.id]
         );
         if (Number(progress?.item_count) === orderItems.length && Number(progress?.verified_units) >= orderUnits) {
-          results.push({ orderId: orderRow.id, orderNumber: orderRow.order_number || String(orderRow.id), status: 'packed', alreadyPacked: true });
+          results.push({ orderId: orderRow.id, orderNumber: orderRow.order_number || String(orderRow.id), status: 'packed', alreadyPacked: true, verifiedUnits: orderUnits });
           uploadedUnits += orderUnits;
           continue;
         }
         throw Object.assign(new Error(`Order #${orderRow.order_number || orderRow.id} is already marked packed, but its saved scan progress is incomplete.`), { status: 409 });
+      }
+      if (currentStatus !== 'confirmed') {
+        throw Object.assign(new Error(`Order #${orderRow.order_number || orderRow.id} must be confirmed before it can be packed (current status: ${orderRow.status}).`), { status: 409 });
       }
 
       const operatorLock = acquireOrVerifyOrderLock({
@@ -3022,7 +3142,7 @@ router.post('/fulfillment/pwa-batch', authenticateScannerOrStaff, async (req, re
         );
       }
       await conn.query('UPDATE orders SET status = ? WHERE id = ?', ['packed', orderRow.id]);
-      results.push({ orderId: orderRow.id, orderNumber: orderRow.order_number || String(orderRow.id), status: 'packed' });
+      results.push({ orderId: orderRow.id, orderNumber: orderRow.order_number || String(orderRow.id), status: 'packed', verifiedUnits: orderUnits });
       uploadedUnits += orderUnits;
     }
 
@@ -3045,8 +3165,20 @@ router.post('/fulfillment/pwa-batch', authenticateScannerOrStaff, async (req, re
     const worker = activeStaffWorkroom.get(operator.username.toLowerCase());
     if (worker) {
       worker.packedOrders = (Number(worker.packedOrders) || 0) + results.filter(order => !order.alreadyPacked).length;
-      worker.packedItems = (Number(worker.packedItems) || 0) + uploadedUnits;
+      worker.packedItems = (Number(worker.packedItems) || 0) + results
+        .filter(order => !order.alreadyPacked)
+        .reduce((sum, order) => sum + (Number(order.verifiedUnits) || 0), 0);
+      worker.recentUploads = [
+        ...results.filter(order => !order.alreadyPacked).map(order => ({
+          orderId: String(order.orderId),
+          orderNumber: String(order.orderNumber),
+          verifiedUnits: Number(order.verifiedUnits) || 0,
+          uploadedAt: new Date().toISOString(),
+        })),
+        ...(Array.isArray(worker.recentUploads) ? worker.recentUploads : []),
+      ].slice(0, 20);
       worker.activeOrder = '';
+      worker.activeOrderItems = [];
       worker.mode = 'IDLE';
       worker.scannedUnits = 0;
       worker.expectedUnits = 0;
@@ -4853,6 +4985,27 @@ router.post('/grn/inward', authenticateInventoryStaff, requirePermission('can_ma
 });
 
 // 9. FULL ONLINE ORDER LIFECYCLE, DISPATCH, TRACKING, LABEL PRINTING & CARRIER BOOKING
+const sendLifecycleStatusEmail = async (orderData, status, trackingNumber, courier) => {
+  if (!orderData?.email) {
+    return { attempted: true, sent: false, error: 'Customer email address is not available.' };
+  }
+  try {
+    await sendOrderStatusEmail(
+      orderData.email,
+      orderData.name || 'Patron',
+      orderData.id,
+      status,
+      trackingNumber || null,
+      courier || null,
+      orderData.order_number
+    );
+    return { attempted: true, sent: true };
+  } catch (error) {
+    console.error(`Order status email failed for #${orderData.order_number || orderData.id}:`, error);
+    return { attempted: true, sent: false, error: error.message || 'Email delivery failed.' };
+  }
+};
+
 router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
   try {
     const orderId = Number(req.params.orderId);
@@ -4866,13 +5019,21 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
       cancelReason,
     } = req.body || {};
 
-    const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'returned', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'returned', 'cancelled'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: 'Order status must be pending, confirmed, packed, shipped, delivered, returned, or cancelled.',
+        message: 'Order status must be pending, confirmed, packed, shipped, out_for_delivery, delivered, returned, or cancelled.',
       });
     }
+
+    const [[orderData]] = await pool.query(
+      `SELECT o.id, o.order_number, o.status, o.tracking_number, o.courier,
+              u.name, u.email
+       FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
+      [orderId]
+    );
+    if (!orderData) return res.status(404).json({ success: false, message: 'Order not found.' });
 
     if (status === 'cancelled') {
       const cancelResult = await executeAtomicOrderCancellationAndRefund(pool, {
@@ -4882,23 +5043,80 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
         executedByEmail: req.invUser.email || 'admin@bhumivera.com',
         razorpay: getRazorpayClient(),
       });
-      await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
-      await invalidatePublicCatalogCache().catch(() => {});
+      markOrderLockCompleted(orderData.order_number || orderId, req.invUser.username, req.invUser.fullName, req.invUser.scannerSessionCode);
+      markOrderLockCompleted(orderId, req.invUser.username, req.invUser.fullName, req.invUser.scannerSessionCode);
+      const warnings = [];
+      try {
+        await syncWebsiteProductsToInventoryMeta(pool);
+      } catch (syncError) {
+        console.error('Inventory sync failed after order cancellation:', syncError);
+        warnings.push('Stock was restored, but inventory sync needs attention.');
+      }
+      try {
+        await invalidatePublicCatalogCache();
+      } catch (cacheError) {
+        console.error('Catalog cache invalidation failed after order cancellation:', cacheError);
+        warnings.push('The public catalog cache could not be refreshed.');
+      }
+      const email = await sendLifecycleStatusEmail(orderData, 'cancelled', orderData.tracking_number, orderData.courier);
       return res.json({
         success: true,
         message: `Order #${orderId} cancelled and stock restored to main inventory.`,
         refundSummary: cancelResult.refundSummary,
+        emailSent: email.sent,
+        emailError: email.error || null,
+        warnings,
       });
     }
 
-    await updateOrderStatus(orderId, status, cancelReason || null, { courier, trackingNumber });
+    const previousStatus = String(orderData.status || '').toLowerCase();
+    if (status !== previousStatus) {
+      const requiredPreviousStatus = {
+        confirmed: 'pending',
+        shipped: 'packed',
+        out_for_delivery: 'shipped',
+        delivered: 'out_for_delivery',
+      }[status];
+      if (status === 'packed') {
+        return res.status(409).json({ success: false, message: 'Packed status is set only after the PWA successfully uploads verified scans.' });
+      }
+      if (requiredPreviousStatus && previousStatus !== requiredPreviousStatus) {
+        return res.status(409).json({
+          success: false,
+          message: `Order must be ${requiredPreviousStatus.replace(/_/g, ' ')} before it can be marked ${status.replace(/_/g, ' ')}.`,
+        });
+      }
+      if (status === 'returned' && !['shipped', 'out_for_delivery', 'delivered'].includes(previousStatus)) {
+        return res.status(409).json({ success: false, message: 'Only shipped orders can be marked returned.' });
+      }
+      if (status === 'pending') {
+        return res.status(409).json({ success: false, message: 'Placed status is assigned when an order is created.' });
+      }
+    }
+
+    const savedTrackingNumber = String(trackingNumber || orderData.tracking_number || '').trim();
+    const savedCourier = String(courier || orderData.courier || '').trim();
+    if (status === 'shipped' && (!savedTrackingNumber || !savedCourier)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Add the courier and tracking/AWB details when shipping the packed order. Packing itself does not require tracking details.',
+      });
+    }
+
+    const updated = await updateOrderStatus(orderId, status, cancelReason || null, {
+      courier: savedCourier,
+      trackingNumber: savedTrackingNumber,
+    });
+    if (!updated) return res.status(404).json({ success: false, message: 'Order not found.' });
 
     const defaultCheckpoint =
       currentLocationCheckpoint ||
       (status === 'delivered'
         ? 'Delivered to Customer'
+        : status === 'out_for_delivery'
+        ? 'Out for Delivery'
         : status === 'shipped'
-        ? `Dispatched via ${courier || 'Courier'}${trackingNumber ? ` (AWB: ${trackingNumber})` : ''} — In Transit`
+        ? `Dispatched via ${savedCourier || 'Courier'}${savedTrackingNumber ? ` (AWB: ${savedTrackingNumber})` : ''} — In Transit`
         : status === 'packed'
         ? 'Packed & Weighed at Asansol Hub — Ready for Courier Pickup'
         : status === 'confirmed'
@@ -4914,38 +5132,42 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
       [estimatedDeliveryDate || null, defaultCheckpoint, notes !== undefined ? notes : null, orderId]
     );
 
-    await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
-    await invalidatePublicCatalogCache().catch(() => {});
-
-    // Notify customer by email
+    const warnings = [];
     try {
-      const [orderData] = await pool.query(
-        'SELECT o.id, o.order_number, o.status, u.name, u.email FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE o.id = ?',
-        [orderId]
-      );
-      if (orderData.length > 0 && orderData[0].email) {
-        sendOrderStatusEmail(
-          orderData[0].email,
-          orderData[0].name || 'Patron',
-          orderId,
-          status,
-          trackingNumber,
-          courier,
-          orderData[0].order_number
-        ).catch(() => {});
-      }
-    } catch {}
+      await syncWebsiteProductsToInventoryMeta(pool);
+    } catch (syncError) {
+      console.error(`Inventory sync failed after order #${orderId} status update:`, syncError);
+      warnings.push('Order status was updated, but inventory sync needs attention.');
+    }
+    try {
+      await invalidatePublicCatalogCache();
+    } catch (cacheError) {
+      console.error(`Catalog cache invalidation failed after order #${orderId} status update:`, cacheError);
+      warnings.push('The public catalog cache could not be refreshed.');
+    }
+
+    const emailStatuses = new Set(['shipped', 'out_for_delivery', 'delivered', 'returned']);
+    const email = emailStatuses.has(status) && status !== previousStatus
+      ? await sendLifecycleStatusEmail(orderData, status, savedTrackingNumber, savedCourier)
+      : { attempted: false, sent: false };
+    if (['packed', 'shipped', 'out_for_delivery', 'delivered', 'returned'].includes(status)) {
+      markOrderLockCompleted(orderData.order_number || orderId, req.invUser.username, req.invUser.fullName, req.invUser.scannerSessionCode);
+      markOrderLockCompleted(orderId, req.invUser.username, req.invUser.fullName, req.invUser.scannerSessionCode);
+    }
 
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
       actionCode: 'ONLINE_ORDER_LIFECYCLE',
-      summary: `Updated Order #${orderId} status to ${status.toUpperCase()}${trackingNumber ? ` (AWB: ${trackingNumber}, Courier: ${courier || 'Standard'})` : ''}.`,
+      summary: `Updated Order #${orderId} status to ${status.toUpperCase()}${savedTrackingNumber ? ` (AWB: ${savedTrackingNumber}, Courier: ${savedCourier || 'Standard'})` : ''}.`,
     });
 
     res.json({
       success: true,
       message: `Online Order #${orderId} updated to ${status.toUpperCase()}.`,
+      emailSent: email.sent,
+      emailError: email.error || null,
+      warnings,
     });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
@@ -4956,10 +5178,7 @@ router.put('/online-orders/:orderId/edit', authenticateInventoryStaff, requirePe
   try {
     const orderId = Number(req.params.orderId);
     const [[existing]] = await pool.query(
-      `SELECT o.*, u.name AS account_customer_name, u.email AS customer_email
-       FROM orders o
-       LEFT JOIN users u ON u.id = o.user_id
-       WHERE o.id = ?`,
+      'SELECT * FROM orders WHERE id = ?',
       [orderId]
     );
     if (!existing) {
@@ -4967,7 +5186,6 @@ router.put('/online-orders/:orderId/edit', authenticateInventoryStaff, requirePe
     }
 
     const {
-      status,
       courier,
       trackingNumber,
       estimatedDeliveryDate,
@@ -4984,8 +5202,11 @@ router.put('/online-orders/:orderId/edit', authenticateInventoryStaff, requirePe
       pincode,
     } = req.body || {};
 
-    if (status && status !== existing.status) {
-      await updateOrderStatus(orderId, status, null, { courier, trackingNumber });
+    if (req.body?.status !== undefined && req.body.status !== existing.status) {
+      return res.status(409).json({
+        success: false,
+        message: 'Change order status using the dedicated lifecycle actions so required validation and customer notifications run.',
+      });
     }
 
     const currentAddr = parseJsonSafe(existing.address_snapshot, {}) || {};
@@ -5031,41 +5252,9 @@ router.put('/online-orders/:orderId/edit', authenticateInventoryStaff, requirePe
       summary: `Edited Order #${existing.order_number || orderId} details (Tracking: ${trackingNumber || existing.tracking_number || 'N/A'}, Location: ${currentLocationCheckpoint || 'Updated'}, City: ${updatedAddr.city || '-'}).`,
     });
 
-    const customerEmail = existing.customer_email || updatedAddr.email || updatedAddr.customer_email;
-    let emailStatus = 'sent';
-    if (customerEmail) {
-      try {
-        await sendOrderModificationEmail({
-          email: customerEmail,
-          name: updatedAddr.full_name || updatedAddr.name || existing.account_customer_name,
-          orderNumber: existing.order_number || orderId,
-          status: status || existing.status,
-          courier: courier !== undefined ? courier : existing.courier,
-          trackingNumber: trackingNumber !== undefined ? trackingNumber : existing.tracking_number,
-          estimatedDeliveryDate: estimatedDeliveryDate || existing.estimated_delivery_date,
-          currentLocationCheckpoint:
-            currentLocationCheckpoint !== undefined
-              ? currentLocationCheckpoint
-              : existing.current_location_checkpoint,
-          address: updatedAddr,
-        });
-      } catch (emailError) {
-        emailStatus = 'failed';
-        console.error(`[Mailer] Failed to send order modification email for Order #${existing.order_number || orderId}:`, emailError);
-      }
-    } else {
-      emailStatus = 'no_email';
-      console.warn(`[Mailer] No customer email available for Order #${existing.order_number || orderId}; modification email was not sent.`);
-    }
-
     res.json({
       success: true,
-      emailStatus,
-      message: emailStatus === 'sent'
-        ? `Order #${existing.order_number || orderId} updated. Customer notification email sent.`
-        : emailStatus === 'failed'
-          ? `Order #${existing.order_number || orderId} updated, but the customer email could not be sent. Please notify them manually.`
-          : `Order #${existing.order_number || orderId} updated. No customer email is on file, so no notification was sent.`,
+      message: `Order #${existing.order_number || orderId} details updated. Customer status emails are sent only by lifecycle transitions.`,
     });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });

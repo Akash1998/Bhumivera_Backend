@@ -56,7 +56,16 @@ const fakePool = {
       return [[]];
     }
     if (/FROM inventory_staff_accounts WHERE id/.test(sql)) {
+      if (Number(params[0]) === 1) {
+        return [[{ id: 1, account_code: 'akash', username: 'akash', full_name: 'Akash Prasad', role: 'admin', status: 'active', password_hash: 'hashed:Admin@123' }]];
+      }
       return [[{ id: 5, account_code: 'BV-IAM-005', username: 'priya', full_name: 'Priya C', role: 'cashier', status: 'active', password_hash: 'hashed:Priya@123' }]];
+    }
+    if (/FROM inventory_staff_accounts ORDER BY/.test(sql)) {
+      return [[
+        { id: 1, account_code: 'akash', username: 'akash', full_name: 'Akash Prasad', role: 'admin', status: 'active', password_hash: 'hashed:Admin@123' },
+        { id: 5, account_code: 'priya', username: 'priya', full_name: 'Priya C', role: 'cashier', status: 'active', password_hash: 'hashed:Priya@123' },
+      ]];
     }
     if (/FROM inventory_scanner_queue/.test(sql)) {
       return [[{ id: 1, session_code: params[0], sku: 'BV-LUX-CFW-01', product_name: 'Charcoal Face Wash', quantity: 2, unit_price: 299, status: 'queued' }]];
@@ -78,7 +87,7 @@ const fakePool = {
     }
     if (/FROM orders/.test(sql)) {
       const id = Number(params[0]) || 1234;
-      return [[{ id, order_number: String(id), status: 'pending', total: 598, address_snapshot: JSON.stringify({ full_name: 'Patron', phone: '9832000000' }) }]];
+      return [[{ id, order_number: String(id), status: 'confirmed', total: 598, address_snapshot: JSON.stringify({ full_name: 'Patron', phone: '9832000000' }) }]];
     }
     if (/UPDATE orders SET status = "packed"/.test(sql)) {
       return [{ affectedRows: 1 }];
@@ -180,7 +189,24 @@ async function invokeRoute(method, routePattern, { path: reqPath, headers = {}, 
   return { status: statusCode, body: responseBody };
 }
 
+async function warmScannerStaffRoster() {
+  const adminToken = JSON.stringify({
+    id: 1,
+    sub: 1,
+    username: 'akash',
+    fullName: 'Akash Prasad',
+    role: 'admin',
+    scope: 'inventory-software',
+  });
+  return invokeRoute('GET', '/iam/users', {
+    headers: { authorization: `Bearer ${adminToken}` },
+  });
+}
+
 test('Staff Mobile Login with Username & Password without pairing QR', async () => {
+  const rosterRes = await warmScannerStaffRoster();
+  assert.equal(rosterRes.status, 200);
+  const beforeLoginSql = sqlQueryCount;
   const loginRes = await invokeRoute('POST', '/scanner/auth/login', {
     body: {
       username: 'priya',
@@ -194,9 +220,11 @@ test('Staff Mobile Login with Username & Password without pairing QR', async () 
   assert.equal(loginRes.body.staff.fullName, 'Priya C');
   assert.ok(loginRes.body.token);
   assert.equal(loginRes.body.staff.permissions.can_pack, true);
+  assert.equal(sqlQueryCount, beforeLoginSql, 'scanner login should authenticate from the in-memory roster');
 });
 
 test('24x7 Workroom Presence ("Go On Work" radar) operates with 0 MySQL queries', async () => {
+  await warmScannerStaffRoster();
   const akashLogin = await invokeRoute('POST', '/scanner/auth/login', {
     body: { username: 'akash', password: 'Admin@123', deviceName: 'Akash PWA' },
   });
@@ -275,9 +303,11 @@ test('24x7 Workroom Presence ("Go On Work" radar) operates with 0 MySQL queries'
 });
 
 test('PWA fulfillment rollback preserves the packing lock, then successful commit completes it', async () => {
+  await warmScannerStaffRoster();
   const loginRes = await invokeRoute('POST', '/scanner/auth/login', {
     body: { username: 'priya', password: 'Priya@123', deviceName: 'PWA Test Device' },
   });
+
   assert.equal(loginRes.status, 200);
   const token = loginRes.body.token;
   const headers = { authorization: `Bearer ${token}` };
@@ -329,6 +359,16 @@ test('PWA fulfillment rollback preserves the packing lock, then successful commi
   assert.ok(transactionEvents.indexOf('commit') < transactionEvents.length);
   const lockAfterCommit = await invokeRoute('GET', '/orders/locks', { headers });
   assert.ok(lockAfterCommit.body.locks.some(lock => lock.orderKey === '9876' && lock.status === 'COMPLETED'));
+});
+
+test('scanner login does not query SQL and reports when the admin roster is not cached', async () => {
+  const beforeSql = sqlQueryCount;
+  const loginRes = await invokeRoute('POST', '/scanner/auth/login', {
+    body: { username: 'not-cached', password: 'anything' },
+  });
+  assert.equal(loginRes.status, 503);
+  assert.equal(loginRes.body.code, 'SCANNER_ROSTER_NOT_LOADED');
+  assert.equal(sqlQueryCount, beforeSql);
 });
 
 test('Multi-staff Order ID mutex lock blocks Priya C when Akash is already billing Order #1234', async () => {
