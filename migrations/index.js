@@ -1035,6 +1035,21 @@ const migrations = [
     // This migration is already recorded and applied in production; keep its registry entry without replaying it.
     up: async () => {},
   },
+  {
+    version: 82,
+    name: 'allow out for delivery order status',
+    up: async () => {
+      const [columns] = await pool.query("SHOW COLUMNS FROM orders LIKE 'status'");
+      if (!columns.length) {
+        throw new Error('Cannot update order status enum: orders.status column was not found.');
+      }
+      if (!String(columns[0].Type || '').toLowerCase().includes("'out_for_delivery'")) {
+        await pool.query(
+          "ALTER TABLE orders MODIFY COLUMN status ENUM('pending','confirmed','packed','shipped','out_for_delivery','delivered','cancelled','returned','archived') DEFAULT 'pending'"
+        );
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

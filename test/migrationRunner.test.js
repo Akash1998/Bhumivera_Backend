@@ -218,11 +218,34 @@ describe('runMigrations', () => {
 
     await runMigrations(pool, migrations, { logger });
 
-    assert.equal(pool.applied.size, 81);
+    assert.equal(pool.applied.size, 82);
     assert.equal(
       pool.applied.get(81),
       'seed and synchronize architectural regimen combos in products table'
     );
+    assert.equal(pool.applied.get(82), 'allow out for delivery order status');
+  });
+
+  it('adds out_for_delivery to the existing order status enum when needed', async () => {
+    const migration = migrations.find(candidate => candidate.version === 82);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      if (sql.startsWith('SHOW COLUMNS FROM orders')) {
+        return [[{ Type: "enum('pending','confirmed','packed','shipped','delivered','cancelled','returned','archived')" }], []];
+      }
+      return [{ affectedRows: 1 }, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.equal(statements.length, 2);
+    assert.match(statements[1], /out_for_delivery/);
   });
 
   it('seeds default post-order spin rewards without replacing existing admin settings', async () => {
