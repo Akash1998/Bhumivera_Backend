@@ -15,6 +15,7 @@ const { listLoyaltyTiers } = require('../models/loyaltyTierModel');
 const {
   getAdminConfig: getAllocationControlsConfig,
   getPublicSnapshots: getCatalogAvailabilitySnapshots,
+  getTodayProductSales,
   getTodaysBestsellers,
   saveAdminConfig: saveAllocationControlsConfig,
 } = require('../services/scarcitySimulatorService');
@@ -41,6 +42,23 @@ router.get(['/catalog-highlights', '/scarcity-simulator/popular-today'], async (
     res.json({ products, source: 'verified_orders' });
   } catch {
     res.status(500).json({ code: 'POPULAR_PRODUCTS_LOAD_FAILED', message: 'Could not load today’s most ordered products.' });
+  }
+});
+
+router.get('/catalog-sales/today', async (req, res) => {
+  try {
+    const ids = req.query.ids ? String(req.query.ids).split(',') : [];
+    if (!ids.length) {
+      return res.status(400).json({ code: 'INVALID_PRODUCT_IDS', message: 'At least one product ID is required.' });
+    }
+    const sales = await getTodayProductSales(ids);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(sales);
+  } catch (err) {
+    if (err.status === 400) {
+      return res.status(400).json({ code: 'INVALID_PRODUCT_IDS', message: err.message });
+    }
+    res.status(500).json({ code: 'PRODUCT_SALES_LOAD_FAILED', message: 'Could not load today’s verified product sales.' });
   }
 });
 

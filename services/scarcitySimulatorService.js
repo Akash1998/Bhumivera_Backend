@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const {
   createDefaultConfig,
   createDefaultProduct,
+  getIstDayInfo,
   getIstDayRange,
   getProductSnapshot,
   normalizeStoredConfig,
@@ -229,9 +230,38 @@ const queryTodaysBestsellers = async () => {
   }));
 };
 
+const getTodayProductSales = async productIds => {
+  const ids = parseProductIds(productIds);
+  if (!ids.length) return { dayKey: getIstDayInfo().dayKey, products: {} };
+
+  const range = getIstDayRange();
+  const placeholders = ids.map(() => '?').join(', ');
+  const [rows] = await pool.query(
+    `SELECT p.id, COALESCE(SUM(CASE WHEN o.id IS NOT NULL THEN oi.quantity ELSE 0 END), 0) AS units_sold_today
+     FROM products p
+     LEFT JOIN order_items oi ON oi.product_id = p.id
+     LEFT JOIN orders o ON o.id = oi.order_id
+       AND o.created_at >= FROM_UNIXTIME(?) AND o.created_at < FROM_UNIXTIME(?)
+       AND ${PURCHASE_STATUS_SQL}
+     WHERE p.id IN (${placeholders}) AND p.status = 'active'
+     GROUP BY p.id`,
+    [range.startEpochSeconds, range.endEpochSeconds, ...ids]
+  );
+  const salesById = new Map(rows.map(row => [String(row.id), Number(row.units_sold_today) || 0]));
+
+  return {
+    dayKey: getIstDayInfo().dayKey,
+    products: Object.fromEntries(ids.map(id => [
+      id,
+      { unitsOrdered: salesById.get(id) || 0 },
+    ])),
+  };
+};
+
 module.exports = {
   getAdminConfig,
   getPublicSnapshots,
+  getTodayProductSales,
   getTodaysBestsellers,
   parseProductIds,
   saveAdminConfig,
