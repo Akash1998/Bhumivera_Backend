@@ -210,6 +210,21 @@ describe('runMigrations', () => {
     );
   });
 
+  it('accepts the production regimen-combo migration history marker', async () => {
+    const pool = createPool();
+    for (const migration of migrations) {
+      pool.applied.set(migration.version, migration.name);
+    }
+
+    await runMigrations(pool, migrations, { logger });
+
+    assert.equal(pool.applied.size, 81);
+    assert.equal(
+      pool.applied.get(81),
+      'seed and synchronize architectural regimen combos in products table'
+    );
+  });
+
   it('seeds default post-order spin rewards without replacing existing admin settings', async () => {
     const migration = migrations.find(candidate => candidate.name === 'seed default post-order spin rewards');
     const originalQuery = pool.query;

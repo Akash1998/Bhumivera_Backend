@@ -1029,6 +1029,12 @@ const migrations = [
       `).catch(() => {});
     },
   },
+  {
+    version: 81,
+    name: 'seed and synchronize architectural regimen combos in products table',
+    // This migration is already recorded and applied in production; keep its registry entry without replaying it.
+    up: async () => {},
+  },
 ];
 
 module.exports = migrations;
