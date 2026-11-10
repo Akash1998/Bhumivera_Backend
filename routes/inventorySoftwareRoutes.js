@@ -1221,6 +1221,7 @@ router.delete('/iam/users/:id', authenticateInventoryStaff, requireIamAdmin, asy
 // 3. UNIFIED BOOTSTRAP & REAL-TIME WEBSITE SYNC ENDPOINTS
 const BOOTSTRAP_HEAVY_WORK_MS = 5 * 60 * 1000;
 let lastBootstrapHeavyWorkAt = 0;
+let bootstrapProductSyncPromise = null;
 
 router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
   try {
@@ -1230,11 +1231,11 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       staffRows.forEach(cacheScannerStaffAccount);
       scannerRosterLoaded = true;
     }
-    if (Date.now() - lastBootstrapHeavyWorkAt >= BOOTSTRAP_HEAVY_WORK_MS) {
+    const shouldSyncWebsiteProducts =
+      !bootstrapProductSyncPromise &&
+      Date.now() - lastBootstrapHeavyWorkAt >= BOOTSTRAP_HEAVY_WORK_MS;
+    if (shouldSyncWebsiteProducts) {
       lastBootstrapHeavyWorkAt = Date.now();
-      await syncWebsiteProductsToInventoryMeta(pool);
-      // Today's SQL backup is guaranteed by the first load of each window; no need to re-check on every load.
-      void ensureDailyAutoBackup(pool, req.invUser.username || 'auto-daily').catch(() => {});
     }
     const [
       [itemRows],
@@ -1637,6 +1638,19 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       carriers,
       cfg,
     });
+    if (shouldSyncWebsiteProducts) {
+      res.once('finish', () => {
+        bootstrapProductSyncPromise = syncWebsiteProductsToInventoryMeta(pool)
+          .then(() => ensureDailyAutoBackup(pool, req.invUser.username || 'auto-daily'))
+          .catch(err => {
+            lastBootstrapHeavyWorkAt = 0;
+            console.error('[INVENTORY_BOOTSTRAP_BACKGROUND_SYNC_ERROR]', err);
+          })
+          .finally(() => {
+            bootstrapProductSyncPromise = null;
+          });
+      });
+    }
   } catch (err) {
     console.error('[INVENTORY_BOOTSTRAP_ERROR]', err);
     res.status(500).json({ success: false, message: 'Failed to load inventory suite data: ' + err.message });
