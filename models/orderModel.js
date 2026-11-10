@@ -98,6 +98,7 @@ const createOrdersTables = async () => {
     await addCol('orders', 'cancel_reason', 'TEXT');
     await addCol('orders', 'notes', 'TEXT');
     await addCol('orders', 'tracking_number', 'VARCHAR(255)');
+    await addCol('orders', 'tracking_url', 'VARCHAR(1000)');
     await addCol('orders', 'courier', 'VARCHAR(255)');
     await addCol('orders', 'whatsapp_updates_opt_in', 'TINYINT(1) NOT NULL DEFAULT 0');
     await addCol('orders', 'whatsapp_consent_at', 'DATETIME DEFAULT NULL');
@@ -841,7 +842,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
   try {
     await conn.beginTransaction();
     const [orders] = await conn.query(
-      'SELECT id, order_number, user_id, status, payment_mode, payment_status, payment_id, tracking_number, courier, total, referral_wallet_amount, coupon_code, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, shopping_wallet_reward_awarded_at FROM orders WHERE id = ? FOR UPDATE',
+      'SELECT id, order_number, user_id, status, payment_mode, payment_status, payment_id, tracking_number, courier, tracking_url, total, referral_wallet_amount, coupon_code, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, shopping_wallet_reward_awarded_at FROM orders WHERE id = ? FOR UPDATE',
       [orderId]
     );
     const order = orders?.[0];
@@ -861,7 +862,6 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
       archived: [],
     };
     if (status !== order.status && !allowedNextStatuses[order.status]?.includes(status)) {
-      await conn.rollback();
       throw {
         status: 409,
         code: 'ORDER_STATUS_TRANSITION_INVALID',
@@ -869,7 +869,6 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
       };
     }
     if (status === 'packed' && metadata.verifiedPackUpload !== true) {
-      await conn.rollback();
       throw {
         status: 409,
         code: 'PACKING_UPLOAD_REQUIRED',
@@ -877,7 +876,6 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
       };
     }
     if (status === 'shipped' && !(metadata.trackingNumber || order.tracking_number) ) {
-      await conn.rollback();
       throw {
         status: 400,
         code: 'SHIPMENT_TRACKING_REQUIRED',
@@ -885,16 +883,21 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
       };
     }
     if (status === 'shipped' && !(metadata.courier || order.courier)) {
-      await conn.rollback();
       throw {
         status: 400,
         code: 'SHIPMENT_COURIER_REQUIRED',
         message: 'Courier partner is required at shipment handover.',
       };
     }
+    if (status === 'shipped' && !(metadata.trackingUrl || order.tracking_url)) {
+      throw {
+        status: 400,
+        code: 'SHIPMENT_TRACKING_URL_REQUIRED',
+        message: 'A courier tracking link is required when the order is shipped.',
+      };
+    }
     assertOrderStatusTransition(order, status, metadata);
     if (statusRank[status] < statusRank[order.status]) {
-      await conn.rollback();
       throw { status: 400, message: `Order cannot move backward from ${order.status} to ${status}.` };
     }
 
@@ -1015,8 +1018,24 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
        payment_status = CASE WHEN ? = 'delivered' AND payment_mode = 'COD' THEN 'paid' ELSE payment_status END,
        delivered_at = CASE WHEN ? = 'delivered' THEN COALESCE(delivered_at, NOW()) ELSE delivered_at END,
        cancel_reason = COALESCE(?, cancel_reason),
-       tracking_number = COALESCE(?, tracking_number), courier = COALESCE(?, courier) WHERE id = ?`,
-      [status, status, status, cancelReason || null, metadata.trackingNumber || null, metadata.courier || null, orderId]
+       tracking_number = COALESCE(?, tracking_number), courier = COALESCE(?, courier),
+       tracking_url = COALESCE(?, tracking_url),
+       estimated_delivery_date = COALESCE(?, estimated_delivery_date),
+       current_location_checkpoint = COALESCE(?, current_location_checkpoint),
+       notes = COALESCE(?, notes) WHERE id = ?`,
+      [
+        status,
+        status,
+        status,
+        cancelReason || null,
+        metadata.trackingNumber || null,
+        metadata.courier || null,
+        metadata.trackingUrl || null,
+        metadata.estimatedDeliveryDate || null,
+        metadata.currentLocationCheckpoint || null,
+        metadata.notes !== undefined ? metadata.notes : null,
+        orderId,
+      ]
     );
     await conn.commit();
     return true;

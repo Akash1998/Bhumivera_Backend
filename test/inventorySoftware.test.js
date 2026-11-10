@@ -120,13 +120,13 @@ test('generateWavePicklist groups orders and aggregates items by bin walk path',
   assert.equal(picklist.walkPath[0].totalPickQuantity, 5);
 });
 
-test('generateCarrierManifest compiles shipment manifest with code and weight calculation', async () => {
+test('generateCarrierManifest includes only shipped orders with real tracking details', async () => {
   const { generateCarrierManifest } = require('../models/inventorySoftwareModel');
   const fakeDb = {
     query: async () => [
       [
-        { id: 201, order_number: 'BV-ORD-201', status: 'packed', courier: 'shiprocket', tracking_number: 'AWB-201', total: 1299, payment_mode: 'prepaid', customer_name: 'Alice', customer_phone: '9876543210' },
-        { id: 202, order_number: 'BV-ORD-202', status: 'packed', courier: 'shiprocket', tracking_number: 'AWB-202', total: 1499, payment_mode: 'cod', customer_name: 'Bob', customer_phone: '9876543211' },
+        { id: 201, order_number: 'BV-ORD-201', status: 'shipped', courier: 'shiprocket', tracking_number: 'AWB-201', tracking_url: 'https://carrier.example/201', total: 1299, payment_mode: 'prepaid', address_snapshot: '{"city":"Asansol","pincode":"713304"}', customer_name: 'Alice', customer_phone: '9876543210' },
+        { id: 202, order_number: 'BV-ORD-202', status: 'shipped', courier: 'shiprocket', tracking_number: 'AWB-202', tracking_url: 'https://carrier.example/202', total: 1499, payment_mode: 'cod', address_snapshot: '{"city":"Durgapur","pincode":"713201"}', customer_name: 'Bob', customer_phone: '9876543211' },
       ],
     ],
   };
@@ -136,7 +136,14 @@ test('generateCarrierManifest compiles shipment manifest with code and weight ca
   assert.equal(manifest.totalShipments, 2);
   assert.equal(manifest.courier, 'shiprocket');
   assert.equal(manifest.generatedBy, 'dispatcher_raj');
-  assert.equal(manifest.parcels[1].collectableAmount, 1499);
+  assert.equal(manifest.shipments[1].collectableAmount, 1499);
+  assert.equal(manifest.shipments[1].trackingNumber, 'AWB-202');
+  await assert.rejects(
+    () => generateCarrierManifest({
+      query: async () => [[{ id: 203, order_number: 'BV-ORD-203', status: 'packed' }]],
+    }, [203], 'shiprocket', 'dispatcher_raj'),
+    error => error.status === 409 && error.code === 'SHIPMENT_DETAILS_REQUIRED',
+  );
 });
 
 

@@ -267,7 +267,7 @@ router.get('/orders/:id', authenticateAdmin, async (req, res) => {
 
 router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
   try {
-    const { status, tracking_number, courier } = req.body;
+    const { status, tracking_number, tracking_url, trackingUrl, courier } = req.body;
     const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'returned'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ message: 'Invalid status' });
@@ -323,12 +323,18 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
     const updated = await updateOrderStatus(orderId, status, req.body.cancel_reason, {
       trackingNumber: tracking_number,
       courier,
+      trackingUrl: trackingUrl || tracking_url,
     });
     if (updated === false) return res.status(404).json({ message: 'Order not found' });
     const updatedOrder = await getOrderById(orderId);
     let emailSent = false;
     let emailError = null;
-    if (updatedOrder?.user_email && previousOrder.status !== status && ['shipped', 'out_for_delivery', 'delivered', 'returned'].includes(status)) {
+    const shipmentDetailsChanged = status === 'shipped' && (
+      String(updatedOrder?.tracking_number || '') !== String(previousOrder.tracking_number || '') ||
+      String(updatedOrder?.courier || '') !== String(previousOrder.courier || '') ||
+      String(updatedOrder?.tracking_url || '') !== String(previousOrder.tracking_url || '')
+    );
+    if (updatedOrder?.user_email && (previousOrder.status !== status || shipmentDetailsChanged) && ['shipped', 'out_for_delivery', 'delivered', 'returned'].includes(status)) {
       try {
         await sendOrderStatusEmail(
           updatedOrder.user_email,
@@ -337,7 +343,8 @@ router.put('/orders/:id/status', authenticateAdmin, async (req, res) => {
           status,
           updatedOrder.tracking_number,
           updatedOrder.courier,
-          updatedOrder.order_number
+          updatedOrder.order_number,
+          { trackingUrl: updatedOrder.tracking_url, items: updatedOrder.items }
         );
         emailSent = true;
       } catch (emailFailure) {

@@ -1277,7 +1277,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         SELECT o.id, o.order_number, o.user_id, o.status, o.delivery_type,
                o.payment_mode, o.payment_status, o.payment_id,
                o.subtotal, o.discount, o.tier_discount, o.referral_wallet_amount,
-               o.shipping_cost, o.total, o.courier, o.tracking_number,
+               o.shipping_cost, o.total, o.courier, o.tracking_number, o.tracking_url,
                o.notes, o.cancel_reason, o.created_at, o.updated_at, o.delivered_at,
                o.estimated_delivery_date, o.current_location_checkpoint,
                o.rto_reason, o.rto_restock_mode, o.rto_processed_at, o.label_printed_at,
@@ -1575,6 +1575,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         total: Number(o.total) || 0,
         courier: o.courier || '',
         trackingNumber: o.tracking_number || '',
+        trackingUrl: o.tracking_url || '',
         estimatedDeliveryDate: estDate,
         currentLocationCheckpoint: o.current_location_checkpoint || defaultCheckpoint,
         rtoReason: o.rto_reason || '',
@@ -1752,7 +1753,7 @@ router.get('/orders', authenticateInventoryStaff, async (req, res) => {
       `SELECT o.id, o.order_number, o.user_id, o.status, o.delivery_type,
               o.payment_mode, o.payment_status, o.payment_id,
               o.subtotal, o.discount, o.tier_discount, o.referral_wallet_amount,
-              o.shipping_cost, o.total, o.courier, o.tracking_number,
+              o.shipping_cost, o.total, o.courier, o.tracking_number, o.tracking_url,
               o.notes, o.cancel_reason, o.created_at, o.updated_at, o.delivered_at,
               o.estimated_delivery_date, o.current_location_checkpoint,
               o.rto_reason, o.rto_restock_mode, o.rto_processed_at, o.label_printed_at,
@@ -1806,6 +1807,7 @@ router.get('/orders', authenticateInventoryStaff, async (req, res) => {
         total: Number(o.total) || 0,
         courier: o.courier || '',
         trackingNumber: o.tracking_number || '',
+        trackingUrl: o.tracking_url || '',
         currentLocationCheckpoint: o.current_location_checkpoint || '',
         labelPrintedAt: o.label_printed_at || null,
         rtoReason: o.rto_reason || '',
@@ -4985,7 +4987,7 @@ router.post('/grn/inward', authenticateInventoryStaff, requirePermission('can_ma
 });
 
 // 9. FULL ONLINE ORDER LIFECYCLE, DISPATCH, TRACKING, LABEL PRINTING & CARRIER BOOKING
-const sendLifecycleStatusEmail = async (orderData, status, trackingNumber, courier) => {
+const sendLifecycleStatusEmail = async (orderData, status, trackingNumber, courier, trackingUrl = '', items = []) => {
   if (!orderData?.email) {
     return { attempted: true, sent: false, error: 'Customer email address is not available.' };
   }
@@ -4997,7 +4999,8 @@ const sendLifecycleStatusEmail = async (orderData, status, trackingNumber, couri
       status,
       trackingNumber || null,
       courier || null,
-      orderData.order_number
+      orderData.order_number,
+      { trackingUrl, items }
     );
     return { attempted: true, sent: true };
   } catch (error) {
@@ -5007,12 +5010,14 @@ const sendLifecycleStatusEmail = async (orderData, status, trackingNumber, couri
 };
 
 router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
+  let dispatchStage = 'validate request';
   try {
     const orderId = Number(req.params.orderId);
     const {
       status,
       courier,
       trackingNumber,
+      trackingUrl,
       estimatedDeliveryDate,
       currentLocationCheckpoint,
       notes,
@@ -5027,8 +5032,9 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
       });
     }
 
+    dispatchStage = 'load order';
     const [[orderData]] = await pool.query(
-      `SELECT o.id, o.order_number, o.status, o.tracking_number, o.courier,
+      `SELECT o.id, o.order_number, o.status, o.tracking_number, o.courier, o.tracking_url,
               u.name, u.email
        FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
       [orderId]
@@ -5096,18 +5102,29 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
 
     const savedTrackingNumber = String(trackingNumber || orderData.tracking_number || '').trim();
     const savedCourier = String(courier || orderData.courier || '').trim();
-    if (status === 'shipped' && (!savedTrackingNumber || !savedCourier)) {
+    const savedTrackingUrl = String(trackingUrl || orderData.tracking_url || '').trim();
+    const shipmentDetailsChanged = status === 'shipped' && (
+      savedTrackingNumber !== String(orderData.tracking_number || '').trim() ||
+      savedCourier !== String(orderData.courier || '').trim() ||
+      savedTrackingUrl !== String(orderData.tracking_url || '').trim()
+    );
+    if (status === 'shipped' && (!savedTrackingNumber || !savedCourier || !savedTrackingUrl)) {
       return res.status(400).json({
         success: false,
-        message: 'Add the courier and tracking/AWB details when shipping the packed order. Packing itself does not require tracking details.',
+        message: 'Add the courier, tracking/AWB number, and tracking link when shipping the packed order. Packing itself does not require shipping details.',
       });
     }
-
-    const updated = await updateOrderStatus(orderId, status, cancelReason || null, {
-      courier: savedCourier,
-      trackingNumber: savedTrackingNumber,
-    });
-    if (!updated) return res.status(404).json({ success: false, message: 'Order not found.' });
+    if (trackingUrl) {
+      let parsedTrackingUrl;
+      try {
+        parsedTrackingUrl = new URL(savedTrackingUrl);
+      } catch {
+        return res.status(400).json({ success: false, message: 'Enter a valid tracking link, including https://.' });
+      }
+      if (!['http:', 'https:'].includes(parsedTrackingUrl.protocol)) {
+        return res.status(400).json({ success: false, message: 'Tracking links must use http:// or https://.' });
+      }
+    }
 
     const defaultCheckpoint =
       currentLocationCheckpoint ||
@@ -5123,14 +5140,16 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
         ? 'Confirmed & Stock Reserved at Asansol Hub'
         : null);
 
-    await pool.query(
-      `UPDATE orders
-       SET estimated_delivery_date = COALESCE(?, estimated_delivery_date),
-           current_location_checkpoint = COALESCE(?, current_location_checkpoint),
-           notes = COALESCE(?, notes)
-       WHERE id = ?`,
-      [estimatedDeliveryDate || null, defaultCheckpoint, notes !== undefined ? notes : null, orderId]
-    );
+    dispatchStage = 'commit lifecycle transition';
+    const updated = await updateOrderStatus(orderId, status, cancelReason || null, {
+      courier: savedCourier,
+      trackingNumber: savedTrackingNumber,
+      trackingUrl: savedTrackingUrl,
+      estimatedDeliveryDate,
+      currentLocationCheckpoint: defaultCheckpoint,
+      notes,
+    });
+    if (!updated) return res.status(404).json({ success: false, message: 'Order not found.' });
 
     const warnings = [];
     try {
@@ -5147,20 +5166,40 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
     }
 
     const emailStatuses = new Set(['shipped', 'out_for_delivery', 'delivered', 'returned']);
-    const email = emailStatuses.has(status) && status !== previousStatus
-      ? await sendLifecycleStatusEmail(orderData, status, savedTrackingNumber, savedCourier)
+    let emailItems = [];
+    if (status === 'shipped' && (status !== previousStatus || shipmentDetailsChanged)) {
+      try {
+        const [rows] = await pool.query(
+          'SELECT name, quantity, price FROM order_items WHERE order_id = ? ORDER BY id ASC',
+          [orderId]
+        );
+        emailItems = rows;
+      } catch (itemsError) {
+        console.error(`Could not load item details for shipment email on order #${orderId}:`, itemsError);
+        warnings.push('Order shipped, but item details could not be added to the customer email.');
+      }
+    }
+    dispatchStage = 'send customer update';
+    const email = emailStatuses.has(status) && (status !== previousStatus || shipmentDetailsChanged)
+      ? await sendLifecycleStatusEmail(orderData, status, savedTrackingNumber, savedCourier, savedTrackingUrl, emailItems)
       : { attempted: false, sent: false };
     if (['packed', 'shipped', 'out_for_delivery', 'delivered', 'returned'].includes(status)) {
       markOrderLockCompleted(orderData.order_number || orderId, req.invUser.username, req.invUser.fullName, req.invUser.scannerSessionCode);
       markOrderLockCompleted(orderId, req.invUser.username, req.invUser.fullName, req.invUser.scannerSessionCode);
     }
 
-    await appendInventoryAuditLog(pool, {
-      actorUsername: req.invUser.username,
-      actorRole: req.invUser.role,
-      actionCode: 'ONLINE_ORDER_LIFECYCLE',
-      summary: `Updated Order #${orderId} status to ${status.toUpperCase()}${savedTrackingNumber ? ` (AWB: ${savedTrackingNumber}, Courier: ${savedCourier || 'Standard'})` : ''}.`,
-    });
+    dispatchStage = 'write audit entry';
+    try {
+      await appendInventoryAuditLog(pool, {
+        actorUsername: req.invUser.username,
+        actorRole: req.invUser.role,
+        actionCode: 'ONLINE_ORDER_LIFECYCLE',
+        summary: `Updated Order #${orderId} status to ${status.toUpperCase()}${savedTrackingNumber ? ` (AWB: ${savedTrackingNumber}, Courier: ${savedCourier || 'Standard'})` : ''}.`,
+      });
+    } catch (auditError) {
+      console.error(`Audit log failed after order #${orderId} status was committed:`, auditError);
+      warnings.push('Order status was updated, but its audit entry could not be saved.');
+    }
 
     res.json({
       success: true,
@@ -5170,7 +5209,13 @@ router.put('/online-orders/:orderId/dispatch-status', authenticateInventoryStaff
       warnings,
     });
   } catch (err) {
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    console.error(`Dispatch status failed during "${dispatchStage}" for order #${req.params.orderId}:`, err);
+    res.status(err.status || 500).json({
+      success: false,
+      code: err.code || 'DISPATCH_STATUS_UPDATE_FAILED',
+      stage: dispatchStage,
+      message: err.message || 'Could not update order dispatch status.',
+    });
   }
 });
 
@@ -5291,6 +5336,19 @@ router.post('/online-orders/:orderId/book-carrier-label', authenticateInventoryS
     const provider = String(req.body?.provider || 'shiprocket').toLowerCase();
     if (!PROVIDERS.includes(provider)) {
       return res.status(400).json({ success: false, message: 'Select Shiprocket or Delhivery.' });
+    }
+    const [[shipment]] = await pool.query(
+      'SELECT status, courier, tracking_number, tracking_url FROM orders WHERE id = ?',
+      [orderId]
+    );
+    if (!shipment) return res.status(404).json({ success: false, message: 'Order not found.' });
+    if (!['shipped', 'out_for_delivery', 'delivered'].includes(String(shipment.status || '').toLowerCase()) ||
+        !shipment.courier || !shipment.tracking_number || !shipment.tracking_url) {
+      return res.status(409).json({
+        success: false,
+        code: 'SHIPMENT_DETAILS_REQUIRED',
+        message: 'Shipping documents are locked until the order is shipped with courier, tracking/AWB number, and tracking link.',
+      });
     }
     const dimensions = {
       weight: Math.max(0.1, Number(req.body?.weight) || 0.5),

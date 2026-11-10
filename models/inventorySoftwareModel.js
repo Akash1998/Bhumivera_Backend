@@ -416,6 +416,7 @@ async function initInventorySoftwareTables(db = pool) {
   // Enhance orders table with full order lifecycle & RTO columns
   await ensureColumnExists(db, 'orders', 'estimated_delivery_date', 'DATE DEFAULT NULL');
   await ensureColumnExists(db, 'orders', 'current_location_checkpoint', 'VARCHAR(255) DEFAULT NULL');
+  await ensureColumnExists(db, 'orders', 'tracking_url', 'VARCHAR(1000) DEFAULT NULL');
   await ensureColumnExists(db, 'orders', 'rto_reason', 'VARCHAR(255) DEFAULT NULL');
   await ensureColumnExists(db, 'orders', 'rto_restock_mode', "ENUM('NONE','RESTOCKED','QUARANTINED') NOT NULL DEFAULT 'NONE'");
   await ensureColumnExists(db, 'orders', 'rto_processed_at', 'DATETIME DEFAULT NULL');
@@ -2041,13 +2042,32 @@ async function generateCarrierManifest(db = pool, orderIds = [], courier = 'All 
 
   const placeholders = orderIds.map(() => '?').join(',');
   const [orders] = await db.query(`
-    SELECT o.id, o.order_number, o.status, o.courier, o.tracking_number,
-           o.total, o.payment_mode, o.created_at,
+    SELECT o.id, o.order_number, o.status, o.courier, o.tracking_number, o.tracking_url,
+           o.total, o.payment_mode, o.created_at, o.address_snapshot,
            u.name AS customer_name, u.phone AS customer_phone
     FROM orders o
     LEFT JOIN users u ON u.id = o.user_id
     WHERE o.id IN (${placeholders})
   `, orderIds);
+
+  const foundOrderIds = new Set(orders.map(order => Number(order.id)));
+  const missingOrderIds = [...new Set(orderIds.map(Number))].filter(id => !foundOrderIds.has(id));
+  if (missingOrderIds.length > 0) {
+    throw Object.assign(new Error(`Order(s) not found: ${missingOrderIds.join(', ')}.`), { status: 404, code: 'MANIFEST_ORDER_NOT_FOUND' });
+  }
+
+  const ineligible = orders.filter(order =>
+    !['shipped', 'out_for_delivery', 'delivered'].includes(String(order.status || '').toLowerCase()) ||
+    !order.courier ||
+    !order.tracking_number ||
+    !order.tracking_url
+  );
+  if (ineligible.length > 0) {
+    throw Object.assign(
+      new Error(`Shipping documents require shipped orders with a courier, tracking/AWB number, and tracking link. Ineligible order(s): ${ineligible.map(order => order.order_number || order.id).join(', ')}.`),
+      { status: 409, code: 'SHIPMENT_DETAILS_REQUIRED' }
+    );
+  }
 
   const manifestCode = `BV-MAN-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
   const totalWeightKg = (orders.length * 0.45).toFixed(2);
@@ -2059,16 +2079,30 @@ async function generateCarrierManifest(db = pool, orderIds = [], courier = 'All 
     totalWeightKg: Number(totalWeightKg),
     generatedBy: actorUsername,
     generatedAt: new Date().toISOString(),
-    parcels: orders.map(o => ({
+    shipments: orders.map(o => {
+      let address = o.address_snapshot || {};
+      if (typeof address === 'string') {
+        try {
+          address = JSON.parse(address);
+        } catch {
+          address = {};
+        }
+      }
+      return {
       orderId: o.id,
       orderNumber: o.order_number || `BV-${o.id}`,
       customerName: o.customer_name || 'Walk-in / Patron',
       phone: o.customer_phone || 'N/A',
-      awb: o.tracking_number || `AWB-${o.id}-${Date.now().toString().slice(-4)}`,
+      trackingNumber: o.tracking_number,
+      trackingUrl: o.tracking_url,
+      destinationCity: address.city || address.district || '',
+      pincode: address.pincode || address.postal_code || address.zip || '',
       courier: o.courier || courier,
       paymentMode: o.payment_mode || 'Prepaid',
       collectableAmount: o.payment_mode === 'cod' ? Number(o.total) : 0,
-    })),
+      declaredValue: Number(o.total) || 0,
+      };
+    }),
   };
 }
 

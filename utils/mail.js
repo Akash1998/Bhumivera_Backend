@@ -134,7 +134,7 @@ function sendMail({ to, subject, html, text, from, timeoutMs }) {
   });
 }
 
-const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null, publicOrderNumber = null) => {
+const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber = null, courier = null, publicOrderNumber = null, shipment = {}) => {
   const formattedId = String(publicOrderNumber || orderId).padStart(9, '0');
   const safeName = escapeHtml(name || 'Bhumivera customer');
   
@@ -150,13 +150,24 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
 
   const config = statusConfig[status.toLowerCase()] || statusConfig.pending;
   
+  const suppliedTrackingUrl = String(shipment.trackingUrl || '').trim();
+  const trackingHref = /^https?:\/\//i.test(suppliedTrackingUrl)
+    ? suppliedTrackingUrl
+    : `https://www.google.com/search?q=${encodeURIComponent(`${trackingNumber || ''} ${courier || ''} tracking`)}`;
   const trackingHtml = (trackingNumber && courier) ? `
       <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 20px; margin-top: 30px;">
         <h4 style="margin: 0 0 10px 0; color: #166534; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Tracking Information</h4>
         <p style="margin: 0 0 5px 0; color: #374151; font-size: 15px;"><strong>Courier:</strong> ${escapeHtml(courier)}</p>
         <p style="margin: 0 0 20px 0; color: #374151; font-size: 15px;"><strong>Tracking Number:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 3px 8px; border-radius: 4px;">${escapeHtml(trackingNumber)}</span></p>
-        <a href="https://www.google.com/search?q=${encodeURIComponent(`${trackingNumber} ${courier} tracking`)}" style="display: inline-block; background-color: #10b981; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 13px; font-weight: bold; text-align: center;">Track Your Package</a>
+        <a href="${escapeHtml(trackingHref)}" style="display: inline-block; background-color: #10b981; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 13px; font-weight: bold; text-align: center;">Track Your Package</a>
       </div>` : '';
+  const itemRows = Array.isArray(shipment.items) ? shipment.items : [];
+  const itemsHtml = itemRows.length
+    ? `<div style="margin-top:24px"><h3 style="margin:0 0 10px;color:#1e293b;font-size:14px;text-transform:uppercase">Items in this shipment</h3><ul style="margin:0;padding-left:20px;color:#4b5563;line-height:1.8">${itemRows.map(item => `<li>${escapeHtml(item.name || 'Product')} × ${Math.max(1, Number(item.quantity) || 1)}</li>`).join('')}</ul></div>`
+    : '';
+  const itemsText = itemRows.length
+    ? `\n\nItems in this shipment:\n${itemRows.map(item => `• ${item.name || 'Product'} × ${Math.max(1, Number(item.quantity) || 1)}`).join('\n')}`
+    : '';
 
   const htmlTemplate = `
     <!DOCTYPE html>
@@ -176,6 +187,7 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
           <p style="color: #6b7280; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 25px;">Order ID: <strong style="color: #111827;">#${formattedId}</strong></p>
           <p style="font-size: 16px; margin-bottom: 20px; color: #1f2937;">Dear ${safeName},</p>
           <p style="font-size: 15px; line-height: 1.7; color: #4b5563; margin-bottom: 30px;">${config.msg}</p>
+          ${itemsHtml}
           ${trackingHtml}
         </div>
         <div style="background-color: #f8fafc; padding: 30px 40px; border-top: 1px solid #e2e8f0;">
@@ -192,7 +204,7 @@ const sendOrderStatusEmail = async (email, name, orderId, status, trackingNumber
       to: email,
       subject: `[Bhumivera] Update on Order #${formattedId}`,
       html: htmlTemplate,
-      text: `${config.title} for Bhumivera order #${formattedId}\n\nDear ${name || 'Bhumivera customer'},\n${config.msg}${trackingNumber && courier ? `\n\nCourier: ${courier}\nTracking number: ${trackingNumber}\nTrack: https://www.google.com/search?q=${encodeURIComponent(`${trackingNumber} ${courier} tracking`)}` : ''}\n\nSupport: https://www.bhumivera.com/contact\nWhatsApp: https://wa.me/917430985647\nEmail: support@bhumivera.com`
+      text: `${config.title} for Bhumivera order #${formattedId}\n\nDear ${name || 'Bhumivera customer'},\n${config.msg}${itemsText}${trackingNumber && courier ? `\n\nCourier: ${courier}\nTracking number: ${trackingNumber}\nTrack: ${trackingHref}` : ''}\n\nSupport: https://www.bhumivera.com/contact\nWhatsApp: https://wa.me/917430985647\nEmail: support@bhumivera.com`
     });
   } catch (error) {
     console.error("Mailrelay Delivery Error:", error);

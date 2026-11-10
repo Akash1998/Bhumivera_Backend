@@ -162,7 +162,7 @@ router.post("/:id/cancel", authenticateUser, async (req, res) => {
 router.put("/:id/status", authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, trackingNumber, courier } = req.body;
+    const { status, trackingNumber, trackingUrl, tracking_url, courier } = req.body;
     const validStatuses = ['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'returned', 'archived'];
 
     if (!validStatuses.includes(status)) {
@@ -187,7 +187,7 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
       await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
       await invalidatePublicCatalogCache().catch(() => {});
       const [orderData] = await pool.query(
-        `SELECT o.id, o.order_number, o.status, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
+        `SELECT o.id, o.order_number, o.status, o.tracking_number, o.courier, o.tracking_url, u.name, u.email FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?`,
         [cancelResult.orderId]
       );
       if (orderData.length > 0) {
@@ -203,7 +203,11 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
       });
     }
 
-    const updated = await updateOrderStatus(id, status, req.body.cancelReason, { trackingNumber, courier });
+    const updated = await updateOrderStatus(id, status, req.body.cancelReason, {
+      trackingNumber,
+      courier,
+      trackingUrl: trackingUrl || tracking_url,
+    });
     if (updated === false) return res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'Order not found.' });
     await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
     await invalidatePublicCatalogCache().catch(() => {});
@@ -215,7 +219,22 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
 
     if (orderData.length > 0 && ['shipped', 'out_for_delivery', 'delivered', 'returned', 'cancelled'].includes(String(status).toLowerCase())) {
       const { email, name } = orderData[0];
-      sendOrderStatusEmail(email, name, id, status, trackingNumber, courier, orderData[0].order_number)
+      let shipmentItems = [];
+      if (String(status).toLowerCase() === 'shipped') {
+        try {
+          const [items] = await pool.query(
+            'SELECT name, quantity, price FROM order_items WHERE order_id = ? ORDER BY id ASC',
+            [id]
+          );
+          shipmentItems = items;
+        } catch (itemsError) {
+          console.error(`Could not load shipment items for order #${id}:`, itemsError);
+        }
+      }
+      sendOrderStatusEmail(email, name, id, status, trackingNumber || orderData[0].tracking_number, courier || orderData[0].courier, orderData[0].order_number, {
+        trackingUrl: orderData[0].tracking_url,
+        items: shipmentItems,
+      })
         .catch(err => console.error(`[Mailer] Failed to send email:`, err));
     }
     res.json({ success: true, message: "Order status updated." });
