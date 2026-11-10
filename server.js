@@ -176,6 +176,7 @@ const corsOptions = {
   allowedHeaders: [
     "Content-Type",
     "Authorization",
+    "X-Scanner-Api-Key",
     "X-Requested-With",
     "X-Client-Platform",
     "X-SuperAdmin-Action-Passcode",

@@ -7,11 +7,11 @@ process.env.FRONTEND_ORIGINS = 'https://www.bhumivera.com';
 
 const app = require('../server');
 let server;
-let checkoutUrl;
+let scannerUrl;
 
 before(async () => {
   await new Promise(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
-  checkoutUrl = `http://127.0.0.1:${server.address().port}/api/inventory-software/pos/checkout`;
+  scannerUrl = `http://127.0.0.1:${server.address().port}/api/inventory-software/scanner/connect`;
 });
 
 after(async () => {
@@ -20,9 +20,9 @@ after(async () => {
   await require('../config/db').end();
 });
 
-describe('POS checkout CORS preflight', () => {
-  const requestedHeaders = ['authorization', 'content-type', 'idempotency-key', 'x-idempotency-key', 'x-client-platform'];
-  const preflight = origin => fetch(checkoutUrl, {
+describe('Scanner pairing CORS preflight', () => {
+  const requestedHeaders = ['authorization', 'content-type', 'x-scanner-api-key'];
+  const preflight = origin => fetch(scannerUrl, {
     method: 'OPTIONS',
     headers: {
       origin,
@@ -31,7 +31,7 @@ describe('POS checkout CORS preflight', () => {
     },
   });
 
-  it('allows the checkout headers for the configured storefront without initializing the database', async () => {
+  it('allows scanner pairing headers for the configured storefront without initializing the database', async () => {
     const response = await preflight('https://www.bhumivera.com');
     assert.equal(response.status, 204);
     assert.equal(response.headers.get('access-control-allow-origin'), 'https://www.bhumivera.com');
