@@ -2,6 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildStandaloneProductQr,
+  computeOptimalA4QrLayout,
   VALID_INVENTORY_ROLES,
   INVENTORY_PERMISSION_DEFINITIONS,
   resolveInventoryPermissions,
@@ -135,4 +137,55 @@ test('generateCarrierManifest compiles shipment manifest with code and weight ca
   assert.equal(manifest.courier, 'shiprocket');
   assert.equal(manifest.generatedBy, 'dispatcher_raj');
   assert.equal(manifest.parcels[1].collectableAmount, 1499);
+});
+
+
+test('buildStandaloneProductQr and computeOptimalA4QrLayout generate mobile-scannable A4 layouts', async () => {
+  const qr = buildStandaloneProductQr('BV-LUX-CFW-01');
+  assert.equal(qr, 'BV-QR:BV-LUX-CFW-01');
+
+  const layout6 = computeOptimalA4QrLayout(6, true);
+  assert.equal(layout6.totalCount, 6);
+  assert.ok(layout6.qrSizeMm >= 24 && layout6.qrSizeMm <= 38, 'QR size must be clamped between 24mm and 38mm');
+
+  const layout10 = computeOptimalA4QrLayout(10, true);
+  assert.equal(layout10.totalCount, 10);
+  assert.equal(layout10.totalPages, 1);
+  assert.ok(layout10.qrSizeMm >= 24 && layout10.qrSizeMm <= 38);
+
+  const layout20 = computeOptimalA4QrLayout(20, true);
+  assert.equal(layout20.totalCount, 20);
+  assert.equal(layout20.totalPages, 1);
+  assert.ok(layout20.qrSizeMm >= 24 && layout20.qrSizeMm <= 38);
+
+  const { resolveProductByQrOrCode } = require('../models/inventorySoftwareModel');
+  const fakeDb = {
+    query: async (sql) => {
+      if (sql.includes('product_serials')) return [[]];
+      if (sql.includes('inventory_product_meta')) {
+        return [[
+          {
+            id: 1,
+            product_id: 10,
+            sku: 'BV-LUX-CFW-01',
+            barcode: '8908020260015',
+            custom_name: 'Bhumivera Activated Charcoal Purifying Luxury Face Wash',
+            physical_stock: 249,
+            selling_price: 299,
+            mrp: 699,
+            gst_rate: 5,
+            gst_hsn_code: '30049011',
+            bin_code: 'ASN-SHOP-R1-B01',
+            batch_no: 'BV-BATCH-2026-CF01',
+            uom: 'Pcs',
+          }
+        ]];
+      }
+      return [[]];
+    }
+  };
+  const resolvedStandalone = await resolveProductByQrOrCode(fakeDb, 'BV-QR:BV-LUX-CFW-01');
+  assert.ok(resolvedStandalone);
+  assert.equal(resolvedStandalone.sku, 'BV-LUX-CFW-01');
+  assert.equal(resolvedStandalone.name, 'Bhumivera Activated Charcoal Purifying Luxury Face Wash');
 });

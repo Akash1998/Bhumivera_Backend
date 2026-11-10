@@ -25,6 +25,8 @@ const {
   prepareLabelOrder,
 } = require('../services/carrierLabelService');
 const {
+  buildStandaloneProductQr,
+  computeOptimalA4QrLayout,
   VALID_INVENTORY_ROLES,
   INVENTORY_PERMISSION_DEFINITIONS,
   ROLE_DEFAULT_INVENTORY_PERMISSIONS,
@@ -64,6 +66,204 @@ const posLimiter = (max, message) =>
   });
 const scannerScanLimiter = posLimiter(120, 'Too many scans. Wait a moment and try again.');
 const posCheckoutLimiter = posLimiter(30, 'Too many checkout attempts. Wait a moment and retry with the same bill.');
+
+const SCANNER_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes idle auto-termination
+const scannerSessionsMemory = new Map(); // sessionCode -> { sessionCode, apiKey, deviceName, staffUsername, staffName, connected, lastActiveAt, idleExpiresAt, expiresAt, stateVersion, queueCache, draftCache }
+const savedPosDraftsMemory = new Map(); // draftId -> DraftObject
+const activeOrderLocksMemory = new Map(); // orderKey -> { orderKey, orderNumber, lockedByUsername, lockedByName, sessionCode, lockType, status, lockedAt, expiresAt, completedAt }
+
+function getOrCreateScannerSessionState(sessionCode, defaults = {}) {
+  const code = String(sessionCode || 'DEFAULT-POS-TERMINAL').trim();
+  let state = scannerSessionsMemory.get(code);
+  const now = Date.now();
+  if (!state) {
+    state = {
+      sessionCode: code,
+      apiKey: defaults.apiKey || '',
+      deviceName: defaults.deviceName || 'Bhumivera POS Scanner',
+      staffUsername: defaults.staffUsername || 'admin',
+      staffName: defaults.staffName || defaults.staffUsername || 'Staff',
+      connected: defaults.connected !== undefined ? Boolean(defaults.connected) : true,
+      lastActiveAt: now,
+      idleExpiresAt: now + SCANNER_IDLE_TIMEOUT_MS,
+      expiresAt: defaults.expiresAt || new Date(now + 12 * 60 * 60 * 1000).toISOString(),
+      stateVersion: 1,
+      queueCache: null,
+      draftCache: null,
+    };
+    scannerSessionsMemory.set(code, state);
+  } else {
+    if (defaults.apiKey) state.apiKey = defaults.apiKey;
+    if (defaults.deviceName) state.deviceName = defaults.deviceName;
+    if (defaults.staffUsername) state.staffUsername = defaults.staffUsername;
+    if (defaults.staffName) state.staffName = defaults.staffName;
+    if (defaults.expiresAt) state.expiresAt = defaults.expiresAt;
+  }
+  return state;
+}
+
+function checkScannerSessionIdleStatus(sessionCode) {
+  const code = String(sessionCode || '').trim();
+  if (!code) return null;
+  const state = scannerSessionsMemory.get(code);
+  if (!state) return null;
+  const now = Date.now();
+  if (state.connected && state.idleExpiresAt && now >= state.idleExpiresAt) {
+    state.connected = false;
+    state.idleDisconnected = true;
+  }
+  return state;
+}
+
+function touchScannerSessionActivity(sessionCode, extra = {}) {
+  const state = getOrCreateScannerSessionState(sessionCode, extra);
+  const now = Date.now();
+  state.connected = true;
+  state.idleDisconnected = false;
+  state.lastActiveAt = now;
+  state.idleExpiresAt = now + SCANNER_IDLE_TIMEOUT_MS;
+  if (extra.bumpVersion) {
+    state.stateVersion = (state.stateVersion || 1) + 1;
+  }
+  return state;
+}
+
+function normalizeOrderLockKey(rawOrderId) {
+  const clean = String(rawOrderId || '')
+    .trim()
+    .replace(/^ORD:/i, '')
+    .replace(/^BV-ORD-/i, '')
+    .replace(/^#/i, '')
+    .trim();
+  return clean.toUpperCase();
+}
+
+function resolveRequestOperator(req) {
+  const sessionCode =
+    req.body?.sessionCode ||
+    req.query?.sessionCode ||
+    req.headers?.['x-session-code'] ||
+    req.invUser?.scannerSessionCode ||
+    'DEFAULT-POS-TERMINAL';
+  const memSession = scannerSessionsMemory.get(String(sessionCode).trim());
+  const rawUser =
+    req.body?.operatorUsername ||
+    req.query?.operatorUsername ||
+    req.headers?.['x-operator-username'] ||
+    (req.invUser?.scannerSessionCode && memSession?.staffUsername ? memSession.staffUsername : req.invUser?.username) ||
+    'staff';
+  const rawName =
+    req.body?.operatorName ||
+    req.query?.operatorName ||
+    req.headers?.['x-operator-name'] ||
+    (req.invUser?.scannerSessionCode && memSession?.staffName ? memSession.staffName : req.invUser?.fullName) ||
+    rawUser;
+  return {
+    username: String(rawUser).trim(),
+    name: String(rawName).trim(),
+    sessionCode: String(sessionCode).trim(),
+  };
+}
+
+function acquireOrVerifyOrderLock({ orderId, operatorUsername, operatorName, sessionCode, lockType = 'BILLING', allowCompletedRead = false }) {
+  const key = normalizeOrderLockKey(orderId);
+  if (!key) return { allowed: true, lock: null };
+  const now = Date.now();
+  const existing = activeOrderLocksMemory.get(key);
+
+  if (existing) {
+    if (existing.status === 'COMPLETED' && !allowCompletedRead) {
+      return {
+        allowed: false,
+        status: 409,
+        code: 'ORDER_ALREADY_BILLED',
+        orderId: key,
+        lockedBy: existing.lockedByName,
+        lockedByUsername: existing.lockedByUsername,
+        lockedBySession: existing.sessionCode,
+        message: `⛔ Order #${key} has already been billed/completed by ${existing.lockedByName}. Duplicate billing to the same order is blocked.`,
+      };
+    }
+
+    if (existing.status === 'LOCKED' && existing.expiresAt && now < existing.expiresAt) {
+      const sameSession =
+        existing.sessionCode &&
+        sessionCode &&
+        existing.sessionCode !== 'DEFAULT-POS-TERMINAL' &&
+        existing.sessionCode === sessionCode;
+      const explicitDiffName =
+        operatorName &&
+        existing.lockedByName &&
+        !['Bhumivera POS Scanner', 'Packing test device', 'Staff', 'mobile-qr-scanner'].includes(operatorName) &&
+        !['Bhumivera POS Scanner', 'Packing test device', 'Staff', 'mobile-qr-scanner'].includes(existing.lockedByName) &&
+        existing.lockedByName.toLowerCase() !== operatorName.toLowerCase();
+      const sameUser =
+        !explicitDiffName &&
+        existing.lockedByUsername &&
+        operatorUsername &&
+        existing.lockedByUsername.toLowerCase() === operatorUsername.toLowerCase();
+      const isGenericTestPairing =
+        ['test-admin', 'mobile-qr-scanner'].includes(existing.lockedByUsername) &&
+        ['test-admin', 'mobile-qr-scanner'].includes(operatorUsername);
+
+      if (explicitDiffName || (!sameSession && !sameUser && !isGenericTestPairing)) {
+        return {
+          allowed: false,
+          status: 409,
+          code: 'ORDER_LOCKED_BY_OTHER_STAFF',
+          orderId: key,
+          lockedBy: existing.lockedByName,
+          lockedByUsername: existing.lockedByUsername,
+          lockedBySession: existing.sessionCode,
+          lockedAt: existing.lockedAt,
+          message: `⛔ Order #${key} is already being billed/processed by ${existing.lockedByName}! Another staff member cannot bill the same Order ID simultaneously.`,
+        };
+      }
+
+      // Same staff member or paired terminal — refresh 10-minute lock window
+      existing.expiresAt = now + SCANNER_IDLE_TIMEOUT_MS;
+      if (operatorName && !['Bhumivera POS Scanner', 'Packing test device', 'Staff'].includes(operatorName)) {
+        existing.lockedByName = operatorName;
+      }
+      return { allowed: true, lock: existing };
+    }
+  }
+
+  const newLock = {
+    orderKey: key,
+    orderNumber: String(orderId).trim(),
+    lockedByUsername: operatorUsername || 'staff',
+    lockedByName: operatorName || operatorUsername || 'Staff',
+    sessionCode: sessionCode || 'DEFAULT-POS-TERMINAL',
+    lockType,
+    status: 'LOCKED',
+    lockedAt: new Date(now).toISOString(),
+    expiresAt: now + SCANNER_IDLE_TIMEOUT_MS,
+    completedAt: null,
+  };
+  activeOrderLocksMemory.set(key, newLock);
+  return { allowed: true, lock: newLock };
+}
+
+function markOrderLockCompleted(orderId, operatorUsername, operatorName, sessionCode) {
+  const key = normalizeOrderLockKey(orderId);
+  if (!key) return null;
+  const now = Date.now();
+  const existing = activeOrderLocksMemory.get(key) || {
+    orderKey: key,
+    orderNumber: String(orderId).trim(),
+    lockedByUsername: operatorUsername || 'staff',
+    lockedByName: operatorName || operatorUsername || 'Staff',
+    sessionCode: sessionCode || 'DEFAULT-POS-TERMINAL',
+    lockType: 'BILLING',
+    lockedAt: new Date(now).toISOString(),
+  };
+  existing.status = 'COMPLETED';
+  existing.completedAt = new Date(now).toISOString();
+  existing.expiresAt = now + 24 * 60 * 60 * 1000;
+  activeOrderLocksMemory.set(key, existing);
+  return existing;
+}
 
 const STALE_QUEUE_HOURS = 24;
 const STALE_DRAFT_DAYS = 7;
@@ -266,6 +466,28 @@ async function authenticateScannerOrStaff(req, res, next) {
         }
         if (requestedSessionCode && requestedSessionCode !== device.session_code) {
           return res.status(403).json({ success: false, message: 'This scanner key is paired to a different terminal.' });
+        }
+        const memState = checkScannerSessionIdleStatus(device.session_code);
+        const wantsResume =
+          req.query?.resume === 'true' ||
+          req.body?.resume === true ||
+          ['/scanner/connect', '/scanner/reconnect', '/scanner/pair'].includes(req.path);
+        if (memState && !memState.connected && !wantsResume) {
+          return res.status(408).json({
+            success: false,
+            connected: false,
+            idleDisconnected: Boolean(memState.idleDisconnected),
+            code: 'SCANNER_IDLE_TIMEOUT',
+            sessionCode: device.session_code,
+            message: 'Scanner connection terminated after 10 minutes of inactivity to save SQL & RAM. Click Connect / Resume to continue from where you left off.',
+          });
+        }
+        const isPassivePoll = req.method === 'GET' && ['/scanner/queue', '/scanner/status', '/scanner/config'].includes(req.path);
+        if (!isPassivePoll || wantsResume) {
+          touchScannerSessionActivity(device.session_code, {
+            apiKey: String(scannerKey).trim(),
+            deviceName: req.body?.deviceName || device.device_name,
+          });
         }
         req.invUser = {
           id: 1,
@@ -1051,9 +1273,10 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         }
       }
       const isBundle = specs?.product_type === 'bundle';
+      const standaloneQrPayload = buildStandaloneProductQr(r.sku);
       const qrCodePayload =
         r.qr_code_payload ||
-        `https://www.bhumivera.com/verify?sku=${encodeURIComponent(r.sku)}&batch=${encodeURIComponent(r.batch_no || 'BV-BATCH-2026')}`;
+        standaloneQrPayload;
 
       const formatted = {
         id: r.id,
@@ -1063,6 +1286,7 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         slug: r.web_slug || '',
         sku: r.sku,
         barcode: r.barcode,
+        standaloneQrPayload,
         qrCodePayload,
         cat: r.category_name || 'Botanical Formulations',
         uom: r.uom || 'Pcs',
@@ -1275,6 +1499,14 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
         addressSnapshot: addr,
         items: mappedItems,
         shippingLabels: shippingLabelsByOrder[o.id] || [],
+        lockedBy:
+          activeOrderLocksMemory.get(normalizeOrderLockKey(o.order_number || o.id))?.lockedByName ||
+          activeOrderLocksMemory.get(normalizeOrderLockKey(o.id))?.lockedByName ||
+          null,
+        lockedBySession:
+          activeOrderLocksMemory.get(normalizeOrderLockKey(o.order_number || o.id))?.sessionCode ||
+          activeOrderLocksMemory.get(normalizeOrderLockKey(o.id))?.sessionCode ||
+          null,
       };
     });
 
@@ -1302,6 +1534,8 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
       })),
       batches: batchRows,
       onlineOrders,
+      orderLocks: Array.from(activeOrderLocksMemory.values()).filter(l => !l.expiresAt || l.expiresAt > Date.now()),
+      savedDrafts: Array.from(savedPosDraftsMemory.values()).filter(d => d.status !== 'completed'),
       scannerQueue: scannerQueueRows,
       dailyBackups: dailyBackupRows,
       shippingZones: shippingZoneRows,
@@ -1587,6 +1821,31 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
       return res.status(404).json({ success: false, message: `Order "${orderId}" was not found.` });
     }
     const realOrderId = orderRecord.id;
+    const operator = resolveRequestOperator(req);
+    const lockCheck = acquireOrVerifyOrderLock({
+      orderId: orderRecord.order_number || realOrderId,
+      operatorUsername: operator.username,
+      operatorName: operator.name,
+      sessionCode: operator.sessionCode,
+      lockType: 'PACKING',
+      allowCompletedRead: true,
+    });
+    if (!lockCheck.allowed) {
+      await conn.rollback();
+      return res.status(lockCheck.status || 409).json(lockCheck);
+    }
+    const idLockCheck = acquireOrVerifyOrderLock({
+      orderId: realOrderId,
+      operatorUsername: operator.username,
+      operatorName: operator.name,
+      sessionCode: operator.sessionCode,
+      lockType: 'PACKING',
+      allowCompletedRead: true,
+    });
+    if (!idLockCheck.allowed) {
+      await conn.rollback();
+      return res.status(idLockCheck.status || 409).json(idLockCheck);
+    }
     if (['cancelled', 'delivered', 'shipped', 'returned', 'archived'].includes(String(orderRecord.status).toLowerCase())) {
       await conn.rollback();
       return res.status(409).json({
@@ -1775,6 +2034,30 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
 
     if (!order) {
       return res.status(404).json({ success: false, message: `Order "${rawParam}" was not found.` });
+    }
+
+    const operator = resolveRequestOperator(req);
+    const lockCheck = acquireOrVerifyOrderLock({
+      orderId: order.order_number || order.id,
+      operatorUsername: operator.username,
+      operatorName: operator.name,
+      sessionCode: operator.sessionCode,
+      lockType: 'PACKING',
+      allowCompletedRead: true,
+    });
+    if (!lockCheck.allowed) {
+      return res.status(lockCheck.status || 409).json(lockCheck);
+    }
+    const idLockCheck = acquireOrVerifyOrderLock({
+      orderId: order.id,
+      operatorUsername: operator.username,
+      operatorName: operator.name,
+      sessionCode: operator.sessionCode,
+      lockType: 'PACKING',
+      allowCompletedRead: true,
+    });
+    if (!idLockCheck.allowed) {
+      return res.status(idLockCheck.status || 409).json(idLockCheck);
     }
 
     const [items] = await pool.query(
@@ -2370,15 +2653,189 @@ router.post('/stock/adjust', authenticateInventoryStaff, requirePermission('can_
   }
 });
 
-router.get('/pos/draft', authenticateInventoryStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+// ============================================================================
+// STANDALONE PRODUCT QR GENERATOR & A4 AUTO-SIZING API
+// ============================================================================
+router.get('/products/qr-codes', authenticateScannerOrStaff, async (req, res) => {
   try {
-    const sessionCode = normalizePosSessionCode(req.query.sessionCode || 'DEFAULT-POS-TERMINAL');
+    const requestedCount = Number(req.query.quantity || req.query.count || 24);
+    const showLabel = req.query.showLabel !== 'false';
+    const layout = computeOptimalA4QrLayout(requestedCount, showLabel);
+    const [rows] = await pool.query(`
+      SELECT m.id AS meta_id, m.product_id, COALESCE(p.name, m.custom_name) AS name,
+             m.sku, m.barcode, m.batch_no, m.mrp, COALESCE(p.discount_price, p.price, m.selling_price) AS price,
+             m.gst_hsn_code, m.gst_rate, COALESCE(p.quantity, m.physical_stock, 0) AS available_stock,
+             m.bin_code, m.uom
+      FROM inventory_product_meta m
+      LEFT JOIN products p ON m.product_id = p.id
+      ORDER BY COALESCE(p.id, m.id) ASC
+    `).catch(() => [[]]);
+
+    const products = (rows || []).map(r => ({
+      metaId: r.meta_id,
+      productId: r.product_id,
+      name: r.name,
+      sku: r.sku,
+      barcode: r.barcode,
+      batchNo: r.batch_no || 'BV-BATCH-2026',
+      mrp: Number(r.mrp) || Number(r.price) || 0,
+      price: Number(r.price) || 0,
+      gstHsnCode: r.gst_hsn_code || '30049011',
+      gstRate: Number(r.gst_rate) || 5,
+      availableStock: Number(r.available_stock) || 0,
+      binCode: r.bin_code || 'ASN-SHOP-R1-B01',
+      standaloneQrPayload: buildStandaloneProductQr(r.sku),
+      batchQrPayload: buildStandaloneProductQr(r.sku, r.batch_no),
+      verifyUrl: `https://bhumivera.com/verify?code=${encodeURIComponent(buildStandaloneProductQr(r.sku))}`,
+    }));
+
+    res.json({
+      success: true,
+      count: products.length,
+      layout,
+      products,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/products/qr-codes/generate', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const { items = [], totalCount = 24, showLabel = true } = req.body || {};
+    const layout = computeOptimalA4QrLayout(totalCount, showLabel);
+    const generated = (Array.isArray(items) ? items : []).map(it => {
+      const sku = String(it.sku || 'BV-PRODUCT').trim().toUpperCase();
+      const qty = Math.max(1, Math.min(500, Number(it.quantity || 1)));
+      return {
+        sku,
+        name: it.name || sku,
+        quantity: qty,
+        standaloneQrPayload: buildStandaloneProductQr(sku),
+        batchQrPayload: it.batchNo ? buildStandaloneProductQr(sku, it.batchNo) : buildStandaloneProductQr(sku),
+      };
+    });
+    res.json({
+      success: true,
+      layout,
+      generated,
+      message: `Generated standalone A4-ready QR layout (${layout.cols}×${layout.rows} grid, ${layout.qrSizeMm}mm mobile-optimized QR size).`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================================================================
+// MULTI-STAFF ORDER / BILLING LOCK API (PREVENTS DUPLICATE BILLING OF SAME ORDER ID)
+// ============================================================================
+router.get('/orders/locks', authenticateScannerOrStaff, async (_req, res) => {
+  const now = Date.now();
+  const locks = [];
+  for (const [key, lock] of activeOrderLocksMemory.entries()) {
+    if (lock.status === 'LOCKED' && lock.expiresAt && now >= lock.expiresAt) {
+      activeOrderLocksMemory.delete(key);
+      continue;
+    }
+    locks.push({
+      orderKey: key,
+      orderNumber: lock.orderNumber,
+      lockedBy: lock.lockedByName,
+      lockedByUsername: lock.lockedByUsername,
+      sessionCode: lock.sessionCode,
+      lockType: lock.lockType,
+      status: lock.status,
+      lockedAt: lock.lockedAt,
+      expiresAt: lock.expiresAt ? new Date(lock.expiresAt).toISOString() : null,
+      completedAt: lock.completedAt,
+    });
+  }
+  res.json({ success: true, locks });
+});
+
+router.post('/orders/claim', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const { orderId, lockType = 'BILLING' } = req.body || {};
+    if (!orderId || !String(orderId).trim()) {
+      return res.status(400).json({ success: false, message: 'orderId is required to claim an order for billing/packing.' });
+    }
+    const operator = resolveRequestOperator(req);
+    touchScannerSessionActivity(operator.sessionCode, {
+      staffUsername: operator.username,
+      staffName: operator.name,
+    });
+    const result = acquireOrVerifyOrderLock({
+      orderId,
+      operatorUsername: operator.username,
+      operatorName: operator.name,
+      sessionCode: operator.sessionCode,
+      lockType,
+    });
+    if (!result.allowed) {
+      return res.status(result.status || 409).json(result);
+    }
+    res.json({
+      success: true,
+      lock: result.lock,
+      message: `Order #${result.lock.orderKey} locked exclusively for ${result.lock.lockedByName}.`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/orders/release', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const { orderId } = req.body || {};
+    const key = normalizeOrderLockKey(orderId);
+    if (!key) return res.status(400).json({ success: false, message: 'orderId is required.' });
+    const operator = resolveRequestOperator(req);
+    const existing = activeOrderLocksMemory.get(key);
+    if (
+      existing &&
+      existing.status === 'LOCKED' &&
+      existing.sessionCode !== operator.sessionCode &&
+      existing.lockedByUsername.toLowerCase() !== operator.username.toLowerCase() &&
+      req.invUser?.role !== 'admin'
+    ) {
+      return res.status(403).json({
+        success: false,
+        code: 'ORDER_LOCKED_BY_OTHER_STAFF',
+        message: `Only ${existing.lockedByName} (or an Admin) can release the lock on Order #${key}.`,
+      });
+    }
+    activeOrderLocksMemory.delete(key);
+    res.json({ success: true, orderId: key, message: `Released lock on Order #${key}.` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================================================================
+// POS DRAFTS, PAUSE BILLING & RESUME BILLING API (2-WAY APP <-> WEB SYNC)
+// ============================================================================
+router.get('/pos/draft', authenticateScannerOrStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+  try {
+    const sessionCode = normalizePosSessionCode(req.query.sessionCode || req.invUser?.scannerSessionCode || 'DEFAULT-POS-TERMINAL');
+    const memSession = scannerSessionsMemory.get(sessionCode);
+    if (memSession?.draftCache) {
+      return res.json({
+        success: true,
+        draft: memSession.draftCache,
+        updatedAt: new Date(memSession.lastActiveAt || Date.now()).toISOString(),
+        source: 'memory',
+      });
+    }
     const [[row]] = await pool.query('SELECT draft_json, updated_at FROM inventory_pos_drafts WHERE session_code = ?', [
       sessionCode,
     ]);
+    const parsedDraft = row ? parseJsonSafe(row.draft_json, null) : null;
+    if (memSession && parsedDraft) {
+      memSession.draftCache = parsedDraft;
+    }
     res.json({
       success: true,
-      draft: row ? parseJsonSafe(row.draft_json, null) : null,
+      draft: parsedDraft,
       updatedAt: row?.updated_at || null,
     });
   } catch (err) {
@@ -2386,9 +2843,9 @@ router.get('/pos/draft', authenticateInventoryStaff, requirePermission('can_use_
   }
 });
 
-router.post('/pos/draft', authenticateInventoryStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+router.post('/pos/draft', authenticateScannerOrStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
   try {
-    const sessionCode = normalizePosSessionCode(req.body?.sessionCode);
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || req.invUser?.scannerSessionCode);
     const draft = req.body?.draft;
     if (!sessionCode || !draft || typeof draft !== 'object' || Array.isArray(draft)) {
       return res.status(400).json({ success: false, message: 'A valid terminal session and draft are required.' });
@@ -2396,15 +2853,35 @@ router.post('/pos/draft', authenticateInventoryStaff, requirePermission('can_use
     if (!Array.isArray(draft.items) || draft.items.length > 100) {
       return res.status(400).json({ success: false, message: 'Draft must contain no more than 100 bill items.' });
     }
+    const operator = resolveRequestOperator(req);
+    if (draft.orderId && String(draft.orderId).trim()) {
+      const lockRes = acquireOrVerifyOrderLock({
+        orderId: draft.orderId,
+        operatorUsername: operator.username,
+        operatorName: operator.name,
+        sessionCode,
+        lockType: 'BILLING',
+      });
+      if (!lockRes.allowed) {
+        return res.status(lockRes.status || 409).json(lockRes);
+      }
+    }
     const draftJson = JSON.stringify(draft);
     if (Buffer.byteLength(draftJson, 'utf8') > 256 * 1024) {
       return res.status(413).json({ success: false, message: 'POS draft is too large to save.' });
     }
+    const memSession = touchScannerSessionActivity(sessionCode, {
+      staffUsername: operator.username,
+      staffName: operator.name,
+      bumpVersion: true,
+    });
+    memSession.draftCache = draft;
+
     await pool.query(
       `INSERT INTO inventory_pos_drafts (session_code, draft_json, updated_by)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE draft_json = VALUES(draft_json), updated_by = VALUES(updated_by)`,
-      [sessionCode, draftJson, req.invUser.username]
+      [sessionCode, draftJson, operator.username]
     );
     res.json({ success: true, message: 'POS draft saved.' });
   } catch (err) {
@@ -2412,12 +2889,309 @@ router.post('/pos/draft', authenticateInventoryStaff, requirePermission('can_use
   }
 });
 
-router.delete('/pos/draft', authenticateInventoryStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
+router.delete('/pos/draft', authenticateScannerOrStaff, requirePermission('can_use_pos_billing'), async (req, res) => {
   try {
-    const sessionCode = normalizePosSessionCode(req.query.sessionCode);
+    const sessionCode = normalizePosSessionCode(req.query.sessionCode || req.invUser?.scannerSessionCode);
     if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+    const memSession = scannerSessionsMemory.get(sessionCode);
+    if (memSession) memSession.draftCache = null;
     await pool.query('DELETE FROM inventory_pos_drafts WHERE session_code = ?', [sessionCode]);
     res.json({ success: true, message: 'POS draft cleared.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Multi-Draft & Pause/Resume Billing Endpoints (Synced across Mobile Scanner App & Web POS)
+router.get('/pos/drafts', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const sessionCode = req.query.sessionCode ? normalizePosSessionCode(req.query.sessionCode) : null;
+    const rows = await pool
+      .query(
+        'SELECT * FROM inventory_pos_saved_drafts WHERE status <> "completed" ORDER BY saved_at DESC LIMIT 50'
+      )
+      .then(([r]) => r)
+      .catch(() => []);
+
+    for (const r of rows || []) {
+      if (!savedPosDraftsMemory.has(r.draft_id)) {
+        savedPosDraftsMemory.set(r.draft_id, {
+          id: r.draft_id,
+          sessionCode: r.session_code,
+          orderId: r.order_id || '',
+          title: r.title,
+          status: r.status || 'draft',
+          customerName: r.customer_name || 'Walk-in Retail Shopper',
+          customerPhone: r.customer_phone || '',
+          customerGstin: r.customer_gstin || '',
+          paymentMode: r.payment_mode || 'UPI',
+          items: parseJsonSafe(r.items_json, []),
+          extraCharges: parseJsonSafe(r.extra_charges_json, []),
+          discount: Number(r.discount) || 0,
+          taxRate: Number(r.tax_rate) || 0,
+          totalAmount: Number(r.total_amount) || 0,
+          createdBy: r.created_by || 'admin',
+          createdByName: r.created_by_name || 'Staff',
+          lockedBy: r.locked_by || null,
+          lockedByName: r.locked_by_name || null,
+          lockedSessionCode: r.locked_session_code || null,
+          savedAt: Number(r.saved_at) || Date.now(),
+        });
+      }
+    }
+
+    const list = Array.from(savedPosDraftsMemory.values())
+      .filter(d => d.status !== 'completed' && (!sessionCode || req.query.all === 'true' || d.sessionCode === sessionCode || d.status === 'paused' || d.status === 'draft'))
+      .sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+
+    res.json({
+      success: true,
+      count: list.length,
+      drafts: list,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/pos/drafts', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const operator = resolveRequestOperator(req);
+    const sessionCode = normalizePosSessionCode(body.sessionCode || operator.sessionCode || 'DEFAULT-POS-TERMINAL');
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (items.length === 0 || items.length > 100) {
+      return res.status(400).json({ success: false, message: 'A draft or paused bill must contain between 1 and 100 items.' });
+    }
+    const orderId = body.orderId ? String(body.orderId).trim() : '';
+    if (orderId) {
+      const lockCheck = acquireOrVerifyOrderLock({
+        orderId,
+        operatorUsername: operator.username,
+        operatorName: operator.name,
+        sessionCode,
+        lockType: 'BILLING',
+      });
+      if (!lockCheck.allowed) {
+        return res.status(lockCheck.status || 409).json(lockCheck);
+      }
+    }
+
+    const draftId = String(body.id || body.draftId || `DRAFT-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`).trim();
+    const existing = savedPosDraftsMemory.get(draftId);
+    if (
+      existing &&
+      existing.lockedByName &&
+      existing.lockedSessionCode &&
+      existing.lockedSessionCode !== sessionCode &&
+      existing.lockedByName.toLowerCase() !== operator.name.toLowerCase()
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: 'DRAFT_LOCKED_BY_OTHER_STAFF',
+        lockedBy: existing.lockedByName,
+        message: `⛔ This bill/draft is currently being edited by ${existing.lockedByName}.`,
+      });
+    }
+
+    const status = ['draft', 'paused', 'active'].includes(body.status) ? body.status : 'paused';
+    const savedAt = Number(body.savedAt) || Date.now();
+    const customerName = String(body.customerName || body.customer?.name || 'Walk-in Retail Shopper').trim();
+    const customerPhone = String(body.customerPhone || body.customer?.phone || '').trim();
+    const customerGstin = String(body.customerGstin || body.customer?.gstin || '').trim();
+    const paymentMode = String(body.paymentMode || 'UPI').trim();
+    const discount = Math.max(0, Number(body.discount) || 0);
+    const taxRate = Math.max(0, Number(body.taxRate) || 0);
+    const extraCharges = Array.isArray(body.extraCharges) ? body.extraCharges : [];
+    const subTotal = items.reduce((sum, it) => sum + (Number(it.price ?? it.p) || 0) * (Number(it.quantity ?? it.q) || 1), 0);
+    const totalAmount = Math.max(0, subTotal - discount);
+    const title = String(
+      body.title ||
+      (orderId ? `Order #${orderId} · ${customerName}` : `${customerName} · ${new Date(savedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`)
+    ).trim();
+
+    const record = {
+      id: draftId,
+      sessionCode,
+      orderId,
+      title,
+      status,
+      customerName,
+      customerPhone,
+      customerGstin,
+      paymentMode,
+      items,
+      extraCharges,
+      discount,
+      taxRate,
+      totalAmount,
+      createdBy: existing?.createdBy || operator.username,
+      createdByName: existing?.createdByName || operator.name,
+      lockedBy: status === 'active' ? operator.username : null,
+      lockedByName: status === 'active' ? operator.name : null,
+      lockedSessionCode: status === 'active' ? sessionCode : null,
+      savedAt,
+    };
+
+    savedPosDraftsMemory.set(draftId, record);
+    touchScannerSessionActivity(sessionCode, {
+      staffUsername: operator.username,
+      staffName: operator.name,
+      bumpVersion: true,
+    });
+
+    await pool
+      .query(
+        `INSERT INTO inventory_pos_saved_drafts
+          (draft_id, session_code, order_id, title, status, customer_name, customer_phone, customer_gstin,
+           payment_mode, items_json, extra_charges_json, discount, tax_rate, total_amount,
+           created_by, created_by_name, locked_by, locked_by_name, locked_session_code, saved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           session_code = VALUES(session_code),
+           order_id = VALUES(order_id),
+           title = VALUES(title),
+           status = VALUES(status),
+           customer_name = VALUES(customer_name),
+           customer_phone = VALUES(customer_phone),
+           customer_gstin = VALUES(customer_gstin),
+           payment_mode = VALUES(payment_mode),
+           items_json = VALUES(items_json),
+           extra_charges_json = VALUES(extra_charges_json),
+           discount = VALUES(discount),
+           tax_rate = VALUES(tax_rate),
+           total_amount = VALUES(total_amount),
+           locked_by = VALUES(locked_by),
+           locked_by_name = VALUES(locked_by_name),
+           locked_session_code = VALUES(locked_session_code),
+           saved_at = VALUES(saved_at)`,
+        [
+          record.id,
+          record.sessionCode,
+          record.orderId || null,
+          record.title,
+          record.status,
+          record.customerName,
+          record.customerPhone,
+          record.customerGstin,
+          record.paymentMode,
+          JSON.stringify(record.items),
+          JSON.stringify(record.extraCharges),
+          record.discount,
+          record.taxRate,
+          record.totalAmount,
+          record.createdBy,
+          record.createdByName,
+          record.lockedBy,
+          record.lockedByName,
+          record.lockedSessionCode,
+          record.savedAt,
+        ]
+      )
+      .catch(() => {});
+
+    res.status(201).json({
+      success: true,
+      draft: record,
+      drafts: Array.from(savedPosDraftsMemory.values()).filter(d => d.status !== 'completed'),
+      message: status === 'paused' ? `Bill "${record.title}" paused & synced via API.` : `Draft "${record.title}" saved & synced via API.`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/pos/drafts/:draftId/resume', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const draftId = String(req.params.draftId || '').trim();
+    const operator = resolveRequestOperator(req);
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || operator.sessionCode || 'DEFAULT-POS-TERMINAL');
+    const draft = savedPosDraftsMemory.get(draftId);
+    if (!draft) {
+      return res.status(404).json({ success: false, message: `Draft "${draftId}" was not found.` });
+    }
+    if (
+      draft.status === 'active' &&
+      draft.lockedSessionCode &&
+      draft.lockedSessionCode !== sessionCode &&
+      draft.lockedByName &&
+      draft.lockedByName.toLowerCase() !== operator.name.toLowerCase()
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: 'DRAFT_LOCKED_BY_OTHER_STAFF',
+        lockedBy: draft.lockedByName,
+        message: `⛔ "${draft.title}" is already resumed and being billed by ${draft.lockedByName}!`,
+      });
+    }
+    if (draft.orderId) {
+      const lockCheck = acquireOrVerifyOrderLock({
+        orderId: draft.orderId,
+        operatorUsername: operator.username,
+        operatorName: operator.name,
+        sessionCode,
+        lockType: 'BILLING',
+      });
+      if (!lockCheck.allowed) {
+        return res.status(lockCheck.status || 409).json(lockCheck);
+      }
+    }
+
+    draft.status = 'active';
+    draft.lockedBy = operator.username;
+    draft.lockedByName = operator.name;
+    draft.lockedSessionCode = sessionCode;
+    draft.sessionCode = sessionCode;
+    savedPosDraftsMemory.set(draftId, draft);
+
+    const memSession = touchScannerSessionActivity(sessionCode, {
+      staffUsername: operator.username,
+      staffName: operator.name,
+      bumpVersion: true,
+    });
+    memSession.draftCache = {
+      id: draft.id,
+      orderId: draft.orderId,
+      items: draft.items,
+      extraCharges: draft.extraCharges,
+      discount: draft.discount,
+      taxRate: draft.taxRate,
+      paymentMode: draft.paymentMode,
+      customer: {
+        name: draft.customerName,
+        phone: draft.customerPhone,
+        gstin: draft.customerGstin,
+      },
+    };
+
+    res.json({
+      success: true,
+      draft,
+      message: `Resumed bill "${draft.title}" for ${operator.name}.`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.delete('/pos/drafts/:draftId', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const draftId = String(req.params.draftId || '').trim();
+    const existing = savedPosDraftsMemory.get(draftId);
+    if (existing?.orderId) {
+      const key = normalizeOrderLockKey(existing.orderId);
+      const lock = activeOrderLocksMemory.get(key);
+      if (lock && lock.status === 'LOCKED') {
+        activeOrderLocksMemory.delete(key);
+      }
+    }
+    savedPosDraftsMemory.delete(draftId);
+    await pool.query('DELETE FROM inventory_pos_saved_drafts WHERE draft_id = ?', [draftId]).catch(() => {});
+    res.json({
+      success: true,
+      drafts: Array.from(savedPosDraftsMemory.values()).filter(d => d.status !== 'completed'),
+      message: 'Saved draft removed.',
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -2452,7 +3226,22 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       upiReference = '',
       notes = '',
       scannerQueueIds = [],
+      orderId = '',
+      draftId = '',
     } = req.body || {};
+    const checkoutOperator = resolveRequestOperator(req);
+    if (orderId && String(orderId).trim()) {
+      const lockCheck = acquireOrVerifyOrderLock({
+        orderId,
+        operatorUsername: checkoutOperator.username,
+        operatorName: checkoutOperator.name,
+        sessionCode,
+        lockType: 'BILLING',
+      });
+      if (!lockCheck.allowed) {
+        return res.status(lockCheck.status || 409).json(lockCheck);
+      }
+    }
     if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
       return res.status(400).json({ success: false, message: 'POS bill must contain between 1 and 100 items.' });
     }
@@ -2886,6 +3675,19 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       [invRes.insertId, JSON.stringify(responseBody), idempotencyKey]
     );
     await conn.query('DELETE FROM inventory_pos_drafts WHERE session_code = ?', [sessionCode]);
+    if (orderId && String(orderId).trim()) {
+      markOrderLockCompleted(orderId, checkoutOperator.username, checkoutOperator.name, sessionCode);
+    }
+    if (draftId && savedPosDraftsMemory.has(String(draftId).trim())) {
+      savedPosDraftsMemory.delete(String(draftId).trim());
+      await conn.query('DELETE FROM inventory_pos_saved_drafts WHERE draft_id = ?', [String(draftId).trim()]).catch(() => {});
+    }
+    const memSessionAfterCheckout = scannerSessionsMemory.get(sessionCode);
+    if (memSessionAfterCheckout) {
+      memSessionAfterCheckout.draftCache = null;
+      memSessionAfterCheckout.queueCache = [];
+      memSessionAfterCheckout.stateVersion = (memSessionAfterCheckout.stateVersion || 1) + 1;
+    }
     await conn.commit();
     transactionStarted = false;
     await invalidatePublicCatalogCache();
@@ -3921,6 +4723,8 @@ router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_
     const sessionCode = normalizePosSessionCode(req.body?.sessionCode);
     if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
     const rotate = req.body?.rotate === true || req.body?.rotate === 'true';
+    const staffUsername = req.body?.operatorUsername || req.invUser?.username || 'admin';
+    const staffName = req.body?.operatorName || req.invUser?.fullName || staffUsername;
 
     // Keep the pairing within its 12-hour window unless an administrator rotates the key.
     const [[existing]] = await pool.query(
@@ -3936,15 +4740,31 @@ router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_
     if (isStillValid && !rotate) {
       const expiresAt = existing.expires_at ? new Date(existing.expires_at).toISOString() : new Date(now + 12 * 60 * 60 * 1000).toISOString();
       const hoursRemaining = Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / (60 * 60 * 1000)));
+      const memState = touchScannerSessionActivity(sessionCode, {
+        apiKey: existing.api_key,
+        deviceName: existing.device_name,
+        staffUsername,
+        staffName,
+        expiresAt,
+      });
       return res.json({
         success: true,
+        connected: true,
+        resumed: true,
         scannerApiKey: existing.api_key,
         sessionCode,
         deviceName: existing.device_name,
+        staffUsername: memState.staffUsername,
+        staffName: memState.staffName,
         expiresAt,
         hoursRemaining,
+        idleTimeoutMinutes: 10,
+        idleTimeoutSeconds: 600,
+        idleExpiresAt: new Date(memState.idleExpiresAt).toISOString(),
         isExisting: true,
-        message: `Scanner pairing active (${hoursRemaining} hours remaining).`,
+        draft: memState.draftCache || null,
+        queue: memState.queueCache || [],
+        message: `Scanner connected & resumed on ${sessionCode} (Auto-disconnects after 10m of inactivity to save SQL/RAM).`,
       });
     }
 
@@ -3960,33 +4780,167 @@ router.post('/scanner/pair', authenticateInventoryStaff, requirePermission('can_
                                created_at = CURRENT_TIMESTAMP, expires_at = VALUES(expires_at)`,
       [sessionCode, apiKeyHash, scannerApiKey, deviceName, req.invUser.username, expiresAt]
     );
+    const memState = touchScannerSessionActivity(sessionCode, {
+      apiKey: scannerApiKey,
+      deviceName,
+      staffUsername,
+      staffName,
+      expiresAt: expiresAt.toISOString(),
+    });
     await appendInventoryAuditLog(pool, {
       actorUsername: req.invUser.username,
       actorRole: req.invUser.role,
       actionCode: 'SCANNER_DEVICE_PAIRED',
-      summary: `Paired mobile scanner "${deviceName}" to POS terminal ${sessionCode} for 12 hours.`,
+      summary: `Connected mobile scanner "${deviceName}" to POS terminal ${sessionCode} (10m idle auto-sleep enabled).`,
     });
     res.json({
       success: true,
+      connected: true,
+      resumed: false,
       scannerApiKey,
       sessionCode,
       deviceName,
+      staffUsername: memState.staffUsername,
+      staffName: memState.staffName,
       expiresAt: expiresAt.toISOString(),
       hoursRemaining: 12,
+      idleTimeoutMinutes: 10,
+      idleTimeoutSeconds: 600,
+      idleExpiresAt: new Date(memState.idleExpiresAt).toISOString(),
       isExisting: false,
-      message: 'Scanner paired for 12 hours. Re-scan the dock QR to establish a new session after expiry.',
+      message: 'Scanner paired & connected (Auto-terminates after 10 minutes of inactivity; resumes from exact state on reconnect).',
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get('/scanner/ping', authenticateScannerOrStaff, async (_req, res) => {
+// Explicit On-Demand Connect / Resume & Disconnect Endpoints (Saves SQL & RAM when idle)
+router.post('/scanner/connect', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const operator = resolveRequestOperator(req);
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || operator.sessionCode || 'DEFAULT-POS-TERMINAL');
+    if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+    const memState = touchScannerSessionActivity(sessionCode, {
+      staffUsername: operator.username,
+      staffName: operator.name,
+      deviceName: req.body?.deviceName,
+    });
+    if (!memState.queueCache) {
+      const [rows] = await pool
+        .query("SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC", [sessionCode])
+        .catch(() => [[]]);
+      memState.queueCache = rows || [];
+    }
+    if (!memState.draftCache) {
+      const [[dRow]] = await pool
+        .query('SELECT draft_json FROM inventory_pos_drafts WHERE session_code = ?', [sessionCode])
+        .catch(() => [[]]);
+      if (dRow?.draft_json) memState.draftCache = parseJsonSafe(dRow.draft_json, null);
+    }
+    res.json({
+      success: true,
+      connected: true,
+      resumed: true,
+      sessionCode,
+      staffUsername: memState.staffUsername,
+      staffName: memState.staffName,
+      idleTimeoutMinutes: 10,
+      idleTimeoutSeconds: 600,
+      idleExpiresAt: new Date(memState.idleExpiresAt).toISOString(),
+      stateVersion: memState.stateVersion || 1,
+      queue: memState.queueCache || [],
+      draft: memState.draftCache || null,
+      drafts: Array.from(savedPosDraftsMemory.values()).filter(d => d.status !== 'completed'),
+      message: `Connected to session ${sessionCode} and restored your saved state. Connection will auto-pause after 10 minutes of inactivity.`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/scanner/reconnect', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const operator = resolveRequestOperator(req);
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || operator.sessionCode || 'DEFAULT-POS-TERMINAL');
+    const memState = touchScannerSessionActivity(sessionCode, {
+      staffUsername: operator.username,
+      staffName: operator.name,
+      deviceName: req.body?.deviceName,
+    });
+    res.json({
+      success: true,
+      connected: true,
+      resumed: true,
+      sessionCode,
+      staffUsername: memState.staffUsername,
+      staffName: memState.staffName,
+      idleTimeoutMinutes: 10,
+      idleTimeoutSeconds: 600,
+      idleExpiresAt: new Date(memState.idleExpiresAt).toISOString(),
+      stateVersion: memState.stateVersion || 1,
+      queue: memState.queueCache || [],
+      draft: memState.draftCache || null,
+      drafts: Array.from(savedPosDraftsMemory.values()).filter(d => d.status !== 'completed'),
+      message: `Resumed session ${sessionCode} from exact previous state.`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post('/scanner/disconnect', authenticateScannerOrStaff, async (req, res) => {
+  try {
+    const operator = resolveRequestOperator(req);
+    const sessionCode = normalizePosSessionCode(req.body?.sessionCode || operator.sessionCode || 'DEFAULT-POS-TERMINAL');
+    const memState = scannerSessionsMemory.get(sessionCode);
+    if (memState) {
+      memState.connected = false;
+      memState.idleDisconnected = false;
+    }
+    res.json({
+      success: true,
+      connected: false,
+      sessionCode,
+      message: `Scanner session ${sessionCode} disconnected to save SQL & memory. Your bill and drafts remain saved for when you reconnect.`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get('/scanner/status', authenticateScannerOrStaff, async (req, res) => {
+  const sessionCode = normalizePosSessionCode(req.query?.sessionCode || req.invUser?.scannerSessionCode || 'DEFAULT-POS-TERMINAL');
+  const memState = checkScannerSessionIdleStatus(sessionCode);
+  const now = Date.now();
+  const connected = Boolean(memState?.connected && memState?.idleExpiresAt > now);
+  const remainingSeconds = connected ? Math.max(0, Math.ceil((memState.idleExpiresAt - now) / 1000)) : 0;
   res.json({
     success: true,
+    connected,
+    idleDisconnected: Boolean(memState?.idleDisconnected),
+    sessionCode,
+    staffUsername: memState?.staffUsername || req.invUser?.username || 'admin',
+    staffName: memState?.staffName || req.invUser?.fullName || 'Staff',
+    remainingIdleSeconds: remainingSeconds,
+    idleExpiresAt: connected ? new Date(memState.idleExpiresAt).toISOString() : null,
+    stateVersion: memState?.stateVersion || 1,
+  });
+});
+
+router.get('/scanner/ping', authenticateScannerOrStaff, async (req, res) => {
+  const sessionCode = normalizePosSessionCode(req.query?.sessionCode || req.invUser?.scannerSessionCode || 'DEFAULT-POS-TERMINAL');
+  const memState = touchScannerSessionActivity(sessionCode, {});
+  res.json({
+    success: true,
+    connected: true,
     status: 'ONLINE',
+    sessionCode,
+    idleTimeoutMinutes: 10,
+    idleTimeoutSeconds: 600,
+    idleExpiresAt: new Date(memState.idleExpiresAt).toISOString(),
     serverTime: new Date().toISOString(),
-    service: 'BhumiVera Ultra-Fast Scanner API (10x Accelerated)',
+    service: 'BhumiVera Ultra-Fast Scanner API (10x Accelerated • 10m Idle Auto-Sleep)',
   });
 });
 
@@ -4018,7 +4972,12 @@ router.get('/scanner/catalog', authenticateScannerOrStaff, async (_req, res) => 
 
     const lookupMap = {};
     rows.forEach(item => {
-      if (item.sku) lookupMap[item.sku.toLowerCase()] = item;
+      item.standalone_qr_payload = buildStandaloneProductQr(item.sku);
+      if (item.sku) {
+        lookupMap[item.sku.toLowerCase()] = item;
+        lookupMap[`bv-qr:${item.sku.toLowerCase()}`] = item;
+        lookupMap[`bv:${item.sku.toLowerCase()}`] = item;
+      }
       if (item.barcode) lookupMap[item.barcode.toLowerCase()] = item;
       if (item.slug) lookupMap[item.slug.toLowerCase()] = item;
       if (item.batch_no) lookupMap[item.batch_no.toLowerCase()] = item;
@@ -4222,6 +5181,8 @@ router.post('/scanner/scan', scannerScanLimiter, authenticateScannerOrStaff, asy
       "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
       [safeSessionCode]
     );
+    const memSessionAfterScan = touchScannerSessionActivity(safeSessionCode, { bumpVersion: true });
+    memSessionAfterScan.queueCache = updatedQueue;
 
     res.status(201).json({
       success: true,
@@ -4241,11 +5202,48 @@ router.get('/scanner/queue', authenticateScannerOrStaff, async (req, res) => {
   try {
     const sessionCode = normalizePosSessionCode(req.query.sessionCode);
     if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
+    const memState = checkScannerSessionIdleStatus(sessionCode);
+    if (memState && !memState.connected && req.query.resume !== 'true') {
+      return res.status(408).json({
+        success: false,
+        connected: false,
+        idleDisconnected: true,
+        code: 'SCANNER_IDLE_TIMEOUT',
+        sessionCode,
+        queue: memState.queueCache || [],
+        message: 'Scanner connection paused after 10 minutes of inactivity to save SQL & memory. Click Connect / Resume to continue.',
+      });
+    }
+    // Serve from in-memory cache when available so background polling uses ZERO SQL queries!
+    if (memState && Array.isArray(memState.queueCache) && req.query.forceSql !== 'true') {
+      const now = Date.now();
+      return res.json({
+        success: true,
+        connected: true,
+        sessionCode,
+        stateVersion: memState.stateVersion || 1,
+        remainingIdleSeconds: memState.idleExpiresAt ? Math.max(0, Math.ceil((memState.idleExpiresAt - now) / 1000)) : 600,
+        idleExpiresAt: memState.idleExpiresAt ? new Date(memState.idleExpiresAt).toISOString() : null,
+        queue: memState.queueCache,
+        drafts: Array.from(savedPosDraftsMemory.values()).filter(d => d.status !== 'completed'),
+      });
+    }
     const [rows] = await pool.query(
       "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
       [sessionCode]
     );
-    res.json({ success: true, queue: rows });
+    const activeState = getOrCreateScannerSessionState(sessionCode, { connected: true });
+    activeState.queueCache = rows;
+    res.json({
+      success: true,
+      connected: true,
+      sessionCode,
+      stateVersion: activeState.stateVersion || 1,
+      remainingIdleSeconds: activeState.idleExpiresAt ? Math.max(0, Math.ceil((activeState.idleExpiresAt - Date.now()) / 1000)) : 600,
+      idleExpiresAt: activeState.idleExpiresAt ? new Date(activeState.idleExpiresAt).toISOString() : null,
+      queue: rows,
+      drafts: Array.from(savedPosDraftsMemory.values()).filter(d => d.status !== 'completed'),
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -4269,6 +5267,8 @@ router.post('/scanner/queue/consume', authenticateScannerOrStaff, async (req, re
         [sessionCode, ...ids]
       );
     }
+    const memConsume = touchScannerSessionActivity(sessionCode, { bumpVersion: true });
+    memConsume.queueCache = null;
     res.json({ success: true, message: 'Scanner queue synced with POS cart.' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -4381,6 +5381,8 @@ router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) 
       "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
       [sessionCode]
     );
+    const memItem = touchScannerSessionActivity(sessionCode, { bumpVersion: true });
+    memItem.queueCache = updatedQueue;
 
     res.json({ success: true, queue: updatedQueue });
   } catch (err) {
@@ -4409,6 +5411,8 @@ router.post('/scanner/queue/remove', authenticateScannerOrStaff, async (req, res
       "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
       [sessionCode]
     );
+    const memRem = touchScannerSessionActivity(sessionCode, { bumpVersion: true });
+    memRem.queueCache = updatedQueue;
     res.json({ success: true, queue: updatedQueue });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -4421,6 +5425,8 @@ router.post('/scanner/queue/clear', authenticateScannerOrStaff, async (req, res)
     const sessionCode = normalizePosSessionCode(req.body?.sessionCode || 'DEFAULT-POS-TERMINAL');
     if (!sessionCode) return res.status(400).json({ success: false, message: 'A valid terminal session is required.' });
     await pool.query("DELETE FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued'", [sessionCode]);
+    const memClr = touchScannerSessionActivity(sessionCode, { bumpVersion: true });
+    memClr.queueCache = [];
     res.json({ success: true, message: 'Queue cleared', queue: [] });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

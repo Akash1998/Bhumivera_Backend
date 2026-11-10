@@ -662,6 +662,60 @@ async function initInventorySoftwareTables(db = pool) {
   `);
 
   await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_pos_saved_drafts (
+      draft_id VARCHAR(64) NOT NULL PRIMARY KEY,
+      session_code VARCHAR(64) NOT NULL DEFAULT 'DEFAULT-POS-TERMINAL',
+      order_id VARCHAR(64) DEFAULT NULL,
+      title VARCHAR(180) NOT NULL,
+      status ENUM('draft','paused','active','completed') NOT NULL DEFAULT 'draft',
+      customer_name VARCHAR(180) DEFAULT 'Walk-in Retail Shopper',
+      customer_phone VARCHAR(40) DEFAULT '',
+      customer_gstin VARCHAR(30) DEFAULT '',
+      payment_mode VARCHAR(40) DEFAULT 'UPI',
+      items_json LONGTEXT NOT NULL,
+      extra_charges_json TEXT DEFAULT NULL,
+      discount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+      total_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      created_by VARCHAR(80) DEFAULT 'admin',
+      created_by_name VARCHAR(150) DEFAULT 'Staff',
+      locked_by VARCHAR(80) DEFAULT NULL,
+      locked_by_name VARCHAR(150) DEFAULT NULL,
+      locked_session_code VARCHAR(64) DEFAULT NULL,
+      saved_at BIGINT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_pos_saved_drafts_session (session_code, status),
+      INDEX idx_pos_saved_drafts_order (order_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_order_locks (
+      order_key VARCHAR(64) NOT NULL PRIMARY KEY,
+      order_id INT DEFAULT NULL,
+      order_number VARCHAR(64) NOT NULL,
+      locked_by_username VARCHAR(80) NOT NULL,
+      locked_by_name VARCHAR(150) NOT NULL,
+      session_code VARCHAR(64) NOT NULL,
+      lock_type ENUM('BILLING','PACKING','POS_DRAFT') NOT NULL DEFAULT 'BILLING',
+      status ENUM('LOCKED','COMPLETED') NOT NULL DEFAULT 'LOCKED',
+      locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      expires_at TIMESTAMP NULL DEFAULT NULL,
+      completed_at TIMESTAMP NULL DEFAULT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  try {
+    await db.query(`ALTER TABLE inventory_scanner_devices ADD COLUMN connection_state VARCHAR(24) NOT NULL DEFAULT 'connected'`);
+  } catch (_) {}
+  try {
+    await db.query(`ALTER TABLE inventory_scanner_devices ADD COLUMN last_active_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP`);
+  } catch (_) {}
+  try {
+    await db.query(`ALTER TABLE inventory_scanner_devices ADD COLUMN idle_expires_at TIMESTAMP NULL DEFAULT NULL`);
+  } catch (_) {}
+
+  await db.query(`
     CREATE TABLE IF NOT EXISTS inventory_pos_checkout_requests (
       idempotency_key VARCHAR(80) NOT NULL PRIMARY KEY,
       request_hash CHAR(64) NOT NULL,
@@ -744,6 +798,7 @@ async function initInventorySoftwareTables(db = pool) {
       ['BV-IAM-002', 'manager', 'Store & Warehouse Operations Manager', 'operations@bhumivera.com', '+91 98320 22222', managerHash, 'manager', 'Bhumivera Flagship Hub — Asansol', JSON.stringify(resolveInventoryPermissions('manager')), 0, generateTotpSecret(), 1],
       ['BV-IAM-003', 'keeper1', 'Vikram Rathore (Cold-Vault & Bin Keeper)', 'keeper@bhumivera.com', '+91 98320 33333', keeperHash, 'keeper', 'Cold-Pressed Botanical Vault — Asansol', JSON.stringify(resolveInventoryPermissions('keeper')), 0, generateTotpSecret(), 1],
       ['BV-IAM-004', 'cashier1', 'Rahul Sharma (Retail POS Cashier)', 'pos@bhumivera.com', '+91 98320 44444', cashierHash, 'cashier', 'Asansol Retail Flagship Counter', JSON.stringify(resolveInventoryPermissions('cashier')), 0, generateTotpSecret(), 1],
+      ['BV-IAM-005', 'priya', 'Priya C (POS & Fulfillment Executive)', 'priya@bhumivera.com', '+91 98320 55555', cashierHash, 'cashier', 'Asansol Retail Flagship Counter', JSON.stringify(resolveInventoryPermissions('cashier')), 0, generateTotpSecret(), 1],
     ];
 
     for (const acc of seedAccounts) {
@@ -1216,8 +1271,14 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
   let extractedSlug = null;
   let extractedBatch = null;
 
-  // Handle standard Bhumivera Batch QR: BV:<SKU>:<BATCH> or BV|<SKU>|<BATCH>
-  if (/^BV[:|]/i.test(raw)) {
+  // Handle standalone Product QR (BV-QR:<SKU>) or Batch QR (BV:<SKU>:<BATCH> or BV|<SKU>|<BATCH>)
+  if (/^BV-QR[:|]/i.test(raw)) {
+    const parts = raw.split(/[:|]/).map(p => p.trim());
+    if (parts.length >= 2) {
+      extractedSku = parts[1];
+      if (parts[2]) extractedBatch = parts[2];
+    }
+  } else if (/^BV[:|]/i.test(raw)) {
     const parts = raw.split(/[:|]/).map(p => p.trim());
     if (parts.length >= 2) {
       extractedSku = parts[1];
@@ -2102,7 +2163,97 @@ async function processReturnQcGrade(db = pool, { orderId, grade, notes = '', act
   }
 }
 
+
+/**
+ * Generates a compact, fast-scannable standalone QR code payload for any product SKU.
+ * Uses a low-density payload (BV-QR:<SKU>) so mobile cameras decode it in <10ms.
+ */
+function buildStandaloneProductQr(sku, batchNo = null) {
+  const cleanSku = String(sku || 'BV-PRODUCT').trim().toUpperCase();
+  if (batchNo && String(batchNo).trim()) {
+    return `BV-QR:${cleanSku}:${String(batchNo).trim()}`;
+  }
+  return `BV-QR:${cleanSku}`;
+}
+
+/**
+ * Automatically computes optimal A4 sheet grid layout (210mm x 297mm) for any requested QR count
+ * (e.g., 6, 10, 20, 24, 35, 48, etc.) while clamping physical QR dimensions between 24mm and 38mm
+ * so the QR code is never too small for mobile cameras and never oversized/awkward on paper.
+ */
+function computeOptimalA4QrLayout(requestedCount = 24, showLabel = true) {
+  const totalCount = Math.max(1, Math.min(500, Math.trunc(Number(requestedCount) || 24)));
+  const printableWidthMm = 194; // 210mm - 2*8mm margin
+  const printableHeightMm = 281; // 297mm - 2*8mm margin
+
+  let cols = 4;
+  let rows = 6;
+
+  if (totalCount <= 4) {
+    cols = 2;
+    rows = 3;
+  } else if (totalCount <= 6) {
+    cols = 3;
+    rows = 3;
+  } else if (totalCount <= 10) {
+    cols = 3;
+    rows = 4;
+  } else if (totalCount <= 12) {
+    cols = 3;
+    rows = 4;
+  } else if (totalCount <= 16) {
+    cols = 4;
+    rows = 4;
+  } else if (totalCount <= 20) {
+    cols = 4;
+    rows = 5;
+  } else if (totalCount <= 24) {
+    cols = 4;
+    rows = 6;
+  } else if (totalCount <= 30) {
+    cols = 5;
+    rows = 6;
+  } else if (totalCount <= 35) {
+    cols = 5;
+    rows = 7;
+  } else {
+    cols = 6;
+    rows = 8;
+  }
+
+  const perPage = cols * rows;
+  const totalPages = Math.ceil(totalCount / perPage);
+  const gapMm = cols >= 5 ? 2.5 : 3.5;
+
+  const cellWidthMm = Number(((printableWidthMm - (cols - 1) * gapMm) / cols).toFixed(1));
+  const cellHeightMm = Number(((printableHeightMm - (rows - 1) * gapMm) / rows).toFixed(1));
+
+  // Reserve vertical space for compact product name + SKU label if enabled
+  const labelAllowanceMm = showLabel ? 9 : 3;
+  const maxFitQrMm = Math.min(cellWidthMm - 5, cellHeightMm - labelAllowanceMm);
+
+  // Clamp strictly between 24mm (fast mobile focus minimum) and 38mm (visual elegance maximum)
+  const qrSizeMm = Math.max(24, Math.min(38, Math.floor(maxFitQrMm)));
+
+  return {
+    totalCount,
+    cols,
+    rows,
+    perPage,
+    totalPages,
+    gapMm,
+    cellWidthMm,
+    cellHeightMm,
+    qrSizeMm,
+    minQrMm: 24,
+    maxQrMm: 38,
+    showLabel: Boolean(showLabel),
+  };
+}
+
 module.exports = {
+  buildStandaloneProductQr,
+  computeOptimalA4QrLayout,
   VALID_INVENTORY_ROLES,
   INVENTORY_PERMISSION_DEFINITIONS,
   ROLE_DEFAULT_INVENTORY_PERMISSIONS,
