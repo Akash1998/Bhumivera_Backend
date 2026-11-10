@@ -1,0 +1,8 @@
+# BHUMIVERA BACKEND — CURSOR RULES & BOT DIRECTIVES
+# 1. READ "AI_MEMORY/00_START_HERE.md" and "AI_MEMORY/03_BOT_STATE_LEDGER.md" FIRST.
+# 2. CURRENT INVENTORY: 41 Route Files | 456 Endpoints | 38 Models | 354 Functions | 79 Migrations.
+# 3. SELF-UPDATING RULE:
+#    Even if the user forgot to remind you in their prompt:
+#    Whenever you add, modify, or delete any endpoint or model function:
+#    YOU MUST update the count in "AI_MEMORY/02_API_AND_FUNCTION_REGISTRY.md"
+#    and log your delta in "AI_MEMORY/03_BOT_STATE_LEDGER.md" (e.g. 57 -> 58 endpoints).

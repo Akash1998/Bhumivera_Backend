@@ -1,0 +1,76 @@
+# Production release checks
+
+## Backend environment
+
+Set `NODE_ENV=production` and provide:
+
+- `JWT_SECRET`: a random value with at least 32 characters. `OTP_SECRET` is recommended as a separate random value with at least 32 characters; if omitted, OTP HMAC uses a stable HKDF-derived key from `JWT_SECRET`.
+- `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `DB_PORT`
+- `DB_SSL=true`; provide `DB_SSL_CA` only when the database provider uses a private CA.
+- `FRONTEND_ORIGINS`: recommended comma-separated exact HTTPS origins for the deployed frontend (no paths, wildcards, or preview domains). The API also allows the verified first-party Vercel storefront origin `https://bhumivera-frontend.vercel.app`; arbitrary Vercel preview origins remain blocked. If omitted, the API allows `https://www.bhumivera.com` and `https://bhumivera.com` as well.
+
+On Railway, link the backend service to the Railway MySQL service by setting `MYSQLHOST`, `MYSQLPORT`, `MYSQLUSER`, `MYSQLPASSWORD`, and `MYSQLDATABASE` as Railway variable references. The backend uses these variables instead of `DB_*` whenever it runs on Railway; it will not silently connect to a TiDB host from stale `DB_*` values. Railway's private `*.railway.internal` database connection uses the private network without TLS. Ensure the Railway database already contains the application data before deploying; switching connection settings does not copy data from TiDB.
+
+On Railway, remove the deprecated `NPM_CONFIG_PRODUCTION` variable to avoid npm's install warning. If production installs should omit development dependencies, use `NPM_CONFIG_OMIT=dev` instead.
+
+For Vercel, set `DB_HOST` to the actual TiDB Cloud hostname; Railway references such as `${{MySQL.MYSQLHOST}}` are not resolved by Vercel.
+If startup logs show `ECONNREFUSED` or `ETIMEDOUT` for the database, verify the configured host, port, provider firewall/IP allowlist, and that the database endpoint is reachable from the backend runtime. A private-network address is not reachable from Vercel unless the deployment has an explicit network path to that private network. Keep `/health/ready` unready until connectivity is restored; the backend retries database initialization automatically.
+Review seed/purge migrations 69–71 are retained only as no-op history markers; they no longer insert or delete review rows. Migration 72 creates image-free regimen bundle products; bundle orders reserve stock from every included catalog product. The admin review archive action hides a review from customers while retaining its database row and media.
+
+If the corresponding feature is enabled, configure both Razorpay API credentials. To receive Razorpay events, configure `RAZORPAY_WEBHOOK_SECRET` and point the provider to `POST /api/webhooks/razorpay`, subscribing to `payment.captured`, `payment.failed`, `refund.created`, `refund.processed`, and `refund.failed`. Use the webhook secret from the provider dashboard, which is separate from the API key secret.
+
+For more than one backend instance, set the same `REDIS_URL` or `RATE_LIMIT_REDIS_URL` on every instance to share rate-limit counters. A single instance can use the built-in in-memory rate-limit store.
+
+Set `REDIS_URL` or `CACHE_REDIS_URL` on each backend instance to enable Redis response caching. The cache is restricted to public product, category, subcategory and active flash-sale GET endpoints; authenticated/cookie requests, explicitly private or no-store responses, and search/referral-preview endpoints are not cached. Repeated product-list, product-detail (numeric ID or slug), category, subcategory, and active flash-sale responses are cached for 60 seconds, up to 1 MiB per response. Redis cache connection or request failures do not prevent API requests from continuing. This is a read-through cache: SQL remains the durable source of truth, and a cache miss or expiry reads SQL.
+
+The MySQL-protocol client pool defaults to at most 3 connections, 1 idle connection and 100 queued operations (`DB_POOL_SIZE` can override the connection cap). This limits per-connection server overhead while bounding application-side queue growth. Check TiDB Cloud metrics for actual cluster resource usage; the admin health page reports application pool limits, not database memory allocation.
+
+### Production system logs
+
+The admin System Logs page stores backend HTTP 5xx and database failures in MySQL for 30 days, and fetches Railway and Vercel records while the provider view is open. To enable Railway HTTP request logs, configure `RAILWAY_PROJECT_ACCESS_TOKEN` (or `RAILWAY_API_TOKEN` / `RAILWAY_TOKEN`) and `RAILWAY_DEPLOYMENT_ID` on the backend service. To enable Vercel runtime and deployment/build logs, configure `VERCEL_TOKEN` (or `VERCEL_API_TOKEN`) and `VERCEL_PROJECT_ID`; `VERCEL_DEPLOYMENT_ID` is optional and selects a specific deployment instead of the latest production deployment. Set `VERCEL_TEAM_ID` for team-scoped projects. These tokens must be available to the backend service (setting a variable only in Vercel does not make it available to Railway). Provider credentials are never returned by the admin API. Railway HTTP access logs do not necessarily include application stack traces. Vercel runtime logs are scoped to one deployment and capped at 200 records returned by the provider; configure a provider log drain for comprehensive historical/continuous retention.
+
+### Promotional email campaigns
+
+Administrators can send an offer or coupon announcement from Admin > Customers > Email opted-in customers. The audience is limited to active customer accounts with `marketing_email_opt_in = 1`; recipients are counted before composing and consent is checked again when the message is sent. The existing Mailrelay integration (`MAILRELAY_API_KEY`, `MAILRELAY_DOMAIN`, and `EMAIL_FROM`) delivers the campaign. Do not send promotional email to customers who have not opted in or have opted out.
+
+The backend requires Node.js 22.x on Vercel. Its install policy permits the pinned `onnxruntime-node` install script because Transformers.js needs the platform runtime binary for local embeddings. The backend uses the MySQL protocol driver and runs its schema migrations before declaring readiness; TiDB Cloud uses the same `DB_*` variables with TLS enabled. Migration 21 creates the empty admin account table and applies its security columns; it does not create an admin login. Migration 66 seeds the default product categories and catalog on a fresh database. Migration 68 adds the customer profile image key used by direct-to-object-storage profile photo uploads. Configure Vercel with the TiDB Cloud host, port, database username, password, database name, and `DB_SSL=true`. Then check `/health/ready`; it must report `{"status":"ready","databaseReady":true}` before testing catalog or authentication endpoints. A migration failure leaves the service unready and is retried; inspect Vercel runtime logs for the failing migration.
+
+On Vercel, `/health/live` is intentionally a lightweight process-liveness check and does not connect to TiDB or run migrations. `/health/ready` and normal API requests initialize the database on demand. Vercel function instances are ephemeral: a scheduled request every four minutes, or deploying the same app from multiple accounts, cannot guarantee that a particular instance stays warm or eliminate cold starts. Use an always-on backend runtime if a strict no-cold-start response time is required; keep-alive requests should not be treated as a substitute for that capacity.
+
+The frontend build must point at the deployed backend origin with `VITE_BASE_URL` (without `/api`). The backend must allow the deployed storefront origin through `FRONTEND_ORIGINS`. Customer email OTP requires `MAILRELAY_API_KEY`; configure it in Vercel along with `MAILRELAY_DOMAIN` and `EMAIL_FROM`. OTP messages are sent by email through Mailrelay; SMS delivery is not configured.
+
+After deploying the backend, verify an OPTIONS preflight to `/api/inventory-software/pos/checkout` from the storefront origin permits `authorization`, `content-type`, and `idempotency-key`. The POS checkout uses `Idempotency-Key`; the separate `X-Idempotency-Key` header remains allowed for request deduplication.
+
+Checkout shows Razorpay first, Wallet second, and COD third. COD remains visible with an explanation, but is selectable only after two of the customer's orders have been recorded as delivered (`delivered_at` set); the order transaction rechecks this rule on the server. Wallet checkout debits the wallet and records its ledger transaction atomically with order creation. Razorpay remains the recommended payment option.
+
+The Orders admin page can compare up to 25 online payments on the visible page with Razorpay. This is a read-only diagnostic: discrepancies and provider lookup failures are reported but never auto-corrected. Normal online checkout captures the payment before creating the order; pending orders also include legitimate COD orders, so do not automatically expire pending orders or release their stock without an approved fulfillment policy.
+
+Customer cancellation is limited to pending or confirmed orders and rechecks that state while holding the order row lock, so a concurrent fulfillment update cannot be overwritten by a stale cancellation request. An already-paid online order returns `409 REFUND_REQUIRED`; process refunds through the return workflow instead of marking a paid order cancelled first.
+
+Refund requests are available only for a received return tied to a captured online Razorpay payment. Migration 35 creates the provider-refund request ledger. An administrator must explicitly enter the amount; the backend validates that payment details match the order, checks Razorpay refund history, reserves the amount transactionally against other refunds, and submits a normal-speed provider refund with a unique internal receipt. Refund requests in progress block repeat attempts. The return is not marked refunded until the signed `refund.processed` webhook arrives. Configure all three refund webhook events above. If a provider request times out or returns an ambiguous conflict, use the admin "Refresh refund status" action (which checks Razorpay history by exact receipt) before any retry; never resubmit an unknown result blindly. Use Razorpay test credentials and test payments before enabling production refunds.
+
+Affiliate administration currently returns `501 AFFILIATE_WORKFLOW_UNAVAILABLE`; partner, commission, and payout actions are not persisted and must not be treated as successful. Dashboard order-value metrics sum stored totals for orders not marked cancelled; they are not reconciled net sales, settled cash, tax collected, or profit.
+
+The A/B Experiment page is informationally disabled: the settings registry stores labels only and does not assign customer variants or record impressions, conversions, or statistical results. Do not use it to make product or marketing decisions.
+
+Category create, update, and delete operations are recorded in `category_audit_log` in the same database transaction as the taxonomy change. The log stores the acting administrator, action, category ID, and before/after category snapshots. Migration 34 creates the table. The admin panel loads the latest 30 records; the endpoint allows limits from 1 to 100. The audit table currently has no retention or export workflow, so define those policies before the log grows substantially.
+
+The admin Support inbox brings persisted contact tickets and return requests into one searchable queue. Replies and customer conversations use the support-ticket workflow; return approvals, replacements, and provider refunds remain in the dedicated Returns workspace so those actions keep their specific authorization and payment safeguards.
+
+For better key-compromise isolation, generate an independent `OTP_SECRET` locally with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` and save it directly as a Vercel environment variable. Never commit or send the generated value in chat. The service remains operational without it by deriving a stable, OTP-specific key from the required strong `JWT_SECRET`.
+
+## Frontend environment
+
+Set `VITE_BASE_URL` to the backend origin, without the `/api` suffix. The current Vercel backend origin is `https://bhumivera-backend.vercel.app`. If the frontend uses a separately configured Razorpay checkout key, make sure it matches the backend key ID.
+
+## Release smoke test
+
+After deploying both applications, run this from the backend repository:
+
+```powershell
+$env:API_BASE_URL = "https://your-backend.example"
+$env:FRONTEND_URL = "https://your-store.example"
+npm.cmd run smoke
+```
+
+The smoke test checks backend liveness, readiness, the root API route, and (when configured) frontend delivery. It does not place orders or make provider charges. Run payment, fulfillment, and refund tests using provider test mode and dedicated test records before enabling live transactions.

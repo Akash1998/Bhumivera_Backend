@@ -1,0 +1,46 @@
+name: Night Sleep & Resource Conservation Schedule
+
+on:
+  schedule:
+    # 16:30 UTC = 22:00 IST (10:00 PM IST) -> Put backend to sleep
+    - cron: '30 16 * * *'
+    # 00:30 UTC = 06:00 IST (06:00 AM IST) -> Wake backend up
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Manual Action'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - sleep
+          - wake
+
+jobs:
+  manage-sleep:
+    name: Manage Backend Sleep/Wake
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Execute Sleep/Wake Action
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE_NAME: Bhumivera_Backend
+          RAILWAY_REGION_KEY: asia-southeast1-eqsg3a
+          RAILWAY_ENVIRONMENT_NAME: production
+        run: |
+          ACTION="${{ github.event.inputs.action || 'auto' }}"
+          echo "Triggering action: $ACTION"
+          node scripts/nightSleepSchedule.js --$ACTION
