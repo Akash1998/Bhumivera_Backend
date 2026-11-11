@@ -1,5 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const pool = require('../config/db');
+
+test.after(async () => {
+  await pool.end();
+});
 
 const {
   buildStandaloneProductQr,
@@ -10,6 +15,7 @@ const {
   generateTotpSecret,
   verifyTotpCode,
   calculateEstimatedDeliveryDate,
+  syncWebsiteProductsToInventoryMeta,
 } = require('../models/inventorySoftwareModel');
 
 test('resolveInventoryPermissions grants all permissions when full_all_access or admin role', () => {
@@ -148,6 +154,63 @@ test('individual item QR resolves through its registered serial to the correct p
   serialStatus = 'sold';
   const sold = await resolveProductByQrOrCode(fakeDb, 'BV-ITEM-SEA-001');
   assert.equal(sold.serialStatus, 'sold');
+});
+
+test('QR lookup ignores inventory metadata orphaned by product deletion', async () => {
+  let metadataLookupCount = 0;
+  const fakeDb = {
+    query: async sql => {
+      if (sql.includes('FROM product_serials ps')) return [[]];
+      if (sql.includes('FROM inventory_product_meta m')) {
+        metadataLookupCount += 1;
+        assert.match(sql, /m\.product_id IS NULL OR p\.id IS NOT NULL/);
+        return [[]];
+      }
+      if (sql.includes('FROM product_batches pb')) return [[]];
+      return [[]];
+    },
+  };
+  const { resolveProductByQrOrCode } = require('../models/inventorySoftwareModel');
+
+  assert.equal(await resolveProductByQrOrCode(fakeDb, 'DELETED-PRODUCT-SKU'), null);
+  assert.equal(metadataLookupCount, 1);
+});
+
+test('admin product sync refreshes only the changed inventory product', async () => {
+  const statements = [];
+  const fakeDb = {
+    query: async (sql, params = []) => {
+      statements.push({ sql, params });
+      if (sql.includes('FROM products p')) {
+        return [[{
+          id: 42,
+          name: 'Updated face wash',
+          sku: 'BV-UPDATED-42',
+          price: 250,
+          discount_price: 200,
+          quantity: 8,
+          gst_hsn_code: '30049011',
+          gst_rate: 5,
+          category_name: 'Face Wash',
+        }]];
+      }
+      if (sql.includes('FROM order_items oi')) return [[]];
+      return [{ affectedRows: 1 }];
+    },
+  };
+
+  await syncWebsiteProductsToInventoryMeta(fakeDb, 42);
+
+  const productQuery = statements.find(({ sql }) => sql.includes('FROM products p'));
+  const soldQuery = statements.find(({ sql }) => sql.includes('FROM order_items oi'));
+  const metaUpsert = statements.find(({ sql }) => sql.includes('INSERT INTO inventory_product_meta'));
+  assert.match(productQuery.sql, /WHERE p\.id = \?/);
+  assert.deepEqual(productQuery.params, [42]);
+  assert.match(soldQuery.sql, /AND oi\.product_id = \?/);
+  assert.deepEqual(soldQuery.params, [42]);
+  assert.ok(metaUpsert);
+  assert.equal(metaUpsert.params[0], 42);
+  assert.equal(metaUpsert.params[1], 'Updated face wash');
 });
 
 test('generateWavePicklist groups orders and aggregates items by bin walk path', async () => {

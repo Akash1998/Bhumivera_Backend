@@ -877,15 +877,18 @@ const DEFAULT_PRODUCT_KEEPER_CONFIG = {
   'BV-BND-VAULT-06': { barcode: '8908020260091', uom: 'Vault', costPrice: 295.00, mrp: 3644.00, binCode: 'ASN-DISPATCH-R1-B01', rackLocation: 'Zone C • Rack D1 • Shelf 01 • Vault Bay', batchNo: null, mfgDate: null, expiryDate: null, minStock: 10, reorderQty: 40, gstHsnCode: '30049011', gstRate: 5.00 },
 };
 
-async function syncWebsiteProductsToInventoryMeta(db = pool) {
+async function syncWebsiteProductsToInventoryMeta(db = pool, productId = null) {
   try {
+    const productFilter = productId == null ? '' : 'WHERE p.id = ?';
+    const productParams = productId == null ? [] : [productId];
     const [products] = await db.query(`
       SELECT p.id, p.name, p.slug, p.sku, p.price, p.discount_price, p.quantity,
              p.gst_hsn_code, p.gst_rate, p.specifications,
              c.name AS category_name
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-    `);
+      ${productFilter}
+    `, productParams);
 
     const [soldAggRows] = await db
       .query(`
@@ -894,8 +897,9 @@ async function syncWebsiteProductsToInventoryMeta(db = pool) {
         INNER JOIN orders o ON o.id = oi.order_id
         WHERE o.status NOT IN ('cancelled', 'returned', 'archived')
           AND oi.product_id IS NOT NULL
+          ${productId == null ? '' : 'AND oi.product_id = ?'}
         GROUP BY oi.product_id
-      `)
+      `, productParams)
       .catch(() => [[]]);
     const onlineSoldMap = new Map(
       (soldAggRows || []).map(r => [Number(r.product_id), Number(r.online_sold) || 0])
@@ -1335,7 +1339,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
         `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
          FROM inventory_product_meta m
          LEFT JOIN products p ON m.product_id = p.id
-         WHERE m.product_id = ?
+         WHERE m.product_id = ? AND p.id IS NOT NULL
          LIMIT 1`,
         [serialRows[0].product_id]
       );
@@ -1353,13 +1357,14 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
     `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
      FROM inventory_product_meta m
      LEFT JOIN products p ON m.product_id = p.id
-     WHERE LOWER(m.sku) = LOWER(?)
+     WHERE (m.product_id IS NULL OR p.id IS NOT NULL)
+       AND (LOWER(m.sku) = LOWER(?)
         OR m.barcode = ?
         OR LOWER(COALESCE(m.batch_no, '')) = LOWER(?)
         OR LOWER(COALESCE(p.slug, '')) = LOWER(?)
         OR LOWER(COALESCE(p.name, m.custom_name, '')) = LOWER(?)
         OR m.id = ?
-        OR p.id = ?
+        OR p.id = ?)
      LIMIT 1`,
     [
       lookupToken,
@@ -1390,7 +1395,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
         `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
          FROM inventory_product_meta m
          LEFT JOIN products p ON m.product_id = p.id
-         WHERE m.product_id = ?
+         WHERE m.product_id = ? AND p.id IS NOT NULL
          LIMIT 1`,
         [batchRows[0].product_id]
       );
@@ -1838,6 +1843,7 @@ async function calculateInventoryVelocityAndDoc(db = pool) {
              COALESCE(p.quantity, m.physical_stock, 0) AS current_stock
       FROM inventory_product_meta m
       LEFT JOIN products p ON m.product_id = p.id
+      WHERE m.product_id IS NULL OR p.id IS NOT NULL
       ORDER BY m.id ASC
     `);
     items = rows || [];

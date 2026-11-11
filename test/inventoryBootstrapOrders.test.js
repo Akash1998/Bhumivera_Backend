@@ -8,10 +8,14 @@ const path = require('node:path');
 const routesPath = path.resolve(__dirname, '../routes/inventorySoftwareRoutes.js');
 const originalLoad = Module._load;
 let failQuery = '';
+let bootstrapItemQuery = '';
 const fakePool = {
   query: async sql => {
     if (/inventory_staff_accounts WHERE id/.test(sql)) {
       return [[{ id: 1, username: 'test', role: 'admin', status: 'active' }]];
+    }
+    if (/SELECT m\.\*/.test(sql) && /FROM inventory_product_meta m/.test(sql)) {
+      bootstrapItemQuery = sql;
     }
     if (failQuery === 'orders' && /FROM orders o/.test(sql)) throw new Error('orders unavailable');
     if (failQuery === 'items' && /FROM order_items WHERE/.test(sql)) throw new Error('order items unavailable');
@@ -63,4 +67,15 @@ describe('inventory bootstrap order failures', () => {
       assert.match(body.message, /unavailable/);
     });
   }
+
+  it('excludes inventory rows whose linked product was deleted and returns empty item arrays', async () => {
+    failQuery = '';
+    bootstrapItemQuery = '';
+    const token = jwt.sign({ scope: 'inventory-software', id: 1 }, process.env.JWT_SECRET || 'fallback_secret');
+    const response = await fetch(`${baseUrl}/bootstrap`, { headers: { authorization: ['Bearer', token].join(' ') } });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.items, []);
+    assert.match(bootstrapItemQuery, /WHERE m\.product_id IS NULL OR p\.id IS NOT NULL/);
+  });
 });
