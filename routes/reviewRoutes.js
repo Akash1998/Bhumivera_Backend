@@ -20,7 +20,6 @@ const {
   approveReview,
   archiveReview,
   deleteReviewPermanently,
-  bulkRandomizeReviewDates,
   getUserReviews,
   updateReviewAsAdmin,
   syncProductStats
@@ -288,17 +287,17 @@ router.get('/', authenticateAdmin, async (req, res) => {
 router.post('/admin', authenticateAdmin, async (req, res) => {
   try {
     const {
-      product_id = 2,
+      product_id,
       product_slug,
       product_name,
-      rating = 5,
+      rating,
       title = '',
       body = '',
       comment = '',
-      user_name = 'Verified Patron',
+      user_name,
       reviewer_name,
-      reviewer_location = 'India',
-      category_tag = 'Quick & Everyday Impressions',
+      reviewer_location = '',
+      category_tag = '',
       is_combo_review = false,
       combo_name = null,
       combo_slug = null,
@@ -308,9 +307,18 @@ router.post('/admin', authenticateAdmin, async (req, res) => {
       created_at,
       images = [],
       videos = [],
-      is_approved = 1
+      is_approved = 0
     } = req.body || {};
 
+    if (!Number.isSafeInteger(Number(product_id)) || Number(product_id) <= 0) {
+      return res.status(400).json({ message: 'Choose a product from the current catalog.' });
+    }
+    if (!String(user_name || reviewer_name || '').trim()) {
+      return res.status(400).json({ message: 'Customer name is required.' });
+    }
+    if (!String(body || comment || '').trim()) {
+      return res.status(400).json({ message: 'Customer review text is required.' });
+    }
     const numericRating = Number(rating);
     if (!Number.isFinite(numericRating) || numericRating < 1 || numericRating > 5) {
       return res.status(400).json({ message: 'Rating must be between 1 and 5.' });
@@ -320,15 +328,15 @@ router.post('/admin', authenticateAdmin, async (req, res) => {
     }
 
     const created = await createReviewAsAdmin({
-      product_id: Number(product_id) || 2,
+      product_id: Number(product_id),
       product_slug,
       product_name,
       rating: Math.round(numericRating),
       title: String(title || '').slice(0, 255),
       body: String(body || comment || '').slice(0, 5000),
-      user_name: String(user_name || reviewer_name || 'Verified Patron').slice(0, 120),
-      reviewer_location: String(reviewer_location || 'India').slice(0, 120),
-      category_tag: String(category_tag || 'Quick & Everyday Impressions').slice(0, 120),
+      user_name: String(user_name || reviewer_name).trim().slice(0, 120),
+      reviewer_location: String(reviewer_location || '').slice(0, 120),
+      category_tag: String(category_tag || '').slice(0, 120) || null,
       is_combo_review: Boolean(is_combo_review || combo_name || category_tag === 'Combo Pack Ritual'),
       combo_name: combo_name ? String(combo_name).slice(0, 255) : null,
       combo_slug,
@@ -446,29 +454,6 @@ router.delete('/admin/:id', authenticateAdmin, async (req, res) => {
   } catch (err) {
     console.error('[ADMIN_REVIEW_DELETE]', err);
     res.status(500).json({ message: 'Failed to delete review.' });
-  }
-});
-
-// POST /api/reviews/admin/bulk-randomize-dates - admin: randomize review publication dates across a date range
-router.post('/admin/bulk-randomize-dates', authenticateAdmin, async (req, res) => {
-  try {
-    const { review_ids, start_date, end_date } = req.body || {};
-    if (!start_date || !end_date) {
-      return res.status(400).json({ success: false, message: 'start_date and end_date are required.' });
-    }
-    if (review_ids !== 'all' && (!Array.isArray(review_ids) || review_ids.length === 0)) {
-      return res.status(400).json({ success: false, message: 'review_ids array cannot be empty.' });
-    }
-
-    const result = await bulkRandomizeReviewDates(review_ids, start_date, end_date);
-    res.json({
-      success: true,
-      count: result.count,
-      message: `Successfully randomized publication dates for ${result.count} reviews between ${start_date} and ${end_date}.`
-    });
-  } catch (error) {
-    console.error('[BULK_RANDOMIZE_REVIEWS_ERROR]', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to randomize review dates.' });
   }
 });
 

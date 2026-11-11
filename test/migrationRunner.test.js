@@ -293,7 +293,7 @@ describe('runMigrations', () => {
 
     await runMigrations(pool, migrations, { logger });
 
-    assert.equal(pool.applied.size, 85);
+    assert.equal(pool.applied.size, migrations.length);
     assert.equal(
       pool.applied.get(81),
       'seed and synchronize architectural regimen combos in products table'
@@ -460,6 +460,59 @@ describe('runMigrations', () => {
       /versions must/
     );
   });
+
+  it('removes only the known untouched illustrative taxonomy and cart-rule defaults', async () => {
+    const migration = migrations.find(candidate => candidate.version === 87);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async (sql, params = []) => {
+      statements.push({ sql, params });
+      return [{ affectedRows: 0 }, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    const subcategoryCleanup = statements.find(({ sql }) => sql.includes('DELETE FROM subcategories'));
+    assert.deepEqual(subcategoryCleanup.params[0], [
+      'seabuckthorn-radiance-cleansers',
+      'activated-charcoal-purifiers',
+      'botanical-saponin-shampoos',
+      'scalp-root-revitalizing-rituals',
+      'charcoal-detox-bathing-bars',
+      'aloe-neem-tulsi-soothing-bars',
+      'seven-tulsi-liquid-extracts',
+      'bio-active-botanical-distillates',
+    ]);
+    assert.equal(statements.filter(({ sql }) => sql.includes('UPDATE categories SET description = NULL')).length, 4);
+    assert.match(statements.find(({ sql }) => sql.includes('DELETE FROM cart_rules')).sql, /AND description = 'Free shipping and 100 loyalty points on qualifying carts\.'/);
+    assert.match(statements.find(({ sql }) => sql.includes('DELETE FROM cart_rules')).sql, /AND min_cart_value = 599/);
+  });
+
+  it('removes only the untouched lifecycle interval defaults', async () => {
+    const migration = migrations.find(candidate => candidate.version === 88);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async (sql, params = []) => {
+      statements.push({ sql, params });
+      return [{ affectedRows: 0 }, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.equal(statements.length, 1);
+    assert.match(statements[0].sql, /group_name = 'lifecycle'/);
+    assert.match(statements[0].sql, /lifecycle_winback_days' AND value = '7'/);
+    assert.match(statements[0].sql, /lifecycle_churn_days' AND value = '90'/);
+  });
+
 });
 
 

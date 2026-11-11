@@ -11,7 +11,6 @@ const {
   getPublicCustomerStories,
   createReviewAsAdmin,
   updateReviewAsAdmin,
-  bulkRandomizeReviewDates,
 } = require('../models/reviewModel');
 
 after(async () => {
@@ -120,6 +119,9 @@ describe('database-backed review retention', () => {
     const statements = [];
     pool.query = async (sql, values = []) => {
       statements.push({ sql, values });
+      if (sql.startsWith('SELECT id, name, slug FROM products')) {
+        return [[{ id: 1, name: 'Catalog product', slug: 'catalog-product' }], []];
+      }
       if (/^INSERT INTO reviews/i.test(sql)) return [{ insertId: 1501 }, []];
       return [{ affectedRows: 1 }, []];
     };
@@ -128,13 +130,17 @@ describe('database-backed review retention', () => {
       const created = await createReviewAsAdmin({
         product_id: 1,
         user_name: 'Subhajit Chatterjee',
-        reviewer_location: 'Asansol, West Bengal',
+        reviewer_location: 'Customer-provided location',
         rating: 5,
         title: 'Khub bhalo',
         body: 'Darun kaaj koreche.',
         created_at: '2024-05-10T10:00:00.000Z',
       });
       assert.equal(created.id, 1501);
+      assert.equal(created.product_name, 'Catalog product');
+      assert.equal(created.user_id, undefined);
+      assert.equal(created.order_number, null);
+      assert.equal(created.is_approved, 0);
       assert.equal(statements.some(({ sql }) => /^INSERT INTO reviews\s*\(\s*id,/i.test(sql)), false);
     } finally {
       pool.query = originalQuery;
@@ -183,37 +189,4 @@ describe('database-backed review retention', () => {
     }
   });
 
-  it('bulk randomizes review dates transactionally and validates inputs', async () => {
-    // 1. Invalid date range throws
-    await assert.rejects(
-      bulkRandomizeReviewDates([1, 2], '2024-12-31', '2024-01-01'),
-      /Invalid date range/
-    );
-
-    // 2. Empty IDs returns 0
-    assert.deepEqual(await bulkRandomizeReviewDates([], '2024-01-01', '2024-12-31'), { count: 0 });
-
-    // 3. Valid transactional batch update
-    const originalGetConnection = pool.getConnection;
-    const ops = [];
-    const mockConn = {
-      beginTransaction: async () => { ops.push('begin'); },
-      query: async (sql, vals) => { ops.push({ sql, vals }); return [{ affectedRows: 2 }]; },
-      commit: async () => { ops.push('commit'); },
-      rollback: async () => { ops.push('rollback'); },
-      release: () => { ops.push('release'); }
-    };
-
-    pool.getConnection = async () => mockConn;
-    try {
-      const res = await bulkRandomizeReviewDates([101, 102], '2023-01-01', '2024-01-01');
-      assert.equal(res.count, 2);
-      assert.equal(ops[0], 'begin');
-      assert.match(ops[1].sql, /UPDATE reviews SET created_at = CASE id/);
-      assert.equal(ops[2], 'commit');
-      assert.equal(ops[3], 'release');
-    } finally {
-      pool.getConnection = originalGetConnection;
-    }
-  });
 });

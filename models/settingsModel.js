@@ -73,8 +73,6 @@ const createSettingsTable = async () => {
     ['lifecycle_third_order_enabled', '0', 'lifecycle'],
     ['lifecycle_third_order_gift_product_id', '', 'lifecycle'],
     ['lifecycle_winback_enabled', '0', 'lifecycle'],
-    ['lifecycle_winback_days', '7', 'lifecycle'],
-    ['lifecycle_churn_days', '90', 'lifecycle'],
     ['lifecycle_birthday_enabled', '0', 'lifecycle'],
     ['lifecycle_birthday_coupon_code', '', 'lifecycle'],
     ['loyalty_program_enabled', '1', 'loyalty'],

@@ -5,25 +5,6 @@ const toSlug = str => String(str || '')
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/(^-|-$)/g, '');
 
-const DEFAULT_CATEGORY_METADATA = {
-  'Artisanal Ayurvedic Cleansing Bars': {
-    slug: 'artisanal-ayurvedic-cleansing-bars',
-    description: 'Handcrafted 100% natural Ayurvedic luxury bathing bars formulated with pure Activated Charcoal, Aloe Vera, Neem, and Sacred Tulsi. Free from sulfates, parabens, and harsh synthetic detergents.'
-  },
-  'Luxury Facial Cleansers': {
-    slug: 'luxury-facial-cleansers',
-    description: 'Sulfate-free, pH 5.5 skin-barrier calibrated luxury facial cleansers. Formulated with 4% Himalayan Sea Buckthorn, 3% Activated Charcoal, Hyaluronic Acid, and Niacinamide with 100% label-disclosed potencies.'
-  },
-  'Luxury Hair Care': {
-    slug: 'luxury-hair-care',
-    description: 'Royal Ayurvedic 2-in-1 conditioning shampoos and restorative botanical hair rituals formulated with natural saponin extracts of Reetha, Amla, Bhringraj, Rosemary Oil, and Shikakai.'
-  },
-  'Luxury Ayurvedic Wellness & Immunity Drops': {
-    slug: 'luxury-ayurvedic-wellness-immunity-drops',
-    description: 'High-potency 90% liquid distillate of 7 sacred Tulsi varieties (Van, Sweet, Marua, Bisva, Kala, Rama & Lemon Tulsi) designed to balance stress, enhance vitality, and promote healthy radiant skin from within.'
-  }
-};
-
 const CATEGORY_AUDIT_FIELDS = ['id', 'name', 'description', 'image_url', 'is_active'];
 
 const createCategoryError = (code, message) => Object.assign(new Error(message), { code });
@@ -31,10 +12,9 @@ const createCategoryError = (code, message) => Object.assign(new Error(message),
 const normalizeCategory = category => {
   const name = String(category.name || '').trim();
   const rawSlug = category.slug ? String(category.slug).trim() : '';
-  const meta = DEFAULT_CATEGORY_METADATA[name] || {};
-  const slug = rawSlug || meta.slug || toSlug(name);
+  const slug = rawSlug || toSlug(name);
   const rawDesc = category.description ? String(category.description).trim() : '';
-  const description = rawDesc || meta.description || null;
+  const description = rawDesc || null;
   return {
     name,
     slug,
@@ -166,14 +146,11 @@ const getAllCategories = async () => {
     }
   }
 
-  return rows.map(row => {
-    const meta = DEFAULT_CATEGORY_METADATA[row.name] || {};
-    return {
-      ...row,
-      slug: row.slug || meta.slug || toSlug(row.name),
-      description: row.description || meta.description || `Formulations and luxury ritual products in ${row.name} by Bhumivera Organics.`
-    };
-  });
+  return rows.map(row => ({
+    ...row,
+    slug: row.slug || toSlug(row.name),
+    description: row.description || null,
+  }));
 };
 
 const getCategoryById = async id => {
@@ -196,11 +173,10 @@ const getCategoryById = async id => {
     }
   }
   if (!row) return null;
-  const meta = DEFAULT_CATEGORY_METADATA[row.name] || {};
   return {
     ...row,
-    slug: row.slug || meta.slug || toSlug(row.name),
-    description: row.description || meta.description || null
+    slug: row.slug || toSlug(row.name),
+    description: row.description || null,
   };
 };
 

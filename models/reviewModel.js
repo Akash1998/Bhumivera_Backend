@@ -128,31 +128,28 @@ const parseReview = review => {
   if (!review) return review;
   const images = parseJsonArray(review.images);
   const videos = parseJsonArray(review.videos);
-  const name = review.reviewer_name || review.user_name || 'Verified Patron';
-  const pid = Number(review.product_id) || 1;
-  const prodSlug = review.product_slug || PRODUCT_SLUGS[pid] || '';
-  const prodName = review.product_name || PRODUCT_NAMES[pid] || 'Bhumivera Product';
-  const comboMatch = review.combo_name ? COMBO_BY_KEY[review.combo_name] : (review.combo_slug ? COMBO_BY_KEY[review.combo_slug] : null);
+  const name = review.reviewer_name || review.user_name || '';
+  const pid = Number(review.product_id) || null;
   return {
     ...review,
     product_id: pid,
-    product_slug: prodSlug,
-    product_name: prodName,
+    product_slug: review.product_slug || '',
+    product_name: review.product_name || '',
     user_name: name,
     reviewer_name: name,
-    reviewer_location: review.reviewer_location || 'India',
-    category_tag: review.category_tag || 'Quick & Everyday Impressions',
+    reviewer_location: review.reviewer_location || '',
+    category_tag: review.category_tag || '',
     is_combo_review: Boolean(review.is_combo_review || review.combo_name || review.category_tag === 'Combo Pack Ritual'),
-    combo_name: comboMatch?.name || review.combo_name || null,
-    combo_slug: comboMatch?.id || review.combo_slug || null,
-    combo_sku: comboMatch?.sku || review.combo_sku || null,
+    combo_name: review.combo_name || null,
+    combo_slug: review.combo_slug || null,
+    combo_sku: review.combo_sku || null,
     body: review.body || review.comment || '',
     comment: review.comment || review.body || '',
     images,
     videos,
     helpful_count: Number(review.helpful_count) || 0,
-    is_approved: Number(review.is_approved ?? 1),
-    status: Number(review.is_approved ?? 1) === 1 ? 'approved' : 'pending'
+    is_approved: Number(review.is_approved ?? 0),
+    status: Number(review.is_approved ?? 0) === 1 ? 'approved' : 'pending'
   };
 };
 
@@ -310,46 +307,44 @@ const createReview = async (data) => {
 };
 
 const createReviewAsAdmin = async (data) => {
-  const newId = Date.now() % 1000000;
-  const productId = Number(data.product_id) || 10;
-  const prodSlug = data.product_slug || PRODUCT_SLUGS[productId] || '';
-  const prod = LUXURY_CATALOG.find(p => Number(p.id) === productId || p.slug === prodSlug) || {};
-  const prodName = data.product_name || PRODUCT_NAMES[productId] || prod.name || `Product #${productId}`;
+  const productId = Number(data.product_id);
+  if (!Number.isSafeInteger(productId) || productId <= 0) {
+    throw new Error('A valid catalog product is required.');
+  }
+  const [products] = await pool.query(
+    'SELECT id, name, slug FROM products WHERE id = ? LIMIT 1',
+    [productId]
+  );
+  const product = products?.[0];
+  if (!product) throw new Error('The selected product was not found in the catalog.');
   const createdAt = data.created_at ? new Date(data.created_at).toISOString() : new Date().toISOString();
-  const categoryTag = data.category_tag || (Number(data.rating) === 1 ? 'Shipping & Packaging Feedback' : 'Quick & Everyday Impressions');
-  const comboMatch = data.combo_name ? COMBO_BY_KEY[data.combo_name] : (data.combo_slug ? COMBO_BY_KEY[data.combo_slug] : (COMBO_BY_KEY[prodSlug] || null));
-  const isCombo = Boolean(data.is_combo_review || comboMatch || categoryTag === 'Combo Pack Ritual');
-  const resolvedComboName = isCombo
-    ? (comboMatch?.name || data.combo_name || 'The Complete Botanical Daily Regimen')
-    : null;
+  const categoryTag = data.category_tag || null;
+  const isCombo = Boolean(data.is_combo_review || data.combo_name);
+  const resolvedComboName = isCombo ? (data.combo_name || null) : null;
 
   const newReview = {
-    id: newId,
     product_id: productId,
-    product_slug: prodSlug || prod.slug || '',
-    product_name: prodName,
-    user_id: 5000 + newId,
-    user_name: (data.user_name || data.reviewer_name || 'Verified Patron').trim(),
-    reviewer_name: (data.user_name || data.reviewer_name || 'Verified Patron').trim(),
-    reviewer_location: (data.reviewer_location || 'India').trim(),
-    user_email: data.user_email || `patron.${newId}@bhumivera.com`,
-    order_id: data.order_id || (90000 + newId),
-    order_number: data.order_number || `BV-${createdAt.slice(0, 4)}-${90000 + newId}`,
-    rating: Number(data.rating) || 5,
+    product_slug: product.slug || '',
+    product_name: product.name,
+    user_name: String(data.user_name || data.reviewer_name || '').trim(),
+    reviewer_name: String(data.user_name || data.reviewer_name || '').trim(),
+    reviewer_location: String(data.reviewer_location || '').trim(),
+    order_number: data.order_number || null,
+    rating: Number(data.rating),
     category_tag: categoryTag,
     is_combo_review: isCombo,
     combo_name: resolvedComboName,
-    combo_slug: isCombo ? (comboMatch?.id || data.combo_slug || null) : null,
-    combo_sku: isCombo ? (comboMatch?.sku || data.combo_sku || null) : null,
+    combo_slug: isCombo ? (data.combo_slug || null) : null,
+    combo_sku: isCombo ? (data.combo_sku || null) : null,
     title: (data.title || '').trim(),
     body: (data.body || data.comment || '').trim(),
     comment: (data.body || data.comment || '').trim(),
     images: Array.isArray(data.images) ? data.images : [],
     videos: Array.isArray(data.videos) ? data.videos : [],
-    helpful_count: data.helpful_count !== undefined ? Number(data.helpful_count) : 8,
+    helpful_count: data.helpful_count !== undefined ? Number(data.helpful_count) : 0,
     public_story_consent: (Array.isArray(data.images) && data.images.length > 0) || (Array.isArray(data.videos) && data.videos.length > 0) ? 1 : 0,
-    is_approved: data.is_approved !== undefined ? (data.is_approved ? 1 : 0) : 1,
-    verified_purchase: data.verified_purchase !== false,
+    is_approved: data.is_approved ? 1 : 0,
+    verified_purchase: data.verified_purchase === true,
     status: data.is_approved === 0 || data.is_approved === false ? 'pending' : 'approved',
     created_at: createdAt,
     updated_at: new Date().toISOString()
@@ -719,53 +714,6 @@ const deleteReviewPermanently = async (id) => {
   return true;
 };
 
-const bulkRandomizeReviewDates = async (reviewIds, startDate, endDate) => {
-  const startTime = new Date(startDate).getTime();
-  const endTime = new Date(endDate).getTime();
-  if (isNaN(startTime) || isNaN(endTime) || startTime > endTime) {
-    throw new Error('Invalid date range specified.');
-  }
-
-  let validIds = [];
-  if (reviewIds === 'all') {
-    const [allRows] = await pool.query('SELECT id FROM reviews');
-    validIds = allRows.map(r => r.id);
-  } else if (Array.isArray(reviewIds)) {
-    validIds = reviewIds.map(id => Number(id)).filter(id => Number.isInteger(id) && id > 0);
-  }
-
-  if (validIds.length === 0) {
-    return { count: 0 };
-  }
-
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-    const batchSize = 100;
-    for (let i = 0; i < validIds.length; i += batchSize) {
-      const chunk = validIds.slice(i, i + batchSize);
-      const cases = [];
-      const values = [];
-      for (const id of chunk) {
-        const randTime = startTime + Math.random() * (endTime - startTime);
-        const formattedDate = new Date(randTime).toISOString().slice(0, 19).replace('T', ' ');
-        cases.push('WHEN ? THEN ?');
-        values.push(id, formattedDate);
-      }
-      values.push(chunk);
-      const query = `UPDATE reviews SET created_at = CASE id ${cases.join(' ')} ELSE created_at END WHERE id IN (?)`;
-      await connection.query(query, values);
-    }
-    await connection.commit();
-    return { count: validIds.length };
-  } catch (err) {
-    await connection.rollback();
-    throw err;
-  } finally {
-    connection.release();
-  }
-};
-
 module.exports = {
   createReviewTable,
   createReview,
@@ -778,7 +726,6 @@ module.exports = {
   approveReview,
   archiveReview,
   deleteReviewPermanently,
-  bulkRandomizeReviewDates,
   getUserReviews,
   updateReviewAsAdmin,
   syncProductStats,

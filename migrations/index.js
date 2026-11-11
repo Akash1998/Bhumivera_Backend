@@ -1245,6 +1245,78 @@ const migrations = [
       }
     },
   },
+  {
+    version: 87,
+    name: 'remove untouched illustrative taxonomy and cart rule seeds',
+    up: async () => {
+      await pool.query(
+        'DELETE FROM subcategories WHERE slug IN (?)',
+        [[
+          'seabuckthorn-radiance-cleansers',
+          'activated-charcoal-purifiers',
+          'botanical-saponin-shampoos',
+          'scalp-root-revitalizing-rituals',
+          'charcoal-detox-bathing-bars',
+          'aloe-neem-tulsi-soothing-bars',
+          'seven-tulsi-liquid-extracts',
+          'bio-active-botanical-distillates',
+        ]]
+      );
+      const illustrativeDescriptions = [
+        [
+          'Artisanal Ayurvedic Cleansing Bars',
+          'Handcrafted 100% natural Ayurvedic luxury bathing bars formulated with pure Activated Charcoal, Aloe Vera, Neem, and Sacred Tulsi. Free from sulfates, parabens, and harsh synthetic detergents.',
+        ],
+        [
+          'Luxury Facial Cleansers',
+          'Sulfate-free, pH 5.5 skin-barrier calibrated luxury facial cleansers. Formulated with 4% Himalayan Sea Buckthorn, 3% Activated Charcoal, Hyaluronic Acid, and Niacinamide with 100% label-disclosed potencies.',
+        ],
+        [
+          'Luxury Hair Care',
+          'Royal Ayurvedic 2-in-1 conditioning shampoos and restorative botanical hair rituals formulated with natural saponin extracts of Reetha, Amla, Bhringraj, Rosemary Oil, and Shikakai.',
+        ],
+        [
+          'Luxury Ayurvedic Wellness & Immunity Drops',
+          'High-potency 90% liquid distillate of 7 sacred Tulsi varieties (Van, Sweet, Marua, Bisva, Kala, Rama & Lemon Tulsi) designed to balance stress, enhance vitality, and promote healthy radiant skin from within.',
+        ],
+      ];
+      for (const [name, description] of illustrativeDescriptions) {
+        await pool.query(
+          'UPDATE categories SET description = NULL WHERE name = ? AND description = ?',
+          [name, description]
+        );
+      }
+      await pool.query(
+        `DELETE FROM cart_rules
+         WHERE name = 'Silver Tier'
+           AND description = 'Free shipping and 100 loyalty points on qualifying carts.'
+           AND priority = 10
+           AND min_cart_value = 599
+           AND max_cart_value IS NULL
+           AND discount_amount = 0
+           AND discount_percent = 0
+           AND free_shipping_enabled = 1
+           AND gift_product_id IS NULL
+           AND gift_quantity = 1
+           AND loyalty_bonus_points = 100
+           AND enforce_min_checkout = 0
+           AND badge_text = 'Silver Tier'
+           AND status = 'active'`
+      );
+    },
+  },
+  {
+    version: 88,
+    name: 'remove unconfigured lifecycle interval defaults',
+    up: async () => {
+      await pool.query(
+        `DELETE FROM settings
+         WHERE group_name = 'lifecycle'
+           AND ((key_name = 'lifecycle_winback_days' AND value = '7')
+             OR (key_name = 'lifecycle_churn_days' AND value = '90'))`
+      );
+    },
+  },
 ];
 
 module.exports = migrations;
