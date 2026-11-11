@@ -58,6 +58,11 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
       missingAmount: Math.max(0, minimum - cartSubtotal),
       progressPct: minimum > 0 ? Math.min(100, Math.max(0, cartSubtotal * 100 / minimum)) : 100,
       freeShipping: Number(rule.free_shipping_enabled) === 1,
+      giftProductId: rule.gift_product_id == null ? null : Number(rule.gift_product_id),
+      giftProductName: rule.gift_product_name || null,
+      giftQuantity: rule.gift_product_id == null
+        ? 0
+        : Math.max(1, Math.trunc(toNumber(rule.gift_quantity)) || 1),
     };
   });
 
