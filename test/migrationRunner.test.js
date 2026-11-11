@@ -83,8 +83,30 @@ describe('runMigrations', () => {
     assert.ok(statements.some(sql => /FOREIGN KEY \(batch_id\) REFERENCES product_batches\(id\) ON DELETE SET NULL/.test(sql)));
   });
 
-  it('adds voided item-code status without repeating the schema change', async () => {
+  it('preserves the production GST migration at version 83', async () => {
     const migration = migrations.find(candidate => candidate.version === 83);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      return [[{ Field: 'existing' }], []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.equal(migration.name, 'ensure product GST fields required by inventory sync');
+    assert.deepEqual(statements, [
+      "SHOW COLUMNS FROM products LIKE 'gst_hsn_code'",
+      "SHOW COLUMNS FROM products LIKE 'gst_rate'",
+    ]);
+  });
+
+  it('adds voided item-code status without repeating the schema change', async () => {
+    const migration = migrations.find(candidate => candidate.version === 84);
     const originalQuery = pool.query;
     const statements = [];
     let statusType = "enum('available','registered','sold')";
@@ -243,12 +265,13 @@ describe('runMigrations', () => {
 
     await runMigrations(pool, migrations, { logger });
 
-    assert.equal(pool.applied.size, 82);
+    assert.equal(pool.applied.size, 84);
     assert.equal(
       pool.applied.get(81),
       'seed and synchronize architectural regimen combos in products table'
     );
     assert.equal(pool.applied.get(82), 'allow out for delivery order status');
+    assert.equal(pool.applied.get(83), 'ensure product GST fields required by inventory sync');
   });
 
   it('adds out_for_delivery to the existing order status enum when needed', async () => {

@@ -1052,6 +1052,25 @@ const migrations = [
   },
   {
     version: 83,
+    name: 'ensure product GST fields required by inventory sync',
+    up: async () => {
+      const [hsnColumn] = await pool.query("SHOW COLUMNS FROM products LIKE 'gst_hsn_code'");
+      if (!hsnColumn.length) {
+        await pool.query(
+          "ALTER TABLE products ADD COLUMN gst_hsn_code VARCHAR(20) DEFAULT '30049011'"
+        );
+      }
+
+      const [rateColumn] = await pool.query("SHOW COLUMNS FROM products LIKE 'gst_rate'");
+      if (!rateColumn.length) {
+        await pool.query(
+          'ALTER TABLE products ADD COLUMN gst_rate DECIMAL(5,2) NOT NULL DEFAULT 5.00'
+        );
+      }
+    },
+  },
+  {
+    version: 84,
     name: 'preserve voided product item codes in authenticity registry',
     up: async () => {
       const [columns] = await pool.query("SHOW COLUMNS FROM product_serials LIKE 'status'");

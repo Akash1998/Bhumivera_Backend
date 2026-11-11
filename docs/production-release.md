@@ -65,7 +65,7 @@ Set `VITE_BASE_URL` to the backend origin, without the `/api` suffix. The curren
 
 ## Per-unit product QR and POS rollout
 
-Migration 83 adds the `voided` item-code state. Deploy the backend and confirm `/health/ready` succeeds before generating or printing item labels. For each product being converted, generate one unique serial for every physical unit in its current sellable stock, then print and attach those labels before selling that product. Once a product has batch-linked item serials, POS checkout requires a matching unique QR for each unit; SKU-only scans and manual quantity entry are intentionally rejected for it.
+Migration 84 adds the `voided` item-code state. Deploy the backend and confirm `/health/ready` succeeds before generating or printing item labels. For each product being converted, generate one unique serial for every physical unit in its current sellable stock, then print and attach those labels before selling that product. Once a product has batch-linked item serials, POS checkout requires a matching unique QR for each unit; SKU-only scans and manual quantity entry are intentionally rejected for it.
 
 The Android scanner and browser POS resolve individual item codes to the product registry, use the same POS checkout endpoint, and receive the same server-created invoice record. A successful checkout marks each item serial sold in the same transaction as the stock deduction and invoice. Voiding an invoice returns its item serials to available unless warranty registration exists; voiding an unused code preserves the code in the registry instead of deleting it. Public authenticity verification continues to identify sold products and reports the item state.
 
