@@ -334,14 +334,14 @@ const createOrder = async ({
           const reqQtyPerCombo = Math.max(1, Number(component.quantity) || 1);
           const totalQtyNeeded = requestedQty * reqQtyPerCombo;
 
-          const [componentRows] = compId
+          const [componentRows] = compSlug
             ? await conn.query(
-                'SELECT id, slug, name, sku, price, discount_price, quantity, gst_hsn_code, gst_rate FROM products WHERE id = ? AND status = ? FOR UPDATE',
-                [compId, 'active']
-              )
-            : await conn.query(
                 'SELECT id, slug, name, sku, price, discount_price, quantity, gst_hsn_code, gst_rate FROM products WHERE slug = ? AND status = ? FOR UPDATE',
                 [compSlug, 'active']
+              )
+            : await conn.query(
+                'SELECT id, slug, name, sku, price, discount_price, quantity, gst_hsn_code, gst_rate FROM products WHERE id = ? AND status = ? FOR UPDATE',
+                [compId, 'active']
               );
 
           if (!componentRows[0]) throw new Error(`A product in ${dbProduct.name} is unavailable.`);

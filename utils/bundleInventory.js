@@ -38,8 +38,8 @@ const getBundleAvailableStock = async (database, specifications) => {
   const components = getBundleComponents(specifications);
   if (!components) return null;
 
-  const idComponents = components.filter(c => c.product_id != null);
-  const slugComponents = components.filter(c => c.product_id == null && c.slug);
+  const slugComponents = components.filter(c => c.slug);
+  const idComponents = components.filter(c => !c.slug && c.product_id != null);
 
   const stockById = new Map();
   const stockBySlug = new Map();
@@ -79,7 +79,7 @@ const getBundleAvailableStock = async (database, specifications) => {
   }
 
   const availableCombos = components.map(c => {
-    const stock = c.product_id != null ? stockById.get(c.product_id) : stockBySlug.get(c.slug);
+    const stock = c.slug ? stockBySlug.get(c.slug) : stockById.get(c.product_id);
     const reqPerCombo = Math.max(1, Number(c.quantity) || 1);
     return Math.floor((stock || 0) / reqPerCombo);
   });

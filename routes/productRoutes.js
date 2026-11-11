@@ -541,7 +541,14 @@ router.get('/slug/:slug', async (req, res) => {
     `;
     const matchedCatalog = findLuxurySkuBySlugOrId(slug);
     const canonicalSlug = matchedCatalog ? matchedCatalog.slug : slug;
-    const [rows] = await pool.query(query, [canonicalSlug]);
+    let [rows] = await pool.query(query, [canonicalSlug]);
+    if (rows.length === 0) {
+      const matchedBundle = MAISON_REGIMEN_BUNDLES.find(bundle => bundle.id === slug);
+      if (matchedBundle) {
+        const bundleQuery = query.replace('WHERE p.slug = ?', 'WHERE p.sku = ?');
+        [rows] = await pool.query(bundleQuery, [matchedBundle.sku]);
+      }
+    }
     if (rows.length === 0) {
       if (matchedCatalog) {
         return res.json({ success: true, data: matchedCatalog, schema_markup: buildProductJsonLd(matchedCatalog) });

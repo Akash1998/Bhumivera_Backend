@@ -87,4 +87,29 @@ describe('bundle inventory', () => {
 
     assert.equal(stock, 9);
   });
+
+  it('uses component slugs instead of stale product IDs when both are present', async () => {
+    const queries = [];
+    const database = {
+      query: async (sql, params) => {
+        queries.push({ sql, params });
+        return [[
+          { id: 11, slug: 'face-wash', quantity: 236, status: 'active' },
+          { id: 12, slug: 'shampoo', quantity: 182, status: 'active' },
+        ], []];
+      },
+    };
+
+    const stock = await getBundleAvailableStock(database, {
+      is_combo: true,
+      combo_items: [
+        { product_id: 2, slug: 'face-wash', quantity: 1 },
+        { product_id: 3, slug: 'shampoo', quantity: 1 },
+      ],
+    });
+
+    assert.equal(stock, 182);
+    assert.deepEqual(queries.map(query => query.params), [['face-wash', 'shampoo']]);
+    assert.match(queries[0].sql, /slug IN \(\?, \?\)/);
+  });
 });
