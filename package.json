@@ -11,6 +11,7 @@
     "dev": "nodemon server",
     "lint": "eslint .",
     "test": "node --test",
+    "audit:soothing-bar-merge": "node scripts/auditSoothingBarMerge.js",
     "smoke": "node scripts/smokeTest",
     "veo:list": "node scripts/generateConciergeVeoVideos.js --list",
     "veo:dry-run": "node scripts/generateConciergeVeoVideos.js --dry-run --all",
