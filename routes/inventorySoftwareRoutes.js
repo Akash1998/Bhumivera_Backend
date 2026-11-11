@@ -1261,7 +1261,6 @@ router.get('/bootstrap', authenticateInventoryStaff, async (req, res) => {
                (SELECT pi.file_path FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.sort_order ASC LIMIT 1) AS image_url
         FROM inventory_product_meta m
         LEFT JOIN products p ON m.product_id = p.id
-        WHERE m.product_id IS NULL OR p.id IS NOT NULL
         ORDER BY COALESCE(p.id, m.id) ASC
       `),
       pool.query('SELECT * FROM inventory_customers ORDER BY name ASC'),
@@ -1682,8 +1681,7 @@ router.get('/summary', authenticateInventoryStaff, async (_req, res) => {
         SELECT COUNT(*) AS count
         FROM inventory_product_meta m
         LEFT JOIN products p ON p.id = m.product_id
-        WHERE (m.product_id IS NULL OR p.id IS NOT NULL)
-          AND COALESCE(p.quantity, m.physical_stock, 0) <= COALESCE(m.min_stock_alert, 20)
+        WHERE COALESCE(p.quantity, m.physical_stock, 0) <= COALESCE(m.min_stock_alert, 20)
       `),
       pool.query(`
         SELECT COALESCE(SUM(bill_total), 0) AS total
@@ -3306,7 +3304,6 @@ router.get('/products/qr-codes', authenticateScannerOrStaff, async (req, res) =>
              m.bin_code, m.uom
       FROM inventory_product_meta m
       LEFT JOIN products p ON m.product_id = p.id
-      WHERE m.product_id IS NULL OR p.id IS NOT NULL
       ORDER BY COALESCE(p.id, m.id) ASC
     `).catch(() => [[]]);
 
@@ -3977,8 +3974,7 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
                 p.name AS product_name, p.price, p.discount_price
          FROM inventory_product_meta m
          LEFT JOIN products p ON p.id = m.product_id
-         WHERE (m.product_id IS NULL OR p.id IS NOT NULL)
-           AND (${conditions.join(' OR ')})
+         WHERE ${conditions.join(' OR ')}
          FOR UPDATE`,
         queryParams
       );
@@ -5847,7 +5843,6 @@ router.get('/scanner/catalog', authenticateScannerOrStaff, async (_req, res) => 
              CONCAT('https://www.bhumivera.com/product/', COALESCE(p.slug, '')) AS product_url
       FROM inventory_product_meta m
       LEFT JOIN products p ON m.product_id = p.id
-      WHERE m.product_id IS NULL OR p.id IS NOT NULL
       ORDER BY m.id ASC
     `);
 

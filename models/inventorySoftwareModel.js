@@ -1335,7 +1335,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
         `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
          FROM inventory_product_meta m
          LEFT JOIN products p ON m.product_id = p.id
-         WHERE m.product_id = ? AND p.id IS NOT NULL
+         WHERE m.product_id = ?
          LIMIT 1`,
         [serialRows[0].product_id]
       );
@@ -1353,14 +1353,13 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
     `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
      FROM inventory_product_meta m
      LEFT JOIN products p ON m.product_id = p.id
-     WHERE (m.product_id IS NULL OR p.id IS NOT NULL)
-       AND (LOWER(m.sku) = LOWER(?)
+     WHERE LOWER(m.sku) = LOWER(?)
         OR m.barcode = ?
         OR LOWER(COALESCE(m.batch_no, '')) = LOWER(?)
         OR LOWER(COALESCE(p.slug, '')) = LOWER(?)
         OR LOWER(COALESCE(p.name, m.custom_name, '')) = LOWER(?)
         OR m.id = ?
-        OR p.id = ?)
+        OR p.id = ?
      LIMIT 1`,
     [
       lookupToken,
@@ -1391,7 +1390,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
         `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
          FROM inventory_product_meta m
          LEFT JOIN products p ON m.product_id = p.id
-         WHERE m.product_id = ? AND p.id IS NOT NULL
+         WHERE m.product_id = ?
          LIMIT 1`,
         [batchRows[0].product_id]
       );
@@ -1839,7 +1838,6 @@ async function calculateInventoryVelocityAndDoc(db = pool) {
              COALESCE(p.quantity, m.physical_stock, 0) AS current_stock
       FROM inventory_product_meta m
       LEFT JOIN products p ON m.product_id = p.id
-      WHERE m.product_id IS NULL OR p.id IS NOT NULL
       ORDER BY m.id ASC
     `);
     items = rows || [];

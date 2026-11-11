@@ -150,26 +150,6 @@ test('individual item QR resolves through its registered serial to the correct p
   assert.equal(sold.serialStatus, 'sold');
 });
 
-test('QR lookup ignores inventory metadata orphaned by product deletion', async () => {
-  let metadataLookupCount = 0;
-  const fakeDb = {
-    query: async sql => {
-      if (sql.includes('FROM product_serials ps')) return [[]];
-      if (sql.includes('FROM inventory_product_meta m')) {
-        metadataLookupCount += 1;
-        assert.match(sql, /m\.product_id IS NULL OR p\.id IS NOT NULL/);
-        return [[]];
-      }
-      if (sql.includes('FROM product_batches pb')) return [[]];
-      return [[]];
-    },
-  };
-  const { resolveProductByQrOrCode } = require('../models/inventorySoftwareModel');
-
-  assert.equal(await resolveProductByQrOrCode(fakeDb, 'DELETED-PRODUCT-SKU'), null);
-  assert.equal(metadataLookupCount, 1);
-});
-
 test('generateWavePicklist groups orders and aggregates items by bin walk path', async () => {
   const { generateWavePicklist } = require('../models/inventorySoftwareModel');
   const fakeDb = {
