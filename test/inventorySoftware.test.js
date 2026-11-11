@@ -99,6 +99,57 @@ test('resolveProductByQrOrCode correctly extracts SKU, Serial, and Slug from web
   assert.equal(res3.barcode, '8908020260015');
 });
 
+test('individual item QR resolves through its registered serial to the correct product and status', async () => {
+  let serialStatus = 'available';
+  const fakeDb = {
+    query: async (sql, params = []) => {
+      if (sql.includes('FROM product_serials ps')) {
+        return [[{
+          serial_number: 'BV-ITEM-SEA-001',
+          product_id: 22,
+          batch_id: 90,
+          status: serialStatus,
+        }]];
+      }
+      if (sql.includes('FROM inventory_product_meta m')) {
+        assert.equal(params[0], 22);
+        return [[{
+          id: 8,
+          product_id: 22,
+          sku: 'BV-SEABUCKTHORN',
+          barcode: '890000000022',
+          custom_name: 'Sea Buckthorn Face Wash',
+          physical_stock: 198,
+          selling_price: 499,
+          mrp: 599,
+          gst_rate: 5,
+          gst_hsn_code: '30049011',
+          uom: 'Pcs',
+          web_name: 'Sea Buckthorn Face Wash',
+          web_quantity: 198,
+          web_price: 499,
+        }]];
+      }
+      return [[]];
+    },
+  };
+  const { resolveProductByQrOrCode } = require('../models/inventorySoftwareModel');
+
+  const resolved = await resolveProductByQrOrCode(
+    fakeDb,
+    'https://www.bhumivera.com/verify?code=BV-ITEM-SEA-001'
+  );
+  assert.equal(resolved.serialNumber, 'BV-ITEM-SEA-001');
+  assert.equal(resolved.serialStatus, 'available');
+  assert.equal(resolved.productId, 22);
+  assert.equal(resolved.sku, 'BV-SEABUCKTHORN');
+  assert.equal(resolved.name, 'Sea Buckthorn Face Wash');
+
+  serialStatus = 'sold';
+  const sold = await resolveProductByQrOrCode(fakeDb, 'BV-ITEM-SEA-001');
+  assert.equal(sold.serialStatus, 'sold');
+});
+
 test('generateWavePicklist groups orders and aggregates items by bin walk path', async () => {
   const { generateWavePicklist } = require('../models/inventorySoftwareModel');
   const fakeDb = {

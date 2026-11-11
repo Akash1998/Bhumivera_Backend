@@ -106,6 +106,7 @@ router.get("/batch-coa/:serial", async (req, res) => {
       const coa = {
         serial: verification.serialNumber,
         batchCode: verification.batchNumber,
+        itemStatus: verification.itemStatus,
         productName: verification.productName,
         bottleSequence: verification.bottleSequence,
         calibratedPh: verification.calibratedPh || '5.3–5.5 pH (Skin-Identical)',
@@ -329,17 +330,20 @@ router.delete("/admin/:serialId", authenticateAdmin, async (req, res) => {
       return res.status(404).json({ success: false, message: "Serial not found" });
     }
     const row = existing[0];
-    if (row.warranty_id || (row.status && row.status.toLowerCase() === 'registered')) {
+    if (row.warranty_id || row.status !== 'available') {
       return res.status(400).json({
         success: false,
-        message: "Serial is already registered under warranty. Cancel warranty registration first."
+        message: "Only unused item codes can be voided. Sold, registered, or already voided codes remain in the authenticity registry."
       });
     }
-    const [del] = await pool.query(`DELETE FROM product_serials WHERE id = ?`, [serialId]);
-    if (del.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: "Serial not found" });
+    const [voided] = await pool.query(
+      "UPDATE product_serials SET status = 'voided' WHERE id = ? AND status = 'available'",
+      [serialId]
+    );
+    if (voided.affectedRows === 0) {
+      return res.status(409).json({ success: false, message: "Item code changed during removal. Refresh and try again." });
     }
-    res.json({ success: true, deleted: serialId });
+    res.json({ success: true, voided: serialId });
   } catch (err) {
     console.error('[SERIAL ADMIN DELETE ERROR]:', err);
     res.status(500).json({ success: false, message: err.message });

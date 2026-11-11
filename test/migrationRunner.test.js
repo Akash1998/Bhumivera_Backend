@@ -83,6 +83,31 @@ describe('runMigrations', () => {
     assert.ok(statements.some(sql => /FOREIGN KEY \(batch_id\) REFERENCES product_batches\(id\) ON DELETE SET NULL/.test(sql)));
   });
 
+  it('adds voided item-code status without repeating the schema change', async () => {
+    const migration = migrations.find(candidate => candidate.version === 83);
+    const originalQuery = pool.query;
+    const statements = [];
+    let statusType = "enum('available','registered','sold')";
+    pool.query = async sql => {
+      statements.push(sql);
+      if (sql.startsWith('SHOW COLUMNS')) return [[{ Type: statusType }], []];
+      if (sql.startsWith('ALTER TABLE product_serials')) {
+        statusType = "enum('available','registered','sold','voided')";
+      }
+      return [{}, []];
+    };
+
+    try {
+      await migration.up();
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.equal(statements.filter(sql => sql.startsWith('ALTER TABLE product_serials')).length, 1);
+    assert.match(statements.find(sql => sql.startsWith('ALTER TABLE product_serials')), /'voided'/);
+  });
+
   it('expands the customer reset OTP column to hold its hash', async () => {
     const migration = migrations.find(candidate => candidate.name === 'expand customer password reset OTP hashes');
     const originalQuery = pool.query;

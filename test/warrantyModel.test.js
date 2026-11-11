@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { after, afterEach, beforeEach, describe, it } = require('node:test');
 const pool = require('../config/db');
-const { registerWarranty } = require('../models/warrantyModel');
+const { registerWarranty, deletGenuiine_test } = require('../models/warrantyModel');
 
 const originalQuery = pool.query;
 const originalGetConnection = pool.getConnection;
@@ -10,6 +10,7 @@ let validatedStatus;
 let isLegacySerial;
 let insertCalls;
 let insertValues;
+let existingWarrantyRegistration;
 
 beforeEach(() => {
   serialStatus = 'available';
@@ -17,6 +18,7 @@ beforeEach(() => {
   isLegacySerial = 1;
   insertCalls = 0;
   insertValues = null;
+  existingWarrantyRegistration = false;
 
   pool.query = async sql => {
     if (sql.includes('FROM product_serials ps')) {
@@ -38,8 +40,14 @@ beforeEach(() => {
     async rollback() {},
     release() {},
     async query(sql, values) {
-      if (sql.includes('SELECT status FROM product_serials')) {
+      if (sql.includes('SELECT id, status FROM product_serials')) {
         return [[{ status: serialStatus }], []];
+      }
+      if (sql.includes('SELECT id FROM warranty_registrations WHERE serial_number_id')) {
+        return [existingWarrantyRegistration ? [{ id: 51 }] : [], []];
+      }
+      if (sql.includes('SELECT registered_serial, serial_number_id FROM warranty_registrations')) {
+        return [[{ registered_serial: 'BV-0012', serial_number_id: 12 }], []];
       }
       if (sql.includes('INSERT INTO warranty_registrations')) {
         insertCalls += 1;
@@ -50,6 +58,11 @@ beforeEach(() => {
         serialStatus = 'registered';
         return [{ affectedRows: 1 }, []];
       }
+      if (sql.includes("UPDATE product_serials SET status = 'available'")) {
+        if (serialStatus === 'registered') serialStatus = 'available';
+        return [{ affectedRows: serialStatus === 'available' ? 1 : 0 }, []];
+      }
+      if (sql.includes('DELETE FROM warranty_registrations')) return [{ affectedRows: 1 }, []];
       throw new Error(`Unexpected connection query: ${sql}`);
     },
   });
@@ -89,6 +102,37 @@ describe('registerWarranty', () => {
     );
 
     assert.equal(insertCalls, 0);
+  });
+
+  it('allows warranty registration for a sold item without making it available for resale', async () => {
+    validatedStatus = 'sold';
+    serialStatus = 'sold';
+
+    await registerWarranty({ serialNumber: 'bv-0012', productId: 4, userId: 9 });
+
+    assert.equal(insertCalls, 1);
+    assert.equal(serialStatus, 'sold');
+  });
+
+  it('rejects a second warranty registration for a sold item', async () => {
+    validatedStatus = 'sold';
+    serialStatus = 'sold';
+    existingWarrantyRegistration = true;
+
+    await assert.rejects(
+      registerWarranty({ serialNumber: 'bv-0012', productId: 4, userId: 9 }),
+      error => error.status === 409
+    );
+
+    assert.equal(insertCalls, 0);
+  });
+
+  it('does not make a sold item available when its warranty registration is removed', async () => {
+    serialStatus = 'sold';
+
+    await deletGenuiine_test(51);
+
+    assert.equal(serialStatus, 'sold');
   });
 
   it('rejects impossible and future purchase dates for e-warranty registrations', async () => {

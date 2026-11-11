@@ -7,7 +7,9 @@ const modelPath = path.resolve(__dirname, '../models/productBatchModel.js');
 const queries = [];
 let connectionCalls = 0;
 let failSerialInsert = false;
+let duplicateSerialInsert = false;
 let publicVerificationRows = [];
+let existingProductBatches = [];
 
 const connection = {
   async beginTransaction() {
@@ -27,11 +29,20 @@ const connection = {
     if (sql.includes('SELECT id, name, sku FROM products')) {
       return [[{ id: 12, name: 'Test Product', sku: 'TEST-12' }]];
     }
+    if (sql.includes('SELECT id, product_id, unit_count FROM product_batches')) {
+      return [existingProductBatches];
+    }
     if (sql.includes('INSERT INTO product_batches')) return [{ insertId: 34 }];
     if (sql.includes('INSERT INTO product_serials')) {
+      if (duplicateSerialInsert) {
+        const error = new Error('duplicate serial');
+        error.code = 'ER_DUP_ENTRY';
+        throw error;
+      }
       if (failSerialInsert) throw new Error('serial insert failed');
       return [{ affectedRows: 2 }];
     }
+    if (sql.includes('SELECT id FROM product_serials')) return [[{ id: 89 }]];
     return [{ affectedRows: 1 }];
   },
 };
@@ -61,7 +72,9 @@ describe('product batch registry', () => {
     queries.length = 0;
     connectionCalls = 0;
     failSerialInsert = false;
+    duplicateSerialInsert = false;
     publicVerificationRows = [];
+    existingProductBatches = [];
   });
 
   it('rejects invalid batch data before opening a database transaction', async () => {
@@ -121,6 +134,40 @@ describe('product batch registry', () => {
         expiryDate: '2027-01-01',
       }),
       /serial insert failed/
+    );
+    assert.equal(queries.some(entry => entry.sql === 'ROLLBACK'), true);
+    assert.equal(queries.some(entry => entry.sql === 'COMMIT'), false);
+  });
+
+  it('creates fresh unique item serials linked to the selected product without a reusable seed', async () => {
+    const result = await batchModel.createGenuinitySerialQR({
+      productId: 12,
+      count: 200,
+      manufactureDate: '2026-01-01',
+      expiryDate: '2027-01-01',
+    });
+
+    assert.equal(result.productId, 12);
+    assert.equal(result.productName, 'Test Product');
+    assert.equal(result.serials.length, 200);
+    assert.equal(new Set(result.serials).size, 200);
+    assert.ok(result.serials.every(serial => /^TEST-\d{4}-[A-F0-9]{24}$/.test(serial)));
+    const serialInsert = queries.find(entry => entry.sql.includes('INSERT INTO product_serials'));
+    assert.ok(serialInsert.params[0].every(row => row[0] === 12 && row[1] === 34 && row[3] === 'available'));
+    assert.equal(queries.some(entry => entry.sql.includes('ON DUPLICATE KEY UPDATE')), false);
+  });
+
+  it('refuses to reactivate an item code that already exists', async () => {
+    duplicateSerialInsert = true;
+
+    await assert.rejects(
+      batchModel.createGenuinitySerialQR({
+        productId: 12,
+        count: 1,
+        serialNumber: 'BV-UNIQUE-001',
+        batchNumber: 'BV-QR-BATCH',
+      }),
+      error => error.status === 409 && /already exist/.test(error.message)
     );
     assert.equal(queries.some(entry => entry.sql === 'ROLLBACK'), true);
     assert.equal(queries.some(entry => entry.sql === 'COMMIT'), false);

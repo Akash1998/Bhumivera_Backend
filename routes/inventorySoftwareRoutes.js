@@ -4028,6 +4028,21 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
          return res.status(400).json({ success: false, message: `Unit price cannot exceed the current catalog price for "${catalogItem.product_name || catalogItem.custom_name}".` });
       }
       const finalUnitPrice = req.invUser.permissions?.can_give_discounts ? requestedPrice : catalogPrice;
+      const requestedSerialNumbers = cartItem.serialNumbers ?? [];
+      if (
+        !Array.isArray(requestedSerialNumbers) ||
+        requestedSerialNumbers.some(serial => typeof serial !== 'string' || !serial.trim())
+      ) {
+        await conn.rollback();
+        transactionStarted = false;
+        return res.status(400).json({ success: false, message: 'Item serial numbers must be a list of non-empty codes.' });
+      }
+      const serialNumbers = requestedSerialNumbers.map(serial => serial.trim().toUpperCase());
+      if (new Set(serialNumbers).size !== serialNumbers.length || (serialNumbers.length > 0 && serialNumbers.length !== requestedQty)) {
+        await conn.rollback();
+        transactionStarted = false;
+        return res.status(400).json({ success: false, message: 'Each serialized item must have exactly one unique serial code.' });
+      }
       const normalizedItem = {
          id: catalogItem.meta_id,
          productId: catalogItem.product_id,
@@ -4038,6 +4053,7 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
          uom: catalogItem.uom || 'Pcs',
          gstHsnCode: catalogItem.gst_hsn_code || '30049011',
          gstRate: Number(catalogItem.gst_rate) || safeTaxRate,
+         serialNumbers,
       };
       const deduction = await atomicAdjustProductStock(
          {
@@ -4195,6 +4211,7 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       [invoiceNo, req.invUser.username, normalizedItems.length]
     );
 
+    const queuedSerialsBySku = new Map();
     if (Array.isArray(scannerQueueIds) && scannerQueueIds.length > 0) {
       const uniqueIds = [...new Set(scannerQueueIds.map(id => Number(id)).filter(Number.isSafeInteger))];
       if (uniqueIds.length !== scannerQueueIds.length) {
@@ -4202,7 +4219,7 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       }
       const placeholders = uniqueIds.map(() => '?').join(',');
       const [queueRows] = await conn.query(
-        `SELECT id, sku, quantity FROM inventory_scanner_queue
+        `SELECT id, sku, quantity, serial_number FROM inventory_scanner_queue
          WHERE session_code = ? AND status = 'queued' AND id IN (${placeholders}) FOR UPDATE`,
         [sessionCode, ...uniqueIds]
       );
@@ -4216,6 +4233,14 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       const queuedQuantityBySku = new Map();
       for (const row of queueRows) {
         queuedQuantityBySku.set(row.sku, (queuedQuantityBySku.get(row.sku) || 0) + Number(row.quantity));
+        if (row.serial_number) {
+          if (Number(row.quantity) !== 1) {
+            throw Object.assign(new Error('A unique item QR must represent exactly one queued unit.'), { status: 409 });
+          }
+          const serials = queuedSerialsBySku.get(row.sku) || [];
+          serials.push(String(row.serial_number).trim().toUpperCase());
+          queuedSerialsBySku.set(row.sku, serials);
+        }
       }
       if ([...queuedQuantityBySku].some(([sku, quantity]) => (soldQuantityBySku.get(sku) || 0) < quantity)) {
         throw Object.assign(new Error('The bill quantity does not include all linked scanner scans.'), { status: 409 });
@@ -4229,7 +4254,7 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
       const skuList = [...new Set(normalizedItems.map(item => item.sku))];
       const placeholders = skuList.map(() => '?').join(',');
       const [queueRows] = await conn.query(
-        `SELECT id, sku, quantity FROM inventory_scanner_queue
+        `SELECT id, sku, quantity, serial_number FROM inventory_scanner_queue
          WHERE session_code = ? AND status = 'queued' AND sku IN (${placeholders})
          ORDER BY created_at ASC FOR UPDATE`,
         [sessionCode, ...skuList]
@@ -4242,6 +4267,14 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
         const remaining = remainingBySku.get(row.sku) || 0;
         const consumed = Math.min(remaining, Number(row.quantity));
         if (consumed <= 0) continue;
+        if (row.serial_number) {
+          if (consumed !== 1 || Number(row.quantity) !== 1) {
+            throw Object.assign(new Error('A unique item QR must be billed as one physical unit.'), { status: 409 });
+          }
+          const serials = queuedSerialsBySku.get(row.sku) || [];
+          serials.push(String(row.serial_number).trim().toUpperCase());
+          queuedSerialsBySku.set(row.sku, serials);
+        }
         remainingBySku.set(row.sku, remaining - consumed);
         if (consumed === Number(row.quantity)) {
           await conn.query(
@@ -4255,6 +4288,73 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
           );
         }
       }
+    }
+
+    const saleSerials = [];
+    for (const item of normalizedItems) {
+      const queuedSerials = queuedSerialsBySku.get(item.sku) || [];
+      if (new Set(queuedSerials).size !== queuedSerials.length) {
+        throw Object.assign(new Error(`Duplicate item serial detected for "${item.name}".`), { status: 409 });
+      }
+      const directSerialSet = new Set(item.serialNumbers);
+      const serialNumbers = [...item.serialNumbers, ...queuedSerials.filter(serial => !directSerialSet.has(serial))];
+      if (serialNumbers.length > 0 && serialNumbers.length !== item.q) {
+        throw Object.assign(new Error(`Scan one unique item QR for every "${item.name}" unit on the bill.`), { status: 409 });
+      }
+      item.serialNumbers = serialNumbers;
+      saleSerials.push(...serialNumbers.map(serialNumber => ({ serialNumber, productId: item.productId, sku: item.sku })));
+    }
+
+    const serializedProductIds = [...new Set(normalizedItems.map(item => Number(item.productId)).filter(Number.isSafeInteger))];
+    if (serializedProductIds.length > 0) {
+      const [trackedProducts] = await conn.query(
+        `SELECT DISTINCT product_id FROM product_serials
+         WHERE batch_id IS NOT NULL AND product_id IN (${serializedProductIds.map(() => '?').join(',')})`,
+        serializedProductIds
+      );
+      const trackedIds = new Set(trackedProducts.map(row => Number(row.product_id)));
+      const missingUnitCodes = normalizedItems.find(item =>
+        trackedIds.has(Number(item.productId)) && item.serialNumbers.length !== item.q
+      );
+      if (missingUnitCodes) {
+        throw Object.assign(
+          new Error(`"${missingUnitCodes.name}" uses individual item QR tracking. Scan one unique QR for each unit before billing.`),
+          { status: 409, code: 'ITEM_QR_REQUIRED' }
+        );
+      }
+    }
+
+    if (saleSerials.length > 0) {
+      const serialCodes = saleSerials.map(item => item.serialNumber);
+      if (new Set(serialCodes).size !== serialCodes.length) {
+        throw Object.assign(new Error('An item serial cannot appear more than once in a bill.'), { status: 409 });
+      }
+      const placeholders = serialCodes.map(() => '?').join(',');
+      const [serialRows] = await conn.query(
+        `SELECT id, serial_number, product_id, status FROM product_serials
+         WHERE serial_number IN (${placeholders}) FOR UPDATE`,
+        serialCodes
+      );
+      const serialByCode = new Map(serialRows.map(row => [String(row.serial_number).toUpperCase(), row]));
+      if (serialRows.length !== saleSerials.length || saleSerials.some(item => {
+        const row = serialByCode.get(item.serialNumber);
+        return !row || Number(row.product_id) !== Number(item.productId) || row.status !== 'available';
+      })) {
+        throw Object.assign(new Error('One or more item QR codes are unknown, belong to another product, or have already been sold.'), { status: 409 });
+      }
+      const serialIds = serialRows.map(row => Number(row.id));
+      const [serialUpdate] = await conn.query(
+        `UPDATE product_serials SET status = 'sold'
+         WHERE status = 'available' AND id IN (${serialIds.map(() => '?').join(',')})`,
+        serialIds
+      );
+      if (Number(serialUpdate.affectedRows) !== serialIds.length) {
+        throw Object.assign(new Error('An item QR was sold in another checkout. Refresh the bill and scan available items again.'), { status: 409 });
+      }
+      await conn.query('UPDATE inventory_pos_invoices SET items_json = ? WHERE id = ?', [
+        JSON.stringify(normalizedItems),
+        invRes.insertId,
+      ]);
     }
 
     for (const item of normalizedItems) {
@@ -4341,7 +4441,7 @@ router.post('/pos/checkout', posCheckoutLimiter, authenticateScannerOrStaff, req
     res.status(201).json(responseBody);
   } catch (err) {
     if (transactionStarted) await conn.rollback();
-    res.status(err.status || 500).json({ success: false, message: err.message });
+    res.status(err.status || 500).json({ success: false, ...(err.code ? { code: err.code } : {}), message: err.message });
   } finally {
     conn.release();
   }
@@ -4378,6 +4478,22 @@ router.post('/pos/:invoiceId/cancel', authenticateInventoryStaff, requirePermiss
           operatorUsername: req.invUser.username,
         },
         conn
+      );
+    }
+    const voidedSerials = [...new Set(items.flatMap(item =>
+      Array.isArray(item.serialNumbers) ? item.serialNumbers.map(serial => String(serial).trim().toUpperCase()) : []
+    ))];
+    if (voidedSerials.length > 0) {
+      await conn.query(
+        `UPDATE product_serials SET status = CASE
+           WHEN EXISTS (
+             SELECT 1 FROM warranty_registrations wr
+             WHERE wr.serial_number_id = product_serials.id
+           ) THEN 'registered'
+           ELSE 'available'
+         END
+         WHERE status = 'sold' AND serial_number IN (${voidedSerials.map(() => '?').join(',')})`,
+        voidedSerials
       );
     }
 
@@ -5873,8 +5989,14 @@ router.post('/scanner/scan', scannerScanLimiter, authenticateScannerOrStaff, asy
 
     const resolvedList = [];
     for (const entry of rawEntries) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return res.status(400).json({ success: false, message: 'Each scanner entry must be an item object.' });
+      }
       const code = entry.qrCode || entry.serialNumber || entry.barcode || entry.sku;
-      const qty = Math.max(1, Math.trunc(Number(entry.quantity || 1)));
+      const qty = Number(entry.quantity ?? 1);
+      if (!Number.isSafeInteger(qty) || qty < 1) {
+        return res.status(400).json({ success: false, message: 'Scanned quantity must be a positive whole number.' });
+      }
       const item = await resolveProductByQrOrCode(pool, code);
       if (!item) {
         return res.status(404).json({
@@ -5883,12 +6005,69 @@ router.post('/scanner/scan', scannerScanLimiter, authenticateScannerOrStaff, asy
           message: `No Bhumivera product found matching QR/Code "${code}".`,
         });
       }
+      if (item.serialNumber && qty !== 1) {
+        return res.status(400).json({
+          success: false,
+          code: 'ITEM_QR_QUANTITY_MUST_BE_ONE',
+          message: 'A unique item QR represents one physical unit. Scan each unit separately.',
+        });
+      }
+      if (item.serialNumber && item.serialStatus !== 'available') {
+        return res.status(409).json({
+          success: false,
+          code: 'ITEM_ALREADY_SOLD_OR_UNAVAILABLE',
+          message: `Item ${item.serialNumber} is ${item.serialStatus || 'unavailable'} and cannot be added to a sale.`,
+        });
+      }
       if (item.availableStock < qty) {
         return res.status(409).json({
           success: false,
           code: 'INSUFFICIENT_STOCK_ON_SCAN',
           message: `Insufficient stock for "${item.name}". Available: ${item.availableStock}, Scanned: ${qty}.`,
         });
+      }
+
+      if (item.serialNumber) {
+        const [existingSerialRows] = await pool.query(
+          `SELECT id FROM inventory_scanner_queue
+           WHERE session_code = ? AND serial_number = ? AND status = 'queued'
+           LIMIT 1`,
+          [safeSessionCode, item.serialNumber]
+        );
+        if (existingSerialRows.length > 0) {
+          return res.status(409).json({
+            success: false,
+            code: 'ITEM_ALREADY_QUEUED',
+            message: `Item ${item.serialNumber} is already in this terminal's bill queue.`,
+          });
+        }
+
+        const [ins] = await pool.query(
+          `INSERT INTO inventory_scanner_queue
+            (session_code, qr_payload, meta_id, product_id, sku, barcode, serial_number, product_name,
+             unit_price, mrp, gst_hsn_code, gst_rate, uom, quantity, available_stock, scanned_by, device_name, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'queued')`,
+          [
+            safeSessionCode,
+            String(code).slice(0, 255),
+            item.metaId,
+            item.productId,
+            item.sku,
+            item.barcode,
+            item.serialNumber,
+            item.name,
+            item.price,
+            item.mrp,
+            item.gstHsnCode,
+            item.gstRate,
+            item.uom,
+            item.availableStock,
+            req.invUser?.username || 'mobile-scanner',
+            deviceName,
+          ]
+        );
+        resolvedList.push({ ...item, queueId: ins.insertId, quantity: 1 });
+        continue;
       }
 
       // Check if this SKU is already queued in the active POS session
@@ -6042,6 +6221,7 @@ router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) 
       sessionCode: requestedSessionCode = 'DEFAULT-POS-TERMINAL',
       sku,
       metaId,
+      serialNumber,
       quantity,
       delta,
       price,
@@ -6053,6 +6233,68 @@ router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) 
 
     if (!sku && !metaId) {
       return res.status(400).json({ success: false, message: 'SKU or metaId required' });
+    }
+
+    if (serialNumber) {
+      const cleanSerial = String(serialNumber).trim().toUpperCase();
+      const requestedQuantity = delta !== undefined && delta !== null ? Number(delta) : Number(quantity ?? 1);
+      if (!Number.isSafeInteger(requestedQuantity) || requestedQuantity !== 1) {
+        return res.status(400).json({ success: false, message: 'A unique item QR can add exactly one physical unit.' });
+      }
+      const item = await resolveProductByQrOrCode(pool, cleanSerial);
+      if (!item || item.serialNumber !== cleanSerial) {
+        return res.status(404).json({ success: false, message: 'The scanned item serial is not registered.' });
+      }
+      if (item.serialStatus !== 'available') {
+        return res.status(409).json({
+          success: false,
+          code: 'ITEM_ALREADY_SOLD_OR_UNAVAILABLE',
+          message: `Item ${cleanSerial} is ${item.serialStatus || 'unavailable'} and cannot be added to a bill.`,
+        });
+      }
+      const [existingSerialRows] = await pool.query(
+        `SELECT id FROM inventory_scanner_queue
+         WHERE session_code = ? AND serial_number = ? AND status = 'queued'
+         LIMIT 1`,
+        [sessionCode, cleanSerial]
+      );
+      if (existingSerialRows.length > 0) {
+        return res.status(409).json({
+          success: false,
+          code: 'ITEM_ALREADY_QUEUED',
+          message: `Item ${cleanSerial} is already in this terminal's bill queue.`,
+        });
+      }
+      await pool.query(
+        `INSERT INTO inventory_scanner_queue
+          (session_code, qr_payload, meta_id, product_id, sku, barcode, serial_number, product_name,
+           unit_price, mrp, gst_hsn_code, gst_rate, uom, quantity, available_stock, scanned_by, device_name, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'POS Sync', 'queued')`,
+        [
+          sessionCode,
+          cleanSerial,
+          item.metaId,
+          item.productId,
+          item.sku,
+          item.barcode,
+          cleanSerial,
+          item.name,
+          item.price,
+          item.mrp,
+          item.gstHsnCode,
+          item.gstRate,
+          item.uom,
+          item.availableStock,
+          req.invUser?.username || 'sync-agent',
+        ]
+      );
+      const [updatedQueue] = await pool.query(
+        "SELECT * FROM inventory_scanner_queue WHERE session_code = ? AND status = 'queued' ORDER BY created_at ASC",
+        [sessionCode]
+      );
+      const memSerialItem = touchScannerSessionActivity(sessionCode, { bumpVersion: true });
+      memSerialItem.queueCache = updatedQueue;
+      return res.status(201).json({ success: true, queue: updatedQueue });
     }
 
     const [existingRows] = await pool.query(
@@ -6146,7 +6388,7 @@ router.post('/scanner/queue/item', authenticateScannerOrStaff, async (req, res) 
 
     res.json({ success: true, queue: updatedQueue });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(err.status || 500).json({ success: false, message: err.message });
   }
 });
 

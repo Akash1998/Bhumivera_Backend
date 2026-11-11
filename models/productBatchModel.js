@@ -96,7 +96,7 @@ const createProductBatch = async ({ productId, count, prefix = 'BHMV', manufactu
 
     const serials = new Set();
     while (serials.size < normalizedCount) {
-      serials.add(`${normalizedPrefix}-${dateStamp}-${crypto.randomBytes(8).toString('hex').toUpperCase()}`);
+      serials.add(`${normalizedPrefix}-${dateStamp}-${crypto.randomBytes(12).toString('hex').toUpperCase()}`);
     }
 
     const rows = [...serials].map(serial => [normalizedProductId, batchResult.insertId, serial, 0]);
@@ -194,11 +194,17 @@ const generateSerialSequence = (seed, totalCount, prefixFallback) => {
   const serials = [];
   const cleanSeed = String(seed || '').trim().toUpperCase();
 
-  if (totalCount <= 1) {
-    if (cleanSeed) return [cleanSeed];
-    const rand = crypto.randomBytes(3).toString('hex').toUpperCase();
+  if (!cleanSeed) {
     const dateStamp = new Date().toISOString().slice(2, 7).replace('-', '');
-    return [`${prefixFallback || 'BHMV'}-${dateStamp}-${rand}`];
+    while (serials.length < totalCount) {
+      const rand = crypto.randomBytes(12).toString('hex').toUpperCase();
+      serials.push(`${prefixFallback || 'BHMV'}-${dateStamp}-${rand}`);
+    }
+    return serials;
+  }
+
+  if (totalCount <= 1) {
+    return [cleanSeed];
   }
 
   // Pure numeric seed: e.g. "123456"
@@ -257,7 +263,10 @@ const createGenuinitySerialQR = async ({
     throw Object.assign(new Error('Choose a valid product.'), { status: 400 });
   }
 
-  const normalizedCount = Math.max(1, Math.min(1000, Number(count) || 1));
+  const normalizedCount = Number(count);
+  if (!Number.isSafeInteger(normalizedCount) || normalizedCount < 1 || normalizedCount > MAX_BATCH_SIZE) {
+    throw Object.assign(new Error(`QR quantity must be between 1 and ${MAX_BATCH_SIZE}.`), { status: 400 });
+  }
 
   // Manufacture and expiry dates
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -308,6 +317,13 @@ const createGenuinitySerialQR = async ({
 
     const defaultPrefix = String(products[0].sku || products[0].name || 'BHMV').replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase();
     const generatedSerials = generateSerialSequence(serialNumber, normalizedCount, defaultPrefix);
+    if (
+      generatedSerials.length !== normalizedCount ||
+      new Set(generatedSerials).size !== normalizedCount ||
+      generatedSerials.some(serial => !/^[A-Z0-9-]{1,100}$/.test(serial))
+    ) {
+      throw Object.assign(new Error('Generated item codes must be unique and contain only letters, numbers, and hyphens.'), { status: 400 });
+    }
 
     // Batch Number
     let cleanBatch = String(batchNumber || '').trim().toUpperCase();
@@ -319,11 +335,14 @@ const createGenuinitySerialQR = async ({
     // Check if batch exists or insert new batch
     let batchId;
     const [existingBatches] = await connection.query(
-      'SELECT id, unit_count FROM product_batches WHERE batch_number = ?',
+      'SELECT id, product_id, unit_count FROM product_batches WHERE batch_number = ? FOR UPDATE',
       [cleanBatch]
     );
 
     if (existingBatches.length > 0) {
+      if (Number(existingBatches[0].product_id) !== normalizedProductId) {
+        throw Object.assign(new Error('This batch number is already assigned to another product.'), { status: 409 });
+      }
       batchId = existingBatches[0].id;
       await connection.query(
         'UPDATE product_batches SET details = ?, manufacture_date = ?, expiry_date = ?, unit_count = unit_count + ? WHERE id = ?',
@@ -339,20 +358,21 @@ const createGenuinitySerialQR = async ({
       batchId = batchResult.insertId;
     }
 
-    // Upsert serials into product_serials
+    // Never reassign or reactivate a previously issued item code.
     const insertValues = generatedSerials.map(sn => [normalizedProductId, batchId, sn, 'available', 0]);
     for (let i = 0; i < insertValues.length; i += 500) {
       const chunk = insertValues.slice(i, i + 500);
-      await connection.query(
-        `INSERT INTO product_serials (product_id, batch_id, serial_number, status, is_legacy)
-         VALUES ?
-         ON DUPLICATE KEY UPDATE
-           product_id = VALUES(product_id),
-           batch_id = VALUES(batch_id),
-           status = 'available',
-           is_legacy = 0`,
-        [chunk]
-      );
+      try {
+        await connection.query(
+          'INSERT INTO product_serials (product_id, batch_id, serial_number, status, is_legacy) VALUES ?',
+          [chunk]
+        );
+      } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY') {
+          throw Object.assign(new Error('One or more generated item codes already exist. Generate a new code range and try again.'), { status: 409 });
+        }
+        throw error;
+      }
     }
 
     // Fetch primary serial ID
@@ -441,25 +461,67 @@ const listGenuinitySerials = async () => {
 };
 
 const deleteGenuinitySerial = async (serialId) => {
-  const [res] = await pool.query('DELETE FROM product_serials WHERE id = ?', [serialId]);
-  if (!res.affectedRows) throw Object.assign(new Error('Serial not found'), { status: 404 });
-  return { success: true };
+  const [rows] = await pool.query('SELECT id, status FROM product_serials WHERE id = ?', [serialId]);
+  if (!rows.length) throw Object.assign(new Error('Serial not found.'), { status: 404 });
+  if (rows[0].status !== 'available') {
+    throw Object.assign(new Error('Sold, registered, or already voided item codes cannot be removed.'), { status: 409 });
+  }
+  const [result] = await pool.query(
+    "UPDATE product_serials SET status = 'voided' WHERE id = ? AND status = 'available'",
+    [serialId]
+  );
+  if (!result.affectedRows) {
+    throw Object.assign(new Error('Item code changed during removal. Refresh and try again.'), { status: 409 });
+  }
+  return { success: true, voided: true };
 };
 
 const bulkDeleteGenuinitySerials = async ({ serialIds, deleteAll }) => {
-  if (deleteAll) {
-    const [res] = await pool.query('DELETE FROM product_serials');
-    return { success: true, count: res.affectedRows };
-  }
-  if (!Array.isArray(serialIds) || serialIds.length === 0) {
+  if (!deleteAll && (!Array.isArray(serialIds) || serialIds.length === 0)) {
     throw Object.assign(new Error('Select at least one serial to delete.'), { status: 400 });
   }
-  const cleanIds = serialIds.map(Number).filter(id => Number.isSafeInteger(id) && id > 0);
-  if (!cleanIds.length) {
+  const cleanIds = deleteAll ? [] : serialIds.map(Number);
+  if (!deleteAll && (!cleanIds.length || cleanIds.some(id => !Number.isSafeInteger(id) || id < 1) || new Set(cleanIds).size !== cleanIds.length)) {
     throw Object.assign(new Error('Invalid serial IDs provided.'), { status: 400 });
   }
-  const [res] = await pool.query('DELETE FROM product_serials WHERE id IN (?)', [cleanIds]);
-  return { success: true, count: res.affectedRows };
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    if (deleteAll) {
+      const [result] = await connection.query(
+        "UPDATE product_serials SET status = 'voided' WHERE status = 'available'"
+      );
+      await connection.commit();
+      return { success: true, count: result.affectedRows, voided: true };
+    }
+
+    const [rows] = await connection.query(
+      `SELECT id, status FROM product_serials WHERE id IN (${cleanIds.map(() => '?').join(',')}) FOR UPDATE`,
+      cleanIds
+    );
+    if (rows.length !== cleanIds.length) {
+      throw Object.assign(new Error('One or more selected item codes no longer exist.'), { status: 404 });
+    }
+    if (rows.some(row => row.status !== 'available')) {
+      throw Object.assign(new Error('Sold, registered, or already voided item codes cannot be removed.'), { status: 409 });
+    }
+    const [result] = await connection.query(
+      `UPDATE product_serials SET status = 'voided'
+       WHERE status = 'available' AND id IN (${cleanIds.map(() => '?').join(',')})`,
+      cleanIds
+    );
+    if (Number(result.affectedRows) !== cleanIds.length) {
+      throw Object.assign(new Error('One or more item codes changed during removal. Refresh and try again.'), { status: 409 });
+    }
+    await connection.commit();
+    return { success: true, count: result.affectedRows, voided: true };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 };
 
 const getPublicProductVerification = async serial => {

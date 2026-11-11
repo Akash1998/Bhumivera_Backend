@@ -1316,12 +1316,13 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
   }
 
   let matchedSerialNumber = null;
+  let matchedSerialStatus = null;
 
   // 1. Check if it's a unique bottle/bar Genuinity Serial in product_serials
   const serialCandidate = extractedSerial || raw;
   try {
     const [serialRows] = await db.query(
-      `SELECT ps.serial_number, ps.product_id, ps.batch_id
+      `SELECT ps.serial_number, ps.product_id, ps.batch_id, ps.status
        FROM product_serials ps
        WHERE UPPER(ps.serial_number) = UPPER(?)
        LIMIT 1`,
@@ -1329,6 +1330,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
     );
     if (serialRows?.[0]?.product_id) {
       matchedSerialNumber = serialRows[0].serial_number;
+      matchedSerialStatus = serialRows[0].status || 'available';
       const [metaRows] = await db.query(
         `SELECT m.*, p.name AS web_name, p.slug AS web_slug, p.quantity AS web_quantity, p.price AS web_price, p.discount_price AS web_discount_price
          FROM inventory_product_meta m
@@ -1338,7 +1340,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
         [serialRows[0].product_id]
       );
       if (metaRows?.[0]) {
-        return formatResolvedScannerItem(metaRows[0], matchedSerialNumber, extractedBatch);
+        return formatResolvedScannerItem(metaRows[0], matchedSerialNumber, extractedBatch, matchedSerialStatus);
       }
     }
   } catch {
@@ -1371,7 +1373,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
   );
 
   if (rows?.[0]) {
-    return formatResolvedScannerItem(rows[0], matchedSerialNumber, extractedBatch);
+    return formatResolvedScannerItem(rows[0], matchedSerialNumber, extractedBatch, matchedSerialStatus);
   }
 
   // 3. Fallback: match by product_batches table if a batch QR was scanned directly
@@ -1401,7 +1403,7 @@ async function resolveProductByQrOrCode(db = pool, rawInput = '') {
   return null;
 }
 
-function formatResolvedScannerItem(r, serialNumber = null, batchNumber = null) {
+function formatResolvedScannerItem(r, serialNumber = null, batchNumber = null, serialStatus = null) {
   const liveQty =
     r.product_id && r.web_quantity !== null && r.web_quantity !== undefined
       ? Number(r.web_quantity)
@@ -1419,6 +1421,7 @@ function formatResolvedScannerItem(r, serialNumber = null, batchNumber = null) {
     sku: r.sku,
     barcode: r.barcode,
     serialNumber: serialNumber || null,
+    serialStatus,
     name: r.web_name || r.custom_name || 'Bhumivera Formulation',
     slug: r.web_slug || '',
     uom: r.uom || 'Pcs',

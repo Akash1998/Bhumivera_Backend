@@ -126,8 +126,10 @@ const registerWarranty = async (data) => {
 
   if (Number(rec.product_id) !== Number(productId))
     throw { status: 400, message: "Product mismatch for given serial number." };
-  if (rec.status === 'registered' || rec.status === 'sold')
+  if (rec.status === 'registered')
     throw { status: 400, message: "This serial number is already registered for warranty." };
+  if (rec.status === 'voided')
+    throw { status: 409, message: "This item code has been voided and cannot be registered." };
 
   const isLegacySerial = rec.is_legacy === 1 || rec.is_legacy === true;
   let registrationDate = null;
@@ -159,13 +161,24 @@ const registerWarranty = async (data) => {
     await conn.beginTransaction();
 
     const [serialRows] = await conn.query(
-      'SELECT status FROM product_serials WHERE id = ? FOR UPDATE',
+      'SELECT id, status FROM product_serials WHERE id = ? FOR UPDATE',
       [rec.serial_id]
     );
     if (!serialRows.length) {
       throw { status: 404, message: "Serial number not found in our database." };
     }
-    if (serialRows[0].status === 'registered' || serialRows[0].status === 'sold') {
+    if (serialRows[0].status === 'registered') {
+      throw { status: 409, message: "This serial number is already registered for warranty." };
+    }
+    if (serialRows[0].status === 'voided') {
+      throw { status: 409, message: "This item code has been voided and cannot be registered." };
+    }
+
+    const [existingRegistrations] = await conn.query(
+      'SELECT id FROM warranty_registrations WHERE serial_number_id = ? LIMIT 1 FOR UPDATE',
+      [rec.serial_id]
+    );
+    if (existingRegistrations.length) {
       throw { status: 409, message: "This serial number is already registered for warranty." };
     }
 
@@ -185,7 +198,12 @@ const registerWarranty = async (data) => {
       ]
     );
 
-    await conn.query(`UPDATE product_serials SET status = 'registered' WHERE serial_number = ?`, [rec.serial_number]);
+    if (serialRows[0].status === 'available') {
+      await conn.query(
+        `UPDATE product_serials SET status = 'registered' WHERE id = ? AND status = 'available'`,
+        [rec.serial_id]
+      );
+    }
     await conn.commit();
 
     return {
@@ -220,9 +238,15 @@ const deletGenuiine_test = async (id) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const [rows] = await conn.query('SELECT registered_serial FROM warranty_registrations WHERE id = ?', [id]);
+    const [rows] = await conn.query(
+      'SELECT registered_serial, serial_number_id FROM warranty_registrations WHERE id = ? FOR UPDATE',
+      [id]
+    );
     if (rows.length > 0)
-      await conn.query("UPDATE product_serials SET status = 'available' WHERE serial_number = ?", [rows[0].registered_serial]);
+      await conn.query(
+        "UPDATE product_serials SET status = 'available' WHERE id = ? AND status = 'registered'",
+        [rows[0].serial_number_id]
+      );
     await conn.query('DELETE FROM warranty_registrations WHERE id = ?', [id]);
     await conn.commit();
   } catch (error) {

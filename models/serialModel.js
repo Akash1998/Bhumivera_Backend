@@ -16,7 +16,7 @@ const initSerialTable = async () => {
       id INT AUTO_INCREMENT PRIMARY KEY,
       product_id INT NOT NULL,
       serial_number VARCHAR(255) NOT NULL,
-      status ENUM('available', 'registered', 'sold') NOT NULL DEFAULT 'available',
+      status ENUM('available', 'registered', 'sold', 'voided') NOT NULL DEFAULT 'available',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       base_warranty_months INT NULL DEFAULT NULL,
       is_legacy TINYINT(1) NOT NULL DEFAULT 1,
@@ -28,6 +28,12 @@ const initSerialTable = async () => {
   await addCol('product_serials', 'base_warranty_months', 'INT NULL DEFAULT NULL AFTER status');
   // is_legacy: false for serials generated under the new e-warranty policy
   await addCol('product_serials', 'is_legacy', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER base_warranty_months');
+  const [statusColumns] = await pool.query("SHOW COLUMNS FROM product_serials LIKE 'status'");
+  if (!String(statusColumns[0]?.Type || '').toLowerCase().includes("'voided'")) {
+    await pool.query(
+      "ALTER TABLE product_serials MODIFY status ENUM('available', 'registered', 'sold', 'voided') NOT NULL DEFAULT 'available'"
+    );
+  }
 };
 
 const getAllSerials = async () => {
@@ -120,21 +126,26 @@ const deleteProductSerial = async (productId, serialId) => {
   );
   
   if (serial.length === 0) throw { status: 404, message: "Serial number not found for this product" };
-  if (serial[0].warranty_id || serial[0].status === 'registered') {
-    throw { status: 409, message: `Cannot delete serial '${serial[0].serial_number}' - it has an active warranty registration` };
+  if (serial[0].warranty_id || serial[0].status !== 'available') {
+    throw { status: 409, message: `Cannot remove serial '${serial[0].serial_number}' after it is sold, registered, or voided.` };
   }
   
-  await pool.query("DELETE FROM product_serials WHERE id = ?", [serialId]);
+  const [result] = await pool.query(
+    "UPDATE product_serials SET status = 'voided' WHERE id = ? AND status = 'available'",
+    [serialId]
+  );
+  if (!result.affectedRows) throw { status: 409, message: 'Item code changed during removal. Refresh and try again.' };
   
-  return { deleted: serial[0].serial_number };
+  return { voided: serial[0].serial_number };
 };
 
 const updateProductSerial = async (productId, serialId, newSerial) => {
   const cleanedSerial = newSerial.trim().toUpperCase();
   if (!/^[A-Z0-9-]+$/.test(cleanedSerial)) throw { status: 400, message: "Invalid serial number format" };
   
-  const [existing] = await pool.query(`SELECT serial_number FROM product_serials WHERE id = ? AND product_id = ?`, [serialId, productId]);
+  const [existing] = await pool.query(`SELECT serial_number, status FROM product_serials WHERE id = ? AND product_id = ?`, [serialId, productId]);
   if (existing.length === 0) throw { status: 404, message: "Serial number not found for this product" };
+  if (existing[0].status !== 'available') throw { status: 409, message: "Only unused item codes can be changed." };
   
   const [duplicate] = await pool.query("SELECT id FROM product_serials WHERE serial_number = ? AND id != ?", [cleanedSerial, serialId]);
   if (duplicate.length > 0) throw { status: 409, message: `Serial '${cleanedSerial}' already exists` };
@@ -168,8 +179,9 @@ const getProductSerialStats = async (productId) => {
   const [stats] = await pool.query(
     `SELECT
         COUNT(*) as total_serials,
-        SUM(CASE WHEN status = 'registered' THEN 1 ELSE 0 END) as used_serials,
-        SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available_serials
+        SUM(CASE WHEN status IN ('registered', 'sold') THEN 1 ELSE 0 END) as used_serials,
+        SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available_serials,
+        SUM(CASE WHEN status = 'voided' THEN 1 ELSE 0 END) as voided_serials
      FROM product_serials
      WHERE product_id = ?`,
     [productId]

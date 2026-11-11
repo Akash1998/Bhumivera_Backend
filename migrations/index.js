@@ -1050,6 +1050,21 @@ const migrations = [
       }
     },
   },
+  {
+    version: 83,
+    name: 'preserve voided product item codes in authenticity registry',
+    up: async () => {
+      const [columns] = await pool.query("SHOW COLUMNS FROM product_serials LIKE 'status'");
+      if (!columns.length) {
+        throw new Error('Cannot update product item code status: product_serials.status column was not found.');
+      }
+      if (!String(columns[0].Type || '').toLowerCase().includes("'voided'")) {
+        await pool.query(
+          "ALTER TABLE product_serials MODIFY status ENUM('available','registered','sold','voided') NOT NULL DEFAULT 'available'"
+        );
+      }
+    },
+  },
 ];
 
 module.exports = migrations;
