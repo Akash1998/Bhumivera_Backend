@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { BHUMIVERA_6_PRODUCTS } = require('../data/bhumiveraCatalog');
 
-const SITE_URL = (process.env.SITE_URL || 'https://bhumivera.com').replace(/\/+$/, '');
+const SITE_URL = (process.env.SITE_URL || 'https://www.bhumivera.com').replace(/\/+$/, '');
 
 const DEFAULT_OG_TITLE =
   'Bhumivera | The Transparent Maison — Rooted in Heritage Since 2016';
@@ -421,6 +421,10 @@ function sitemapController(req, res) {
     '/about',
     '/shop',
     '/products',
+    '/category/luxury-facial-cleansers',
+    '/category/luxury-hair-care',
+    '/category/artisanal-ayurvedic-cleansing-bars',
+    '/category/luxury-ayurvedic-wellness-immunity-drops',
     '/science',
     '/guides',
     '/guides/ultimate-guide-luxury-organic-face-wash-india',
@@ -550,14 +554,14 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
         <link rel="canonical" href="${escapeXml(canonicalUrl)}" />
         <meta property="og:type" content="${product ? 'product' : 'website'}" />
         <meta property="og:site_name" content="Bhumivera" />
-        <meta property="og:title" content="${escapeXml(DEFAULT_OG_TITLE)}" />
-        <meta property="og:description" content="${escapeXml(DEFAULT_OG_DESCRIPTION)}" />
+        <meta property="og:title" content="${escapeXml(pageTitle)}" />
+        <meta property="og:description" content="${escapeXml(pageDesc)}" />
         <meta property="og:url" content="${escapeXml(canonicalUrl)}" />
         <meta property="og:image" content="${escapeXml(pageImage)}" />
         ${product ? `<meta property="product:price:amount" content="${product.price}" /><meta property="product:price:currency" content="INR" />` : ''}
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="${escapeXml(DEFAULT_OG_TITLE)}" />
-        <meta name="twitter:description" content="${escapeXml(DEFAULT_OG_DESCRIPTION)}" />
+        <meta name="twitter:title" content="${escapeXml(pageTitle)}" />
+        <meta name="twitter:description" content="${escapeXml(pageDesc)}" />
         <meta name="twitter:image" content="${escapeXml(pageImage)}" />
         <script type="application/ld+json">${jsonLd}</script>
       `;

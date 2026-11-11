@@ -94,7 +94,7 @@ const BHUMIVERA_6_PRODUCTS = [
     rating: 4.74,
     review_count: 290,
     reviews: 290,
-    legacySlugs: ['aloe vera face wash', 'sea-buckthorn-niacinamide-luxury-face-wash'],
+    legacySlugs: ['aloe vera face wash', 'sea-buckthorn-niacinamide-luxury-face-wash', 'seabuckthorn-face-wash', 'sea-buckthorn-face-wash', 'seabuckthorn', 'sea-buckthorn'],
     sku: 'BV-LUX-SBFW-02',
     legacySkus: ['BV-SBFW-100ML'],
     mpn: 'BVSBFW100ML',
@@ -122,7 +122,7 @@ const BHUMIVERA_6_PRODUCTS = [
     seo_title: 'Bhumivera Himalayan Sea Buckthorn Luxury Face Wash (100ml) | 4% Sea Buckthorn, 5% Glycerin, Hyaluronic Acid, Niacinamide & Manjistha Brightening Cleanser',
     meta_description: 'Discover Bhumivera Himalayan Sea Buckthorn Face Wash (100ml): formulated for conscious skincare buyers with 4% Sea Buckthorn (Omega-7 & Vitamin C), 5% Glycerin, 0.5% Manjistha, 0.5% Haridra, 0.1% Hyaluronic Acid & 0.1% Niacinamide.',
     short_description: 'Brightening botanical luxury face wash crafted for skin-conscious buyers. Formulated per 100ml with a label-disclosed 4% Himalayan Sea Buckthorn extract, 5% Botanical Glycerin, 0.5% Manjistha, 0.5% Haridra, 0.5% Neem, 0.5% Cucumber, 0.1% Hyaluronic Acid & 0.1% Niacinamide.',
-    search_keywords: 'sea buckthorn face wash India, brightening botanical face wash for glowing skin, omega 7 vitamin c face wash with niacinamide hyaluronic acid, gentle sulfate free face wash for dry dull skin, manjistha turmeric radiance cleanser, conscious skincare face wash India',
+    search_keywords: 'seabuckthorn face wash, sea buckthorn face wash, seabuckthorn face wash India, himalayan sea buckthorn face wash, bhumivera sea buckthorn, best sea buckthorn face wash, brightening botanical face wash for glowing skin, omega 7 vitamin c face wash with niacinamide hyaluronic acid, gentle sulfate free face wash for dry dull skin, manjistha turmeric radiance cleanser, conscious skincare face wash India, organic seabuckthorn facial cleanser',
     conscious_buyer_highlights: [
       'High-Potency 4% Sea Buckthorn: Delivers natural Omega-7, carotenoids, and botanical antioxidants at a full 4.0% concentration.',
       'Dewy Glass-Skin Hydration: 5.0% Botanical Glycerin and 0.1% Hyaluronic Acid lock in moisture during cleansing.',

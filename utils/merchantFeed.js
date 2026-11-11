@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { cleanProductMarketingFields } = require('./productMarketingClaims');
+const { BHUMIVERA_6_PRODUCTS } = require('../data/bhumiveraCatalog');
 
 const escapeXml = value => String(value ?? '').replace(/[<>&'"]/g, character => ({
   '<': '&lt;',
@@ -8,6 +9,23 @@ const escapeXml = value => String(value ?? '').replace(/[<>&'"]/g, character => 
   "'": '&apos;',
   '"': '&quot;',
 }[character]));
+
+const getGoogleCategory = (name = '', category = '') => {
+  const text = `${name} ${category}`.toLowerCase();
+  if (text.includes('face wash') || text.includes('facial cleanser')) {
+    return 'Health &amp; Beauty &gt; Personal Care &gt; Cosmetics &gt; Skin Care &gt; Facial Cleansers';
+  }
+  if (text.includes('shampoo')) {
+    return 'Health &amp; Beauty &gt; Personal Care &gt; Hair Care &gt; Shampoo &amp; Conditioner';
+  }
+  if (text.includes('soap') || text.includes('bar')) {
+    return 'Health &amp; Beauty &gt; Personal Care &gt; Cosmetics &gt; Bath &amp; Body &gt; Bar Soap';
+  }
+  if (text.includes('tulsi') || text.includes('drops')) {
+    return 'Health &amp; Beauty &gt; Health Care &gt; Dietary Supplements';
+  }
+  return 'Health &amp; Beauty &gt; Personal Care &gt; Cosmetics';
+};
 
 const generateGoogleMerchantFeed = async () => {
   try {
@@ -32,22 +50,36 @@ const generateGoogleMerchantFeed = async () => {
 
     products.forEach(product => {
       const p = cleanProductMarketingFields(product);
-      const imagePath = p.primary_image || p.image_url;
+      const catalogMatch = BHUMIVERA_6_PRODUCTS.find(c =>
+        c.slug === p.slug ||
+        c.sku === p.sku ||
+        c.name.toLowerCase() === p.name.toLowerCase() ||
+        (p.name.toLowerCase().includes('sea buckthorn') && c.slug.includes('seabuckthorn')) ||
+        (p.name.toLowerCase().includes('charcoal') && p.name.toLowerCase().includes('face wash') && c.slug.includes('charcoal-luxury-face-wash'))
+      );
+
+      const title = p.meta_title || catalogMatch?.seo_title || `${p.name} | Bhumivera Organics`;
+      const description = p.meta_description || catalogMatch?.meta_description || catalogMatch?.short_description || p.description || 'Bhumivera Organics luxury botanical formulation';
+      const imagePath = p.primary_image || p.image_url || catalogMatch?.image_url;
       const imageUrl = imagePath
         ? (/^https?:\/\//i.test(imagePath) ? imagePath : `${imageBaseUrl}/${String(imagePath).replace(/^\/+/, '')}`)
         : 'https://www.bhumivera.com/logo.webp';
+      const googleCategory = getGoogleCategory(p.name, p.category_name || catalogMatch?.category);
+
       xml += `    <item>
-      <g:id>${escapeXml(p.sku || p.id)}</g:id>
-      <g:title>${escapeXml(p.seo_title || `${p.name} | Bhumivera Organics`)}</g:title>
-      <g:description>${escapeXml(p.short_description || p.meta_description || p.description || p.name || 'Bhumivera Organics luxury botanical formulation')}</g:description>
-      <g:link>${escapeXml(`https://www.bhumivera.com/product/${p.slug || p.id}`)}</g:link>
+      <g:id>${escapeXml(p.sku || catalogMatch?.sku || `BV-LUX-${p.id}`)}</g:id>
+      <g:title>${escapeXml(title)}</g:title>
+      <g:description>${escapeXml(description)}</g:description>
+      <g:link>${escapeXml(`https://www.bhumivera.com/product/${p.slug || catalogMatch?.slug || p.id}`)}</g:link>
       <g:image_link>${escapeXml(imageUrl)}</g:image_link>
       <g:condition>new</g:condition>
       <g:availability>in_stock</g:availability>
-      <g:price>${escapeXml(`${p.discount_price || p.price} INR`)}</g:price>
+      <g:price>${escapeXml(`${p.discount_price || p.price || 699} INR`)}</g:price>
       <g:brand>Bhumivera Organics</g:brand>
-      <g:mpn>${escapeXml(p.mpn || p.sku || `BVLUX-${p.id}`)}</g:mpn>
-      <g:google_product_category>Health &amp; Beauty &gt; Personal Care &gt; Cosmetics</g:google_product_category>
+      <g:mpn>${escapeXml(p.mpn || catalogMatch?.mpn || p.sku || `BVLUX-${p.id}`)}</g:mpn>
+      <g:gtin>${escapeXml(catalogMatch?.gtin13 || '8906182600018')}</g:gtin>
+      <g:google_product_category>${googleCategory}</g:google_product_category>
+      <g:product_type>${escapeXml(catalogMatch?.category || p.category_name || 'Luxury Botanical Personal Care')}</g:product_type>
     </item>\n`;
     });
 

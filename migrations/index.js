@@ -1116,6 +1116,135 @@ const migrations = [
       await pool.query('DELETE FROM inventory_product_meta WHERE sku IN (?)', [comboSkus]);
     },
   },
+  {
+    version: 86,
+    name: 'optimize taxonomy categories subcategories and products to 100 percent SEO health',
+    up: async () => {
+      // 1. Ensure categories.slug column exists
+      const [catSlugCol] = await pool.query(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'categories' AND COLUMN_NAME = 'slug'"
+      );
+      if (!catSlugCol.length) {
+        await pool.query("ALTER TABLE categories ADD COLUMN slug VARCHAR(120) AFTER name");
+      }
+
+      // 2. Backfill category slugs and rich semantic descriptions (> 20 chars for 100% SEO score)
+      const categoriesSeoData = [
+        {
+          name: 'Artisanal Ayurvedic Cleansing Bars',
+          slug: 'artisanal-ayurvedic-cleansing-bars',
+          description: 'Handcrafted 100% natural Ayurvedic luxury bathing bars formulated with pure Activated Charcoal, Aloe Vera, Neem, and Sacred Tulsi. Free from sulfates, parabens, and harsh synthetic detergents.'
+        },
+        {
+          name: 'Luxury Facial Cleansers',
+          slug: 'luxury-facial-cleansers',
+          description: 'Sulfate-free, pH 5.5 skin-barrier calibrated luxury facial cleansers. Formulated with 4% Himalayan Sea Buckthorn, 3% Activated Charcoal, Hyaluronic Acid, and Niacinamide with 100% label-disclosed potencies.'
+        },
+        {
+          name: 'Luxury Hair Care',
+          slug: 'luxury-hair-care',
+          description: 'Royal Ayurvedic 2-in-1 conditioning shampoos and restorative botanical hair rituals formulated with natural saponin extracts of Reetha, Amla, Bhringraj, Rosemary Oil, and Shikakai.'
+        },
+        {
+          name: 'Luxury Ayurvedic Wellness & Immunity Drops',
+          slug: 'luxury-ayurvedic-wellness-immunity-drops',
+          description: 'High-potency 90% liquid distillate of 7 sacred Tulsi varieties (Van, Sweet, Marua, Bisva, Kala, Rama & Lemon Tulsi) designed to balance stress, enhance vitality, and promote healthy radiant skin from within.'
+        }
+      ];
+
+      for (const cat of categoriesSeoData) {
+        await pool.query(
+          "UPDATE categories SET slug = ?, description = ? WHERE name = ? AND (slug IS NULL OR slug = '' OR description IS NULL OR description = '')",
+          [cat.slug, cat.description, cat.name]
+        );
+      }
+
+      // Auto-slugify any other categories that may have been created
+      await pool.query(
+        "UPDATE categories SET slug = LOWER(REPLACE(REPLACE(name, ' ', '-'), '&', 'and')) WHERE slug IS NULL OR slug = ''"
+      );
+
+      // 3. Ensure subcategories.slug column exists
+      const [subSlugCol] = await pool.query(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subcategories' AND COLUMN_NAME = 'slug'"
+      );
+      if (!subSlugCol.length) {
+        await pool.query("ALTER TABLE subcategories ADD COLUMN slug VARCHAR(120) AFTER name");
+      }
+
+      // 4. Seed default subcategories if none exist
+      const [subCount] = await pool.query("SELECT COUNT(*) AS cnt FROM subcategories");
+      if (subCount[0].cnt === 0) {
+        const subcategoriesToSeed = [
+          { category_name: 'Luxury Facial Cleansers', name: 'Himalayan Sea Buckthorn Radiance Cleansers', slug: 'seabuckthorn-radiance-cleansers', description: 'Botanical Omega-7, Vitamin C and Niacinamide radiance face washes for brightening and cellular renewal.' },
+          { category_name: 'Luxury Facial Cleansers', name: 'Activated Charcoal Deep Pore Purifiers', slug: 'activated-charcoal-purifiers', description: 'Microporous carbon facial cleansers crafted to adsorb PM2.5 pollution and excess sebum without barrier stripping.' },
+          { category_name: 'Luxury Hair Care', name: 'Botanical Saponin Conditioning Shampoos', slug: 'botanical-saponin-shampoos', description: 'Low-pH sulfate-free dual-action 2-in-1 hair cleansers with Reetha, Amla, Shikakai, and pure Rosemary Oil.' },
+          { category_name: 'Luxury Hair Care', name: 'Scalp & Root Revitalizing Rituals', slug: 'scalp-root-revitalizing-rituals', description: 'Ayurvedic multi-herb botanical hair and scalp treatments designed to strengthen hair roots.' },
+          { category_name: 'Artisanal Ayurvedic Cleansing Bars', name: 'Activated Charcoal Detox Bathing Bars', slug: 'charcoal-detox-bathing-bars', description: 'Handcrafted obsidian Ayurvedic cleansing bars infused with Aloe Vera for gentle, non-stripping deep body purification.' },
+          { category_name: 'Artisanal Ayurvedic Cleansing Bars', name: 'Aloe Vera Neem & Tulsi Soothing Bars', slug: 'aloe-neem-tulsi-soothing-bars', description: 'Traditional sacred botanical bathing bars for blemish-prone, sensitive skin delivering a calm, glowing finish.' },
+          { category_name: 'Luxury Ayurvedic Wellness & Immunity Drops', name: 'Seven-Tulsi Liquid Extracts & Adaptogens', slug: 'seven-tulsi-liquid-extracts', description: 'Concentrated 90% liquid distillates of 7 sacred Tulsi varieties for gut-skin axis harmony and daily wellness.' },
+          { category_name: 'Luxury Ayurvedic Wellness & Immunity Drops', name: 'Bio-Active Botanical Wellness Distillates', slug: 'bio-active-botanical-distillates', description: 'Ingestible cellular adaptogens formulated to protect against oxidative stress and environmental wear.' }
+        ];
+
+        for (const sub of subcategoriesToSeed) {
+          const [catRows] = await pool.query("SELECT id FROM categories WHERE name = ? LIMIT 1", [sub.category_name]);
+          if (catRows.length > 0) {
+            await pool.query(
+              "INSERT INTO subcategories (category_id, name, slug, description) VALUES (?, ?, ?, ?)",
+              [catRows[0].id, sub.name, sub.slug, sub.description]
+            );
+          }
+        }
+      }
+
+      // 5. Populate rich SEO metadata, meta_title, meta_description, and high-converting search tags across all flagship products
+      const productsSeoUpdates = [
+        {
+          nameMatch: 'Sea Buckthorn',
+          meta_title: 'Bhumivera Himalayan Sea Buckthorn Face Wash (100ml) | 4% Sea Buckthorn, 5% Glycerin & Niacinamide',
+          meta_description: 'Buy Bhumivera Himalayan Sea Buckthorn Luxury Face Wash (100ml) with 4% Cold-Pressed Sea Buckthorn (Omega-7 & Vitamin C), 5% Glycerin, Hyaluronic Acid & Niacinamide. Sulfate-free & pH 5.5 balanced.',
+          tags: 'seabuckthorn face wash, sea buckthorn face wash, seabuckthorn face wash india, himalayan sea buckthorn face wash, bhumivera sea buckthorn, best sea buckthorn face wash, brightening face wash, omega 7 vitamin c face wash, sulfate free face wash, ayurvedic botanical cleanser'
+        },
+        {
+          nameMatch: 'Charcoal Purifying Luxury Face Wash',
+          meta_title: 'Bhumivera Activated Charcoal Luxury Face Wash (100ml) | 3% Charcoal, 5% Glycerin & Hyaluronic Acid',
+          meta_description: 'Crafted for conscious skincare lovers: Bhumivera Activated Charcoal Luxury Face Wash (100ml) with 3% Activated Charcoal, 5% Glycerin, Manjistha, Haridra & Hyaluronic Acid. Sulfate-free & pH-balanced.',
+          tags: 'charcoal face wash, activated charcoal face wash, bhumivera charcoal face wash, charcoal face wash india, pore detox cleanser, sulfate free face wash'
+        },
+        {
+          nameMatch: '2-in-1 Luxury Shampoo',
+          meta_title: 'Bhumivera Royal 2-in-1 Luxury Shampoo with Conditioner (200ml) | Reetha, Amla & Rosemary Oil',
+          meta_description: 'Shop Bhumivera Royal Botanical 2-in-1 Luxury Shampoo with Conditioner (200ml). Formulated with 25mg Reetha, 20mg Amla, 10mg Rosemary Oil, Bhringraj & Aloe Vera. Sulfate-free hair care.',
+          tags: 'ayurvedic shampoo, 2 in 1 shampoo conditioner, reetha amla shampoo, rosemary hair growth shampoo, sulfate free shampoo india, bhumivera shampoo'
+        },
+        {
+          nameMatch: 'Charcoal Deep Cleansing Bar',
+          meta_title: 'Bhumivera Charcoal Deep Cleansing Bar (100 GM) | Handmade Ayurvedic Activated Charcoal Soap',
+          meta_description: 'Handcrafted 100 GM Bhumivera Charcoal Deep Cleansing Bar with Activated Charcoal and Aloe Vera in a gentle Ayurvedic soap base free from harsh synthetic detergents.',
+          tags: 'charcoal soap, handmade charcoal soap, ayurvedic bathing bar, natural charcoal cleansing soap, bhumivera charcoal bar'
+        },
+        {
+          nameMatch: 'Aloevera mosturising soothing bar',
+          meta_title: 'Bhumivera Soothing Bar (100 GM) | Handmade Aloe Vera, Neem & Tulsi Ayurvedic Bathing Soap',
+          meta_description: 'Shop Bhumivera Soothing Bar (100 GM): handmade Ayurvedic cleansing bar infused with Aloe Vera, Neem, and Sacred Tulsi for smooth, clarified, and glowing skin.',
+          tags: 'aloe vera soap, neem tulsi soap, handmade ayurvedic soap, natural herbal bathing bar, bhumivera soothing bar'
+        },
+        {
+          nameMatch: 'Kalpvriksh Satva Tulsi',
+          meta_title: 'Bhumivera Kalpvriksh Satva Tulsi Drops (30 ML) | Concentrated Liquid Extract of 7 Tulsi Varieties',
+          meta_description: 'Shop Bhumivera Kalpvriksh Satva Tulsi (30 ML): 9.0ml per 10ml liquid extract of 7 Tulsi varieties (Van, Sweet, Marua, Bisva, Kala, Rama & Lemon Tulsi) for immunity & skin vitality.',
+          tags: 'tulsi drops, 7 tulsi extract, kalpvriksh satva tulsi, panchtulsi vs 7 tulsi, ayurvedic immunity drops, bhumivera tulsi drops'
+        }
+      ];
+
+      for (const pSeo of productsSeoUpdates) {
+        await pool.query(
+          "UPDATE products SET meta_title = ?, meta_description = ?, tags = ? WHERE name LIKE ? AND (meta_title IS NULL OR meta_title = '' OR meta_description IS NULL OR meta_description = '')",
+          [pSeo.meta_title, pSeo.meta_description, pSeo.tags, `%${pSeo.nameMatch}%`]
+        );
+      }
+    },
+  },
 ];
 
 module.exports = migrations;
