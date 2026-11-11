@@ -1084,6 +1084,38 @@ const migrations = [
       }
     },
   },
+  {
+    version: 85,
+    name: 'remove prefilled fake regimen combos',
+    up: async () => {
+      const comboSkus = [
+        'BV-BND-DAILY-01',
+        'BV-BND-ROYAL-03',
+        'BV-BND-INSIDEOUT-02',
+        'BV-BND-VAULT-06',
+      ];
+      const comboSlugs = [
+        'bundle-daily-regimen',
+        'bundle-royal-crown-trio',
+        'bundle-inside-out-ritual',
+        'bundle-grand-maison-vault',
+      ];
+      const [products] = await pool.query(
+        'SELECT id FROM products WHERE sku IN (?) OR slug IN (?)',
+        [comboSkus, comboSlugs]
+      );
+      const productIds = products.map(product => product.id);
+
+      if (productIds.length > 0) {
+        await pool.query('DELETE FROM cart_items WHERE product_id IN (?)', [productIds]);
+        await pool.query('DELETE FROM product_serials WHERE product_id IN (?)', [productIds]);
+        await pool.query('DELETE FROM inventory_product_meta WHERE product_id IN (?)', [productIds]);
+        await pool.query('DELETE FROM products WHERE id IN (?)', [productIds]);
+      }
+
+      await pool.query('DELETE FROM inventory_product_meta WHERE sku IN (?)', [comboSkus]);
+    },
+  },
 ];
 
 module.exports = migrations;

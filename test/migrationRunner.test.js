@@ -130,6 +130,34 @@ describe('runMigrations', () => {
     assert.match(statements.find(sql => sql.startsWith('ALTER TABLE product_serials')), /'voided'/);
   });
 
+  it('removes only the prefilled fake combo products and their operational records', async () => {
+    const migration = migrations.find(candidate => candidate.version === 85);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async (sql, params = []) => {
+      statements.push({ sql, params });
+      if (sql.startsWith('SELECT id FROM products')) return [[{ id: 501 }, { id: 502 }], []];
+      return [{ affectedRows: 2 }, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.equal(statements[0].sql, 'SELECT id FROM products WHERE sku IN (?) OR slug IN (?)');
+    assert.deepEqual(statements[0].params[0], [
+      'BV-BND-DAILY-01',
+      'BV-BND-ROYAL-03',
+      'BV-BND-INSIDEOUT-02',
+      'BV-BND-VAULT-06',
+    ]);
+    assert.ok(statements.some(({ sql }) => sql === 'DELETE FROM products WHERE id IN (?)'));
+    assert.ok(statements.some(({ sql }) => sql === 'DELETE FROM cart_items WHERE product_id IN (?)'));
+    assert.ok(!statements.some(({ sql }) => sql.includes('order_items')));
+  });
+
   it('expands the customer reset OTP column to hold its hash', async () => {
     const migration = migrations.find(candidate => candidate.name === 'expand customer password reset OTP hashes');
     const originalQuery = pool.query;
@@ -265,13 +293,14 @@ describe('runMigrations', () => {
 
     await runMigrations(pool, migrations, { logger });
 
-    assert.equal(pool.applied.size, 84);
+    assert.equal(pool.applied.size, 85);
     assert.equal(
       pool.applied.get(81),
       'seed and synchronize architectural regimen combos in products table'
     );
     assert.equal(pool.applied.get(82), 'allow out for delivery order status');
     assert.equal(pool.applied.get(83), 'ensure product GST fields required by inventory sync');
+    assert.equal(pool.applied.get(85), 'remove prefilled fake regimen combos');
   });
 
   it('adds out_for_delivery to the existing order status enum when needed', async () => {
