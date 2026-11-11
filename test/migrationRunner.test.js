@@ -218,12 +218,36 @@ describe('runMigrations', () => {
 
     await runMigrations(pool, migrations, { logger });
 
-    assert.equal(pool.applied.size, 82);
+    assert.equal(pool.applied.size, 83);
     assert.equal(
       pool.applied.get(81),
       'seed and synchronize architectural regimen combos in products table'
     );
     assert.equal(pool.applied.get(82), 'allow out for delivery order status');
+    assert.equal(pool.applied.get(83), 'ensure product GST fields required by inventory sync');
+  });
+
+  it('adds product GST columns required by inventory item saves', async () => {
+    const migration = migrations.find(candidate => candidate.version === 83);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      return sql.startsWith('SHOW COLUMNS') ? [[], []] : [{}, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.deepEqual(statements, [
+      "SHOW COLUMNS FROM products LIKE 'gst_hsn_code'",
+      "ALTER TABLE products ADD COLUMN gst_hsn_code VARCHAR(20) DEFAULT '30049011'",
+      "SHOW COLUMNS FROM products LIKE 'gst_rate'",
+      'ALTER TABLE products ADD COLUMN gst_rate DECIMAL(5,2) NOT NULL DEFAULT 5.00',
+    ]);
   });
 
   it('adds out_for_delivery to the existing order status enum when needed', async () => {
