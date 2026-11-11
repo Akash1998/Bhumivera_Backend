@@ -16,6 +16,7 @@ router.get('/regimen-bundles', (req, res) => {
 const pool = require('../config/db');
 const { getBundleAvailableStock } = require('../utils/bundleInventory');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
+const { syncWebsiteProductsToInventoryMeta } = require('../models/inventorySoftwareModel');
 const { generateUploadUrl, deleteProductImage } = require('../config/s3Upload');
 const { generateGoogleMerchantFeed } = require('../utils/merchantFeed');
 const { findLuxurySkuBySlugOrId, buildProductJsonLd } = require('../middleware/seoPrerender');
@@ -241,6 +242,7 @@ router.post('/', authenticateAdmin, async (req, res) => {
       (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
       FROM products p WHERE p.id = ?
     `, [result.insertId]);
+    await syncWebsiteProductsToInventoryMeta(pool);
     res.status(201).json({ success: true, message: 'Product created', data: parseImages(newProduct)[0] });
   } catch (error) {
     console.error("Insert Error:", error);
@@ -303,6 +305,7 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
       (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
       FROM products p WHERE p.id = ?
     `, [productId]);
+    await syncWebsiteProductsToInventoryMeta(pool);
     res.json({ success: true, message: 'Product updated', data: parseImages(updated)[0] });
   } catch (error) {
     console.error("Update Error:", error);
@@ -318,6 +321,7 @@ router.patch('/:id/status', authenticateAdmin, async (req, res) => {
     const { status } = req.body;
     if (!['active', 'inactive', 'draft'].includes(status)) return res.status(400).json({ success: false, message: 'Invalid status' });
     await pool.query('UPDATE products SET status = ? WHERE id = ?', [status, req.params.id]);
+    await syncWebsiteProductsToInventoryMeta(pool);
     res.json({ success: true, message: `Product status set to ${status}` });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to update status' });
