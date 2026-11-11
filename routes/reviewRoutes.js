@@ -30,8 +30,6 @@ const MAX_REVIEW_IMAGES = 5;
 const MAX_REVIEW_VIDEOS = 3;
 const MAX_REVIEW_MEDIA_BYTES = 25 * 1024 * 1024;
 const REVIEW_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm']);
-const { MAISON_REGIMEN_BUNDLES } = require('../data/luxuryCatalog');
-
 const isValidMediaItem = item =>
   typeof item === 'string' &&
   item.length > 0 &&
@@ -115,29 +113,39 @@ router.get('/product/:productId', async (req, res) => {
 
 router.get('/combo/:bundleId', async (req, res) => {
   const param = req.params.bundleId;
-  let bundle = MAISON_REGIMEN_BUNDLES.find(
-    item => item.id === param || item.sku === param || item.name === param
-  );
   let dbProduct = null;
   try {
     const [pRows] = await pool.query('SELECT * FROM products WHERE (id = ? OR slug = ? OR sku = ?)', [param, param, param]);
     if (pRows.length > 0) {
       dbProduct = pRows[0];
-      if (!bundle) bundle = dbProduct;
     }
   } catch (err) {
     console.error('[COMBO_PRODUCT_LOOKUP_ERROR]', err);
   }
 
-  if (!bundle) return res.status(404).json({ message: 'Regimen not found.' });
+  if (!dbProduct) return res.status(404).json({ message: 'Combo not found.' });
 
   try {
-    let reviews = [];
-    if (dbProduct) {
-      reviews = await getReviewsByProduct(dbProduct.id);
+    let specifications = dbProduct.specifications;
+    if (typeof specifications === 'string') {
+      try {
+        specifications = JSON.parse(specifications);
+      } catch {
+        specifications = {};
+      }
     }
-    if (reviews.length === 0 && bundle.name) {
-      reviews = await getReviewsByComboName(bundle.name);
+    const isCombo = Boolean(
+      specifications?.is_combo ||
+      ['combo', 'bundle'].includes(String(specifications?.product_type || '').toLowerCase()) ||
+      [specifications?.combo_items, specifications?.components, specifications?.items].some(
+        items => Array.isArray(items) && items.length > 0
+      )
+    );
+    if (!isCombo) return res.status(404).json({ message: 'Combo not found.' });
+
+    let reviews = await getReviewsByProduct(dbProduct.id);
+    if (reviews.length === 0 && dbProduct.name) {
+      reviews = await getReviewsByComboName(dbProduct.name);
     }
     const average = reviews.length
       ? Number((reviews.reduce((sum, review) => sum + (Number(review.rating) || 0), 0) / reviews.length).toFixed(2))

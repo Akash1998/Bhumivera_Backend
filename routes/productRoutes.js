@@ -1,18 +1,6 @@
 const express = require('express');
 const router = express.Router();
 
-const { MAISON_REGIMEN_BUNDLES, BATCH_COA_REGISTRY, HOSPITALITY_BACKBAR_PROGRAM } = require('../data/luxuryCatalog');
-
-router.get('/regimen-bundles', (req, res) => {
-  res.json({
-    success: true,
-    positioning: 'The Transparent Maison — 100% Active Percentage Disclosure in Cold-Pressed (<28°C) Botanicals',
-    bundles: MAISON_REGIMEN_BUNDLES || [],
-    hospitalityProgram: HOSPITALITY_BACKBAR_PROGRAM || {},
-    sampleBatchCoas: Object.values(BATCH_COA_REGISTRY || {})
-  });
-});
-
 const pool = require('../config/db');
 const { getBundleAvailableStock } = require('../utils/bundleInventory');
 const { authenticateAdmin } = require('../middleware/authMiddleware');
@@ -24,6 +12,51 @@ const {
   cleanProductMarketingFields,
   validateProductMarketingFields,
 } = require('../utils/productMarketingClaims');
+
+const isComboRecord = product => {
+  let specifications = product?.specifications;
+  if (typeof specifications === 'string') {
+    try {
+      specifications = JSON.parse(specifications);
+    } catch {
+      return false;
+    }
+  }
+  return Boolean(
+    specifications?.is_combo ||
+    ['combo', 'bundle'].includes(String(specifications?.product_type || '').toLowerCase()) ||
+    [specifications?.combo_items, specifications?.components, specifications?.items].some(
+      items => Array.isArray(items) && items.length > 0
+    )
+  );
+};
+
+router.get('/regimen-bundles', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT p.*, c.name as category_name,
+      (SELECT JSON_ARRAYAGG(JSON_OBJECT('id', id, 'file_path', file_path, 'media_type', media_type, 'sort_order', sort_order)) FROM product_images WHERE product_id = p.id) as images
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.status = 'active'
+      ORDER BY p.created_at DESC
+    `);
+    const combos = parseImages(rows).filter(isComboRecord);
+    for (const combo of combos) {
+      try {
+        const availableStock = await getBundleAvailableStock(pool, combo.specifications);
+        if (availableStock !== null) combo.quantity = availableStock;
+      } catch (error) {
+        console.error('[ACTIVE_COMBO_STOCK_LOOKUP]', error);
+        combo.quantity = 0;
+      }
+    }
+    res.json({ success: true, data: combos, bundles: combos });
+  } catch (error) {
+    console.error('[ACTIVE_COMBOS_LOAD]', error);
+    res.status(500).json({ success: false, message: 'Could not load active combos.' });
+  }
+});
 
 const normalizeUrlList = (value, allowedHosts) => {
   if (value === undefined || value === null || value === '') return { value: null };
@@ -541,14 +574,7 @@ router.get('/slug/:slug', async (req, res) => {
     `;
     const matchedCatalog = findLuxurySkuBySlugOrId(slug);
     const canonicalSlug = matchedCatalog ? matchedCatalog.slug : slug;
-    let [rows] = await pool.query(query, [canonicalSlug]);
-    if (rows.length === 0) {
-      const matchedBundle = MAISON_REGIMEN_BUNDLES.find(bundle => bundle.id === slug);
-      if (matchedBundle) {
-        const bundleQuery = query.replace('WHERE p.slug = ?', 'WHERE p.sku = ?');
-        [rows] = await pool.query(bundleQuery, [matchedBundle.sku]);
-      }
-    }
+    const [rows] = await pool.query(query, [canonicalSlug]);
     if (rows.length === 0) {
       if (matchedCatalog) {
         return res.json({ success: true, data: matchedCatalog, schema_markup: buildProductJsonLd(matchedCatalog) });
