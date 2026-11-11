@@ -2093,7 +2093,6 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
         : `Verified "${resolved.name}" for Order #${orderRecord.order_number || realOrderId} (${totalVerified}/${totalUnits} units scanned).`,
     });
   } catch (err) {
-    console.error('[INVENTORY_ITEM_SAVE_ERROR]', err);
     await conn.rollback();
     res.status(500).json({ success: false, message: err.message });
   } finally {

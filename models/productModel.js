@@ -65,8 +65,6 @@ const initProductsTable = async () => {
   // Migrations for existing tables
   await addColIfMissing('products', 'quantity', "INT DEFAULT 0");
   await addColIfMissing('products', 'status', "ENUM('active', 'inactive') DEFAULT 'active'");
-  await addColIfMissing('products', 'gst_hsn_code', "VARCHAR(20) DEFAULT '30049011'");
-  await addColIfMissing('products', 'gst_rate', 'DECIMAL(5,2) NOT NULL DEFAULT 5.00');
   await addColIfMissing('products', 'is_featured', "BOOLEAN DEFAULT FALSE");
   await addColIfMissing('products', 'is_trending', "BOOLEAN DEFAULT FALSE");
   await addColIfMissing('products', 'is_new_arrival', "BOOLEAN DEFAULT FALSE");
