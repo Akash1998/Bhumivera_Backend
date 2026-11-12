@@ -3,6 +3,7 @@ const express = require('express');
 const pool = require('../config/db');
 const { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware');
 const { orderLimiter } = require('../middleware/rateLimiter');
+const { notifyIndexNow } = require('../services/indexNowService');
 const { initImpactTables, getPublicImpact, getAllContributions, getAllImpactUpdates } = require('../models/impactModel');
 const { getRazorpayClient, verifyRazorpayPayment } = require('../services/razorpayService');
 const {
@@ -282,6 +283,7 @@ router.post('/admin/updates', authenticateAdmin, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
       [projectKey, title.trim().slice(0, 180), summary.trim(), fieldDate || null, photoUrl, videoUrl, req.admin.id]
     );
+    await notifyIndexNow(['https://www.bhumivera.com/impact']);
     res.status(201).json({ success: true, id: result.insertId });
   } catch (error) {
     console.error('[IMPACT_UPDATE_CREATE]', error);

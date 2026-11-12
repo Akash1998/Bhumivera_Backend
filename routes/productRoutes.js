@@ -8,6 +8,7 @@ const { syncWebsiteProductsToInventoryMeta } = require('../models/inventorySoftw
 const { generateUploadUrl, deleteProductImage } = require('../config/s3Upload');
 const { generateGoogleMerchantFeed } = require('../utils/merchantFeed');
 const { findLuxurySkuBySlugOrId, buildProductJsonLd } = require('../middleware/seoPrerender');
+const { notifyIndexNow } = require('../services/indexNowService');
 const {
   cleanProductMarketingFields,
   validateProductMarketingFields,
@@ -29,6 +30,11 @@ const isComboRecord = product => {
       items => Array.isArray(items) && items.length > 0
     )
   );
+};
+
+const notifyProductIndex = slug => {
+  if (typeof slug !== 'string' || !slug.trim()) return Promise.resolve(false);
+  return notifyIndexNow([`https://www.bhumivera.com/product/${encodeURIComponent(slug)}`]);
 };
 
 router.get('/regimen-bundles', async (req, res) => {
@@ -276,6 +282,7 @@ router.post('/', authenticateAdmin, async (req, res) => {
       FROM products p WHERE p.id = ?
     `, [result.insertId]);
     await syncWebsiteProductsToInventoryMeta(pool, result.insertId);
+    await notifyProductIndex(newProduct[0]?.slug || finalSlug);
     res.status(201).json({ success: true, message: 'Product created', data: parseImages(newProduct)[0] });
   } catch (error) {
     console.error("Insert Error:", error);
@@ -339,6 +346,7 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
       FROM products p WHERE p.id = ?
     `, [productId]);
     await syncWebsiteProductsToInventoryMeta(pool, productId);
+    await notifyProductIndex(updated[0]?.slug);
     res.json({ success: true, message: 'Product updated', data: parseImages(updated)[0] });
   } catch (error) {
     console.error("Update Error:", error);
@@ -354,7 +362,9 @@ router.patch('/:id/status', authenticateAdmin, async (req, res) => {
     const { status } = req.body;
     if (!['active', 'inactive', 'draft'].includes(status)) return res.status(400).json({ success: false, message: 'Invalid status' });
     await pool.query('UPDATE products SET status = ? WHERE id = ?', [status, req.params.id]);
+    const [[product]] = await pool.query('SELECT slug FROM products WHERE id = ?', [req.params.id]);
     await syncWebsiteProductsToInventoryMeta(pool, Number(req.params.id));
+    await notifyProductIndex(product?.slug);
     res.json({ success: true, message: `Product status set to ${status}` });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to update status' });
@@ -507,7 +517,9 @@ router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
     const productId = parseInt(req.params.id, 10);
     if (isNaN(productId)) return res.status(400).json({ success: false, message: 'Invalid ID format' });
+    const [[product]] = await pool.query('SELECT slug FROM products WHERE id = ?', [productId]);
     await pool.query('DELETE FROM products WHERE id = ?', [productId]);
+    await notifyProductIndex(product?.slug);
     res.json({ success: true, message: 'Product deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to delete product' });

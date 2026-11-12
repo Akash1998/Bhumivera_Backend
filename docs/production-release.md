@@ -39,6 +39,8 @@ On Vercel, `/health/live` is intentionally a lightweight process-liveness check 
 
 The frontend build must point at the deployed backend origin with `VITE_BASE_URL` (without `/api`). The backend must allow the deployed storefront origin through `FRONTEND_ORIGINS`. Customer email OTP requires `MAILRELAY_API_KEY`; configure it in Vercel along with `MAILRELAY_DOMAIN` and `EMAIL_FROM`. OTP messages are sent by email through Mailrelay; SMS delivery is not configured.
 
+The storefront hosts the IndexNow verification key at `https://www.bhumivera.com/b4b0ecccd2749abb58822fa6846f5d923a61a7d30242c52d.txt`. Vercel's frontend `postbuild` submits canonical URLs from `public/sitemap.xml` after deployments; backend product create/update/status/delete and published impact updates submit affected URLs directly. Verify both deployments expose the key file and check Vercel build logs for `[INDEXNOW]` submissions. This sends URLs to IndexNow participating search engines, not Google.
+
 After deploying the backend, verify an OPTIONS preflight to `/api/inventory-software/pos/checkout` from the storefront origin permits `authorization`, `content-type`, and `idempotency-key`. The POS checkout uses `Idempotency-Key`; the separate `X-Idempotency-Key` header remains allowed for request deduplication.
 
 Checkout shows Razorpay first, Wallet second, and COD third. COD remains visible with an explanation, but is selectable only after two of the customer's orders have been recorded as delivered (`delivered_at` set); the order transaction rechecks this rule on the server. Wallet checkout debits the wallet and records its ledger transaction atomically with order creation. Razorpay remains the recommended payment option.

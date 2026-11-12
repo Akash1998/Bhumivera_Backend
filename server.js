@@ -24,6 +24,7 @@ const { createModuleAvailabilityMiddleware } = require("./utils/moduleAvailabili
 const { createRazorpayWebhookRouter } = require("./services/razorpayWebhook");
 const { runMigrations } = require("./utils/migrationRunner");
 const { createHealthRouter } = require("./utils/healthRoutes");
+const { INDEXNOW_KEY } = require("./services/indexNowService");
 const migrations = require("./migrations");
 const {
   SITE_URL,
@@ -245,9 +246,9 @@ app.get("/llms-full.txt", (req, res) => {
   res.status(200).send(generateLlmsFullTxt());
 });
 
-app.get("/bhumivera-indexnow-2026.txt", (req, res) => {
+app.get(`/${INDEXNOW_KEY}.txt`, (req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.status(200).send("bhumivera-indexnow-2026");
+  res.status(200).send(INDEXNOW_KEY);
 });
 
 app.get(["/api/brand", "/api/meta"], (req, res) => {
