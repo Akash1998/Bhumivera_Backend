@@ -21,7 +21,6 @@ const orderItem = {
   product_id: 5,
   name: 'Test formulation',
   sku: 'BV-TEST-01',
-  image_url: 'products/test-formulation.webp',
   barcode: '890000000001',
   quantity: 1,
   price: 299,
@@ -278,7 +277,6 @@ describe('scanner order packing', () => {
     assert.equal(response.status, 200, body.message);
     assert.equal(body.items.length, 1);
     assert.equal(body.items[0].verifiedCount, 1);
-    assert.equal(body.items[0].imageUrl, 'products/test-formulation.webp');
     assert.equal(body.order.items[0].verifiedCount, 1);
   });
 

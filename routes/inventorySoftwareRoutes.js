@@ -2214,9 +2214,6 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
     const [items] = await pool.query(
       `SELECT oi.id AS order_item_id, oi.product_id, oi.name, oi.price, oi.quantity,
               COALESCE(m.sku, p.sku, CONCAT('SKU-', oi.product_id)) AS sku,
-              (SELECT pi.file_path FROM product_images pi
-               WHERE pi.product_id = oi.product_id
-               ORDER BY pi.sort_order ASC, pi.id ASC LIMIT 1) AS image_url,
               m.barcode, m.bin_code, m.batch_no, m.gst_hsn_code, m.gst_rate,
               COALESCE(pp.verified_quantity, 0) AS verified_count
        FROM order_items oi
@@ -2277,7 +2274,6 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
           productId: it.product_id,
           name: it.name,
           sku: it.sku,
-          imageUrl: it.image_url || null,
           barcode: it.barcode || it.sku,
           price: Number(it.price) || 0,
           quantity: Number(it.quantity) || 1,
@@ -2294,7 +2290,6 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
         productId: it.product_id,
         name: it.name,
         sku: it.sku,
-        imageUrl: it.image_url || null,
         barcode: it.barcode || it.sku,
         price: Number(it.price) || 0,
         quantity: Number(it.quantity) || 1,
