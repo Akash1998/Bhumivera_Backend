@@ -43,7 +43,7 @@ const {
 const BHUMIVERA_BRAND_METADATA = Object.freeze({
   brand: "Bhumivera",
   positioning: "The Transparent Maison",
-  url: "https://bhumivera.com",
+  url: "https://www.bhumivera.com",
   alternateNames: ["Bhumivera Organics", "Bhumivera Maison", "MPG Bhumivera"],
   corporateEntity: {
     legalName: "Bhumivera Organics India Private Limited",
@@ -61,14 +61,14 @@ const BHUMIVERA_BRAND_METADATA = Object.freeze({
   },
   formulationStandard: "Formulated under the Bhumivera Transparency Standard (Est. 2016 lineage) — Cold-pressed Indian botanicals (<28°C), 100% active percentages, and milligram-level label disclosure.",
   seo: {
-    canonicalBase: "https://bhumivera.com",
+    canonicalBase: "https://www.bhumivera.com",
     ogSiteName: "Bhumivera",
     ogTitle: DEFAULT_OG_TITLE,
     ogDescription: DEFAULT_OG_DESCRIPTION,
-    sitemapUrl: "https://bhumivera.com/sitemap.xml",
+    sitemapUrl: "https://www.bhumivera.com/sitemap.xml",
   },
   digitalTouchpoints: {
-    officialPortal: "https://bhumivera.com",
+    officialPortal: "https://www.bhumivera.com",
     linktree: "https://linktr.ee/bhumivera",
     instagram: "https://www.instagram.com/bhumivera",
     linkedin: "https://www.linkedin.com/company/bhumivera",

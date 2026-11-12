@@ -6,6 +6,7 @@ const {
   buildWikipediaLinkedJsonLd,
   createSeoPrerenderMiddleware,
   sitemapController,
+  normalizeSiteUrl,
   findLuxurySkuBySlugOrId,
   generateLlmsFullTxt,
   generateRobotsTxt,
@@ -30,7 +31,13 @@ describe('luxury catalog GEO/SEO compliance', () => {
     }
     assert.equal(findLuxurySkuBySlugOrId('8')?.sku, 'BV-SBFW-100ML');
     assert.equal(findLuxurySkuBySlugOrId('106')?.sku, 'BV-TRHM-100ML');
-    assert.match(generateRobotsTxt(), /Sitemap: https:\/\/www\.bhumivera\.com\/sitemap\.xml/);
+    const robotsTxt = generateRobotsTxt();
+    assert.match(robotsTxt, /Sitemap: https:\/\/www\.bhumivera\.com\/sitemap\.xml/);
+    assert.equal((robotsTxt.match(/^Sitemap:/gm) || []).length, 1);
+    assert.doesNotMatch(robotsTxt, /Sitemap: https:\/\/bhumivera\.com\//);
+    assert.equal(normalizeSiteUrl('https://bhumivera.com'), 'https://www.bhumivera.com');
+    assert.equal(normalizeSiteUrl('http://www.bhumivera.com/'), 'https://www.bhumivera.com');
+    assert.equal(normalizeSiteUrl('https://preview.bhumivera.test'), 'https://preview.bhumivera.test');
     assert.match(generateLlmsFullTxt(), /sulfate-free-luxury-herbal-shampoos/);
   });
 
@@ -58,6 +65,9 @@ describe('luxury catalog GEO/SEO compliance', () => {
     assert.match(body, /activated-charcoal-luxury-face-wash/);
     assert.match(body, /himalayan-seabuckthorn-luxury-face-wash/);
     assert.match(body, /kalpvriksh-satva-tulsi-7-tulsi-extract/);
+    const sitemapLocs = [...body.matchAll(/<loc>(.*?)<\/loc>/g)].map(([, loc]) => loc);
+    assert.ok(sitemapLocs.length > 0);
+    assert.ok(sitemapLocs.every(loc => loc.startsWith('https://www.bhumivera.com/')));
 
     const mw = createSeoPrerenderMiddleware({});
     await mw({ path: '/products/activated-charcoal-luxury-face-wash', method: 'GET' }, res, () => {});

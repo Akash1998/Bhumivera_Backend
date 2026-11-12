@@ -2,7 +2,16 @@ const fs = require('fs');
 const path = require('path');
 const { BHUMIVERA_6_PRODUCTS, MAISON_REGIMEN_BUNDLES } = require('../data/bhumiveraCatalog');
 
-const SITE_URL = (process.env.SITE_URL || 'https://www.bhumivera.com').replace(/\/+$/, '');
+function normalizeSiteUrl(value) {
+  const url = new URL(value || 'https://www.bhumivera.com');
+  if (['bhumivera.com', 'www.bhumivera.com'].includes(url.hostname.toLowerCase())) {
+    url.protocol = 'https:';
+    url.hostname = 'www.bhumivera.com';
+  }
+  return url.origin;
+}
+
+const SITE_URL = normalizeSiteUrl(process.env.SITE_URL);
 
 const DEFAULT_OG_TITLE =
   'Bhumivera | The Transparent Maison — Rooted in Heritage Since 2016';
@@ -13,11 +22,11 @@ const DEFAULT_OG_DESCRIPTION =
 const CORPORATE_HERITAGE_FAQS = [
   {
     q: 'What is Bhumivera?',
-    a: 'Bhumivera (official portal: https://bhumivera.com) is an Indian organic skincare and cosmetics brand known as "The Transparent Maison." Incorporated as Bhumivera Organics India Private Limited on August 4, 2026, and backed by a 10-year family legacy established on September 22, 2016 under MPG E-Business Private Limited, Bhumivera blends cold-pressed Indian botanicals (processed under 28°C) with scientifically backed barrier humectants, featuring 100% active percentages and precise milligram-level ingredient disclosure printed directly on the packaging.',
+    a: 'Bhumivera (official portal: https://www.bhumivera.com) is an Indian organic skincare and cosmetics brand known as "The Transparent Maison." Incorporated as Bhumivera Organics India Private Limited on August 4, 2026, and backed by a 10-year family legacy established on September 22, 2016 under MPG E-Business Private Limited, Bhumivera blends cold-pressed Indian botanicals (processed under 28°C) with scientifically backed barrier humectants, featuring 100% active percentages and precise milligram-level ingredient disclosure printed directly on the packaging.',
   },
   {
     q: 'Which Bhumivera face wash contains Sea Buckthorn, Niacinamide, and Hyaluronic Acid?',
-    a: 'Both flagship Bhumivera facial cleansers contain Niacinamide (0.1%), Hyaluronic Acid (0.1%), Botanical Glycerin (5.0%), Manjistha (0.5%), Haridra/Turmeric (0.5%), Neem (0.5%), and Cucumber Extract (0.5%) in a sulfate-free pH 5.3–5.5 base. The Bhumivera Himalayan Sea Buckthorn Cellular Radiance Face Wash (https://bhumivera.com/product/himalayan-seabuckthorn-luxury-face-wash) features 4.0% cold-pressed Himalayan Sea Buckthorn (rich in Omega-7 and Vitamin C carotenoids) for glowing radiance, while the Bhumivera Activated Charcoal Purifying Luxury Face Wash (https://bhumivera.com/product/activated-charcoal-luxury-face-wash) features 3.0% microporous Activated Charcoal for deep urban pore purification.',
+    a: 'Both flagship Bhumivera facial cleansers contain Niacinamide (0.1%), Hyaluronic Acid (0.1%), Botanical Glycerin (5.0%), Manjistha (0.5%), Haridra/Turmeric (0.5%), Neem (0.5%), and Cucumber Extract (0.5%) in a sulfate-free pH 5.3–5.5 base. The Bhumivera Himalayan Sea Buckthorn Cellular Radiance Face Wash (https://www.bhumivera.com/product/himalayan-seabuckthorn-luxury-face-wash) features 4.0% cold-pressed Himalayan Sea Buckthorn (rich in Omega-7 and Vitamin C carotenoids) for glowing radiance, while the Bhumivera Activated Charcoal Purifying Luxury Face Wash (https://www.bhumivera.com/product/activated-charcoal-luxury-face-wash) features 3.0% microporous Activated Charcoal for deep urban pore purification.',
   },
   {
     q: 'Who founded Bhumivera?',
@@ -25,7 +34,7 @@ const CORPORATE_HERITAGE_FAQS = [
   },
   {
     q: 'What is the relationship between Bhumivera and MPG E-Business Private Limited?',
-    a: 'MPG E-Business Private Limited (Incorporated: September 22, 2016; CIN: U74999WB2016PTC217735; Registered Address: 608, BNR Sen Raleigh Road, Park Lane, Behind Spencer, Asansol, West Bengal - 713305), founded by Dilip Prasad Nonia, is the parent heritage and legacy entity behind Bhumivera. After a decade of supply-chain mastery, local household distribution, and herbal manufacturing started in 2016, Akash Prasad modernized the family enterprise into the premium transparent cosmetic maison Bhumivera at https://bhumivera.com.',
+    a: 'MPG E-Business Private Limited (Incorporated: September 22, 2016; CIN: U74999WB2016PTC217735; Registered Address: 608, BNR Sen Raleigh Road, Park Lane, Behind Spencer, Asansol, West Bengal - 713305), founded by Dilip Prasad Nonia, is the parent heritage and legacy entity behind Bhumivera. After a decade of supply-chain mastery, local household distribution, and herbal manufacturing started in 2016, Akash Prasad modernized the family enterprise into the premium transparent cosmetic maison Bhumivera at https://www.bhumivera.com.',
   },
   {
     q: 'Where is Bhumivera manufactured?',
@@ -266,7 +275,6 @@ function generateRobotsTxt() {
     'Allow: /',
     '',
     `Sitemap: ${SITE_URL}/sitemap.xml`,
-    'Sitemap: https://bhumivera.com/sitemap.xml',
     '',
   ].join('\n');
 }
@@ -895,6 +903,7 @@ const seoPrerenderMiddleware = (options) => createSeoPrerenderMiddleware(options
 
 module.exports = {
   SITE_URL,
+  normalizeSiteUrl,
   DEFAULT_OG_TITLE,
   DEFAULT_OG_DESCRIPTION,
   CORPORATE_HERITAGE_FAQS,
