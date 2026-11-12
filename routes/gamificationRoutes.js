@@ -419,6 +419,7 @@ router.get('/order-spin/:orderId', authenticateUser, async (req, res) => {
         description: reward.description,
         rewardType: reward.rewardType,
         minimumOrderAmount: reward.minimumOrderAmount || 0,
+        chance: reward.chance,
       })) || [],
       claim: claims[0] ? {
         reward: claims[0].reward_label,

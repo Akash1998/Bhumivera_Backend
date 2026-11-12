@@ -56,7 +56,14 @@ describe('post-order spin policy', () => {
 
   it('selects a reward using configured weighted ranges', () => {
     assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 0).index, 0);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 79).index, 0);
     assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 80).index, 1);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 164).index, 1);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 165).index, 2);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 184).index, 2);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 185).index, 3);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 224).index, 3);
+    assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 225).index, 4);
     assert.equal(chooseOrderSpinReward(DEFAULT_ORDER_SPIN_REWARDS, 229).index, 4);
   });
 });
