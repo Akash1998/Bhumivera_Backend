@@ -643,6 +643,18 @@ async function initInventorySoftwareTables(db = pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS inventory_order_pack_scan_events (
+      scan_id VARCHAR(80) NOT NULL PRIMARY KEY,
+      order_item_id INT NOT NULL,
+      order_id INT NOT NULL,
+      scanned_code VARCHAR(255) NOT NULL,
+      staff_username VARCHAR(80) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_order_pack_scan_events_order (order_id, order_item_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
   try {
     await db.query(`ALTER TABLE inventory_scanner_devices ADD COLUMN api_key VARCHAR(128) DEFAULT NULL AFTER api_key_hash`);
   } catch (_) {}

@@ -319,6 +319,47 @@ function cacheScannerStaffAccount(row) {
   scannerStaffCredentialsMemory.set(String(row.username).trim().toLowerCase(), row);
 }
 
+function getScannerAccountVersion(row) {
+  return crypto.createHash('sha256').update(JSON.stringify([
+    row.id,
+    String(row.username || '').toLowerCase(),
+    row.full_name || '',
+    row.email || '',
+    row.phone || '',
+    row.password_hash || '',
+    row.role || '',
+    row.assigned_hub || '',
+    row.permissions || null,
+    row.status || 'active',
+    row.totp_enabled || 0,
+    row.totp_secret || '',
+    row.passkeys || null,
+    row.first_login || 0,
+  ])).digest('hex');
+}
+
+async function restoreScannerTokenAfterRestart(payload) {
+  const username = String(payload.username || '').trim().toLowerCase();
+  if (!username || !payload.jti || !payload.scannerAccountVersion) return false;
+
+  const [rows] = await pool.query(
+    'SELECT * FROM inventory_staff_accounts WHERE id = ?',
+    [payload.id]
+  );
+  const account = rows[0];
+  if (!account ||
+      String(account.username || '').trim().toLowerCase() !== username ||
+      account.status === 'suspended' ||
+      getScannerAccountVersion(account) !== payload.scannerAccountVersion) {
+    return false;
+  }
+
+  const activeTokens = scannerTokenIdsMemory.get(username) || new Set();
+  activeTokens.add(payload.jti);
+  scannerTokenIdsMemory.set(username, activeTokens);
+  return true;
+}
+
 function revokeScannerSessions(username) {
   const userKey = String(username || '').trim().toLowerCase();
   if (!userKey) return;
@@ -359,7 +400,7 @@ async function authenticateInventoryStaff(req, res, next) {
     const payload = jwt.verify(token, secret());
     if (payload.scannerAuth) {
       const activeTokens = scannerTokenIdsMemory.get(String(payload.username || '').toLowerCase());
-      if (!payload.jti || !activeTokens?.has(payload.jti)) {
+      if (!payload.jti || !activeTokens?.has(payload.jti) && !await restoreScannerTokenAfterRestart(payload)) {
         return res.status(401).json({ code: 'SCANNER_SESSION_REVOKED', message: 'Scanner session expired. Sign in again.' });
       }
     }
@@ -566,17 +607,23 @@ function authenticateWorkroomMemory(req, res, next) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   if (!token) {
-    return res.status(401).json({ success: false, code: 'AUTH_TOKEN_MISSING', message: 'Sign in to the scanner to continue.' });
+    return res.status(401).json({ success: false, code: 'AUTH_TOKEN_MISSING', message: 'Sign in to Inventory Software to view the live workroom.' });
   }
 
+  let payload;
   try {
-    const payload = jwt.verify(token, secret());
-    if (payload.scope !== 'inventory-software' || !payload.username || !payload.id) {
-      return res.status(401).json({ success: false, code: 'AUTH_TOKEN_INVALID', message: 'Sign in to the scanner to continue.' });
-    }
+    payload = jwt.verify(token, secret());
+  } catch {
+    return res.status(401).json({ success: false, code: 'AUTH_TOKEN_INVALID', message: 'Inventory Software session expired. Sign in again.' });
+  }
+  if (payload.scope !== 'inventory-software' || !payload.username || !payload.id) {
+    return res.status(401).json({ success: false, code: 'AUTH_TOKEN_INVALID', message: 'Inventory Software session is invalid. Sign in again.' });
+  }
+
+  const nextWithPayload = async () => {
     if (payload.scannerAuth) {
       const activeTokens = scannerTokenIdsMemory.get(String(payload.username).toLowerCase());
-      if (!payload.jti || !activeTokens?.has(payload.jti)) {
+      if (!payload.jti || !activeTokens?.has(payload.jti) && !await restoreScannerTokenAfterRestart(payload)) {
         return res.status(401).json({ success: false, code: 'SCANNER_SESSION_REVOKED', message: 'Scanner session expired. Sign in again.' });
       }
       const requestedUser = String(req.body?.operatorUsername || '').trim().toLowerCase();
@@ -596,12 +643,13 @@ function authenticateWorkroomMemory(req, res, next) {
       assignedHub: String(payload.assignedHub || ''),
       permissions: {},
       fullAllAccess: false,
+      scannerAuth: Boolean(payload.scannerAuth),
       scannerSessionCode: `STAFF-${String(payload.username).toUpperCase().replace(/[^A-Z0-9]/g, '-')}`,
     };
     return next();
-  } catch {
-    return res.status(401).json({ success: false, code: 'AUTH_TOKEN_INVALID', message: 'Sign in to the scanner to continue.' });
-  }
+  };
+
+  Promise.resolve(nextWithPayload()).catch(next);
 }
 
 function requireIamAdmin(req, res, next) {
@@ -2105,6 +2153,7 @@ router.post('/fulfillment/verify-pack', authenticateScannerOrStaff, async (req, 
 // GET /api/inventory-software/orders/:id/manifest - Guided Packing Manifest
 router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) => {
   try {
+    await ensureInventorySoftwareTables(pool);
     const rawParam = String(req.params.id || '').trim().replace(/^ORD:/i, '').replace(/^#/i, '').trim();
     if (!rawParam) return res.status(400).json({ success: false, message: 'Invalid Order ID format.' });
 
@@ -2175,6 +2224,20 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
        ORDER BY oi.id ASC`,
       [order.id]
     );
+    const [savedScans] = await pool.query(
+      `SELECT scan_id, order_item_id, scanned_code
+       FROM inventory_order_pack_scan_events
+       WHERE order_id = ?
+       ORDER BY created_at ASC, scan_id ASC`,
+      [order.id]
+    );
+    const scansByItem = new Map();
+    for (const scan of savedScans) {
+      const itemKey = String(scan.order_item_id);
+      const scans = scansByItem.get(itemKey) || [];
+      scans.push({ scanId: scan.scan_id, code: scan.scanned_code });
+      scansByItem.set(itemKey, scans);
+    }
 
     const addr = parseJsonSafe(order.address_snapshot, {}) || {};
     const resolvedCustName = addr.full_name || addr.fullName || addr.name || order.u_name || 'Valued Patron';
@@ -2219,6 +2282,7 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
           gstHsnCode: it.gst_hsn_code || '30049011',
           gstRate: Number(it.gst_rate) || 5,
           verifiedCount: Number(it.verified_count) || 0,
+          scannedCodes: scansByItem.get(String(it.order_item_id)) || [],
         })),
       },
       items: items.map(it => ({
@@ -2234,6 +2298,7 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
         gstHsnCode: it.gst_hsn_code || '30049011',
         gstRate: Number(it.gst_rate) || 5,
         verifiedCount: Number(it.verified_count) || 0,
+        scannedCodes: scansByItem.get(String(it.order_item_id)) || [],
       })),
     });
   } catch (err) {
@@ -2245,6 +2310,7 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
 router.put('/orders/:id/items', authenticateInventoryStaff, requirePermission('can_manage_online_dispatch'), async (req, res) => {
   const conn = await pool.getConnection();
   try {
+    await ensureInventorySoftwareTables(pool);
     await conn.beginTransaction();
     const rawParam = String(req.params.id || '').trim().replace(/^ORD:/i, '').replace(/^#/i, '').trim();
     const numericCandidate = Number(rawParam.replace(/\D/g, '')) || 0;
@@ -2328,6 +2394,7 @@ router.put('/orders/:id/items', authenticateInventoryStaff, requirePermission('c
       });
     }
 
+    await conn.query('DELETE FROM inventory_order_pack_scan_events WHERE order_id = ?', [realOrderId]);
     await conn.query('DELETE FROM order_items WHERE order_id = ?', [realOrderId]);
     await conn.query('DELETE FROM inventory_order_pack_progress WHERE order_id = ?', [realOrderId]);
 
@@ -2823,7 +2890,8 @@ router.post('/scanner/auth/login', async (req, res) => {
       scope: 'inventory-software',
       scannerAuth: true,
       jti,
-    }, secret(), { expiresIn: '24h' });
+      scannerAccountVersion: getScannerAccountVersion(accountRow),
+    }, secret(), { expiresIn: '31d' });
     const sessionSlug = norm.username.toUpperCase().replace(/[^A-Z0-9]/g, '-');
     const sessionCode = `STAFF-${sessionSlug}`;
 
@@ -2941,7 +3009,24 @@ router.post('/workroom/toggle-work', authenticateWorkroomMemory, (req, res) => {
 router.post('/workroom/heartbeat', authenticateWorkroomMemory, (req, res) => {
   const operator = resolveRequestOperator(req);
   const userKey = operator.username.toLowerCase();
-  const current = activeStaffWorkroom.get(userKey);
+  const current = activeStaffWorkroom.get(userKey) || (req.invUser?.scannerAuth ? {
+    username: operator.username,
+    fullName: operator.name,
+    role: req.invUser.role || 'cashier',
+    onWork: true,
+    mode: 'IDLE',
+    activeOrder: '',
+    deviceName: 'Bhumivera Scanner PWA',
+    sessionCode: operator.sessionCode,
+    activeOrderItems: [],
+    recentUploads: [],
+    savedBulkOrders: [],
+    scannedUnits: 0,
+    expectedUnits: 0,
+    packedOrders: 0,
+    packedItems: 0,
+    lastSeenAt: Date.now(),
+  } : null);
   if (!current || !current.onWork) {
     return res.status(409).json({
       success: false,
@@ -3023,6 +3108,144 @@ router.get('/workroom/presence', authenticateWorkroomMemory, (_req, res) => {
     workers,
     serverTime: new Date().toISOString(),
   });
+});
+
+router.post('/fulfillment/pwa-scan', authenticateScannerOrStaff, async (req, res) => {
+  const conn = await pool.getConnection();
+  let transactionStarted = false;
+  try {
+    await ensureInventorySoftwareTables(pool);
+    const scanId = String(req.body?.scanId || '').trim();
+    const rawOrderId = String(req.body?.orderId || '').trim().replace(/^ORD:/i, '').replace(/^#/i, '');
+    const orderItemId = Number(req.body?.orderItemId);
+    const scannedCode = String(req.body?.scannedCode || '').trim();
+    if (!/^[A-Za-z0-9_-]{8,80}$/.test(scanId) || !rawOrderId ||
+      !Number.isSafeInteger(orderItemId) || orderItemId < 1 || !scannedCode || scannedCode.length > 255) {
+      return res.status(400).json({ success: false, message: 'A valid scan ID, order, item, and product code are required.' });
+    }
+
+    await conn.beginTransaction();
+    transactionStarted = true;
+    const numericCandidate = Number(rawOrderId.replace(/\D/g, '')) || 0;
+    let order = null;
+    if (numericCandidate > 0) {
+      const [[foundOrder]] = await conn.query(
+        'SELECT id, order_number, status FROM orders WHERE id = ? OR order_number = ? LIMIT 1 FOR UPDATE',
+        [numericCandidate, rawOrderId]
+      );
+      order = foundOrder;
+    }
+    if (!order) {
+      const [[foundOrder]] = await conn.query(
+        'SELECT id, order_number, status FROM orders WHERE order_number = ? LIMIT 1 FOR UPDATE',
+        [rawOrderId]
+      );
+      order = foundOrder;
+    }
+    if (!order) {
+      throw Object.assign(new Error(`Order "${rawOrderId}" was not found.`), { status: 404 });
+    }
+
+    const [[existingScan]] = await conn.query(
+      'SELECT scan_id, order_id, order_item_id FROM inventory_order_pack_scan_events WHERE scan_id = ? FOR UPDATE',
+      [scanId]
+    );
+    if (existingScan) {
+      if (Number(existingScan.order_id) !== Number(order.id) ||
+        Number(existingScan.order_item_id) !== orderItemId) {
+        throw Object.assign(new Error('This scan ID was already used for a different order item.'), { status: 409 });
+      }
+      const [[progress]] = await conn.query(
+        'SELECT verified_quantity FROM inventory_order_pack_progress WHERE order_item_id = ?',
+        [orderItemId]
+      );
+      await conn.commit();
+      transactionStarted = false;
+      return res.json({
+        success: true,
+        duplicate: true,
+        verifiedCount: Number(progress?.verified_quantity) || 0,
+        message: 'Scan was already saved.',
+      });
+    }
+
+    if (String(order.status || '').toLowerCase() !== 'confirmed') {
+      throw Object.assign(new Error(`Order #${order.order_number || order.id} must be confirmed before packing (current status: ${order.status}).`), { status: 409 });
+    }
+    const operator = resolveRequestOperator(req);
+    const lockCheck = acquireOrVerifyOrderLock({
+      orderId: order.order_number || order.id,
+      operatorUsername: operator.username,
+      operatorName: operator.name,
+      sessionCode: operator.sessionCode,
+      lockType: 'PACKING',
+    });
+    if (!lockCheck.allowed) {
+      throw Object.assign(new Error(lockCheck.message), { status: lockCheck.status || 409 });
+    }
+
+    const [[item]] = await conn.query(
+      `SELECT oi.id AS order_item_id, oi.quantity,
+              COALESCE(m.sku, p.sku, CONCAT('SKU-', oi.product_id)) AS sku,
+              m.barcode
+       FROM order_items oi
+       LEFT JOIN products p ON p.id = oi.product_id
+       LEFT JOIN inventory_product_meta m
+         ON m.id = (SELECT MIN(m2.id) FROM inventory_product_meta m2 WHERE m2.product_id = oi.product_id)
+       WHERE oi.id = ? AND oi.order_id = ?
+       LIMIT 1 FOR UPDATE`,
+      [orderItemId, order.id]
+    );
+    if (!item) {
+      throw Object.assign(new Error('This item does not belong to the selected order.'), { status: 400 });
+    }
+    const acceptedCodes = [item.sku, item.barcode].filter(Boolean).map(value => String(value).trim().toLowerCase());
+    if (!acceptedCodes.includes(scannedCode.toLowerCase())) {
+      throw Object.assign(new Error('Scanned code does not match this order item.'), { status: 400 });
+    }
+
+    await conn.query(
+      `INSERT IGNORE INTO inventory_order_pack_progress (order_item_id, order_id, verified_quantity)
+       VALUES (?, ?, 0)`,
+      [orderItemId, order.id]
+    );
+    const [[progress]] = await conn.query(
+      'SELECT verified_quantity FROM inventory_order_pack_progress WHERE order_item_id = ? FOR UPDATE',
+      [orderItemId]
+    );
+    const verifiedCount = Number(progress?.verified_quantity) || 0;
+    const quantity = Math.max(1, Math.trunc(Number(item.quantity) || 1));
+    if (verifiedCount >= quantity) {
+      throw Object.assign(new Error('This order item is already fully scanned.'), { status: 409 });
+    }
+
+    await conn.query(
+      `INSERT INTO inventory_order_pack_scan_events
+        (scan_id, order_item_id, order_id, scanned_code, staff_username)
+       VALUES (?, ?, ?, ?, ?)`,
+      [scanId, orderItemId, order.id, scannedCode, String(operator.username || 'scanner').slice(0, 80)]
+    );
+    await conn.query(
+      'UPDATE inventory_order_pack_progress SET verified_quantity = ? WHERE order_item_id = ?',
+      [verifiedCount + 1, orderItemId]
+    );
+    await conn.commit();
+    transactionStarted = false;
+    return res.json({
+      success: true,
+      duplicate: false,
+      orderId: order.id,
+      orderItemId,
+      verifiedCount: verifiedCount + 1,
+      quantity,
+      message: 'Scan saved to Inventory Software.',
+    });
+  } catch (error) {
+    if (transactionStarted) await conn.rollback();
+    return res.status(error.status || 500).json({ success: false, message: error.message || 'Could not save this scan.' });
+  } finally {
+    conn.release();
+  }
 });
 
 router.post('/fulfillment/pwa-batch', authenticateScannerOrStaff, async (req, res) => {

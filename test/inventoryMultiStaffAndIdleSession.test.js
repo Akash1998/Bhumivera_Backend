@@ -26,6 +26,7 @@ function createMockRouter() {
 
 let sqlQueryCount = 0;
 let failPwaWrite = false;
+let lastJwtSignOptions = null;
 const transactionEvents = [];
 const scannerKeyAkash = 'BV-SCAN-AKASH-KEY';
 const scannerKeyPriya = 'BV-SCAN-PRIYA-KEY';
@@ -56,6 +57,25 @@ const fakePool = {
       return [[]];
     }
     if (/FROM inventory_staff_accounts WHERE id/.test(sql)) {
+      if (Number(params[0]) === 10) {
+        return [[{
+          id: 10,
+          account_code: 'BV-IAM-010',
+          username: 'restart-worker',
+          full_name: 'Restart Worker',
+          email: '',
+          phone: '',
+          password_hash: 'hashed:Restart@123',
+          role: 'cashier',
+          assigned_hub: 'Bhumivera Flagship Hub',
+          permissions: null,
+          status: 'active',
+          totp_enabled: 0,
+          totp_secret: '',
+          passkeys: null,
+          first_login: 0,
+        }]];
+      }
       if (Number(params[0]) === 1) {
         return [[{ id: 1, account_code: 'akash', username: 'akash', full_name: 'Akash Prasad', role: 'admin', status: 'active', password_hash: 'hashed:Admin@123' }]];
       }
@@ -117,7 +137,10 @@ Module._load = function (request, parent, isMain) {
   }
   if (request === 'jsonwebtoken') {
     return {
-      sign: (payload) => JSON.stringify(payload),
+      sign: (payload, _secret, options = {}) => {
+        lastJwtSignOptions = options;
+        return JSON.stringify(payload);
+      },
       verify: (token) => JSON.parse(token),
     };
   }
@@ -220,6 +243,7 @@ test('Staff Mobile Login with Username & Password without pairing QR', async () 
   assert.equal(loginRes.body.staff.fullName, 'Priya C');
   assert.ok(loginRes.body.token);
   assert.equal(loginRes.body.staff.permissions.can_pack, true);
+  assert.equal(lastJwtSignOptions.expiresIn, '31d');
   assert.equal(sqlQueryCount, beforeLoginSql, 'scanner login should authenticate from the in-memory roster');
 });
 
@@ -300,6 +324,101 @@ test('24x7 Workroom Presence ("Go On Work" radar) operates with 0 MySQL queries'
   assert.ok(allStaffRes.body.workers.some(w => w.username === 'akash' && w.savedBulkOrders.length === 2));
   // ZERO MySQL queries executed for workroom presence!
   assert.equal(sqlQueryCount - beforeSql, 0);
+});
+
+test('workroom heartbeat restores a valid scanner session after backend memory restarts', async () => {
+  const account = {
+    id: 10,
+    username: 'restart-worker',
+    full_name: 'Restart Worker',
+    email: '',
+    phone: '',
+    password_hash: 'hashed:Restart@123',
+    role: 'cashier',
+    assigned_hub: 'Bhumivera Flagship Hub',
+    permissions: null,
+    status: 'active',
+    totp_enabled: 0,
+    totp_secret: '',
+    passkeys: null,
+    first_login: 0,
+  };
+  const scannerAccountVersion = crypto.createHash('sha256').update(JSON.stringify([
+    account.id,
+    account.username,
+    account.full_name,
+    account.email,
+    account.phone,
+    account.password_hash,
+    account.role,
+    account.assigned_hub,
+    account.permissions,
+    account.status,
+    account.totp_enabled,
+    account.totp_secret,
+    account.passkeys,
+    account.first_login,
+  ])).digest('hex');
+  const token = JSON.stringify({
+    id: account.id,
+    username: account.username,
+    fullName: account.full_name,
+    role: account.role,
+    scope: 'inventory-software',
+    scannerAuth: true,
+    scannerAccountVersion,
+    jti: 'scanner-token-issued-before-restart',
+  });
+  const headers = { authorization: `Bearer ${token}` };
+
+  const heartbeatRes = await invokeRoute('POST', '/workroom/heartbeat', {
+    headers,
+    body: {
+      sessionCode: 'STAFF-RESTART-WORKER',
+      mode: 'PACKING',
+      activeOrder: 'ORD-RECOVERED',
+      scannedUnits: 1,
+      expectedUnits: 2,
+    },
+  });
+
+  assert.equal(heartbeatRes.status, 200);
+  assert.equal(heartbeatRes.body.worker.onWork, true);
+  assert.equal(heartbeatRes.body.worker.activeOrder, 'ORD-RECOVERED');
+  assert.equal(heartbeatRes.body.worker.scannedUnits, 1);
+
+  const revokedToken = JSON.stringify({
+    id: account.id,
+    username: account.username,
+    fullName: account.full_name,
+    role: account.role,
+    scope: 'inventory-software',
+    scannerAuth: true,
+    scannerAccountVersion: 'stale-account-version',
+    jti: 'scanner-token-revoked-by-account-update',
+  });
+  const revokedRes = await invokeRoute('POST', '/workroom/heartbeat', {
+    headers: { authorization: `Bearer ${revokedToken}` },
+    body: { sessionCode: 'STAFF-RESTART-WORKER' },
+  });
+  assert.equal(revokedRes.status, 401);
+  assert.equal(revokedRes.body.code, 'SCANNER_SESSION_REVOKED');
+
+  const apiToken = JSON.stringify({
+    id: account.id,
+    username: account.username,
+    fullName: account.full_name,
+    role: account.role,
+    scope: 'inventory-software',
+    scannerAuth: true,
+    scannerAccountVersion,
+    jti: 'scanner-api-token-issued-before-restart',
+  });
+  const authRes = await invokeRoute('GET', '/auth/me', {
+    headers: { authorization: `Bearer ${apiToken}` },
+  });
+  assert.equal(authRes.status, 200);
+  assert.equal(authRes.body.user.username, account.username);
 });
 
 test('PWA fulfillment rollback preserves the packing lock, then successful commit completes it', async () => {
