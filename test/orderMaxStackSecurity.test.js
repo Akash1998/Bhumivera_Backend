@@ -33,7 +33,7 @@ test('failsafe & unhackable stacking security policy', async (t) => {
     );
   });
 
-  await t.test('orders between ₹799 and ₹999 allow only welcome bonus (max ₹100); referral balance is ineligible', () => {
+  await t.test('welcome bonus remains separate from configured referral redemption tiers', () => {
     // Customer has ₹300 welcome bonus + ₹200 referral balance (total ₹500)
     const totalBalance = 500.00;
     const welcomeBonus = 300.00;
@@ -59,30 +59,36 @@ test('failsafe & unhackable stacking security policy', async (t) => {
       'At ₹999, only ₹100 welcome bonus allowed'
     );
 
-    // If customer has only referral balance (no welcome bonus) on ₹999: gets ₹0
+    // No configured referral tier means referral balance cannot be used.
     assert.equal(
       calculateTieredReferralWalletRedemption(200.00, 999.00, [], 999.00, 0),
       0,
-      'Referral balance is ineligible for orders <= ₹999'
+      'Referral balance is unavailable without an eligible configured tier'
+    );
+
+    assert.equal(
+      calculateTieredReferralWalletRedemption(200.00, 999.00, [{ min_order_amount: 799, referral_amount: 250 }], 999.00, 0),
+      200,
+      'An eligible configured referral tier caps use by the remaining balance'
     );
   });
 
-  await t.test('orders above ₹999 allow ₹100 welcome bonus + ₹100 referral balance (₹200 total)', () => {
+  await t.test('configured referral limit combines with the separate welcome bonus cap', () => {
     const totalBalance = 500.00; // ₹300 welcome + ₹200 referral
     const welcomeBonus = 300.00;
 
-    // Order of ₹1,200 (above ₹999): ₹100 welcome + ₹100 referral = ₹200
+    // Order of ₹1,200: ₹100 welcome + up to ₹100 referral = ₹200
     assert.equal(
-      calculateTieredReferralWalletRedemption(totalBalance, 1200.00, [], 1200.00, welcomeBonus),
+      calculateTieredReferralWalletRedemption(totalBalance, 1200.00, [{ min_order_amount: 1000, referral_amount: 100 }], 1200.00, welcomeBonus),
       200,
       'Orders above ₹999 allow ₹100 welcome + ₹100 referral = ₹200'
     );
 
     // Order of ₹1,200 with only referral balance: gets ₹100
     assert.equal(
-      calculateTieredReferralWalletRedemption(200.00, 1200.00, [], 1200.00, 0),
+      calculateTieredReferralWalletRedemption(200.00, 1200.00, [{ min_order_amount: 1000, referral_amount: 100 }], 1200.00, 0),
       100,
-      'Above ₹999, referral balance unlocks up to ₹100'
+      'The configured referral tier caps referral balance at ₹100'
     );
 
     // Order of ₹1,200 with only welcome bonus: gets ₹100
@@ -118,7 +124,7 @@ test('failsafe & unhackable stacking security policy', async (t) => {
     const subtotal = 999.00;
 
     // 1. Welcome bonus deduction: capped at ₹100 (referral ineligible)
-    const walletDeduction = calculateTieredReferralWalletRedemption(500, subtotal, [], subtotal, 300);
+    const walletDeduction = calculateTieredReferralWalletRedemption(500, subtotal, [{ min_order_amount: 1000, referral_amount: 100 }], subtotal, 300);
     assert.equal(walletDeduction, 100);
 
     // 2. 10% coupon
@@ -155,7 +161,7 @@ test('failsafe & unhackable stacking security policy', async (t) => {
     const subtotal = 1200.00;
 
     // 1. Above ₹999: ₹100 welcome bonus + ₹100 referral balance = ₹200
-    const walletDeduction = calculateTieredReferralWalletRedemption(500, subtotal, [], subtotal, 300);
+    const walletDeduction = calculateTieredReferralWalletRedemption(500, subtotal, [{ min_order_amount: 1000, referral_amount: 100 }], subtotal, 300);
     assert.equal(walletDeduction, 200);
 
     // 2. Extra coupon (e.g. ₹120 or 10%)

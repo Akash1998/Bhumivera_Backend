@@ -66,6 +66,40 @@ describe('referral wallet coupon validation', () => {
     assert.ok(queries.some(({ sql, params }) => sql.includes('FROM referral_wallets') && params[0] === 7));
   });
 
+  it('uses the tier for the highest eligible order threshold, not the largest reward value', async () => {
+    state.query = async sql => {
+      if (sql.includes('SELECT * FROM coupons')) {
+        return [[{
+          code: 'REFTEST',
+          restricted_user_id: 7,
+          is_active: 1,
+          valid_from: null,
+          expires_at: null,
+          usage_limit: 10,
+          used_count: 0,
+          min_order_amount: 0,
+          discount_value: 500,
+          reward_type: 'referral_wallet',
+          wallet_per_order_limit: 500,
+        }], []];
+      }
+      if (sql.includes('FROM referral_wallets')) return [[{ balance: '1000.00' }], []];
+      if (sql.includes('SELECT * FROM referral_settings')) return [[{
+        referral_redemption_tiers: JSON.stringify([
+          { min_order_amount: 700, referral_amount: 250 },
+          { min_order_amount: 1100, referral_amount: 100 },
+        ]),
+      }], []];
+      throw new Error(`Unexpected query: ${sql}`);
+    };
+
+    const result = await couponModel.validateCoupon('REFTEST', 1200, 7);
+
+    assert.equal(result.valid, true);
+    assert.equal(result.discount, 100);
+    assert.equal(result.referralWalletAmount, 100);
+  });
+
   it('does not allow a referral coupon to be used by a different customer', async () => {
     let walletBalanceRead = false;
     state.query = async sql => {

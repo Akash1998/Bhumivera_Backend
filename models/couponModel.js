@@ -943,12 +943,15 @@ const validateCoupon = async (code, orderTotal = 0, userId = null, options = {})
     const config = await getReferralConfig();
     const tiers = config?.referral_redemption_tiers || [];
 
-    let tierAmount = 0;
+    let applicableTier = null;
     for (const tier of tiers) {
-      if (orderTotal >= tier.min_order_amount && tier.referral_amount > tierAmount) {
-        tierAmount = tier.referral_amount;
+      const minimumOrderAmount = Number(tier?.min_order_amount);
+      if (orderTotal >= minimumOrderAmount &&
+          (!applicableTier || minimumOrderAmount > Number(applicableTier.min_order_amount))) {
+        applicableTier = tier;
       }
     }
+    const tierAmount = Number(applicableTier?.referral_amount) || 0;
 
     const perOrderLimit = parseFloat(coupon.wallet_per_order_limit || coupon.discount_value || 0);
     let discountAmount = Math.min(walletBalance, orderTotal);

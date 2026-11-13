@@ -28,6 +28,21 @@ describe('order payment policies', () => {
     assert.equal(calculateTieredReferralWalletRedemption(500, 1100, tiers, 900), 200);
     assert.equal(calculateTieredReferralWalletRedemption(500, 1100, tiers, 80), 80);
     assert.equal(calculateTieredReferralWalletRedemption(500, 80, [{ min_order_amount: 0, referral_amount: 100 }]), 80);
+    assert.equal(calculateTieredReferralWalletRedemption(500, 1200, [
+      { min_order_amount: 700, referral_amount: 250 },
+      { min_order_amount: 1100, referral_amount: 100 },
+    ]), 100);
+    assert.equal(calculateTieredReferralWalletRedemption(500, 699, [
+      { min_order_amount: 600, referral_amount: 75 },
+    ]), 75);
+  });
+
+  it('applies configured referral tiers separately from welcome-bonus limits', () => {
+    const tiers = [{ min_order_amount: 600, referral_amount: 75 }];
+    assert.equal(calculateTieredReferralWalletRedemption(200, 599, tiers, 599, 0), 0);
+    assert.equal(calculateTieredReferralWalletRedemption(200, 600, tiers, 600, 0), 75);
+    assert.equal(calculateTieredReferralWalletRedemption(300, 600, tiers, 600, 200), 75);
+    assert.equal(calculateTieredReferralWalletRedemption(300, 799, tiers, 799, 300), 100);
   });
 
   it('requires two successfully delivered orders before COD is allowed', () => {

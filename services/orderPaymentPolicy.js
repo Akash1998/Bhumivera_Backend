@@ -11,29 +11,29 @@ const calculateTieredReferralWalletRedemption = (balance, orderSubtotal, tiers =
   const orderCents = toCents(orderSubtotal);
   const eligibleCents = toCents(eligibleSubtotal);
   const totalBalanceCents = toCents(balance);
-
-  if (orderCents < 79900) return 0;
+  const applicableTier = (Array.isArray(tiers) ? tiers : []).reduce((selected, tier) => {
+    const minimumOrderCents = toCents(tier?.min_order_amount);
+    const referralLimitCents = toCents(tier?.referral_amount);
+    if (referralLimitCents === 0 || minimumOrderCents > orderCents) return selected;
+    return !selected || minimumOrderCents > selected.minimumOrderCents
+      ? { minimumOrderCents, referralLimitCents }
+      : selected;
+  }, null);
+  const maxReferral = applicableTier?.referralLimitCents || 0;
 
   if (welcomeBonusBalance !== null && welcomeBonusBalance !== undefined) {
     const welcomeCents = Math.min(totalBalanceCents, toCents(welcomeBonusBalance));
     const referralCents = Math.max(0, totalBalanceCents - welcomeCents);
 
     const maxWelcome = orderCents >= 79900 ? 10000 : 0;
-    const maxReferral = orderCents > 99900 ? 10000 : 0;
 
     const redeemWelcome = Math.min(welcomeCents, maxWelcome);
     const redeemReferral = Math.min(referralCents, maxReferral);
 
-    if (welcomeCents === 0 && referralCents === 0 && totalBalanceCents > 0) {
-      const maxAllowed = orderCents > 99900 ? 20000 : 10000;
-      return Math.min(totalBalanceCents, eligibleCents, maxAllowed) / 100;
-    }
-
     return Math.min(eligibleCents, redeemWelcome + redeemReferral) / 100;
   }
 
-  const maxAllowed = orderCents > 99900 ? 20000 : 10000;
-  return Math.min(totalBalanceCents, eligibleCents, maxAllowed) / 100;
+  return Math.min(totalBalanceCents, eligibleCents, maxReferral) / 100;
 };
 
 const assertCodEligibility = (paymentMode, deliveredOrderCount) => {
