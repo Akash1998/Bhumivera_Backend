@@ -1421,6 +1421,22 @@ const migrations = [
       }
     },
   },
+  {
+    version: 90,
+    name: 'store creator application interests',
+    up: async () => {
+      for (const [column, definition] of [
+        ['follower_tier', 'VARCHAR(24) DEFAULT NULL'],
+        ['content_niche', 'VARCHAR(40) DEFAULT NULL'],
+        ['collaboration_type', 'VARCHAR(32) DEFAULT NULL'],
+      ]) {
+        const [columns] = await pool.query('SHOW COLUMNS FROM affiliate_partners LIKE ?', [column]);
+        if (columns.length === 0) {
+          await pool.query(`ALTER TABLE affiliate_partners ADD COLUMN ${column} ${definition}`);
+        }
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

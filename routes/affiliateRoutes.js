@@ -221,18 +221,27 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
   const socialPlatform = typeof req.body?.socialPlatform === 'string' ? req.body.socialPlatform.trim().slice(0, 40) : '';
   const submittedHandle = typeof req.body?.socialHandle === 'string' ? req.body.socialHandle.trim().slice(0, 120) : '';
   const profileUrl = typeof req.body?.profileUrl === 'string' ? req.body.profileUrl.trim().slice(0, 500) : '';
-  const followerCount = Number(req.body?.followerCount);
+  const followerCount = Number(req.body?.followerCount ?? 0);
+  const followerTier = typeof req.body?.followerTier === 'string' ? req.body.followerTier.trim() : '';
+  const contentNiche = typeof req.body?.contentNiche === 'string' ? req.body.contentNiche.trim() : '';
+  const collaborationType = typeof req.body?.collaborationType === 'string' ? req.body.collaborationType.trim() : '';
   const allowedProfileHosts = {
     Facebook: ['facebook.com', 'fb.com'],
     Instagram: ['instagram.com'],
     YouTube: ['youtube.com'],
   };
+  const allowedFollowerTiers = new Set(['under_1k', '1k_10k', '10k_50k', '50k_plus']);
+  const allowedContentNiches = new Set(['Skincare', 'Haircare', 'Lifestyle', 'Wellness', 'Unboxing']);
+  const allowedCollaborations = new Set(['product_gifting', 'affiliate_commission', 'both']);
   if (!Object.hasOwn(allowedProfileHosts, socialPlatform) ||
       !submittedHandle ||
+      !allowedFollowerTiers.has(followerTier) ||
+      !allowedContentNiches.has(contentNiche) ||
+      !allowedCollaborations.has(collaborationType) ||
       !Number.isSafeInteger(followerCount) ||
       followerCount < 0 ||
       followerCount > 100000000) {
-    return res.status(400).json({ code: 'INVALID_PARTNER_APPLICATION', message: 'Add your platform, profile name, and a valid follower count.' });
+    return res.status(400).json({ code: 'INVALID_PARTNER_APPLICATION', message: 'Complete your platform, profile, audience tier, niche, and collaboration preference.' });
   }
   let parsedUrl;
   try {
@@ -256,6 +265,9 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
       socialHandle: submittedHandle,
       profileUrl,
       followerCount,
+      followerTier,
+      contentNiche,
+      collaborationType,
     });
     return res.status(result.alreadyApplied ? 200 : 201).json({ success: true, ...result });
   } catch (error) {

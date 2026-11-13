@@ -107,6 +107,9 @@ describe('affiliate routes', () => {
       socialHandle: 'creator',
       profileUrl: 'https://www.instagram.com/creator/',
       followerCount: 5000,
+      followerTier: '1k_10k',
+      contentNiche: 'Skincare',
+      collaborationType: 'both',
     };
     const response = await request('POST', '/partner/apply', true, application);
 
@@ -124,10 +127,30 @@ describe('affiliate routes', () => {
       socialHandle: '@creator',
       profileUrl: 'https://instagram.com.attacker.example/creator',
       followerCount: 5000,
+      followerTier: '1k_10k',
+      contentNiche: 'Skincare',
+      collaborationType: 'both',
     });
 
     assert.equal(response.status, 400);
     assert.equal((await response.json()).code, 'INVALID_PARTNER_PROFILE_URL');
+    assert.equal(capturedApplication, null);
+  });
+
+  it('rejects unsupported application preferences before persistence', async () => {
+    capturedApplication = null;
+    const response = await request('POST', '/partner/apply', true, {
+      socialPlatform: 'Instagram',
+      socialHandle: '@creator',
+      profileUrl: 'https://www.instagram.com/creator/',
+      followerCount: 0,
+      followerTier: 'million_plus',
+      contentNiche: 'Skincare',
+      collaborationType: 'both',
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_PARTNER_APPLICATION');
     assert.equal(capturedApplication, null);
   });
 

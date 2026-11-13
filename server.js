@@ -312,6 +312,7 @@ app.get(["/sitemap.xml", "/api/sitemap.xml"], async (req, res) => {
       { loc: `${SITE_URL}/somatic-registry`, changefreq: "weekly", priority: "0.85" },
       { loc: `${SITE_URL}/verify`, changefreq: "weekly", priority: "0.85" },
       { loc: `${SITE_URL}/impact`, changefreq: "weekly", priority: "0.85" },
+      { loc: `${SITE_URL}/promotions`, changefreq: "weekly", priority: "0.85" },
       { loc: `${SITE_URL}/contact`, changefreq: "weekly", priority: "0.85" },
       { loc: `${SITE_URL}/purchase-protection`, changefreq: "weekly", priority: "0.75" },
       { loc: `${SITE_URL}/legal`, changefreq: "weekly", priority: "0.75" },

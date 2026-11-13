@@ -198,6 +198,11 @@ const ROUTE_SEO_META = {
     description: 'Collaborate with Bhumivera through ASCI-compliant ingredient education, live pH strip demonstrations, and transparent botanical storytelling.',
     keywords: 'Bhumivera affiliate program, skincare creator partnership India',
   },
+  '/promotions': {
+    title: 'Bhumivera Creator & Promoter Program | Product Gifting and Affiliate Partnerships',
+    description: 'Join the Bhumivera creator community. No fixed follower minimum; applications are reviewed by our team. Explore selective product gifting and transparent affiliate partnerships.',
+    keywords: 'Bhumivera creator program, skincare creator partnerships India, botanical skincare product gifting, Bhumivera affiliate program, beauty influencer collaboration',
+  },
   '/sell-on-bhumivera': {
     title: 'B2B Raw Botanical Cooperatives, Luxury Spas & Retail Partnerships | Bhumivera',
     description: 'Partner with Bhumivera for traceable wild-harvested botanicals, boutique hotel & spa backbar amenities, or authorized retail distribution.',
@@ -689,6 +694,7 @@ function sitemapController(req, res) {
     '/flash-sales',
     '/order-tracking',
     '/affiliate',
+    '/promotions',
     '/sell-on-bhumivera',
     '/mpgebusiness',
     '/community',

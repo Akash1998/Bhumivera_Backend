@@ -38,7 +38,16 @@ const saveProgramConfig = async config => {
   return getProgramConfig();
 };
 
-const applyForPartner = async ({ userId, socialPlatform, socialHandle, profileUrl, followerCount }) => {
+const applyForPartner = async ({
+  userId,
+  socialPlatform,
+  socialHandle,
+  profileUrl,
+  followerCount,
+  followerTier,
+  contentNiche,
+  collaborationType,
+}) => {
   const [existing] = await pool.query('SELECT * FROM affiliate_partners WHERE user_id = ? LIMIT 1', [userId]);
   if (existing.length) {
     if (['pending', 'approved', 'paused'].includes(existing[0].status)) {
@@ -63,24 +72,29 @@ const applyForPartner = async ({ userId, socialPlatform, socialHandle, profileUr
     await pool.query(
       `UPDATE affiliate_partners
        SET social_platform = ?, social_handle = ?, profile_url = ?, follower_count = ?,
+           follower_tier = ?, content_niche = ?, collaboration_type = ?,
            status = 'pending', referral_code = COALESCE(referral_code, ?),
            applied_at = CURRENT_TIMESTAMP, admin_notes = NULL
        WHERE id = ?`,
-      [socialPlatform, socialHandle, profileUrl || null, followerCount, createReferralCode(), existing[0].id]
+      [socialPlatform, socialHandle, profileUrl || null, followerCount, followerTier, contentNiche, collaborationType, createReferralCode(), existing[0].id]
     );
   } else {
     const config = await getProgramConfig();
     await pool.query(
       `INSERT INTO affiliate_partners
-       (user_id, social_platform, social_handle, profile_url, follower_count, status, referral_code,
+       (user_id, social_platform, social_handle, profile_url, follower_count, follower_tier,
+        content_niche, collaboration_type, status, referral_code,
         discount_percent, commission_share_percent)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
       [
         userId,
         socialPlatform,
         socialHandle,
         profileUrl || null,
         followerCount,
+        followerTier,
+        contentNiche,
+        collaborationType,
         createReferralCode(),
         config.default_customer_discount_percent,
         config.default_commission_share_percent,
@@ -312,6 +326,7 @@ const getAdminPromoterAnalytics = async (period = '30d') => {
   );
   const [partners] = await pool.query(
     `SELECT p.id, p.user_id, p.social_platform, p.social_handle, p.profile_url, p.follower_count,
+       p.follower_tier, p.content_niche, p.collaboration_type,
        p.status, p.referral_code, p.discount_percent, p.commission_share_percent, p.applied_at,
        u.name AS user_name, u.email AS user_email,
        COALESCE(s.attributed_orders, 0) AS attributed_orders,
