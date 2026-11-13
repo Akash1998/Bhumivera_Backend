@@ -25,7 +25,10 @@ Module._load = originalLoad;
 describe('referral model', () => {
   it('returns the referral count separately from the referral list', async () => {
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const queries = [];
     state.poolQuery = async sql => {
+      queries.push(sql);
+      if (sql.includes("WHERE status = 'pending' AND auto_approve_at <= NOW()")) return [[], []];
       if (sql.includes('SELECT id FROM referral_claims')) return [[ ], []];
       if (sql.includes('SELECT id FROM users WHERE id')) return [[{ id: 7 }], []];
       if (sql.includes('SELECT code FROM referral_codes')) return [[{ code: 'BV123456' }], []];
@@ -47,6 +50,7 @@ describe('referral model', () => {
     assert.equal(result.referrals[0].name, 'Friend');
     assert.equal(result.wallet_earned, 1000);
     assert.match(result.referralUrl, /\/register\?ref=/);
+    assert.ok(queries.some(sql => sql.includes("WHERE status = 'pending' AND auto_approve_at <= NOW()")));
   });
 
   it('repairs a missing wallet balance without duplicating an existing referral credit', async () => {

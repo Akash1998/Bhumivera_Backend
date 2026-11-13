@@ -330,6 +330,10 @@ router.post('/google', googleCallbackLimiter, async (req, res) => {
   if (!idToken || idToken.length > 8192) {
     return res.status(400).json({ message: 'A valid Google identity token is required.' });
   }
+  const mode = req.body?.mode || 'login';
+  if (!['login', 'register'].includes(mode)) {
+    return res.status(400).json({ message: 'Choose whether to sign in or create a new account with Google.' });
+  }
 
   let payload;
   try {
@@ -352,8 +356,20 @@ router.post('/google', googleCallbackLimiter, async (req, res) => {
 
   try {
     let user = await getUserByGoogleId(googleId);
+    if (user && mode === 'register') {
+      return res.status(409).json({
+        code: 'GOOGLE_ACCOUNT_ALREADY_REGISTERED',
+        message: 'This Google account already has a Bhumivera account. Please sign in instead.',
+      });
+    }
     if (!user) {
       user = await getUserByEmail(email);
+      if (user && mode === 'register') {
+        return res.status(409).json({
+          code: 'ACCOUNT_ALREADY_REGISTERED',
+          message: 'This email already has a Bhumivera account. Please sign in instead.',
+        });
+      }
       if (user && user.google_id && user.google_id !== googleId) {
         return res.status(409).json({
           code: 'GOOGLE_ACCOUNT_ALREADY_LINKED',
@@ -361,27 +377,106 @@ router.post('/google', googleCallbackLimiter, async (req, res) => {
         });
       }
       if (!user) {
+        if (mode === 'login') {
+          return res.status(404).json({
+            code: 'ACCOUNT_NOT_FOUND',
+            message: 'No Bhumivera account exists for this Google email yet. Please create an account first.',
+          });
+        }
         if (req.body?.termsAccepted !== true) {
           return res.status(428).json({
             code: 'TERMS_ACCEPTANCE_REQUIRED',
             message: 'Accept the Conditions of Use and acknowledge the Privacy Notice before creating an account.',
           });
         }
+        const securityAnswer = typeof req.body?.securityAnswer === 'string' ? req.body.securityAnswer.trim() : '';
+        if (!securityAnswer || securityAnswer.length > 255) {
+          return res.status(400).json({
+            code: 'SECURITY_ANSWER_REQUIRED',
+            message: 'Enter a security answer to protect account recovery.',
+          });
+        }
+        for (const preference of ['marketingEmailOptIn', 'adPersonalizationOptIn']) {
+          if (req.body?.[preference] !== undefined && typeof req.body[preference] !== 'boolean') {
+            return res.status(400).json({ message: 'Account preferences must be true or false.' });
+          }
+        }
+
+        let referrerUserId = null;
+        if (req.body?.referralToken) {
+          referrerUserId = await verifyReferralToken(req.body.referralToken);
+          if (!referrerUserId) {
+            return res.status(400).json({
+              code: 'INVALID_REFERRAL_LINK',
+              message: 'This referral link is invalid. Ask your friend for a new link.',
+            });
+          }
+        } else if (req.body?.referralCode) {
+          referrerUserId = await findReferralUser(req.body.referralCode);
+          if (!referrerUserId) {
+            return res.status(400).json({
+              code: 'INVALID_REFERRAL_CODE',
+              message: 'Referral code not found. Check the code and try again.',
+            });
+          }
+        }
+
         const name = typeof payload.name === 'string' && payload.name.trim()
           ? payload.name.trim().slice(0, 100)
           : email.split('@')[0].slice(0, 100);
+        const connection = await pool.getConnection();
+        let referralClaimId = null;
+        let userId;
         try {
-          const userId = await createUser({
+          await connection.beginTransaction();
+          userId = await createUser({
             name,
             email,
             password: crypto.randomBytes(48).toString('base64url'),
-            securityAnswer: crypto.randomBytes(32).toString('hex'),
+            securityAnswer,
+            marketingEmailOptIn: req.body?.marketingEmailOptIn === true,
+            adPersonalizationOptIn: req.body?.adPersonalizationOptIn === true,
+            adPersonalizationConsentVersion: req.body?.adPersonalizationOptIn === true
+              ? AD_PERSONALIZATION_CONSENT_VERSION
+              : null,
+            referrerUserId,
             termsVersion: TERMS_VERSION,
-          });
-          user = await getUserById(userId);
+          }, connection);
+          await connection.query('UPDATE users SET google_id = ? WHERE id = ?', [googleId, userId]);
+          await connection.query(
+            `INSERT INTO privacy_consent_events (user_id, purpose, granted, notice_version, source)
+             VALUES (?, 'personalized_recommendations', ?, ?, 'registration')`,
+            [userId, req.body?.adPersonalizationOptIn === true ? 1 : 0, AD_PERSONALIZATION_CONSENT_VERSION]
+          );
+          referralClaimId = await createReferralClaim(connection, userId, referrerUserId);
+          await connection.commit();
         } catch (error) {
-          if (error.code !== 'ER_DUP_ENTRY') throw error;
-          user = await getUserByEmail(email);
+          await connection.rollback();
+          if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({
+              code: 'ACCOUNT_ALREADY_REGISTERED',
+              message: 'This email already has a Bhumivera account. Please sign in instead.',
+            });
+          }
+          throw error;
+        } finally {
+          connection.release();
+        }
+        user = await getUserById(userId);
+        if (user) user.google_id = googleId;
+        if (referralClaimId) {
+          try {
+            const [[referrer]] = await pool.query('SELECT name, email FROM users WHERE id = ?', [referrerUserId]);
+            if (referrer?.email) {
+              sendMail({
+                to: referrer.email,
+                subject: 'Your Bhumivera referral is being reviewed',
+                html: `<p>Hi ${String(referrer.name || 'there').replace(/[&<>"]/g, '')},</p><p>Your friend has created a Bhumivera account using your referral. The reward is pending a quick review and will be automatically approved one hour after registration if not reviewed.</p><p>You can see its status in your account under Refer &amp; Earn.</p>`,
+              }).catch(error => console.error('[REFERRAL_PENDING_EMAIL]', error));
+            }
+          } catch (error) {
+            console.error('[REFERRAL_PENDING_EMAIL_LOOKUP]', error);
+          }
         }
       }
 

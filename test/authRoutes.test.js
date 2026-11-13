@@ -17,6 +17,7 @@ const state = {
   recoveryUser: null,
   googlePayload: null,
   createdGoogleUser: null,
+  referralClaims: [],
   sentMail: null,
   activeSession: true,
   otpConsumed: true,
@@ -44,7 +45,24 @@ const pool = {
     if (sql.includes('SELECT login_otp_expires >= NOW() AS valid')) {
       return [[{ valid: state.expiryValid ? 1 : 0 }]];
     }
+    if (sql.includes('SELECT name, email FROM users WHERE id = ?')) {
+      return [[{ name: 'Referrer', email: 'referrer@example.com' }]];
+    }
     return [{ affectedRows: 1 }];
+  },
+  async getConnection() {
+    return {
+      async beginTransaction() {},
+      async commit() {},
+      async rollback() {},
+      release() {},
+      async query(sql, params = []) {
+        if (sql.includes('UPDATE users SET google_id = ?')) {
+          if (state.createdGoogleUser?.id === params[1]) state.createdGoogleUser.google_id = params[0];
+        }
+        return [{ affectedRows: 1, insertId: 1 }];
+      },
+    };
   },
 };
 
@@ -94,6 +112,15 @@ const mocks = new Map([
     trustAdminDevice: async () => {},
     revokeTrustedAdminDevices: async () => {},
   }],
+  ['../models/referralModel', {
+    createReferralClaim: async (_connection, referredUserId, referrerUserId) => {
+      if (!referrerUserId) return null;
+      state.referralClaims.push({ referredUserId, referrerUserId });
+      return state.referralClaims.length;
+    },
+    findReferralUser: async code => code === 'FRIEND123' ? 77 : null,
+    verifyReferralToken: async token => token === 'valid-referral-token' ? 77 : null,
+  }],
   ['../models/adminModel', {
     getAdminByEmail: async email => email === state.admin.email ? state.admin : null,
   }],
@@ -109,6 +136,8 @@ const mocks = new Map([
         role: 'customer',
         google_id: null,
         two_factor_enabled: 0,
+        security_answer: user.securityAnswer,
+        referrer_user_id: user.referrerUserId,
       };
       return state.createdGoogleUser.id;
     },
@@ -136,6 +165,7 @@ const mocks = new Map([
 for (const request of [
   '../models/adminModel',
   '../models/userModel',
+  'google-auth-library',
   '../utils/trustedDevice',
   '../utils/otpCrypto',
   '../utils/adminTrustedDevice',
@@ -180,6 +210,7 @@ after(async () => {
   for (const request of [
     '../models/adminModel',
     '../models/userModel',
+    'google-auth-library',
     '../utils/trustedDevice',
     '../utils/otpCrypto',
     '../utils/adminTrustedDevice',
@@ -210,6 +241,7 @@ beforeEach(() => {
     google_id: null,
   };
   state.createdGoogleUser = null;
+  state.referralClaims.length = 0;
   state.googlePayload = {
     sub: 'google-subject-123',
     email: state.recoveryUser.email,
@@ -351,14 +383,14 @@ describe('customer password login', () => {
 });
 
 describe('customer Google sign-in', () => {
-  const signIn = (body = { idToken: 'valid-google-token', termsAccepted: true }) => fetch(`${baseUrl}/google`, {
+  const signIn = (body = { idToken: 'valid-google-token', mode: 'login' }) => fetch(`${baseUrl}/google`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
 
   it('rejects invalid Google ID tokens', async () => {
-    const response = await signIn({ idToken: 'invalid-token', termsAccepted: true });
+    const response = await signIn({ idToken: 'invalid-token', mode: 'login' });
     assert.equal(response.status, 401);
     assert.equal(state.issued.length, 0);
   });
@@ -372,19 +404,85 @@ describe('customer Google sign-in', () => {
 
   it('requires acceptance before creating a new Google account', async () => {
     state.googlePayload.email = 'new-customer@example.com';
-    const response = await signIn({ idToken: 'valid-google-token' });
+    const response = await signIn({ idToken: 'valid-google-token', mode: 'register' });
     assert.equal(response.status, 428);
     assert.equal(state.createdGoogleUser, null);
   });
 
-  it('creates an account with accepted terms and issues a customer session', async () => {
+  it('creates an account with accepted terms, a security answer, and issues a customer session', async () => {
     state.googlePayload.email = 'new-customer@example.com';
-    const response = await signIn();
+    const response = await signIn({
+      idToken: 'valid-google-token',
+      mode: 'register',
+      termsAccepted: true,
+      securityAnswer: 'my answer',
+    });
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.user.id, 99);
     assert.equal(state.createdGoogleUser.google_id, 'google-subject-123');
+    assert.equal(state.createdGoogleUser.security_answer, 'my answer');
     assert.equal(jwt.verify(body.token, secret).sessionType, 'user');
+  });
+
+  it('does not create accounts from the sign-in flow', async () => {
+    state.googlePayload.email = 'new-customer@example.com';
+    const response = await signIn({ idToken: 'valid-google-token' });
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).code, 'ACCOUNT_NOT_FOUND');
+    assert.equal(state.createdGoogleUser, null);
+  });
+
+  it('does not sign in an existing account from the registration flow', async () => {
+    const response = await signIn({
+      idToken: 'valid-google-token',
+      mode: 'register',
+      termsAccepted: true,
+      securityAnswer: 'my answer',
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, 'ACCOUNT_ALREADY_REGISTERED');
+    assert.equal(state.issued.length, 0);
+  });
+
+  it('requires a security answer before creating a Google account', async () => {
+    state.googlePayload.email = 'new-customer@example.com';
+    const response = await signIn({
+      idToken: 'valid-google-token',
+      mode: 'register',
+      termsAccepted: true,
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'SECURITY_ANSWER_REQUIRED');
+    assert.equal(state.createdGoogleUser, null);
+  });
+
+  it('attaches a referral claim when a customer registers with Google', async () => {
+    state.googlePayload.email = 'referred-customer@example.com';
+    const response = await signIn({
+      idToken: 'valid-google-token',
+      mode: 'register',
+      termsAccepted: true,
+      securityAnswer: 'my answer',
+      referralToken: 'valid-referral-token',
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(state.referralClaims, [{ referredUserId: 99, referrerUserId: 77 }]);
+    assert.equal(state.createdGoogleUser.referrer_user_id, 77);
+  });
+
+  it('rejects invalid referrals before creating a Google account', async () => {
+    state.googlePayload.email = 'new-customer@example.com';
+    const response = await signIn({
+      idToken: 'valid-google-token',
+      mode: 'register',
+      termsAccepted: true,
+      securityAnswer: 'my answer',
+      referralCode: 'NOT-A-CODE',
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_REFERRAL_CODE');
+    assert.equal(state.createdGoogleUser, null);
   });
 
   it('links an existing customer using a verified email and enforces enabled 2FA', async () => {

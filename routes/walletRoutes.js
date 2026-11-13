@@ -5,6 +5,7 @@ const { authenticateUser, authenticateAdmin } = require("../middleware/authMiddl
 const { WalletModel } = require("../models/walletModel");
 const { ensureWalletAccount } = require("../utils/walletAccount");
 const { getRazorpayClient, isValidPaymentSignature, verifyRazorpayPayment } = require('../services/razorpayService');
+const { approveDueReferralClaims, reconcileReferralRewards } = require('../models/referralModel');
 const crypto = require('crypto');
 
 const syncUserWallet = async userId => {
@@ -14,6 +15,8 @@ const syncUserWallet = async userId => {
 
 router.get("/balance", authenticateUser, async (req, res) => {
   try {
+    await approveDueReferralClaims();
+    await reconcileReferralRewards(req.user.id);
     const balance = await WalletModel.getWalletBalance(req.user.id);
     let referralBalance = null;
     let referralBalanceAvailable = false;

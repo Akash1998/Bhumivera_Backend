@@ -162,6 +162,7 @@ const createReferralClaim = async (connection, referredUserId, referrerUserId) =
 };
 
 const getReferralSummary = async userId => {
+  await approveDueReferralClaims();
   await reconcileReferralRewards(userId);
   const code = await ensureReferralCode(userId);
   const [codeRows] = await pool.query('SELECT link_expires_at FROM referral_codes WHERE user_id = ?', [userId]);
