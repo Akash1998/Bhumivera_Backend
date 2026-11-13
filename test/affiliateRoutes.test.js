@@ -58,7 +58,9 @@ const request = (method, endpoint, authenticated = true, body) => fetch(`${baseU
 });
 
 describe('affiliate routes', () => {
-  it('requires administrator authentication for the partner management routes', async () => {
+  it('enforces authentication on the partner and admin routes', async () => {
+    assert.equal((await request('POST', '/partner/apply', false, {})).status, 401);
+    assert.equal((await request('GET', '/partner/me', false)).status, 401);
     assert.equal((await request('GET', '/partners', false)).status, 401);
     assert.equal((await request('GET', '/admin/partners', false)).status, 401);
     assert.equal((await request('POST', '/admin/partners', false)).status, 401);

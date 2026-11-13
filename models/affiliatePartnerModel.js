@@ -13,6 +13,7 @@ const defaultProgramConfig = Object.freeze({
 });
 
 const configKeys = Object.keys(defaultProgramConfig);
+const createReferralCode = () => `BV${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
 
 const getProgramConfig = async (connection = pool) => {
   const [rows] = await connection.query(
@@ -41,28 +42,46 @@ const applyForPartner = async ({ userId, socialPlatform, socialHandle, profileUr
   const [existing] = await pool.query('SELECT * FROM affiliate_partners WHERE user_id = ? LIMIT 1', [userId]);
   if (existing.length) {
     if (['pending', 'approved', 'paused'].includes(existing[0].status)) {
+      if (existing[0].status === 'pending' && !existing[0].referral_code) {
+        const referralCode = createReferralCode();
+        const [updateResult] = await pool.query(
+          'UPDATE affiliate_partners SET referral_code = ? WHERE id = ? AND status = \'pending\' AND referral_code IS NULL',
+          [referralCode, existing[0].id]
+        );
+        if (updateResult.affectedRows > 0) {
+          existing[0].referral_code = referralCode;
+        } else {
+          const [[currentPartner]] = await pool.query(
+            'SELECT referral_code FROM affiliate_partners WHERE id = ?',
+            [existing[0].id]
+          );
+          existing[0].referral_code = currentPartner?.referral_code || null;
+        }
+      }
       return { partner: existing[0], alreadyApplied: true };
     }
     await pool.query(
       `UPDATE affiliate_partners
        SET social_platform = ?, social_handle = ?, profile_url = ?, follower_count = ?,
-           status = 'pending', applied_at = CURRENT_TIMESTAMP, admin_notes = NULL
+           status = 'pending', referral_code = COALESCE(referral_code, ?),
+           applied_at = CURRENT_TIMESTAMP, admin_notes = NULL
        WHERE id = ?`,
-      [socialPlatform, socialHandle, profileUrl || null, followerCount, existing[0].id]
+      [socialPlatform, socialHandle, profileUrl || null, followerCount, createReferralCode(), existing[0].id]
     );
   } else {
     const config = await getProgramConfig();
     await pool.query(
       `INSERT INTO affiliate_partners
-       (user_id, social_platform, social_handle, profile_url, follower_count, status,
+       (user_id, social_platform, social_handle, profile_url, follower_count, status, referral_code,
         discount_percent, commission_share_percent)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
       [
         userId,
         socialPlatform,
         socialHandle,
         profileUrl || null,
         followerCount,
+        createReferralCode(),
         config.default_customer_discount_percent,
         config.default_commission_share_percent,
       ]
@@ -87,8 +106,6 @@ const getPartnerByCode = async (code, connection = pool) => {
   );
   return partner || null;
 };
-
-const createReferralCode = () => `BV${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
 
 const createAdminPartner = async ({
   email,
