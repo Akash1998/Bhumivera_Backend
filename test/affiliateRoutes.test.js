@@ -48,15 +48,24 @@ const adminToken = jwt.sign({
   sessionType: 'admin',
 }, secret, { expiresIn: '5m', jwtid: 'affiliate-test-session' });
 
-const request = (method, endpoint, authenticated = true) => fetch(`${baseUrl}${endpoint}`, {
+const request = (method, endpoint, authenticated = true, body) => fetch(`${baseUrl}${endpoint}`, {
   method,
-  headers: authenticated ? { authorization: `Bearer ${adminToken}` } : {},
+  headers: {
+    ...(authenticated ? { authorization: `Bearer ${adminToken}` } : {}),
+    ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+  },
+  ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 
 describe('affiliate routes', () => {
   it('requires administrator authentication for the partner management routes', async () => {
     assert.equal((await request('GET', '/partners', false)).status, 401);
     assert.equal((await request('GET', '/admin/partners', false)).status, 401);
+    assert.equal((await request('POST', '/admin/partners', false)).status, 401);
+    assert.equal((await request('GET', '/admin/analytics', false)).status, 401);
+    assert.equal((await request('GET', '/admin/partners/1/performance', false)).status, 401);
+    assert.equal((await request('GET', '/admin/eligible-products', false)).status, 401);
+    assert.equal((await request('POST', '/admin/simulate', false)).status, 401);
   });
 
   it('rejects invalid promoter configuration before attempting persistence', async () => {
@@ -69,5 +78,25 @@ describe('affiliate routes', () => {
     const response = await request('PATCH', '/admin/partners/not-an-id');
     assert.equal(response.status, 400);
     assert.equal((await response.json()).code, 'INVALID_PARTNER_UPDATE');
+  });
+
+  it('rejects incomplete admin promoter creation before attempting persistence', async () => {
+    const response = await request('POST', '/admin/partners', true, { email: 'not-an-email' });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_ADMIN_PARTNER');
+  });
+
+  it('rejects invalid analytics periods and malformed scenario inputs before querying data', async () => {
+    const analytics = await request('GET', '/admin/analytics?period=forever');
+    assert.equal(analytics.status, 400);
+    assert.equal((await analytics.json()).code, 'INVALID_ANALYTICS_PERIOD');
+
+    const scenario = await request('POST', '/admin/simulate', true, {});
+    assert.equal(scenario.status, 400);
+    assert.equal((await scenario.json()).code, 'INVALID_PROMOTER_SCENARIO');
+
+    const performance = await request('GET', '/admin/partners/not-an-id/performance');
+    assert.equal(performance.status, 400);
+    assert.equal((await performance.json()).code, 'INVALID_PARTNER_PERFORMANCE_QUERY');
   });
 });

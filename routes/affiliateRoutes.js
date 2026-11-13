@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../config/db');
 const { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware');
 const { referralPreviewLimiter } = require('../middleware/rateLimiter');
+const { calculateAffiliateProfit } = require('../services/affiliateProfitPolicy');
 const {
   defaultConfig,
   getReferralConfig,
@@ -17,16 +18,20 @@ const {
   getProgramConfig,
   saveProgramConfig,
   applyForPartner,
+  createAdminPartner,
   getPartnerByCode,
   updatePartner,
   listPartners,
   getPartnerDashboard,
   listCommissions,
   listPayouts,
+  getAdminPromoterAnalytics,
+  getPartnerPerformance,
   payCommission,
 } = require('../models/affiliatePartnerModel');
 
 const router = express.Router();
+const analyticsPeriods = new Set(['7d', '30d', '90d', 'month', 'all']);
 
 router.get('/referral/preview', referralPreviewLimiter, async (req, res) => {
   try {
@@ -291,12 +296,264 @@ const saveProgramConfigHandler = async (req, res) => {
 };
 router.put('/admin/program-config', authenticateAdmin, saveProgramConfigHandler);
 
+router.get('/admin/analytics', authenticateAdmin, async (req, res) => {
+  const period = typeof req.query.period === 'string' ? req.query.period : '30d';
+  if (!analyticsPeriods.has(period)) {
+    return res.status(400).json({ code: 'INVALID_ANALYTICS_PERIOD', message: 'Choose a valid reporting period.' });
+  }
+  try {
+    return res.json({ success: true, ...(await getAdminPromoterAnalytics(period)) });
+  } catch (error) {
+    console.error('[AFFILIATE_ADMIN_ANALYTICS]', error);
+    return res.status(500).json({ message: 'Could not load promoter performance analytics.' });
+  }
+});
+
+router.get('/admin/partners/:id/performance', authenticateAdmin, async (req, res) => {
+  const partnerId = Number(req.params.id);
+  const period = typeof req.query.period === 'string' ? req.query.period : '30d';
+  const orderPage = Math.max(1, Math.min(100000, Number.parseInt(req.query.orderPage, 10) || 1));
+  const customerPage = Math.max(1, Math.min(100000, Number.parseInt(req.query.customerPage, 10) || 1));
+  const limit = Math.max(1, Math.min(100, Number.parseInt(req.query.limit, 10) || 20));
+  const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 120) : '';
+  if (!Number.isSafeInteger(partnerId) || partnerId < 1 || !analyticsPeriods.has(period)) {
+    return res.status(400).json({ code: 'INVALID_PARTNER_PERFORMANCE_QUERY', message: 'Choose a valid promoter and reporting period.' });
+  }
+  try {
+    const performance = await getPartnerPerformance({
+      partnerId,
+      period,
+      orderPage,
+      customerPage,
+      limit,
+      search,
+    });
+    if (!performance) return res.status(404).json({ message: 'Promoter not found.' });
+    return res.json({ success: true, ...performance });
+  } catch (error) {
+    console.error('[AFFILIATE_PARTNER_PERFORMANCE]', error);
+    return res.status(500).json({ message: 'Could not load this promoter’s customer and order details.' });
+  }
+});
+
+router.get('/admin/eligible-products', authenticateAdmin, async (_req, res) => {
+  try {
+    const [products] = await pool.query(
+      `SELECT p.id, p.name, p.price,
+         COALESCE(NULLIF(p.discount_price, 0), p.price) AS selling_price,
+         COALESCE(p.gst_rate, m.gst_rate, 18) AS gst_rate,
+         m.cost_price
+       FROM products p
+       JOIN inventory_product_meta m ON m.product_id = p.id
+       WHERE p.status = 'active' AND m.cost_price > 0
+       ORDER BY p.name ASC
+       LIMIT 500`
+    );
+    return res.json({ success: true, products });
+  } catch (error) {
+    console.error('[AFFILIATE_ADMIN_ELIGIBLE_PRODUCTS]', error);
+    return res.status(500).json({ message: 'Could not load active products with inventory costs.' });
+  }
+});
+
+router.post('/admin/simulate', authenticateAdmin, async (req, res) => {
+  const scenarioMode = req.body?.scenarioMode;
+  const referredPeople = Number(req.body?.referredPeople);
+  const conversionPercent = Number(req.body?.conversionPercent);
+  const salesTarget = Number(req.body?.salesTarget);
+  const paymentMode = req.body?.paymentMode;
+  const partnerId = req.body?.partnerId === '' || req.body?.partnerId == null ? null : Number(req.body.partnerId);
+  const basket = Array.isArray(req.body?.basket) ? req.body.basket : [];
+  const basketIsValid = basket.length > 0 && basket.length <= 20 &&
+    basket.every(item => Number.isSafeInteger(Number(item?.productId)) && Number(item.productId) > 0 &&
+      Number.isSafeInteger(Number(item?.quantity)) && Number(item.quantity) > 0 && Number(item.quantity) <= 100) &&
+    new Set(basket.map(item => Number(item.productId))).size === basket.length;
+  if (!['conversion', 'sales_target'].includes(scenarioMode) ||
+      !Number.isSafeInteger(referredPeople) || referredPeople < 1 || referredPeople > 10000000 ||
+      (scenarioMode === 'conversion' && (!Number.isFinite(conversionPercent) || conversionPercent < 0 || conversionPercent > 100)) ||
+      (scenarioMode === 'sales_target' && (!Number.isFinite(salesTarget) || salesTarget < 0 || salesTarget > 1000000000)) ||
+      !['online', 'COD', 'WALLET'].includes(paymentMode) || !basketIsValid ||
+      (partnerId !== null && (!Number.isSafeInteger(partnerId) || partnerId < 1))) {
+    return res.status(400).json({
+      code: 'INVALID_PROMOTER_SCENARIO',
+      message: 'Enter a referral count, valid conversion or sales target, payment mode, promoter, and one to twenty inventory-priced products.',
+    });
+  }
+  try {
+    const config = await getProgramConfig();
+    let discountPercent = config.default_customer_discount_percent;
+    let commissionSharePercent = config.default_commission_share_percent;
+    if (partnerId !== null) {
+      const [[partner]] = await pool.query(
+        'SELECT id, discount_percent, commission_share_percent FROM affiliate_partners WHERE id = ? LIMIT 1',
+        [partnerId]
+      );
+      if (!partner) return res.status(404).json({ message: 'Promoter not found.' });
+      discountPercent = Number(partner.discount_percent);
+      commissionSharePercent = Number(partner.commission_share_percent);
+    }
+
+    const productIds = basket.map(item => Number(item.productId));
+    const placeholders = productIds.map(() => '?').join(',');
+    const [productRows] = await pool.query(
+      `SELECT p.id, p.name, COALESCE(NULLIF(p.discount_price, 0), p.price) AS selling_price,
+         COALESCE(p.gst_rate, m.gst_rate, 18) AS gst_rate, m.cost_price
+       FROM products p
+       JOIN inventory_product_meta m ON m.product_id = p.id
+       WHERE p.status = 'active' AND m.cost_price > 0 AND p.id IN (${placeholders})`,
+      productIds
+    );
+    if (productRows.length !== productIds.length) {
+      return res.status(400).json({
+        code: 'PROMOTER_SCENARIO_PRODUCT_UNAVAILABLE',
+        message: 'One or more selected products are inactive or do not have a positive inventory cost.',
+      });
+    }
+
+    const productById = new Map(productRows.map(product => [Number(product.id), product]));
+    const scenarioBasket = basket.map(item => {
+      const product = productById.get(Number(item.productId));
+      return {
+        productId: Number(product.id),
+        name: product.name,
+        quantity: Number(item.quantity),
+        unitPrice: Number(product.selling_price),
+        unitCost: Number(product.cost_price),
+        gstRate: Number(product.gst_rate),
+      };
+    });
+    const basketSubtotal = scenarioBasket.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    const discountRate = discountPercent / 100;
+    const basketDiscount = basketSubtotal * discountRate;
+    const discountedBasketValue = basketSubtotal - basketDiscount;
+    if (!(discountedBasketValue > 0)) {
+      return res.status(400).json({ code: 'INVALID_PROMOTER_SCENARIO_BASKET', message: 'The selected product basket must have a positive discounted value.' });
+    }
+
+    const expectedOrders = scenarioMode === 'sales_target'
+      ? salesTarget / discountedBasketValue
+      : referredPeople * conversionPercent / 100;
+    const totalMerchandiseSales = scenarioMode === 'sales_target'
+      ? salesTarget
+      : discountedBasketValue * expectedOrders;
+    const merchandiseSubtotal = basketSubtotal * expectedOrders;
+    const totalDiscount = basketDiscount * expectedOrders;
+    const impliedConversionPercent = expectedOrders / referredPeople * 100;
+    const belowMinimum = expectedOrders > 0 && discountedBasketValue < config.minimum_order_amount;
+    const profit = calculateAffiliateProfit({
+      items: scenarioBasket.map(item => ({
+        unitPrice: item.unitPrice,
+        quantity: item.quantity * expectedOrders,
+        gstRate: item.gstRate,
+        unitCost: item.unitCost,
+      })),
+      merchandiseSubtotal,
+      totalMerchandiseDiscount: totalDiscount,
+      paymentTotal: totalMerchandiseSales,
+      paymentMode,
+      commissionSharePercent,
+      fulfillmentCost: config.fulfillment_cost * expectedOrders,
+      rtoReserve: config.rto_reserve * expectedOrders,
+      onlinePaymentFeePercent: config.online_payment_fee_percent,
+      minimumRetainedMarginPercent: config.minimum_retained_margin_percent,
+    });
+    const result = belowMinimum
+      ? {
+          ...profit,
+          commission: 0,
+          retainedProfit: profit.contributionProfit,
+          retainedMarginPercent: profit.revenueExcludingTax > 0
+            ? Math.round(profit.contributionProfit / profit.revenueExcludingTax * 10000) / 100
+            : 0,
+          marginFloorMet: false,
+          eligible: false,
+        }
+      : profit;
+    return res.json({
+      success: true,
+      assumptions: {
+        scenarioMode,
+        referredPeople,
+        conversionPercent: scenarioMode === 'conversion' ? conversionPercent : impliedConversionPercent,
+        expectedOrders,
+        impliedConversionPercent,
+        salesTarget: scenarioMode === 'sales_target' ? salesTarget : totalMerchandiseSales,
+        totalMerchandiseSales,
+        averageOrderValue: discountedBasketValue,
+        merchandiseSubtotal,
+        totalDiscount,
+        paymentMode,
+        discountPercent,
+        commissionSharePercent,
+        basket: scenarioBasket,
+      },
+      belowMinimum,
+      minimumOrderAmount: config.minimum_order_amount,
+      result,
+    });
+  } catch (error) {
+    console.error('[AFFILIATE_ADMIN_SIMULATE]', error);
+    return res.status(500).json({ message: 'Could not calculate the promoter scenario.' });
+  }
+});
+
 router.get(['/admin/partners', '/partners'], authenticateAdmin, async (_req, res) => {
   try {
     return res.json({ success: true, partners: await listPartners() });
   } catch (error) {
     console.error('[AFFILIATE_ADMIN_PARTNERS]', error);
     return res.status(500).json({ message: 'Could not load promoter applications.' });
+  }
+});
+
+router.post('/admin/partners', authenticateAdmin, async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const socialPlatform = typeof req.body?.socialPlatform === 'string' ? req.body.socialPlatform.trim().slice(0, 40) : '';
+  const socialHandle = typeof req.body?.socialHandle === 'string' ? req.body.socialHandle.trim().slice(0, 120) : '';
+  const profileUrl = typeof req.body?.profileUrl === 'string' ? req.body.profileUrl.trim().slice(0, 500) : '';
+  const followerCount = Number(req.body?.followerCount ?? 0);
+  const discountPercent = Number(req.body?.discountPercent);
+  const commissionSharePercent = Number(req.body?.commissionSharePercent);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 ||
+      !socialPlatform || !socialHandle ||
+      !Number.isSafeInteger(followerCount) || followerCount < 0 || followerCount > 100000000 ||
+      !Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 60 ||
+      !Number.isFinite(commissionSharePercent) || commissionSharePercent < 0 || commissionSharePercent > 100) {
+    return res.status(400).json({
+      code: 'INVALID_ADMIN_PARTNER',
+      message: 'Enter an existing customer email, social profile, follower count, and valid discount and contribution-share rates.',
+    });
+  }
+  if (profileUrl) {
+    try {
+      const parsed = new URL(profileUrl);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('Unsupported profile URL.');
+    } catch {
+      return res.status(400).json({ code: 'INVALID_PARTNER_PROFILE_URL', message: 'Use a valid public profile URL.' });
+    }
+  }
+  try {
+    const partner = await createAdminPartner({
+      email,
+      socialPlatform,
+      socialHandle,
+      profileUrl,
+      followerCount,
+      discountPercent,
+      commissionSharePercent,
+      adminId: req.user.id,
+    });
+    return res.status(201).json({ success: true, partner });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: 'ADMIN_PARTNER_CREATE_FAILED', message: error.message });
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        code: 'ADMIN_PARTNER_ALREADY_EXISTS',
+        message: 'This customer already has a promoter record. Find it in the list and update it there.',
+      });
+    }
+    console.error('[AFFILIATE_ADMIN_PARTNER_CREATE]', error);
+    return res.status(500).json({ message: 'Could not add this promoter.' });
   }
 });
 
