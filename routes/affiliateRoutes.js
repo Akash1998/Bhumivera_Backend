@@ -3,7 +3,6 @@ const pool = require('../config/db');
 const { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware');
 const { referralPreviewLimiter } = require('../middleware/rateLimiter');
 const { calculateAffiliateProfit } = require('../services/affiliateProfitPolicy');
-const { parsePromoterProfileUrl } = require('../services/promoterProfileUrl');
 const {
   defaultConfig,
   getReferralConfig,
@@ -223,33 +222,38 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
   const submittedHandle = typeof req.body?.socialHandle === 'string' ? req.body.socialHandle.trim().slice(0, 120) : '';
   const profileUrl = typeof req.body?.profileUrl === 'string' ? req.body.profileUrl.trim().slice(0, 500) : '';
   const followerCount = Number(req.body?.followerCount);
-  const parsedProfile = parsePromoterProfileUrl(profileUrl);
-  const supportedPlatforms = new Set(['Facebook', 'Instagram', 'YouTube']);
-  if (!socialPlatform || !submittedHandle || !Number.isSafeInteger(followerCount) || followerCount < 0 || followerCount > 100000000) {
+  const allowedProfileHosts = {
+    Facebook: ['facebook.com', 'fb.com'],
+    Instagram: ['instagram.com'],
+    YouTube: ['youtube.com'],
+  };
+  if (!Object.hasOwn(allowedProfileHosts, socialPlatform) ||
+      !submittedHandle ||
+      !Number.isSafeInteger(followerCount) ||
+      followerCount < 0 ||
+      followerCount > 100000000) {
     return res.status(400).json({ code: 'INVALID_PARTNER_APPLICATION', message: 'Add your platform, profile name, and a valid follower count.' });
   }
-  if (supportedPlatforms.has(socialPlatform) &&
-      (!parsedProfile || parsedProfile.platform !== socialPlatform ||
-        parsedProfile.handle.toLowerCase() !== submittedHandle.toLowerCase())) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(profileUrl);
+  } catch {
+    return res.status(400).json({ code: 'INVALID_PARTNER_PROFILE_URL', message: 'Enter a valid public profile URL.' });
+  }
+  const isAllowedProfileHost = allowedProfileHosts[socialPlatform].some(host =>
+    parsedUrl.hostname === host || parsedUrl.hostname.endsWith(`.${host}`)
+  );
+  if (parsedUrl.protocol !== 'https:' || !isAllowedProfileHost) {
     return res.status(400).json({
       code: 'INVALID_PARTNER_PROFILE_URL',
-      message: 'Paste the public HTTPS profile URL for the selected platform. The platform and profile name must match that URL.',
+      message: 'Use an HTTPS profile URL from the selected social platform.',
     });
   }
-  if (!supportedPlatforms.has(socialPlatform) && profileUrl) {
-    try {
-      const parsedUrl = new URL(profileUrl);
-      if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') throw new Error('Unsupported profile URL.');
-    } catch {
-      return res.status(400).json({ code: 'INVALID_PARTNER_PROFILE_URL', message: 'Use a valid public profile URL.' });
-    }
-  }
-  const socialHandle = parsedProfile?.handle || submittedHandle;
   try {
     const result = await applyForPartner({
       userId: req.user.id,
       socialPlatform,
-      socialHandle,
+      socialHandle: submittedHandle,
       profileUrl,
       followerCount,
     });

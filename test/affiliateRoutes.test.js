@@ -9,12 +9,24 @@ const { closeRateLimitStore } = require('../middleware/rateLimiter');
 
 const secret = 'affiliate-tests-only-secret-with-more-than-32-characters';
 const authMiddlewarePath = path.resolve(__dirname, '../middleware/authMiddleware.js');
+const affiliateRoutesPath = path.resolve(__dirname, '../routes/affiliateRoutes.js');
 const originalLoad = Module._load;
+let capturedApplication;
 process.env.JWT_SECRET = secret;
 
 Module._load = function (request, parent, isMain) {
   if (parent?.filename === authMiddlewarePath && request === '../utils/sessionStore') {
     return { isSessionActive: async () => true };
+  }
+  if (parent?.filename === affiliateRoutesPath && request === '../models/affiliatePartnerModel') {
+    const model = originalLoad.call(this, request, parent, isMain);
+    return {
+      ...model,
+      applyForPartner: async application => {
+        capturedApplication = application;
+        return { alreadyApplied: false, partner: { id: 99 } };
+      },
+    };
   }
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -86,6 +98,37 @@ describe('affiliate routes', () => {
     const response = await request('POST', '/admin/partners', true, { email: 'not-an-email' });
     assert.equal(response.status, 400);
     assert.equal((await response.json()).code, 'INVALID_ADMIN_PARTNER');
+  });
+
+  it('accepts manually entered promoter details without deriving the handle from the URL', async () => {
+    capturedApplication = null;
+    const application = {
+      socialPlatform: 'Instagram',
+      socialHandle: 'creator',
+      profileUrl: 'https://www.instagram.com/creator/',
+      followerCount: 5000,
+    };
+    const response = await request('POST', '/partner/apply', true, application);
+
+    assert.equal(response.status, 201);
+    assert.deepEqual(capturedApplication, {
+      ...application,
+      userId: 7,
+    });
+  });
+
+  it('rejects profile links hosted on a different platform before persistence', async () => {
+    capturedApplication = null;
+    const response = await request('POST', '/partner/apply', true, {
+      socialPlatform: 'Instagram',
+      socialHandle: '@creator',
+      profileUrl: 'https://instagram.com.attacker.example/creator',
+      followerCount: 5000,
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_PARTNER_PROFILE_URL');
+    assert.equal(capturedApplication, null);
   });
 
   it('rejects invalid analytics periods and malformed scenario inputs before querying data', async () => {
