@@ -15,6 +15,8 @@ const {
 } = require('./shoppingWalletRewardModel');
 const { computeQuantumHash512 } = require('../utils/quantumCrypto');
 const { BHUMIVERA_6_PRODUCTS, MAISON_REGIMEN_BUNDLES } = require('../data/luxuryCatalog');
+const { calculateAffiliateProfit, roundCurrency } = require('../services/affiliateProfitPolicy');
+const { getProgramConfig, getPartnerByCode, syncCommissionOrderStatus } = require('./affiliatePartnerModel');
 
 const getDeliveredOrderCount = async userId => {
   const [[result]] = await pool.query(
@@ -91,6 +93,9 @@ const createOrdersTables = async () => {
     await addCol('orders', 'total', 'DECIMAL(10,2) DEFAULT 0');
     await addCol('orders', 'coupon_code', 'VARCHAR(100)');
     await addCol('orders', 'coupon_id', 'INT DEFAULT NULL');
+    await addCol('orders', 'affiliate_partner_id', 'INT DEFAULT NULL');
+    await addCol('orders', 'affiliate_code', 'VARCHAR(32) DEFAULT NULL');
+    await addCol('orders', 'affiliate_discount_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
     await addCol('orders', 'terms_version', 'VARCHAR(20) DEFAULT NULL');
     await addCol('orders', 'terms_accepted_at', 'DATETIME DEFAULT NULL');
     await addCol('orders', 'payment_status', "ENUM('pending', 'paid', 'failed') DEFAULT 'pending'");
@@ -146,6 +151,9 @@ const createOrder = async ({
   termsVersion = null,
   lifecycleGiftProductId = null,
   loyaltyPointsToRedeem = 0,
+  affiliateCode = null,
+  affiliateDiscount = 0,
+  affiliatePartnerId = null,
   ipAddress = null,
   userAgent = null,
 }) => {
@@ -382,6 +390,7 @@ const createOrder = async ({
             gst_rate: component.gst_rate,
             price: allocatedCents / 100,
             quantity: component.totalNeeded,
+            comboQty: component.comboQty,
             image: null,
             is_gift: isGift ? 1 : 0,
           });
@@ -494,6 +503,75 @@ const createOrder = async ({
       enabled: Boolean(loyaltyConfig.enabled),
     });
     const backendTotal = Math.max(0, backendSubtotal - safeDiscount - safeTierDiscount - safeReferralWalletAmount + safeShippingCost - loyaltyDiscount + safeImpactAmount);
+    let affiliateProfit = null;
+    let affiliatePartner = null;
+    if (affiliateCode) {
+      affiliatePartner = await getPartnerByCode(affiliateCode, conn);
+      if (!affiliatePartner || Number(affiliatePartner.id) !== Number(affiliatePartnerId)) {
+        throw Object.assign(new Error('This promoter offer is no longer active. Remove it and try again.'), {
+          status: 409,
+          code: 'PROMOTER_OFFER_CHANGED',
+        });
+      }
+      if (String(affiliatePartner.user_id) === String(userId)) {
+        throw Object.assign(new Error('Promoter codes cannot be used on the promoter’s own orders.'), {
+          status: 400,
+          code: 'PROMOTER_SELF_REFERRAL',
+        });
+      }
+      const expectedAffiliateDiscount = roundCurrency(backendSubtotal * Number(affiliatePartner.discount_percent) / 100);
+      if (Math.abs(expectedAffiliateDiscount - Number(affiliateDiscount)) > 0.01 ||
+          safeDiscount + 0.01 < expectedAffiliateDiscount) {
+        throw Object.assign(new Error('The promoter offer changed. Refresh checkout and try again.'), {
+          status: 409,
+          code: 'PROMOTER_OFFER_CHANGED',
+        });
+      }
+
+      const productIds = [...new Set(processedItems.map(item => Number(item.product_id)).filter(Number.isSafeInteger))];
+      const placeholders = productIds.map(() => '?').join(',');
+      const [costRows] = productIds.length
+        ? await conn.query(
+            `SELECT product_id, cost_price FROM inventory_product_meta WHERE product_id IN (${placeholders})`,
+            productIds
+          )
+        : [[]];
+      const costByProductId = new Map(costRows.map(row => [Number(row.product_id), Number(row.cost_price)]));
+      const policyItems = processedItems.map(item => {
+        const unitCost = costByProductId.get(Number(item.product_id));
+        if (!Number.isFinite(unitCost) || unitCost <= 0) {
+          throw Object.assign(new Error(`Promoter orders are unavailable for ${item.name} until its inventory unit cost is entered.`), {
+            status: 400,
+            code: 'AFFILIATE_PRODUCT_COST_MISSING',
+          });
+        }
+        return {
+          unitPrice: (Number(item.price) || 0) / (Number(item.comboQty) || 1),
+          unitCost,
+          quantity: Number(item.quantity) || 0,
+          gstRate: item.gst_rate === null || item.gst_rate === undefined ? 18 : Number(item.gst_rate),
+        };
+      });
+      const config = await getProgramConfig(conn);
+      affiliateProfit = calculateAffiliateProfit({
+        items: policyItems,
+        merchandiseSubtotal: backendSubtotal,
+        totalMerchandiseDiscount: safeDiscount + safeTierDiscount + safeReferralWalletAmount + loyaltyDiscount,
+        paymentTotal: backendTotal,
+        paymentMode,
+        commissionSharePercent: Number(affiliatePartner.commission_share_percent),
+        fulfillmentCost: config.fulfillment_cost,
+        rtoReserve: config.rto_reserve,
+        onlinePaymentFeePercent: config.online_payment_fee_percent,
+        minimumRetainedMarginPercent: config.minimum_retained_margin_percent,
+      });
+      if (!affiliateProfit.eligible) {
+        throw Object.assign(new Error('This basket cannot receive the promoter offer while preserving the minimum product margin. Remove the offer or adjust your basket.'), {
+          status: 400,
+          code: 'AFFILIATE_MARGIN_FLOOR_NOT_MET',
+        });
+      }
+    }
     if (pointsRedeemed > 0) {
       await conn.query('UPDATE users SET loyalty_points = loyalty_points - ? WHERE id = ? AND loyalty_points >= ?', [pointsRedeemed, userId, pointsRedeemed]);
     }
@@ -501,8 +579,8 @@ const createOrder = async ({
     // Step 4: Insert the Order
     const publicOrderNumber = generateOrderNumber();
     const [res] = await conn.query(
-      `INSERT INTO orders (user_id, order_number, subtotal, discount, tier_discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, total, coupon_code, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, terms_version, terms_accepted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      `INSERT INTO orders (user_id, order_number, subtotal, discount, tier_discount, referral_wallet_amount, shipping_cost, impact_amount, impact_project, loyalty_points_awarded, loyalty_points_redeemed, coupon_credit_eligible_subtotal, total, coupon_code, affiliate_partner_id, affiliate_code, affiliate_discount_amount, address_snapshot, delivery_type, payment_mode, payment_status, payment_id, notes, terms_version, terms_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         userId,
         publicOrderNumber,
@@ -518,6 +596,9 @@ const createOrder = async ({
         couponCreditEligibleSubtotal,
         backendTotal,
         couponCode || lockedCoupon?.code || null,
+        affiliatePartner?.id || null,
+        affiliatePartner?.referral_code || null,
+        affiliatePartner ? roundCurrency(affiliateDiscount) : 0,
         typeof addressSnapshot === 'string' ? addressSnapshot : JSON.stringify(addressSnapshot),
         deliveryType || 'standard',
         paymentMode || 'COD',
@@ -529,6 +610,32 @@ const createOrder = async ({
     );
 
     const orderId = res.insertId;
+    if (affiliatePartner && affiliateProfit) {
+      await conn.query(
+        `INSERT INTO affiliate_commissions
+         (partner_id, order_id, referral_code, order_subtotal, discount_amount, revenue_ex_tax,
+          product_cost, fulfillment_cost, rto_reserve, payment_fee, contribution_profit,
+          commission_share_percent, commission_amount, retained_profit, retained_margin_percent, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        [
+          affiliatePartner.id,
+          orderId,
+          affiliatePartner.referral_code,
+          backendSubtotal,
+          safeDiscount + safeTierDiscount + safeReferralWalletAmount + loyaltyDiscount,
+          affiliateProfit.revenueExcludingTax,
+          affiliateProfit.productCost,
+          affiliateProfit.fulfillmentCost,
+          affiliateProfit.rtoReserve,
+          affiliateProfit.gatewayFee,
+          affiliateProfit.contributionProfit,
+          affiliatePartner.commission_share_percent,
+          affiliateProfit.commission,
+          affiliateProfit.retainedProfit,
+          affiliateProfit.retainedMarginPercent,
+        ]
+      );
+    }
 
     // Record tamper-proof coupon redemption in ledger if a coupon was applied
     if (couponId || couponCode || lockedCoupon) {
@@ -1037,6 +1144,7 @@ const updateOrderStatus = async (orderId, status, cancelReason, metadata = {}) =
         orderId,
       ]
     );
+    await syncCommissionOrderStatus(orderId, status, conn);
     await conn.commit();
     return true;
   } catch (err) {

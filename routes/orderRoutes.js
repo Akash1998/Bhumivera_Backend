@@ -37,6 +37,12 @@ const { reconcileReferralRewards, getReferralConfig } = require('../models/refer
 const { calculateShippingCost } = require('../services/shippingPolicy');
 const { createNotification } = require('../models/notificationModel');
 const { validateCoupon } = require('../models/couponModel');
+const {
+  getProgramConfig,
+  getPartnerByCode,
+  syncCommissionOrderStatus,
+} = require('../models/affiliatePartnerModel');
+const { calculateAffiliateProfit, roundCurrency } = require('../services/affiliateProfitPolicy');
 
 // [FIX]: Correctly destructure AddressModel from the exported object
 const { AddressModel } = require("../models/addressModel");
@@ -139,6 +145,7 @@ router.post("/:id/cancel", authenticateUser, async (req, res) => {
       reason: req.body.reason || "Cancelled by customer before packaging/dispatch",
       executedByEmail: req.user.email || "customer@bhumivera.com",
     });
+    await syncCommissionOrderStatus(order.id, 'cancelled');
 
     await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
     await invalidatePublicCatalogCache().catch(() => {});
@@ -184,6 +191,7 @@ router.put("/:id/status", authenticateAdmin, async (req, res) => {
         executedByEmail: req.user?.email || "adminbhumivera27@gmail.com",
         razorpay: getRazorpayClient(),
       });
+      await syncCommissionOrderStatus(cancelResult.orderId, 'cancelled');
       await syncWebsiteProductsToInventoryMeta(pool).catch(() => {});
       await invalidatePublicCatalogCache().catch(() => {});
       const [orderData] = await pool.query(
@@ -256,6 +264,7 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       deliveryType,
       paymentMode: requestedPaymentMode,
       couponCode,
+      affiliateCode: requestedAffiliateCode,
       notes,
       loyaltyPointsToRedeem,
     } = req.body;
@@ -284,6 +293,11 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
 
     const { items, total: cartTotal } = await getCartTotal(req.user.id);
     if (!items || items.length === 0) return res.status(400).json({ message: "Cart is empty." });
+    const affiliateCode = typeof requestedAffiliateCode === 'string' ? requestedAffiliateCode.trim().toUpperCase() : '';
+    if (requestedAffiliateCode && (!affiliateCode || affiliateCode.length > 32 || !/^[A-Z0-9_-]+$/.test(affiliateCode))) {
+      return res.status(400).json({ code: 'INVALID_PROMOTER_CODE', message: 'This promoter code is invalid.' });
+    }
+    const programConfig = await getProgramConfig();
 
     const rules = await listCartRules({ activeOnly: true });
     const enforceMinimum = (await getSetting('enforce_cart_rule_minimum')) === '1';
@@ -349,13 +363,43 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     else if (couponStackPolicy === 'coupon_first' && couponDiscount > 0) discount = couponDiscount;
     else if (ruleDiscount <= 0) discount = couponDiscount;
     discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount));
+    const discountWithoutAffiliate = discount;
     const loyaltyConfig = await getLoyaltyConfig();
-    const tierDiscount = calculateTierDiscount(
+    let tierDiscount = calculateTierDiscount(
       Number(cartTotal) || 0,
       discount,
       loyaltyTier?.tier_discount_percent,
       Boolean(loyaltyConfig.enabled)
     );
+    let affiliatePartner = null;
+    let affiliateDiscount = 0;
+    if (affiliateCode) {
+      affiliatePartner = await getPartnerByCode(affiliateCode);
+      if (!affiliatePartner) {
+        return res.status(400).json({ code: 'PROMOTER_CODE_INVALID', message: 'This promoter offer is not active.' });
+      }
+      if (String(affiliatePartner.user_id) === String(req.user.id)) {
+        return res.status(400).json({ code: 'PROMOTER_SELF_REFERRAL', message: 'Promoter codes cannot be used on the promoter’s own orders.' });
+      }
+      affiliateDiscount = roundCurrency(Number(cartTotal) * Number(affiliatePartner.discount_percent) / 100);
+      discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount + affiliateDiscount));
+      tierDiscount = calculateTierDiscount(
+        Number(cartTotal) || 0,
+        discount,
+        loyaltyTier?.tier_discount_percent,
+        Boolean(loyaltyConfig.enabled)
+      );
+    }
+    const discountedMerchandiseAmount = roundCurrency(Math.max(0, Number(cartTotal) - discount - tierDiscount));
+    if (discountedMerchandiseAmount < Number(programConfig.minimum_order_amount)) {
+      const missingAmount = roundCurrency(Number(programConfig.minimum_order_amount) - discountedMerchandiseAmount);
+      return res.status(400).json({
+        code: 'MINIMUM_ORDER_NOT_MET',
+        minimumOrderAmount: Number(programConfig.minimum_order_amount),
+        missingAmount,
+        message: `Add ₹${missingAmount.toFixed(2)} more in merchandise after discounts to place this order.`,
+      });
+    }
     const referralConfig = await getReferralConfig();
     const [[referralWallet]] = await pool.query(
       'SELECT balance, welcome_bonus_balance FROM referral_wallets WHERE user_id = ?',
@@ -396,7 +440,106 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       ? Number(lifecycleSettings.lifecycle_third_order_gift_product_id) || null
       : null;
     const orderItems = [...items, ...giftItems];
+    const backendSubtotal = items.reduce((sum, item) => {
+      const discountPrice = Number(item.discount_price);
+      const unitPrice = discountPrice > 0 ? discountPrice : Number(item.price) || 0;
+      return sum + unitPrice * (Number(item.quantity) || 1);
+    }, 0);
+    if (affiliatePartner) {
+      affiliateDiscount = roundCurrency(backendSubtotal * Number(affiliatePartner.discount_percent) / 100);
+      discount = Math.min(backendSubtotal, discountWithoutAffiliate + affiliateDiscount);
+      tierDiscount = calculateTierDiscount(
+        backendSubtotal,
+        discount,
+        loyaltyTier?.tier_discount_percent,
+        Boolean(loyaltyConfig.enabled)
+      );
+    }
+    const safeDiscount = Math.min(backendSubtotal, Math.max(0, Number(discount) || 0));
+    const safeTierDiscount = calculateTierDiscount(
+      backendSubtotal,
+      safeDiscount,
+      loyaltyTier?.tier_discount_percent,
+      Boolean(loyaltyConfig.enabled)
+    );
+    const actualDiscountedMerchandise = roundCurrency(Math.max(0, backendSubtotal - safeDiscount - safeTierDiscount));
+    if (actualDiscountedMerchandise < Number(programConfig.minimum_order_amount)) {
+      const missingAmount = roundCurrency(Number(programConfig.minimum_order_amount) - actualDiscountedMerchandise);
+      return res.status(400).json({
+        code: 'MINIMUM_ORDER_NOT_MET',
+        minimumOrderAmount: Number(programConfig.minimum_order_amount),
+        missingAmount,
+        message: `Add ₹${missingAmount.toFixed(2)} more in merchandise after discounts to place this order.`,
+      });
+    }
     let pointsToRedeemForOrder = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
+    const requestedPoints = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
+    const [[userPoints]] = await pool.query('SELECT loyalty_points FROM users WHERE id = ?', [req.user.id]);
+    const redemption = calculateLoyaltyRedemption({
+      pointsBalance: userPoints?.loyalty_points,
+      eligibleSubtotal: backendSubtotal - safeDiscount - safeTierDiscount - referralWalletAmount,
+      redemptionPointsPerRupee: loyaltyConfig.redemption_points_per_rupee,
+      maxRedemptionPercent: loyaltyConfig.max_redemption_percent,
+      minimumRedemptionPoints: loyaltyConfig.minimum_redemption_points,
+      enabled: Boolean(loyaltyConfig.enabled),
+    });
+    if (paymentMode !== 'online' && requestedPoints > redemption.points) {
+      return res.status(400).json({ code: 'LOYALTY_POINTS_BALANCE_CHANGED', message: 'Your loyalty points or eligible order amount changed. Refresh checkout and try again.' });
+    }
+    pointsToRedeemForOrder = paymentMode === 'online' ? Math.min(requestedPoints, redemption.points) : requestedPoints;
+    const pointsDiscount = Math.min(redemption.discount, pointsToRedeemForOrder / loyaltyConfig.redemption_points_per_rupee);
+    const expectedTotal = Math.max(0, backendSubtotal - safeDiscount - safeTierDiscount - referralWalletAmount + shippingCost - pointsDiscount);
+
+    if (affiliatePartner) {
+      const productIds = [...new Set(orderItems.map(item => Number(item.product_id || item.id)).filter(Number.isSafeInteger))];
+      const placeholders = productIds.map(() => '?').join(',');
+      const [products] = await pool.query(
+        `SELECT p.id, p.price, p.discount_price, p.gst_rate, m.cost_price
+         FROM products p
+         LEFT JOIN inventory_product_meta m ON m.product_id = p.id
+         WHERE p.id IN (${placeholders})`,
+        productIds
+      );
+      const productById = new Map(products.map(product => [Number(product.id), product]));
+      const policyItems = orderItems.map(item => {
+        const product = productById.get(Number(item.product_id || item.id));
+        if (!product || !Number.isFinite(Number(product.cost_price)) || Number(product.cost_price) <= 0) {
+          return null;
+        }
+        const isGift = item.is_gift === true || Number(item.is_gift) === 1;
+        return {
+          unitPrice: isGift ? 0 : (Number(product.discount_price) > 0 ? Number(product.discount_price) : Number(product.price)),
+          unitCost: Number(product.cost_price),
+          quantity: Number(item.quantity) || 1,
+          gstRate: product.gst_rate === null || product.gst_rate === undefined ? 18 : Number(product.gst_rate),
+        };
+      });
+      if (policyItems.some(item => item === null)) {
+        return res.status(400).json({
+          code: 'AFFILIATE_PRODUCT_COST_MISSING',
+          message: 'This basket includes a product without a verified inventory unit cost, so the promoter offer cannot be applied.',
+        });
+      }
+      const profit = calculateAffiliateProfit({
+        items: policyItems,
+        merchandiseSubtotal: backendSubtotal,
+        totalMerchandiseDiscount: safeDiscount + safeTierDiscount + referralWalletAmount + pointsDiscount,
+        paymentTotal: expectedTotal,
+        paymentMode,
+        commissionSharePercent: Number(affiliatePartner.commission_share_percent),
+        fulfillmentCost: programConfig.fulfillment_cost,
+        rtoReserve: programConfig.rto_reserve,
+        onlinePaymentFeePercent: programConfig.online_payment_fee_percent,
+        minimumRetainedMarginPercent: programConfig.minimum_retained_margin_percent,
+      });
+      if (!profit.eligible) {
+        return res.status(400).json({
+          code: 'AFFILIATE_MARGIN_FLOOR_NOT_MET',
+          message: 'This basket cannot receive the promoter offer while preserving the minimum product margin. Adjust the basket or remove the offer.',
+        });
+      }
+    }
+
     if (paymentMode === 'online') {
       const {
         razorpay_order_id: razorpayOrderId,
@@ -406,31 +549,6 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       if (![razorpayOrderId, razorpayPaymentId, razorpaySignature].every(value => typeof value === 'string' && value.trim())) {
         return res.status(400).json({ message: 'Verified Razorpay payment details are required for online orders.' });
       }
-      const backendSubtotal = items.reduce((sum, item) => {
-        const discountPrice = Number(item.discount_price);
-        const unitPrice = discountPrice > 0 ? discountPrice : Number(item.price) || 0;
-        return sum + unitPrice * (Number(item.quantity) || 1);
-      }, 0);
-      const safeDiscount = Math.min(backendSubtotal, Math.max(0, Number(discount) || 0));
-      const safeTierDiscount = calculateTierDiscount(
-        backendSubtotal,
-        safeDiscount,
-        loyaltyTier?.tier_discount_percent,
-        Boolean(loyaltyConfig.enabled)
-      );
-      const requestedPoints = Math.max(0, Math.trunc(Number(loyaltyPointsToRedeem) || 0));
-      const [[userPoints]] = await pool.query('SELECT loyalty_points FROM users WHERE id = ?', [req.user.id]);
-      const redemption = calculateLoyaltyRedemption({
-        pointsBalance: userPoints?.loyalty_points,
-        eligibleSubtotal: backendSubtotal - safeDiscount - safeTierDiscount - referralWalletAmount,
-        redemptionPointsPerRupee: loyaltyConfig.redemption_points_per_rupee,
-        maxRedemptionPercent: loyaltyConfig.max_redemption_percent,
-        minimumRedemptionPoints: loyaltyConfig.minimum_redemption_points,
-        enabled: Boolean(loyaltyConfig.enabled),
-      });
-      pointsToRedeemForOrder = Math.min(requestedPoints, redemption.points);
-      const pointsDiscount = Math.min(redemption.discount, pointsToRedeemForOrder / loyaltyConfig.redemption_points_per_rupee);
-      const expectedTotal = Math.max(0, backendSubtotal - safeDiscount - safeTierDiscount - referralWalletAmount + shippingCost - pointsDiscount);
       verifiedPayment = await verifyRazorpayPayment({
         orderId: razorpayOrderId,
         paymentId: razorpayPaymentId,
@@ -461,6 +579,9 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       termsVersion: TERMS_VERSION,
       lifecycleGiftProductId,
       loyaltyPointsToRedeem: pointsToRedeemForOrder,
+      affiliateCode: affiliatePartner?.referral_code || null,
+      affiliateDiscount,
+      affiliatePartnerId: affiliatePartner?.id || null,
       ipAddress: req.ip || null,
       userAgent: req.headers?.['user-agent'] || null,
     });

@@ -513,6 +513,28 @@ describe('runMigrations', () => {
     assert.match(statements[0].sql, /lifecycle_churn_days' AND value = '90'/);
   });
 
+  it('creates promoter attribution, commission, payout and default economics schema', async () => {
+    const migration = migrations.find(candidate => candidate.version === 89);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async (sql, params = []) => {
+      statements.push({ sql, params });
+      return [[], []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.ok(statements.some(({ sql }) => sql.includes('CREATE TABLE IF NOT EXISTS affiliate_partners')));
+    assert.ok(statements.some(({ sql }) => sql.includes('CREATE TABLE IF NOT EXISTS affiliate_commissions')));
+    assert.ok(statements.some(({ sql }) => sql.includes('CREATE TABLE IF NOT EXISTS affiliate_payouts')));
+    assert.ok(statements.some(({ sql }) => sql.includes('ALTER TABLE orders ADD COLUMN affiliate_discount_amount')));
+    assert.equal(statements.filter(({ sql }) => sql.includes("VALUES ('affiliate_program', ?, ?)")).length, 8);
+  });
+
 });
 
 

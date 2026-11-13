@@ -4,6 +4,8 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const Module = require('node:module');
 const path = require('node:path');
+const pool = require('../config/db');
+const { closeRateLimitStore } = require('../middleware/rateLimiter');
 
 const secret = 'affiliate-tests-only-secret-with-more-than-32-characters';
 const authMiddlewarePath = path.resolve(__dirname, '../middleware/authMiddleware.js');
@@ -34,7 +36,9 @@ before(async () => {
 });
 
 after(async () => {
+  if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  await Promise.all([pool.end(), closeRateLimitStore()]);
 });
 
 const adminToken = jwt.sign({
@@ -50,26 +54,20 @@ const request = (method, endpoint, authenticated = true) => fetch(`${baseUrl}${e
 });
 
 describe('affiliate routes', () => {
-  it('requires admin authentication', async () => {
+  it('requires administrator authentication for the partner management routes', async () => {
     assert.equal((await request('GET', '/partners', false)).status, 401);
+    assert.equal((await request('GET', '/admin/partners', false)).status, 401);
   });
 
-  it('reports every non-persisted affiliate action as unavailable', async () => {
-    const actions = [
-      ['GET', '/partners'],
-      ['GET', '/withdrawals'],
-      ['GET', '/config'],
-      ['PUT', '/config'],
-      ['PUT', '/partners/12/status'],
-      ['PATCH', '/partners/12/status'],
-      ['POST', '/withdrawals/8/approve'],
-      ['PATCH', '/withdrawals/8/approve'],
-    ];
+  it('rejects invalid promoter configuration before attempting persistence', async () => {
+    const response = await request('PUT', '/admin/program-config');
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_AFFILIATE_PROGRAM_CONFIG');
+  });
 
-    for (const [method, endpoint] of actions) {
-      const response = await request(method, endpoint);
-      assert.equal(response.status, 501, `${method} ${endpoint}`);
-      assert.equal((await response.json()).code, 'AFFILIATE_WORKFLOW_UNAVAILABLE');
-    }
+  it('rejects malformed partner updates before attempting persistence', async () => {
+    const response = await request('PATCH', '/admin/partners/not-an-id');
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_PARTNER_UPDATE');
   });
 });

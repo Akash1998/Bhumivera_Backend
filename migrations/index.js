@@ -1317,6 +1317,110 @@ const migrations = [
       );
     },
   },
+  {
+    version: 89,
+    name: 'initialize promoter affiliate program',
+    up: async () => {
+      for (const [column, definition] of [
+        ['affiliate_partner_id', 'INT DEFAULT NULL'],
+        ['affiliate_code', 'VARCHAR(32) DEFAULT NULL'],
+        ['affiliate_discount_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0'],
+      ]) {
+        const [columns] = await pool.query("SHOW COLUMNS FROM orders LIKE ?", [column]);
+        if (columns.length === 0) {
+          await pool.query(`ALTER TABLE orders ADD COLUMN ${column} ${definition}`);
+        }
+      }
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS affiliate_partners (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL UNIQUE,
+          social_platform VARCHAR(40) NOT NULL,
+          social_handle VARCHAR(120) NOT NULL,
+          profile_url VARCHAR(500) DEFAULT NULL,
+          follower_count INT UNSIGNED NOT NULL DEFAULT 0,
+          status ENUM('pending','approved','rejected','paused') NOT NULL DEFAULT 'pending',
+          referral_code VARCHAR(32) DEFAULT NULL UNIQUE,
+          discount_percent DECIMAL(5,2) NOT NULL DEFAULT 15,
+          commission_share_percent DECIMAL(5,2) NOT NULL DEFAULT 25,
+          admin_notes VARCHAR(1000) DEFAULT NULL,
+          reviewed_by INT DEFAULT NULL,
+          applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          approved_at DATETIME DEFAULT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_affiliate_partners_status (status),
+          CONSTRAINT fk_affiliate_partners_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          CONSTRAINT fk_affiliate_partners_reviewer FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS affiliate_commissions (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          partner_id INT NOT NULL,
+          order_id INT NOT NULL UNIQUE,
+          referral_code VARCHAR(32) NOT NULL,
+          order_subtotal DECIMAL(10,2) NOT NULL,
+          discount_amount DECIMAL(10,2) NOT NULL,
+          revenue_ex_tax DECIMAL(10,2) NOT NULL,
+          product_cost DECIMAL(10,2) NOT NULL,
+          fulfillment_cost DECIMAL(10,2) NOT NULL,
+          rto_reserve DECIMAL(10,2) NOT NULL,
+          payment_fee DECIMAL(10,2) NOT NULL,
+          contribution_profit DECIMAL(10,2) NOT NULL,
+          commission_share_percent DECIMAL(5,2) NOT NULL,
+          commission_amount DECIMAL(10,2) NOT NULL,
+          retained_profit DECIMAL(10,2) NOT NULL,
+          retained_margin_percent DECIMAL(6,3) NOT NULL,
+          status ENUM('pending','approved','paid','reversed') NOT NULL DEFAULT 'pending',
+          paid_at DATETIME DEFAULT NULL,
+          reversed_at DATETIME DEFAULT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_affiliate_commissions_partner_status (partner_id, status),
+          INDEX idx_affiliate_commissions_created_at (created_at),
+          CONSTRAINT fk_affiliate_commissions_partner FOREIGN KEY (partner_id) REFERENCES affiliate_partners(id) ON DELETE RESTRICT,
+          CONSTRAINT fk_affiliate_commissions_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT
+        ) ENGINE=InnoDB
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS affiliate_payouts (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          partner_id INT NOT NULL,
+          commission_id INT NOT NULL UNIQUE,
+          amount DECIMAL(10,2) NOT NULL,
+          reference VARCHAR(120) NOT NULL,
+          paid_by INT NOT NULL,
+          paid_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_affiliate_payouts_partner_paid (partner_id, paid_at),
+          CONSTRAINT fk_affiliate_payouts_partner FOREIGN KEY (partner_id) REFERENCES affiliate_partners(id) ON DELETE RESTRICT,
+          CONSTRAINT fk_affiliate_payouts_commission FOREIGN KEY (commission_id) REFERENCES affiliate_commissions(id) ON DELETE RESTRICT,
+          CONSTRAINT fk_affiliate_payouts_admin FOREIGN KEY (paid_by) REFERENCES users(id) ON DELETE RESTRICT
+        ) ENGINE=InnoDB
+      `);
+
+      const defaults = [
+        ['default_customer_discount_percent', '15'],
+        ['default_commission_share_percent', '25'],
+        ['fulfillment_cost', '220'],
+        ['rto_reserve', '100'],
+        ['online_payment_fee_percent', '2'],
+        ['minimum_retained_margin_percent', '12'],
+        ['target_retained_margin_percent', '20'],
+        ['minimum_order_amount', '599'],
+      ];
+      for (const [key, value] of defaults) {
+        await pool.query(
+          `INSERT IGNORE INTO settings (group_name, key_name, value)
+           VALUES ('affiliate_program', ?, ?)`,
+          [key, value]
+        );
+      }
+    },
+  },
 ];
 
 module.exports = migrations;
