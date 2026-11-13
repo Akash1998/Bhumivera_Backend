@@ -3,6 +3,7 @@ const pool = require('../config/db');
 const { authenticateAdmin, authenticateUser } = require('../middleware/authMiddleware');
 const { referralPreviewLimiter } = require('../middleware/rateLimiter');
 const { calculateAffiliateProfit } = require('../services/affiliateProfitPolicy');
+const { parsePromoterProfileUrl } = require('../services/promoterProfileUrl');
 const {
   defaultConfig,
   getReferralConfig,
@@ -219,20 +220,31 @@ router.get('/offer', referralPreviewLimiter, async (req, res) => {
 
 router.post('/partner/apply', authenticateUser, async (req, res) => {
   const socialPlatform = typeof req.body?.socialPlatform === 'string' ? req.body.socialPlatform.trim().slice(0, 40) : '';
-  const socialHandle = typeof req.body?.socialHandle === 'string' ? req.body.socialHandle.trim().slice(0, 120) : '';
+  const submittedHandle = typeof req.body?.socialHandle === 'string' ? req.body.socialHandle.trim().slice(0, 120) : '';
   const profileUrl = typeof req.body?.profileUrl === 'string' ? req.body.profileUrl.trim().slice(0, 500) : '';
   const followerCount = Number(req.body?.followerCount);
-  if (!socialPlatform || !socialHandle || !Number.isSafeInteger(followerCount) || followerCount < 0 || followerCount > 100000000) {
+  const parsedProfile = parsePromoterProfileUrl(profileUrl);
+  const supportedPlatforms = new Set(['Facebook', 'Instagram', 'YouTube']);
+  if (!socialPlatform || !submittedHandle || !Number.isSafeInteger(followerCount) || followerCount < 0 || followerCount > 100000000) {
     return res.status(400).json({ code: 'INVALID_PARTNER_APPLICATION', message: 'Add your platform, profile name, and a valid follower count.' });
   }
-  if (profileUrl) {
+  if (supportedPlatforms.has(socialPlatform) &&
+      (!parsedProfile || parsedProfile.platform !== socialPlatform ||
+        parsedProfile.handle.toLowerCase() !== submittedHandle.toLowerCase())) {
+    return res.status(400).json({
+      code: 'INVALID_PARTNER_PROFILE_URL',
+      message: 'Paste the public HTTPS profile URL for the selected platform. The platform and profile name must match that URL.',
+    });
+  }
+  if (!supportedPlatforms.has(socialPlatform) && profileUrl) {
     try {
-      const parsed = new URL(profileUrl);
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('Unsupported profile URL.');
+      const parsedUrl = new URL(profileUrl);
+      if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') throw new Error('Unsupported profile URL.');
     } catch {
       return res.status(400).json({ code: 'INVALID_PARTNER_PROFILE_URL', message: 'Use a valid public profile URL.' });
     }
   }
+  const socialHandle = parsedProfile?.handle || submittedHandle;
   try {
     const result = await applyForPartner({
       userId: req.user.id,
