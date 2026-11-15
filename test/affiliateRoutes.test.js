@@ -12,6 +12,7 @@ const authMiddlewarePath = path.resolve(__dirname, '../middleware/authMiddleware
 const affiliateRoutesPath = path.resolve(__dirname, '../routes/affiliateRoutes.js');
 const originalLoad = Module._load;
 let capturedApplication;
+let capturedPerkUpdate;
 process.env.JWT_SECRET = secret;
 
 Module._load = function (request, parent, isMain) {
@@ -25,6 +26,10 @@ Module._load = function (request, parent, isMain) {
       applyForPartner: async application => {
         capturedApplication = application;
         return { alreadyApplied: false, partner: { id: 99 } };
+      },
+      submitPartnerReelAndCode: async (userId, settings) => {
+        capturedPerkUpdate = { userId, settings };
+        return { partner: { id: 99 } };
       },
     };
   }
@@ -152,6 +157,43 @@ describe('affiliate routes', () => {
     assert.equal(response.status, 400);
     assert.equal((await response.json()).code, 'INVALID_PARTNER_APPLICATION');
     assert.equal(capturedApplication, null);
+  });
+
+  it('rejects the legacy standalone collaboration choices for new applications', async () => {
+    capturedApplication = null;
+    const response = await request('POST', '/partner/apply', true, {
+      socialPlatform: 'Instagram',
+      socialHandle: '@creator',
+      profileUrl: 'https://www.instagram.com/creator/',
+      followerCount: 5000,
+      followerTier: '1k_10k',
+      contentNiche: 'Skincare',
+      collaborationType: 'affiliate_commission',
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_PARTNER_APPLICATION');
+    assert.equal(capturedApplication, null);
+  });
+
+  it('marks new trial reimbursement submissions as coming soon but keeps vanity-code updates available', async () => {
+    capturedPerkUpdate = null;
+    const trialSubmission = await request('PATCH', '/partner/me/perks', true, {
+      reelUrl: 'https://www.instagram.com/reel/example/',
+      trialOrderId: 123,
+    });
+    assert.equal(trialSubmission.status, 409);
+    assert.equal((await trialSubmission.json()).code, 'CREATOR_PAID_COLLABORATION_COMING_SOON');
+    assert.equal(capturedPerkUpdate, null);
+
+    const codeUpdate = await request('PATCH', '/partner/me/perks', true, {
+      customCode: 'CREATOR10',
+    });
+    assert.equal(codeUpdate.status, 200);
+    assert.deepEqual(capturedPerkUpdate, {
+      userId: 7,
+      settings: { customCode: 'CREATOR10', reelUrl: '', trialOrderId: null },
+    });
   });
 
   it('rejects invalid analytics periods and malformed scenario inputs before querying data', async () => {

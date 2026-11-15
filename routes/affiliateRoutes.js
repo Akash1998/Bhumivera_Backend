@@ -233,7 +233,7 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
   };
   const allowedFollowerTiers = new Set(['under_1k', '1k_10k', '10k_50k', '50k_plus']);
   const allowedContentNiches = new Set(['Skincare', 'Haircare', 'Lifestyle', 'Wellness', 'Unboxing']);
-  const allowedCollaborations = new Set(['product_gifting', 'affiliate_commission', 'both']);
+  const allowedCollaborations = new Set(['both']);
   if (!Object.hasOwn(allowedProfileHosts, socialPlatform) ||
       !submittedHandle ||
       !allowedFollowerTiers.has(followerTier) ||
@@ -242,7 +242,7 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
       !Number.isSafeInteger(followerCount) ||
       followerCount < 0 ||
       followerCount > 100000000) {
-    return res.status(400).json({ code: 'INVALID_PARTNER_APPLICATION', message: 'Complete your platform, profile, audience tier, niche, and collaboration preference.' });
+    return res.status(400).json({ code: 'INVALID_PARTNER_APPLICATION', message: 'Choose the current product-gifting/barter and affiliate profit-sharing track, then complete your platform, profile, audience tier, and niche.' });
   }
   let parsedUrl;
   try {
@@ -290,6 +290,16 @@ router.patch('/partner/me/perks', authenticateUser, async (req, res) => {
   const customCode = typeof req.body?.customCode === 'string' ? req.body.customCode.trim().toUpperCase() : '';
   const reelUrl = typeof req.body?.reelUrl === 'string' ? req.body.reelUrl.trim() : '';
   const trialOrderId = req.body?.trialOrderId ? Number(req.body.trialOrderId) : null;
+  const hasTrialOrderSubmission = req.body?.trialOrderId !== undefined &&
+    req.body?.trialOrderId !== null &&
+    req.body?.trialOrderId !== '';
+
+  if (reelUrl || hasTrialOrderSubmission) {
+    return res.status(409).json({
+      code: 'CREATOR_PAID_COLLABORATION_COMING_SOON',
+      message: 'Paid creator collaborations and trial reimbursements are coming soon. The current program is product gifting/barter with affiliate profit sharing.',
+    });
+  }
 
   if (customCode && !/^[A-Z0-9_-]{4,20}$/.test(customCode)) {
     return res.status(400).json({
