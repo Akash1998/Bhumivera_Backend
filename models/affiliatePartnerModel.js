@@ -2,15 +2,40 @@ const crypto = require('node:crypto');
 const pool = require('../config/db');
 
 const defaultProgramConfig = Object.freeze({
-  default_customer_discount_percent: 15,
-  default_commission_share_percent: 25,
-  fulfillment_cost: 220,
-  rto_reserve: 100,
+  default_customer_discount_percent: 10,
+  default_commission_share_percent: 20,
+  fulfillment_cost: 110,
+  rto_reserve: 40,
   online_payment_fee_percent: 2,
-  minimum_retained_margin_percent: 12,
-  target_retained_margin_percent: 20,
+  minimum_retained_margin_percent: 15,
+  target_retained_margin_percent: 25,
   minimum_order_amount: 599,
 });
+
+const CREATOR_MILESTONES = Object.freeze([
+  { orders: 3, key: 'milestone_3_credited_at', rewardInr: 500, label: '₹500 Bhumivera Luxury Gift Card', shareBoost: null },
+  { orders: 10, key: 'milestone_10_credited_at', rewardInr: 1200, label: '₹1,200 Creator Bonus + Full-Range PR Box', shareBoost: null },
+  { orders: 25, key: 'milestone_25_upgraded_at', rewardInr: 2500, label: '₹2,500 VIP Gift Card + 25% Profit Share Tier', shareBoost: 25 },
+]);
+
+const creditCreatorReferralWallet = async (connection, { userId, amount, description, referenceId }) => {
+  const credit = Math.round((Number(amount) || 0) * 100) / 100;
+  if (!(credit > 0)) return 0;
+  await connection.query(
+    'INSERT IGNORE INTO referral_wallets (user_id, balance) VALUES (?, 0.00)',
+    [userId]
+  );
+  await connection.query(
+    'UPDATE referral_wallets SET balance = balance + ? WHERE user_id = ?',
+    [credit, userId]
+  );
+  await connection.query(
+    `INSERT INTO referral_wallet_transactions (user_id, amount, type, description, reference_id)
+     VALUES (?, ?, 'credit', ?, ?)`,
+    [userId, credit, description, referenceId]
+  );
+  return credit;
+};
 
 const configKeys = Object.keys(defaultProgramConfig);
 const createReferralCode = () => `BV${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
@@ -631,6 +656,42 @@ const syncCommissionOrderStatus = async (orderId, orderStatus, connection = pool
        WHERE order_id = ? AND status = 'pending'`,
       [orderId]
     );
+    const [[comm]] = await connection.query(
+      'SELECT partner_id FROM affiliate_commissions WHERE order_id = ? LIMIT 1',
+      [orderId]
+    ).catch(() => [[]]);
+    if (comm?.partner_id) {
+      const [[partner]] = await connection.query(
+        'SELECT * FROM affiliate_partners WHERE id = ? FOR UPDATE',
+        [comm.partner_id]
+      ).catch(() => [[]]);
+      const [[counts]] = await connection.query(
+        `SELECT COUNT(*) AS delivered_count
+         FROM affiliate_commissions
+         WHERE partner_id = ? AND status IN ('approved', 'paid')`,
+        [comm.partner_id]
+      ).catch(() => [[{ delivered_count: 0 }]]);
+      const delivered = Number(counts?.delivered_count) || 0;
+      if (partner) {
+        for (const m of CREATOR_MILESTONES) {
+          if (delivered >= m.orders && !partner[m.key]) {
+            await connection.query(
+              `UPDATE affiliate_partners
+               SET ${m.key} = CURRENT_TIMESTAMP,
+                   commission_share_percent = CASE WHEN ? IS NOT NULL AND commission_share_percent < ? THEN ? ELSE commission_share_percent END
+               WHERE id = ?`,
+              [m.shareBoost, m.shareBoost || 0, m.shareBoost || 0, partner.id]
+            );
+            await creditCreatorReferralWallet(connection, {
+              userId: partner.user_id,
+              amount: m.rewardInr,
+              description: `Creator Milestone Unlocked (${m.orders} Delivered Orders): ${m.label}`,
+              referenceId: `creator-milestone-${partner.id}-${m.orders}`,
+            });
+          }
+        }
+      }
+    }
   } else if (['cancelled', 'returned'].includes(orderStatus)) {
     await connection.query(
       `UPDATE affiliate_commissions
@@ -638,6 +699,44 @@ const syncCommissionOrderStatus = async (orderId, orderStatus, connection = pool
        WHERE order_id = ? AND status IN ('pending', 'approved', 'paid')`,
       [orderId]
     );
+  }
+};
+
+const submitPartnerReelAndCode = async (userId, { customCode, reelUrl, trialOrderId }) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [[partner]] = await connection.query(
+      'SELECT * FROM affiliate_partners WHERE user_id = ? FOR UPDATE',
+      [userId]
+    );
+    if (!partner) {
+      const error = new Error('Promoter account not found.');
+      error.status = 404;
+      throw error;
+    }
+    const nextCode = customCode
+      ? String(customCode).trim().toUpperCase()
+      : partner.referral_code;
+    const nextReelUrl = reelUrl ? String(reelUrl).trim().slice(0, 500) : partner.reel_submission_url;
+    const nextTrialOrderId = trialOrderId ? Number(trialOrderId) : partner.trial_order_id;
+    const nextCashbackStatus = reelUrl && (!partner.trial_cashback_status || partner.trial_cashback_status === 'none')
+      ? 'pending_review'
+      : (partner.trial_cashback_status || 'none');
+
+    await connection.query(
+      `UPDATE affiliate_partners
+       SET referral_code = ?, reel_submission_url = ?, trial_order_id = ?, trial_cashback_status = ?
+       WHERE id = ?`,
+      [nextCode, nextReelUrl, nextTrialOrderId, nextCashbackStatus, partner.id]
+    );
+    await connection.commit();
+    return getPartnerDashboard(userId);
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
 };
 
@@ -658,4 +757,6 @@ module.exports = {
   getPartnerPerformance,
   payCommission,
   syncCommissionOrderStatus,
+  submitPartnerReelAndCode,
+  CREATOR_MILESTONES,
 };

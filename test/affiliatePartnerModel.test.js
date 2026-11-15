@@ -59,7 +59,7 @@ describe('affiliate partner applications', () => {
     assert.equal(result.partner.status, 'pending');
     assert.match(result.partner.referral_code, /^BV[A-F0-9]{10}$/);
     assert.equal(insertParams[5], result.partner.referral_code);
-    assert.equal(result.partner.discount_percent, 15);
-    assert.equal(result.partner.commission_share_percent, 25);
+    assert.equal(result.partner.discount_percent, 10);
+    assert.equal(result.partner.commission_share_percent, 20);
   });
 });

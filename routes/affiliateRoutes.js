@@ -28,6 +28,7 @@ const {
   getAdminPromoterAnalytics,
   getPartnerPerformance,
   payCommission,
+  submitPartnerReelAndCode,
 } = require('../models/affiliatePartnerModel');
 
 const router = express.Router();
@@ -282,6 +283,41 @@ router.get('/partner/me', authenticateUser, async (req, res) => {
   } catch (error) {
     console.error('[AFFILIATE_PARTNER_DASHBOARD]', error);
     return res.status(500).json({ message: 'Could not load your promoter dashboard.' });
+  }
+});
+
+router.patch('/partner/me/perks', authenticateUser, async (req, res) => {
+  const customCode = typeof req.body?.customCode === 'string' ? req.body.customCode.trim().toUpperCase() : '';
+  const reelUrl = typeof req.body?.reelUrl === 'string' ? req.body.reelUrl.trim() : '';
+  const trialOrderId = req.body?.trialOrderId ? Number(req.body.trialOrderId) : null;
+
+  if (customCode && !/^[A-Z0-9_-]{4,20}$/.test(customCode)) {
+    return res.status(400).json({
+      code: 'INVALID_CUSTOM_CODE',
+      message: 'Custom promo code must be 4–20 letters or numbers (e.g., AYEESHA10).',
+    });
+  }
+  if (reelUrl) {
+    try {
+      const parsed = new URL(reelUrl);
+      if (parsed.protocol !== 'https:') throw new Error('HTTPS required');
+    } catch {
+      return res.status(400).json({
+        code: 'INVALID_REEL_URL',
+        message: 'Enter a valid HTTPS link to your published Instagram Reel or YouTube Short.',
+      });
+    }
+  }
+  try {
+    const dashboard = await submitPartnerReelAndCode(req.user.id, { customCode, reelUrl, trialOrderId });
+    return res.json({ success: true, dashboard });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ code: 'PROMOTER_CODE_TAKEN', message: 'That custom code is already taken. Try adding 10 or 15 at the end.' });
+    }
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error('[AFFILIATE_PARTNER_PERKS_UPDATE]', error);
+    return res.status(500).json({ message: 'Could not update your creator perks.' });
   }
 });
 

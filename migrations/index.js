@@ -1437,6 +1437,86 @@ const migrations = [
       }
     },
   },
+  {
+    version: 91,
+    name: 'upgrade creator perk engine, adjusted unit costs, and non-stacking milestones',
+    up: async () => {
+      const partnerColumns = [
+        ['creator_track', "ENUM('commission_perks','barter_cashback','both') NOT NULL DEFAULT 'both'"],
+        ['welcome_gift_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 300.00'],
+        ['welcome_gift_credited_at', 'DATETIME DEFAULT NULL'],
+        ['milestone_3_credited_at', 'DATETIME DEFAULT NULL'],
+        ['milestone_10_credited_at', 'DATETIME DEFAULT NULL'],
+        ['milestone_25_upgraded_at', 'DATETIME DEFAULT NULL'],
+        ['trial_order_id', 'INT DEFAULT NULL'],
+        ['reel_submission_url', 'VARCHAR(500) DEFAULT NULL'],
+        ['trial_cashback_status', "ENUM('none','pending_review','refunded') NOT NULL DEFAULT 'none'"],
+      ];
+      for (const [col, def] of partnerColumns) {
+        const [exists] = await pool.query('SHOW COLUMNS FROM affiliate_partners LIKE ?', [col]);
+        if (exists.length === 0) {
+          await pool.query(`ALTER TABLE affiliate_partners ADD COLUMN ${col} ${def}`);
+        }
+      }
+
+      const optimizedSettings = [
+        ['default_customer_discount_percent', '10'],
+        ['default_commission_share_percent', '20'],
+        ['fulfillment_cost', '110'],
+        ['rto_reserve', '40'],
+        ['online_payment_fee_percent', '2'],
+        ['minimum_retained_margin_percent', '15'],
+        ['target_retained_margin_percent', '25'],
+        ['minimum_order_amount', '599'],
+      ];
+      for (const [key, value] of optimizedSettings) {
+        await pool.query(
+          `INSERT INTO settings (group_name, key_name, value)
+           VALUES ('affiliate_program', ?, ?)
+           ON DUPLICATE KEY UPDATE value = VALUES(value)`,
+          [key, value]
+        );
+      }
+
+      const skuEconomics = [
+        { sku: 'BV-LUX-ASB-08', cost: 44.00, mrp: 149.00, sp: 99.00 },
+        { sku: 'BV-LUX-ASOAP-05', cost: 44.00, mrp: 149.00, sp: 99.00 },
+        { sku: 'BV-LUX-CFW-01', cost: 80.00, mrp: 299.00, sp: 249.00 },
+        { sku: 'BV-LUX-SBFW-02', cost: 82.00, mrp: 399.00, sp: 299.00 },
+        { sku: 'BV-LUX-SH2IN1-03', cost: 105.00, mrp: 449.00, sp: 375.00 },
+        { sku: 'BV-LUX-CSOAP-04', cost: 44.00, mrp: 199.00, sp: 129.00 },
+        { sku: 'BV-LUX-TULSI-06', cost: 75.00, mrp: 399.00, sp: 199.00 },
+      ];
+      for (const item of skuEconomics) {
+        await pool.query(
+          `UPDATE inventory_product_meta
+           SET cost_price = ?, mrp = ?, selling_price = ?
+           WHERE sku = ?`,
+          [item.cost, item.mrp, item.sp, item.sku]
+        );
+        await pool.query(
+          `UPDATE products
+           SET price = ?, discount_price = ?
+           WHERE sku = ?`,
+          [item.mrp, item.sp, item.sku]
+        );
+      }
+
+      await pool.query(
+        `UPDATE cart_rules SET max_cart_value = 1098.99, priority = 100
+         WHERE min_cart_value >= 790 AND min_cart_value <= 805`
+      );
+      await pool.query(
+        `UPDATE cart_rules SET max_cart_value = 1398.99, priority = 150
+         WHERE min_cart_value >= 1090 AND min_cart_value <= 1105`
+      );
+      await pool.query(
+        `UPDATE cart_rules SET max_cart_value = NULL, priority = 200
+         WHERE min_cart_value >= 1390 AND min_cart_value <= 1405`
+      );
+    },
+  },
 ];
 
 module.exports = migrations;
+

@@ -19,20 +19,28 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
     return (start === null || (Number.isFinite(start) && start <= currentTime)) &&
       (end === null || (Number.isFinite(end) && end >= currentTime));
   });
+
   const enforcedRules = userProfile.enforceMinimum !== false
     ? activeRules.filter(rule => Number(rule.enforce_min_checkout) === 1 && cartSubtotal < toNumber(rule.min_cart_value))
     : [];
   const enforcedMin = enforcedRules.reduce((minimum, rule) => Math.max(minimum, toNumber(rule.min_cart_value)), 0) || null;
-  const matchedRules = activeRules
+
+  const allMatchedRules = activeRules
     .filter(rule => cartSubtotal >= toNumber(rule.min_cart_value) &&
       (rule.max_cart_value === null || rule.max_cart_value === undefined || rule.max_cart_value === '' || cartSubtotal <= toNumber(rule.max_cart_value)))
-    .sort((a, b) => toNumber(b.priority) - toNumber(a.priority) || toNumber(a.id) - toNumber(b.id));
+    .sort((a, b) => toNumber(b.min_cart_value) - toNumber(a.min_cart_value) || toNumber(b.priority) - toNumber(a.priority) || toNumber(a.id) - toNumber(b.id));
+
+  const hasPercentageMilestones = allMatchedRules.some(r => toNumber(r.discount_percent) > 0);
+  const matchedRules = (userProfile.nonStackingMilestones === true || hasPercentageMilestones) && allMatchedRules.length > 1
+    ? [allMatchedRules[0]]
+    : allMatchedRules.sort((a, b) => toNumber(b.priority) - toNumber(a.priority) || toNumber(a.id) - toNumber(b.id));
 
   const rawDiscount = matchedRules.reduce((total, rule) => {
     const fixed = Math.max(0, toNumber(rule.discount_amount));
     const percent = Math.max(0, toNumber(rule.discount_percent));
     return total + fixed + cartSubtotal * percent / 100;
   }, 0);
+
   const gifts = matchedRules
     .filter(rule => rule.gift_product_id !== null && rule.gift_product_id !== undefined)
     .map(rule => ({
@@ -42,6 +50,7 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
       productSku: rule.gift_product_sku || null,
       quantity: Math.max(1, Math.trunc(toNumber(rule.gift_quantity)) || 1),
     }));
+
   const matchedIds = new Set(matchedRules.map(rule => String(rule.id)));
   const tiers = activeRules.map(rule => {
     const minimum = toNumber(rule.min_cart_value);
@@ -54,7 +63,7 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
       badge: rule.badge_text || rule.name,
       minCartValue: minimum,
       maxCartValue: maximum,
-      unlocked: matchedIds.has(String(rule.id)),
+      unlocked: matchedIds.has(String(rule.id)) || cartSubtotal >= minimum,
       missingAmount: Math.max(0, minimum - cartSubtotal),
       progressPct: minimum > 0 ? Math.min(100, Math.max(0, cartSubtotal * 100 / minimum)) : 100,
       freeShipping: Number(rule.free_shipping_enabled) === 1,
@@ -72,7 +81,7 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
     tiers,
     totalDiscount: Math.min(cartSubtotal, Math.max(0, Number(rawDiscount.toFixed(2)))),
     gifts,
-    freeShipping: matchedRules.some(rule => Number(rule.free_shipping_enabled) === 1),
+    freeShipping: allMatchedRules.some(rule => Number(rule.free_shipping_enabled) === 1),
     loyaltyBonusPoints: matchedRules.reduce((total, rule) => total + Math.max(0, Math.trunc(toNumber(rule.loyalty_bonus_points))), 0),
     badges: matchedRules.map(rule => rule.badge_text).filter(Boolean),
     membershipTier: userProfile.loyaltyTierName || null,
