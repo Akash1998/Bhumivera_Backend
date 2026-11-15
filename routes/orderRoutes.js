@@ -135,7 +135,7 @@ router.post("/:id/cancel", authenticateUser, async (req, res) => {
         success: false,
         code: isDelivered ? "ORDER_DELIVERED_NON_RETURNABLE" : "ORDER_ALREADY_PACKED_OR_SHIPPED",
         message: isDelivered
-          ? `Order #${order.order_number || order.id} is already delivered. All Bhumivera formulations are intimate personal care cosmetics and are 100% non-returnable once delivered.`
+          ? `Order #${order.order_number || order.id} is already delivered. Change-of-mind returns are not available for sealed personal-care products. Contact support if you need help with a product or delivery issue.`
           : `Order #${order.order_number || order.id} is already ${currentStatus.replace(/_/g, ' ')} and cannot be cancelled because it has already been packed and dispatched from our warehouse. Orders can only be cancelled before they are packed and shipped.`,
       });
     }

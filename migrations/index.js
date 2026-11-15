@@ -1516,6 +1516,16 @@ const migrations = [
       );
     },
   },
+  {
+    version: 92,
+    name: 'store creator partnership intent',
+    up: async () => {
+      const [columns] = await pool.query('SHOW COLUMNS FROM affiliate_partners LIKE ?', ['partnership_intent']);
+      if (columns.length === 0) {
+        await pool.query('ALTER TABLE affiliate_partners ADD COLUMN partnership_intent VARCHAR(800) DEFAULT NULL');
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

@@ -102,7 +102,7 @@ function buildOrderCard(order, items = [], returnInfo = null, returnPolicyDays =
   const currentStep = stepMap[status] ?? 0;
   const cancellable = ['pending', 'placed', 'confirmed', 'processing'].includes(status);
   const canReturn = false;
-  const returnEligibilityReason = 'All personal care formulations are strictly 100% non-returnable once delivered.';
+  const returnEligibilityReason = 'Sealed personal-care products are not eligible for change-of-mind returns. Report a product issue to customer support for review; a missing video does not by itself prevent a claim.';
 
   const addr = parseJsonSafe(order.address_snapshot, {});
   const ordNum = order.order_number || String(order.id).padStart(9, '0');
@@ -362,10 +362,10 @@ async function cancelOrderTool(args = {}, context = {}) {
     const isDelivered = targetOrder.status === 'delivered';
     return {
       success: false,
-      code: isDelivered ? 'ORDER_DELIVERED_NON_RETURNABLE' : 'ORDER_NOT_CANCELLABLE',
+      code: isDelivered ? 'ORDER_DELIVERED' : 'ORDER_NOT_CANCELLABLE',
       message: isDelivered
-        ? `Order #${targetOrder.orderNumber} has already been delivered. All Bhumivera botanical formulations are intimate personal care cosmetics and are 100% non-returnable once delivered. If your item arrived damaged or defective, please submit an uncut 360° unboxing video within 48 hours for direct replacement or refund without return shipping.`
-        : `Order #${targetOrder.orderNumber} is already '${targetOrder.status}' and cannot be cancelled because it has already been packed and dispatched from our warehouse. Orders can only be cancelled before they are packed and shipped. Delivered items are 100% non-returnable.`,
+        ? `Order #${targetOrder.orderNumber} has already been delivered. Change-of-mind returns are not available for sealed personal-care products. If there is a product or delivery issue, contact support for review; photos or an unboxing video may help but are not mandatory.`
+        : `Order #${targetOrder.orderNumber} is already '${targetOrder.status}' and may no longer be cancellable because it has been packed or dispatched. Contact support if you believe another remedy applies.`,
       orderCards: [targetOrder],
     };
   }
@@ -500,8 +500,8 @@ async function initiateReturnTool(args = {}, context = {}) {
 
   return {
     success: false,
-    code: 'ITEMS_NON_RETURNABLE',
-    message: 'All Bhumivera formulations are intimate personal care cosmetics and are 100% non-returnable once delivered. We do not accept returns. If your parcel arrived damaged, leaking, or with an incorrect product, please submit an uncut 360° unboxing video to our concierge team within 48 hours for direct replacement or refund without return shipping.',
+    code: 'RETURN_REVIEW_REQUIRED',
+    message: 'Change-of-mind returns are not available for sealed personal-care products. If your item is damaged, defective, leaking, incorrect, missing, or materially misdescribed, contact customer support promptly for review. Photos or an unboxing video may help but are not mandatory; any remedy is assessed under applicable law.',
     orderCards: lookup?.order ? [lookup.order] : [],
   };
 }
@@ -626,8 +626,8 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
     dispatchCutoffIst: '14:00 IST (2:00 PM)',
     estimatedDeliveryBeforeCutoff: '4–6 calendar days',
     estimatedDeliveryAfterCutoff: '5–7 calendar days',
-    returnWindowDays: 0,
-    returnPolicy: '100% Non-Returnable. All personal care formulations are strictly non-returnable once delivered. Pre-dispatch cancellation is available before packing and shipping.',
+    returnWindowDays: 7,
+    returnPolicy: 'Sealed personal-care items are not eligible for change-of-mind returns. Report product or delivery issues to support for review; statutory rights are not limited.',
     isReturnable: false,
   };
 
@@ -646,8 +646,8 @@ async function queryInventoryCatalogTool(args = {}, context = {}) {
       freeShippingThresholdInr: freeThreshold,
       standardShippingChargeInr: stdCharge,
       expressShippingChargeInr: expCharge,
-      returnWindowDays: 0,
-      returnPolicy: '100% Non-Returnable. All personal care formulations are strictly non-returnable once delivered. Pre-dispatch cancellation is available before packing and shipping.',
+      returnWindowDays: retDays,
+      returnPolicy: 'Sealed personal-care items are not eligible for change-of-mind returns. Report product or delivery issues to support for review; statutory rights are not limited.',
       isReturnable: false,
       sampleStandardBelow500: calculateShippingCost({
         deliveryType: 'standard',
@@ -977,7 +977,7 @@ const SUPPORT_TOOLS_REGISTRY = Object.freeze({
   },
   initiate_return: {
     name: 'initiate_return',
-    description: 'Provide the strict 100% non-returnable policy for intimate personal care cosmetics and guide transit damage claims via 48-hour unboxing video.',
+    description: 'Explain the change-of-mind return restriction and direct product or delivery issue claims to support for review. Photos or videos are optional.',
     execute: initiateReturnTool,
   },
   check_refund_status: {

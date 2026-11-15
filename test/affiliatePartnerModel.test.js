@@ -10,6 +10,9 @@ let insertParams;
 let dashboardPartner = null;
 let dashboardSummary = null;
 let dashboardSummaryQuery = '';
+let dashboardCommissionsQuery = '';
+let dashboardCommissionTotal = 0;
+let dashboardCommissionsParams = [];
 
 const fakePool = {
   async query(sql, params = []) {
@@ -23,7 +26,12 @@ const fakePool = {
       dashboardSummaryQuery = sql;
       return [[dashboardSummary], []];
     }
+    if (sql.includes('SELECT COUNT(*) AS total FROM affiliate_commissions WHERE partner_id = ?')) {
+      return [[{ total: dashboardCommissionTotal }], []];
+    }
     if (sql.includes('SELECT c.id, c.order_id, c.order_subtotal')) {
+      dashboardCommissionsQuery = sql;
+      dashboardCommissionsParams = params;
       return [[], []];
     }
     if (sql.includes('INSERT INTO affiliate_partners')) {
@@ -35,9 +43,10 @@ const fakePool = {
         profile_url: params[3],
         follower_count: params[4],
         status: 'pending',
-        referral_code: params[8],
-        discount_percent: params[9],
-        commission_share_percent: params[10],
+        partnership_intent: params[8],
+        referral_code: params[9],
+        discount_percent: params[10],
+        commission_share_percent: params[11],
       };
       return [{ insertId: 1 }, undefined];
     }
@@ -63,30 +72,39 @@ describe('affiliate partner applications', () => {
       socialHandle: '@creator',
       profileUrl: 'https://instagram.com/creator',
       followerCount: 1000,
+      partnershipIntent: 'I want to create honest, useful skincare education with my community over time.',
     });
 
     assert.equal(result.alreadyApplied, false);
     assert.equal(result.partner.status, 'pending');
     assert.match(result.partner.referral_code, /^BV[A-F0-9]{10}$/);
-    assert.equal(insertParams[8], result.partner.referral_code);
+    assert.equal(insertParams[8], result.partner.partnership_intent);
+    assert.equal(insertParams[9], result.partner.referral_code);
     assert.equal(result.partner.discount_percent, 10);
     assert.equal(result.partner.commission_share_percent, 20);
   });
 
   it("reports collected impact contributions from the partner's attributed orders", async () => {
     dashboardPartner = { id: 17 };
+    dashboardCommissionTotal = 65;
     dashboardSummary = {
       attributed_orders: 2,
       funded_impact_contributions: 1,
       impact_amount: '250.00',
     };
 
-    const dashboard = await getPartnerDashboard(42);
+    const dashboard = await getPartnerDashboard(42, { commissionPage: 3 });
 
     assert.equal(Number(dashboard.summary.funded_impact_contributions), 1);
     assert.equal(Number(dashboard.summary.impact_amount), 250);
     assert.match(dashboardSummaryQuery, /LEFT JOIN impact_contributions ic/);
     assert.match(dashboardSummaryQuery, /ic\.status = 'collected'/);
     assert.match(dashboardSummaryQuery, /ic\.order_id = c\.order_id/);
+    assert.match(dashboardCommissionsQuery, /c\.revenue_ex_tax/);
+    assert.match(dashboardCommissionsQuery, /c\.product_cost/);
+    assert.match(dashboardCommissionsQuery, /c\.contribution_profit/);
+    assert.match(dashboardCommissionsQuery, /c\.retained_profit/);
+    assert.deepEqual(dashboardCommissionsParams, [17, 20, 40]);
+    assert.deepEqual(dashboard.commissionPagination, { page: 3, pageSize: 20, total: 65, pages: 4 });
   });
 });

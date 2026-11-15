@@ -226,6 +226,9 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
   const followerTier = typeof req.body?.followerTier === 'string' ? req.body.followerTier.trim() : '';
   const contentNiche = typeof req.body?.contentNiche === 'string' ? req.body.contentNiche.trim() : '';
   const collaborationType = typeof req.body?.collaborationType === 'string' ? req.body.collaborationType.trim() : '';
+  const partnershipIntent = typeof req.body?.partnershipIntent === 'string'
+    ? req.body.partnershipIntent.trim()
+    : '';
   const allowedProfileHosts = {
     Facebook: ['facebook.com', 'fb.com'],
     Instagram: ['instagram.com'],
@@ -239,10 +242,12 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
       !allowedFollowerTiers.has(followerTier) ||
       !allowedContentNiches.has(contentNiche) ||
       !allowedCollaborations.has(collaborationType) ||
+      partnershipIntent.length < 30 ||
+      partnershipIntent.length > 800 ||
       !Number.isSafeInteger(followerCount) ||
       followerCount < 0 ||
       followerCount > 100000000) {
-    return res.status(400).json({ code: 'INVALID_PARTNER_APPLICATION', message: 'Choose the current product-gifting/barter and affiliate profit-sharing track, then complete your platform, profile, audience tier, and niche.' });
+    return res.status(400).json({ code: 'INVALID_PARTNER_APPLICATION', message: 'Complete your profile details and tell us in 30–800 characters how you want to build a genuine, nature-minded partnership.' });
   }
   let parsedUrl;
   try {
@@ -269,6 +274,7 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
       followerTier,
       contentNiche,
       collaborationType,
+      partnershipIntent,
     });
     return res.status(result.alreadyApplied ? 200 : 201).json({ success: true, ...result });
   } catch (error) {
@@ -278,8 +284,15 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
 });
 
 router.get('/partner/me', authenticateUser, async (req, res) => {
+  const commissionPage = Number(req.query?.commissionPage ?? 1);
+  if (!Number.isSafeInteger(commissionPage) || commissionPage < 1) {
+    return res.status(400).json({ code: 'INVALID_COMMISSION_PAGE', message: 'Choose a valid commission-ledger page.' });
+  }
   try {
-    return res.json({ success: true, dashboard: await getPartnerDashboard(req.user.id) });
+    return res.json({
+      success: true,
+      dashboard: await getPartnerDashboard(req.user.id, { commissionPage }),
+    });
   } catch (error) {
     console.error('[AFFILIATE_PARTNER_DASHBOARD]', error);
     return res.status(500).json({ message: 'Could not load your promoter dashboard.' });

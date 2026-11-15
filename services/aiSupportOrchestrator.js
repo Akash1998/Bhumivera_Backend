@@ -799,7 +799,7 @@ function synthesizeDeterministicResponse({
       if (intent === 'return_assistance') {
         return {
           reply:
-            `I can initiate a return or replacement for your delivered order right away! ` +
+            `I can help submit a request about your delivered order for review. ` +
             `Please reply with your **9-digit Order Number** (e.g., \`BHVM815899599\` or \`return #918273646\`) along with your registered **email address** or **10-digit phone number**.`,
           quickActions: [
             { label: 'Check Refund Status', prompt: 'Check the status of my refund' },
@@ -903,10 +903,10 @@ function synthesizeDeterministicResponse({
 
       if (intent === 'return_assistance') {
         const returnHint =
-          `🌿 **Strict 100% Non-Returnable Policy**:\n` +
-          `All Bhumivera formulations are intimate personal care cosmetics sealed with tamper-evident security. Once shipped or delivered, **all items are 100% non-returnable**.\n\n` +
-          `• **Pre-Dispatch Order Cancellation**: You can cancel an order **only if it has not yet been packed and shipped** (status Pending, Confirmed, or Processing).\n` +
-          `• **Damaged in Transit / Defective Parcel**: If an item arrived damaged or leaking, submit an uncut 360° unboxing video within 48 hours for direct replacement or refund without return shipping.`;
+          `**Change-of-mind returns**:\n` +
+          `We do not accept change-of-mind returns for sealed personal-care products. This does not prevent a customer from reporting a defective, damaged, leaking, incorrect, missing, or materially misdescribed item, or limit a remedy required by law.\n\n` +
+          `• **Cancellation**: You may request cancellation before dispatch. If the order has been packed or dispatched, it may no longer be possible to stop it; contact support if you believe another remedy applies.\n` +
+          `• **Product or Delivery Issue**: Contact support promptly with your order details. Photos or an unboxing video can help, but are not mandatory to raise a concern. A request will be reviewed; a refund or replacement is not guaranteed unless required by the circumstances or applicable law.`;
         const cancellable = lookupResult.orderCards.filter(ord =>
           ['pending', 'confirmed', 'placed', 'processing'].includes(String(ord.status || '').toLowerCase())
         );
@@ -927,7 +927,7 @@ function synthesizeDeterministicResponse({
         );
         const cancelHint =
           `Orders can only be cancelled **before they are packed and shipped** from our warehouse. ` +
-          `Once an order enters Packed or Shipped status, courier dispatch is locked and cannot be cancelled or recalled. Delivered items are 100% non-returnable.`;
+          `Once an order is packed or dispatched, it may no longer be possible to stop it. Sealed personal-care products are not eligible for change-of-mind returns, but product issues and statutory remedies can still be raised with support.`;
         return {
           reply: `Here are the orders on your account:\n${historyLines}\n\n${cancelHint}`,
           quickActions: [

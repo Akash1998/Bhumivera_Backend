@@ -87,6 +87,12 @@ describe('affiliate routes', () => {
     assert.equal((await request('POST', '/admin/simulate', false)).status, 401);
   });
 
+  it('rejects invalid creator ledger pages before querying the dashboard', async () => {
+    const response = await request('GET', '/partner/me?commissionPage=0');
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_COMMISSION_PAGE');
+  });
+
   it('rejects invalid promoter configuration before attempting persistence', async () => {
     const response = await request('PUT', '/admin/program-config');
     assert.equal(response.status, 400);
@@ -115,6 +121,7 @@ describe('affiliate routes', () => {
       followerTier: '1k_10k',
       contentNiche: 'Skincare',
       collaborationType: 'both',
+      partnershipIntent: 'I want to create honest, useful skincare education with my community over time.',
     };
     const response = await request('POST', '/partner/apply', true, application);
 
@@ -135,6 +142,7 @@ describe('affiliate routes', () => {
       followerTier: '1k_10k',
       contentNiche: 'Skincare',
       collaborationType: 'both',
+      partnershipIntent: 'I want to create honest, useful skincare education with my community over time.',
     });
 
     assert.equal(response.status, 400);
@@ -152,6 +160,7 @@ describe('affiliate routes', () => {
       followerTier: 'million_plus',
       contentNiche: 'Skincare',
       collaborationType: 'both',
+      partnershipIntent: 'I want to create honest, useful skincare education with my community over time.',
     });
 
     assert.equal(response.status, 400);
@@ -169,6 +178,25 @@ describe('affiliate routes', () => {
       followerTier: '1k_10k',
       contentNiche: 'Skincare',
       collaborationType: 'affiliate_commission',
+      partnershipIntent: 'I want to create honest, useful skincare education with my community over time.',
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_PARTNER_APPLICATION');
+    assert.equal(capturedApplication, null);
+  });
+
+  it('requires a substantive partnership intent before accepting a creator application', async () => {
+    capturedApplication = null;
+    const response = await request('POST', '/partner/apply', true, {
+      socialPlatform: 'Instagram',
+      socialHandle: '@creator',
+      profileUrl: 'https://www.instagram.com/creator/',
+      followerCount: 5000,
+      followerTier: '1k_10k',
+      contentNiche: 'Skincare',
+      collaborationType: 'both',
+      partnershipIntent: 'Free products please.',
     });
 
     assert.equal(response.status, 400);

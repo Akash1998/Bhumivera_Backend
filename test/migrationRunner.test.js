@@ -83,6 +83,29 @@ describe('runMigrations', () => {
     assert.ok(statements.some(sql => /FOREIGN KEY \(batch_id\) REFERENCES product_batches\(id\) ON DELETE SET NULL/.test(sql)));
   });
 
+  it('adds the creator partnership-intent field idempotently', async () => {
+    const migration = migrations.find(candidate => candidate.version === 92);
+    const originalQuery = pool.query;
+    const statements = [];
+    let hasIntentColumn = false;
+    pool.query = async (sql, params = []) => {
+      statements.push({ sql, params });
+      if (sql.startsWith('SHOW COLUMNS')) return [hasIntentColumn ? [{ Field: 'partnership_intent' }] : [], []];
+      if (sql.startsWith('ALTER TABLE affiliate_partners')) hasIntentColumn = true;
+      return [{}, []];
+    };
+
+    try {
+      await migration.up();
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.equal(statements.filter(({ sql }) => sql.startsWith('ALTER TABLE affiliate_partners')).length, 1);
+    assert.deepEqual(statements[0].params, ['partnership_intent']);
+  });
+
   it('preserves the production GST migration at version 83', async () => {
     const migration = migrations.find(candidate => candidate.version === 83);
     const originalQuery = pool.query;

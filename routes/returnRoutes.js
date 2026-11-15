@@ -20,7 +20,6 @@ const {
   toPaise,
 } = require('../services/returnRefundService');
 
-const REQUEST_REVIEW_DELAY_MS = 30 * 60 * 1000;
 const MAX_RETURN_IMAGES = 5;
 const MAX_RETURN_IMAGE_BYTES = 8 * 1024 * 1024;
 const RETURN_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -45,7 +44,6 @@ const getWindow = (deliveredAt, days) => {
   const deliveredTime = new Date(deliveredAt).getTime();
   if (!Number.isFinite(deliveredTime)) return null;
   return {
-    availableAt: new Date(deliveredTime + REQUEST_REVIEW_DELAY_MS),
     expiresAt: new Date(deliveredTime + days * 24 * 60 * 60 * 1000),
   };
 };
@@ -59,12 +57,14 @@ const isOwnedDeliveredOrder = async (orderId, userId) => {
   const days = await returnPolicyDays();
   const window = getWindow(order.delivered_at, days);
   if (!window) return { error: { status: 400, message: 'This order has no verified delivery timestamp. Contact customer support to review it.' } };
-  const now = Date.now();
-  if (now < window.availableAt.getTime()) {
-    return { error: { status: 403, code: 'RETURN_WINDOW_NOT_OPEN', message: 'The return option will be available 30 minutes after delivery.', available_at: window.availableAt } };
-  }
-  if (now > window.expiresAt.getTime()) {
-    return { error: { status: 403, code: 'RETURN_WINDOW_CLOSED', message: 'The configured return window for this order has ended.' } };
+  if (Date.now() > window.expiresAt.getTime()) {
+    return {
+      error: {
+        status: 403,
+        code: 'STANDARD_RETURN_WINDOW_CLOSED',
+        message: 'The standard online request period has ended. Contact customer support if you believe a warranty or statutory remedy applies.',
+      },
+    };
   }
   return { order, window, days };
 };
@@ -93,6 +93,7 @@ router.get('/my', authenticateUser, async (req, res) => {
 router.get('/eligibility', authenticateUser, async (req, res) => {
   try {
     const days = await returnPolicyDays();
+    const now = Date.now();
     const [orders] = await pool.query(
       `SELECT o.id, o.status, o.delivered_at, o.total,
         EXISTS(SELECT 1 FROM returns r WHERE r.order_id = o.id AND r.user_id = o.user_id
@@ -101,14 +102,23 @@ router.get('/eligibility', authenticateUser, async (req, res) => {
        ORDER BY o.delivered_at DESC, o.id DESC`,
       [req.user.id]
     );
-    return res.json(orders.map(order => ({
-      ...order,
-      return_window_days: 0,
-      return_available_at: null,
-      return_expires_at: null,
-      can_request_return: false,
-      non_returnable_reason: 'All Bhumivera personal care products are strictly 100% non-returnable once delivered.',
-    })));
+    return res.json(orders.map(order => {
+      const window = getWindow(order.delivered_at, days);
+      const alreadyRequested = Number(order.has_return_request) > 0;
+      const withinStandardWindow = Boolean(window && now <= window.expiresAt.getTime());
+      return {
+        ...order,
+        return_window_days: days,
+        return_available_at: null,
+        return_expires_at: window?.expiresAt || null,
+        can_request_return: !alreadyRequested && withinStandardWindow,
+        non_returnable_reason: alreadyRequested
+          ? 'A request for this order is already under review.'
+          : !withinStandardWindow
+            ? 'The standard online request period has ended. Contact customer support if you believe a warranty or statutory remedy applies.'
+            : null,
+      };
+    }));
   } catch (error) {
     console.error('[RETURNS_ELIGIBILITY]', error);
     return res.status(500).json({ message: 'Could not check return eligibility.' });
@@ -138,10 +148,46 @@ router.post('/upload-url', authenticateUser, async (req, res) => {
 });
 
 router.post('/', authenticateUser, async (req, res) => {
-  return res.status(400).json({
-    code: 'ITEMS_NON_RETURNABLE',
-    message: 'All Bhumivera formulations are intimate personal care cosmetics and are strictly 100% non-returnable once delivered. If your parcel arrived damaged, leaking, or with wrong items, please submit an uncut 360° unboxing video to customer support within 48 hours for direct replacement or refund without return shipping.',
-  });
+  const orderId = Number(req.body?.order_id);
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+  const refundType = req.body?.refund_type === 'replacement' ? 'replacement' : 'refund';
+  if (!Number.isSafeInteger(orderId) || orderId < 1 || !reason || reason.length > 255 ||
+      !description || description.length > 10000) {
+    return res.status(400).json({
+      code: 'INVALID_RETURN_REQUEST',
+      message: 'Provide a valid order, issue reason, and description (up to 10,000 characters).',
+    });
+  }
+  try {
+    const access = await isOwnedDeliveredOrder(orderId, req.user.id);
+    if (access.error) return res.status(access.error.status).json(access.error);
+    const returnId = await createReturn({
+      order_id: orderId,
+      user_id: req.user.id,
+      reason,
+      description,
+      refund_type: refundType,
+      refund_method: 'review',
+      items: [],
+      image_urls: [],
+    });
+    return res.status(201).json({
+      success: true,
+      message: 'Your request has been received for review. Submission does not guarantee a refund or replacement; any remedy will be assessed under the order terms and applicable law.',
+      data: { id: returnId, status: 'pending_admin_review' },
+    });
+  } catch (error) {
+    if (error.status) {
+      return res.status(error.status).json({
+        code: error.code || 'RETURN_REQUEST_REJECTED',
+        message: error.message,
+        ...(error.returnId ? { return_id: error.returnId } : {}),
+      });
+    }
+    console.error('[RETURN_REQUEST_CREATE]', error);
+    return res.status(500).json({ code: 'RETURN_REQUEST_FAILED', message: 'Could not submit the request. Please contact customer support.' });
+  }
 });
 
 router.get('/admin/all', authenticateAdmin, async (req, res) => {

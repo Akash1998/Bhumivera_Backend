@@ -4995,7 +4995,7 @@ router.post('/returns/rto-process', authenticateInventoryStaff, requirePermissio
       return res.status(400).json({
         success: false,
         code: 'POST_DELIVERY_RETURN_PROHIBITED',
-        message: `Order #${order.order_number || order.id} is marked DELIVERED. Under Bhumivera company policy, delivered orders are 100% non-returnable. Only undelivered (RTO) shipments can be returned and restocked.`,
+        message: `Order #${order.order_number || order.id} is marked DELIVERED and cannot be processed as a carrier RTO/restock. Customer product or delivery issue claims must be reviewed through support; do not treat this warehouse action as a decision on a customer remedy.`,
       });
     }
 

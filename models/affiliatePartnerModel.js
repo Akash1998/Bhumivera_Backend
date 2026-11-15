@@ -72,6 +72,7 @@ const applyForPartner = async ({
   followerTier,
   contentNiche,
   collaborationType,
+  partnershipIntent,
 }) => {
   const [existing] = await pool.query('SELECT * FROM affiliate_partners WHERE user_id = ? LIMIT 1', [userId]);
   if (existing.length) {
@@ -97,20 +98,20 @@ const applyForPartner = async ({
     await pool.query(
       `UPDATE affiliate_partners
        SET social_platform = ?, social_handle = ?, profile_url = ?, follower_count = ?,
-           follower_tier = ?, content_niche = ?, collaboration_type = ?,
+           follower_tier = ?, content_niche = ?, collaboration_type = ?, partnership_intent = ?,
            status = 'pending', referral_code = COALESCE(referral_code, ?),
            applied_at = CURRENT_TIMESTAMP, admin_notes = NULL
        WHERE id = ?`,
-      [socialPlatform, socialHandle, profileUrl || null, followerCount, followerTier, contentNiche, collaborationType, createReferralCode(), existing[0].id]
+      [socialPlatform, socialHandle, profileUrl || null, followerCount, followerTier, contentNiche, collaborationType, partnershipIntent || null, createReferralCode(), existing[0].id]
     );
   } else {
     const config = await getProgramConfig();
     await pool.query(
       `INSERT INTO affiliate_partners
        (user_id, social_platform, social_handle, profile_url, follower_count, follower_tier,
-        content_niche, collaboration_type, status, referral_code,
+        content_niche, collaboration_type, partnership_intent, status, referral_code,
         discount_percent, commission_share_percent)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
       [
         userId,
         socialPlatform,
@@ -120,6 +121,7 @@ const applyForPartner = async ({
         followerTier,
         contentNiche,
         collaborationType,
+        partnershipIntent || null,
         createReferralCode(),
         config.default_customer_discount_percent,
         config.default_commission_share_percent,
@@ -265,7 +267,7 @@ const listPartners = async () => {
   return partners;
 };
 
-const getPartnerDashboard = async userId => {
+const getPartnerDashboard = async (userId, { commissionPage = 1, commissionPageSize = 20 } = {}) => {
   const partner = await getPartnerByUserId(userId);
   if (!partner) return null;
   const [[summary]] = await pool.query(
@@ -283,16 +285,37 @@ const getPartnerDashboard = async userId => {
     [partner.id, partner.id]
   );
   summary.balance_carryover = 0;
+  const [[commissionCount]] = await pool.query(
+    'SELECT COUNT(*) AS total FROM affiliate_commissions WHERE partner_id = ?',
+    [partner.id]
+  );
+  const commissionTotal = Number(commissionCount.total) || 0;
+  const commissionPages = Math.max(1, Math.ceil(commissionTotal / commissionPageSize));
+  const page = Math.min(commissionPage, commissionPages);
   const [commissions] = await pool.query(
-    `SELECT c.id, c.order_id, c.order_subtotal, c.commission_amount, c.retained_margin_percent,
-            c.status, c.created_at, c.paid_at, c.reversed_at
+    `SELECT c.id, c.order_id, c.order_subtotal, c.discount_amount, c.revenue_ex_tax,
+            c.product_cost, c.fulfillment_cost, c.rto_reserve, c.payment_fee,
+            c.contribution_profit, c.commission_share_percent, c.commission_amount,
+            c.retained_profit, c.retained_margin_percent, c.status, c.created_at,
+            c.paid_at, c.reversed_at
      FROM affiliate_commissions c
      WHERE c.partner_id = ?
      ORDER BY c.created_at DESC
-     LIMIT 50`,
-    [partner.id]
+     LIMIT ? OFFSET ?`,
+    [partner.id, commissionPageSize, (page - 1) * commissionPageSize]
   );
-  return { partner, summary, commissions, programConfig: await getProgramConfig() };
+  return {
+    partner,
+    summary,
+    commissions,
+    commissionPagination: {
+      page,
+      pageSize: commissionPageSize,
+      total: commissionTotal,
+      pages: commissionPages,
+    },
+    programConfig: await getProgramConfig(),
+  };
 };
 
 const listCommissions = async () => {
@@ -356,7 +379,7 @@ const getAdminPromoterAnalytics = async (period = '30d') => {
   );
   const [partners] = await pool.query(
     `SELECT p.id, p.user_id, p.social_platform, p.social_handle, p.profile_url, p.follower_count,
-       p.follower_tier, p.content_niche, p.collaboration_type,
+       p.follower_tier, p.content_niche, p.collaboration_type, p.partnership_intent,
        p.status, p.referral_code, p.discount_percent, p.commission_share_percent, p.applied_at,
        u.name AS user_name, u.email AS user_email,
        COALESCE(s.attributed_orders, 0) AS attributed_orders,
