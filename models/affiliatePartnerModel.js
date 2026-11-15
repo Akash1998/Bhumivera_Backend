@@ -269,12 +269,17 @@ const getPartnerDashboard = async userId => {
   const partner = await getPartnerByUserId(userId);
   if (!partner) return null;
   const [[summary]] = await pool.query(
-    `SELECT COUNT(*) AS attributed_orders,
-       COALESCE(SUM(CASE WHEN status = 'pending' THEN commission_amount ELSE 0 END), 0) AS pending_commission,
-       COALESCE(SUM(CASE WHEN status = 'approved' THEN commission_amount ELSE 0 END), 0) AS payable_commission,
-       COALESCE(SUM(CASE WHEN status = 'reversed' THEN commission_amount ELSE 0 END), 0) AS reversed_commission,
+    `SELECT COUNT(c.id) AS attributed_orders,
+       COALESCE(SUM(CASE WHEN c.status = 'pending' THEN c.commission_amount ELSE 0 END), 0) AS pending_commission,
+       COALESCE(SUM(CASE WHEN c.status = 'approved' THEN c.commission_amount ELSE 0 END), 0) AS payable_commission,
+       COALESCE(SUM(CASE WHEN c.status = 'reversed' THEN c.commission_amount ELSE 0 END), 0) AS reversed_commission,
+       COUNT(ic.id) AS funded_impact_contributions,
+       COALESCE(SUM(ic.amount), 0) AS impact_amount,
        (SELECT COALESCE(SUM(amount), 0) FROM affiliate_payouts WHERE partner_id = ?) AS paid_commission
-     FROM affiliate_commissions WHERE partner_id = ?`,
+     FROM affiliate_commissions c
+     LEFT JOIN impact_contributions ic
+       ON ic.order_id = c.order_id AND ic.status = 'collected'
+     WHERE c.partner_id = ?`,
     [partner.id, partner.id]
   );
   summary.balance_carryover = 0;
