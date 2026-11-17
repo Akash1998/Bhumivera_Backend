@@ -24,6 +24,9 @@ async function generateUploadUrl(filename, fileType, prefix = "products", conten
     Bucket: process.env.R2_BUCKET_NAME,
     Key: key,
     ContentType: fileType,
+    ...(prefix === "products"
+      ? { CacheControl: "public, max-age=31536000, immutable" }
+      : {}),
     ...(contentLength ? { ContentLength: contentLength } : {}),
   });
   

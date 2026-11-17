@@ -11,6 +11,7 @@ const startApp = async () => {
   app.use(cache);
   app.get('/api/products/active', (req, res) => {
     hits.products += 1;
+    if (req.query.noStore === '1') res.set('Cache-Control', 'no-store');
     res.json({ n: hits.products });
   });
   app.get('/api/users/me', (req, res) => {
@@ -25,21 +26,52 @@ const startApp = async () => {
   return { base, hits, cache, close: () => server.close() };
 };
 
-test('public GETs are served from cache without re-running the handler', async () => {
+test('authenticated requests bypass the public cache', async () => {
   const ctx = await startApp();
   try {
     const first = await fetch(`${ctx.base}/api/products/active`);
     assert.equal(first.headers.get('x-public-cache'), 'MISS');
     for (let i = 0; i < 10; i += 1) {
       const res = await fetch(`${ctx.base}/api/products/active`, { headers: { Authorization: 'Bearer x' } });
-      assert.equal(res.headers.get('x-public-cache'), 'HIT');
-      assert.deepEqual(await res.json(), { n: 1 });
+      assert.equal(res.headers.get('x-public-cache'), null);
+      assert.deepEqual(await res.json(), { n: i + 2 });
     }
-    assert.equal(ctx.hits.products, 1);
+    assert.equal(ctx.hits.products, 11);
 
     await fetch(`${ctx.base}/api/users/me`);
     await fetch(`${ctx.base}/api/users/me`);
     assert.equal(ctx.hits.me, 2, 'non-allowlisted paths are never cached');
+  } finally {
+    ctx.close();
+  }
+});
+
+test('responses marked no-store are not added to the memory cache', async () => {
+  const ctx = await startApp();
+  try {
+    const first = await fetch(`${ctx.base}/api/products/active?noStore=1`);
+    const second = await fetch(`${ctx.base}/api/products/active?noStore=1`);
+
+    assert.equal(first.headers.get('cache-control'), 'no-store');
+    assert.equal(second.headers.get('cache-control'), 'no-store');
+    assert.equal(first.headers.get('x-public-cache'), 'MISS');
+    assert.equal(second.headers.get('x-public-cache'), 'MISS');
+    assert.equal(ctx.hits.products, 2);
+  } finally {
+    ctx.close();
+  }
+});
+
+test('requests asking to bypass caches reach the route handler', async () => {
+  const ctx = await startApp();
+  try {
+    await fetch(`${ctx.base}/api/products/active`);
+    const bypass = await fetch(`${ctx.base}/api/products/active`, {
+      headers: { 'cache-control': 'no-cache' },
+    });
+
+    assert.equal(bypass.headers.get('x-public-cache'), null);
+    assert.deepEqual(await bypass.json(), { n: 2 });
   } finally {
     ctx.close();
   }

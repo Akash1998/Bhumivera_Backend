@@ -13,7 +13,7 @@ class MemoryRedis {
   }
 
   async set(key, value, options) {
-    assert.equal(options.EX, 60);
+    assert.equal(options.EX, 900);
     this.entries.set(key, value);
   }
 }
@@ -23,29 +23,35 @@ const app = express();
 let publicRequestCount = 0;
 let productDetailRequestCount = 0;
 let privateRequestCount = 0;
+let publicImpactRequestCount = 0;
+let databaseGateRequestCount = 0;
 let server;
 let baseUrl;
 
 app.use(createRedisResponseCache(redis, {
   logger: { error: error => { throw error; } },
 }));
-app.get('/api/products/active', (_req, res) => {
+app.use((req, _res, next) => {
+  if (req.path === '/api/products/active') databaseGateRequestCount += 1;
+  next();
+});
+app.get('/api/products/active', (req, res) => {
+  if (req.query.private === '1') {
+    privateRequestCount += 1;
+    return res.set('Cache-Control', 'private, no-store').json({ request: privateRequestCount });
+  }
+  if (req.query.vary === '1') return res.set('Vary', 'x-test-variant').json({ request: true });
+  if (req.query.large === '1') return res.json({ payload: 'x'.repeat(1024 * 1024) });
   publicRequestCount += 1;
   res.json({ request: publicRequestCount });
-});
-app.get('/api/products/active/private-response', (_req, res) => {
-  privateRequestCount += 1;
-  res.set('Cache-Control', 'private, no-store').json({ request: privateRequestCount });
-});
-app.get('/api/products/active/unkeyed-vary-response', (_req, res) => {
-  res.set('Vary', 'x-test-variant').json({ request: true });
-});
-app.get('/api/products/active/large-response', (_req, res) => {
-  res.json({ payload: 'x'.repeat(1024 * 1024) });
 });
 app.get('/api/products/:id', (req, res) => {
   productDetailRequestCount += 1;
   res.json({ id: req.params.id, request: productDetailRequestCount });
+});
+app.get('/api/impact/public', (_req, res) => {
+  publicImpactRequestCount += 1;
+  res.json({ request: publicImpactRequestCount });
 });
 app.get('/api/search', (_req, res) => {
   publicRequestCount += 1;
@@ -82,8 +88,9 @@ describe('Redis response cache', () => {
     assert.deepEqual(secondBody, firstBody);
     assert.equal(first.headers.get('x-redis-cache'), 'MISS');
     assert.equal(second.headers.get('x-redis-cache'), 'HIT');
-    assert.equal(first.headers.get('cache-control'), 'public, max-age=0, s-maxage=30, stale-while-revalidate=30');
-    assert.equal(second.headers.get('cache-control'), 'public, max-age=0, s-maxage=30, stale-while-revalidate=30');
+    assert.equal(first.headers.get('cache-control'), 'public, max-age=60, s-maxage=300, stale-while-revalidate=3600');
+    assert.equal(second.headers.get('cache-control'), 'public, max-age=60, s-maxage=300, stale-while-revalidate=3600');
+    assert.equal(databaseGateRequestCount, 1);
   });
 
   it('caches individual public product details by numeric ID', async () => {
@@ -97,8 +104,8 @@ describe('Redis response cache', () => {
   });
 
   it('does not cache responses that vary by a header absent from the cache key', async () => {
-    const first = await fetch(`${baseUrl}/api/products/active/unkeyed-vary-response`);
-    const second = await fetch(`${baseUrl}/api/products/active/unkeyed-vary-response`);
+    const first = await fetch(`${baseUrl}/api/products/active?vary=1`);
+    const second = await fetch(`${baseUrl}/api/products/active?vary=1`);
 
     assert.equal(first.headers.get('x-redis-cache'), 'MISS');
     assert.equal(second.headers.get('x-redis-cache'), 'MISS');
@@ -111,8 +118,8 @@ describe('Redis response cache', () => {
     const cookieRequest = await fetch(`${baseUrl}/api/products/active`, {
       headers: { cookie: 'session=user-session' },
     });
-    const privateFirst = await fetch(`${baseUrl}/api/products/active/private-response`);
-    const privateSecond = await fetch(`${baseUrl}/api/products/active/private-response`);
+    const privateFirst = await fetch(`${baseUrl}/api/products/active?private=1`);
+    const privateSecond = await fetch(`${baseUrl}/api/products/active?private=1`);
 
     assert.equal(authenticated.headers.get('x-redis-cache'), null);
     assert.equal(cookieRequest.headers.get('x-redis-cache'), null);
@@ -136,11 +143,23 @@ describe('Redis response cache', () => {
     assert.equal(publicRequestCount, 7);
   });
 
+  it('caches additional anonymous public content endpoints', async () => {
+    const first = await fetch(`${baseUrl}/api/impact/public`);
+    const second = await fetch(`${baseUrl}/api/impact/public`);
+
+    assert.deepEqual(await first.json(), { request: 1 });
+    assert.deepEqual(await second.json(), { request: 1 });
+    assert.equal(first.headers.get('x-redis-cache'), 'MISS');
+    assert.equal(second.headers.get('x-redis-cache'), 'HIT');
+    assert.equal(publicImpactRequestCount, 1);
+  });
+
   it('skips caching a response larger than the configured per-entry memory cap', async () => {
-    const response = await fetch(`${baseUrl}/api/products/active/large-response`);
+    const entriesBefore = redis.entries.size;
+    const response = await fetch(`${baseUrl}/api/products/active?large=1`);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('x-redis-cache'), 'MISS');
-    assert.equal(redis.entries.size, 2);
+    assert.equal(redis.entries.size, entriesBefore);
   });
 
   it('continues serving requests when Redis reads fail', async () => {
@@ -167,6 +186,46 @@ describe('Redis response cache', () => {
     } finally {
       await new Promise((resolve, reject) =>
         failingServer.close(error => error ? reject(error) : resolve())
+      );
+    }
+  });
+
+  it('connects Redis before the database gate and bypasses the gate on a hit', async () => {
+    const disconnectedRedis = new MemoryRedis();
+    disconnectedRedis.isReady = false;
+    let connectCalls = 0;
+    let databaseGateCalls = 0;
+    const lazyApp = express();
+    lazyApp.use(createRedisResponseCache(disconnectedRedis, {
+      connectClient: async () => {
+        connectCalls += 1;
+        disconnectedRedis.isReady = true;
+      },
+      logger: { error: error => { throw error; } },
+    }));
+    lazyApp.use((_req, _res, next) => {
+      databaseGateCalls += 1;
+      next();
+    });
+    lazyApp.get('/api/products/active', (_req, res) => res.json({ available: true }));
+
+    const lazyServer = await new Promise(resolve => {
+      const listeningServer = lazyApp.listen(0, '127.0.0.1', () => resolve(listeningServer));
+    });
+    try {
+      const url = `http://127.0.0.1:${lazyServer.address().port}/api/products/active`;
+      const first = await fetch(url);
+      await first.json();
+      await new Promise(resolve => setImmediate(resolve));
+      const second = await fetch(url);
+
+      assert.equal(first.headers.get('x-redis-cache'), 'MISS');
+      assert.equal(second.headers.get('x-redis-cache'), 'HIT');
+      assert.equal(connectCalls, 1);
+      assert.equal(databaseGateCalls, 1);
+    } finally {
+      await new Promise((resolve, reject) =>
+        lazyServer.close(error => error ? reject(error) : resolve())
       );
     }
   });

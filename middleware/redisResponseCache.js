@@ -1,19 +1,29 @@
 const crypto = require('node:crypto');
 
-const CACHE_TTL_SECONDS = 60;
+const configuredTtlSeconds = process.env.PUBLIC_RESPONSE_CACHE_TTL_SECONDS
+  ? Number(process.env.PUBLIC_RESPONSE_CACHE_TTL_SECONDS)
+  : 900;
+const CACHE_TTL_SECONDS = Number.isFinite(configuredTtlSeconds)
+  ? Math.max(60, Math.floor(configuredTtlSeconds))
+  : 900;
 const REDIS_READ_TIMEOUT_MS = 100;
 const MAX_CACHEABLE_RESPONSE_BYTES = 1024 * 1024;
 const CACHE_PREFIX = 'bhumivera:response-cache:v2:';
-const EDGE_CACHE_CONTROL = 'public, max-age=0, s-maxage=30, stale-while-revalidate=30';
+const EDGE_CACHE_CONTROL = 'public, max-age=60, s-maxage=300, stale-while-revalidate=3600';
 const RATE_LIMITED_PUBLIC_PATHS = new Set([
   '/api/affiliate/referral/preview',
   '/api/search',
 ]);
 const CACHEABLE_PUBLIC_PATHS = [
-  '/api/products/active',
-  '/api/categories',
-  '/api/subcategories',
-  '/api/flash-sales',
+  /^\/api\/products\/(active|regimen-bundles)$/,
+  /^\/api\/products\/slug\/[^/]+$/,
+  /^\/api\/products\/\d+(\/qa)?$/,
+  /^\/api\/categories(\/\d+)?$/,
+  /^\/api\/subcategories(\/\d+|\/by-category\/\d+)?$/,
+  /^\/api\/flash-sales(\/active)?$/,
+  /^\/api\/impact\/public$/,
+  /^\/api\/shipping(\/zones\/active)?$/,
+  /^\/api\/settings\/public$/,
 ];
 const CACHEABLE_HEADERS = ['content-type', 'cache-control', 'content-language', 'vary'];
 const CACHE_KEY_HEADERS = ['accept', 'accept-language', 'accept-encoding', 'origin'];
@@ -54,9 +64,7 @@ const canCacheRequest = req => {
   const cacheControl = `${req.get('cache-control') || ''},${req.get('pragma') || ''}`;
   return req.method === 'GET' &&
     path.startsWith('/api/') &&
-    (CACHEABLE_PUBLIC_PATHS.some(prefix => path === prefix || path.startsWith(`${prefix}/`)) ||
-      path.startsWith('/api/products/slug/') ||
-      /^\/api\/products\/\d+$/.test(path)) &&
+    CACHEABLE_PUBLIC_PATHS.some(pattern => pattern.test(path)) &&
     !RATE_LIMITED_PUBLIC_PATHS.has(path) &&
     !req.get('authorization') &&
     !req.get('cookie') &&
@@ -84,6 +92,7 @@ const isCacheableResponse = (req, res, body) => {
 const createRedisResponseCache = (client, {
   ttlSeconds = CACHE_TTL_SECONDS,
   logger = console,
+  connectClient,
 } = {}) => (req, res, next) => {
   if (!canCacheRequest(req)) return next();
 
@@ -96,78 +105,96 @@ const createRedisResponseCache = (client, {
   };
 
   if (!client) return next();
+  if (typeof client.isReady === 'boolean' && !client.isReady && connectClient) {
+    Promise.resolve()
+      .then(connectClient)
+      .then(() => {
+        if (typeof client.isReady === 'boolean' && !client.isReady) return next();
+        return lookupCache();
+      })
+      .catch(error => {
+        cacheMetrics.readErrors += 1;
+        logger.error('[RESPONSE_CACHE_CONNECT_ERROR]', error.message);
+        next();
+      });
+    return;
+  }
   if (typeof client.isReady === 'boolean' && !client.isReady) return next();
 
-  const key = hashRequest(req);
-  let timeoutId;
-  const readTimeout = new Promise((_, reject) => {
-    timeoutId = setTimeout(
-      () => reject(new Error('Redis response-cache read timed out.')),
-      REDIS_READ_TIMEOUT_MS
-    );
-    timeoutId.unref?.();
-  });
-  Promise.race([
-    Promise.resolve().then(() => client.get(key)),
-    readTimeout,
-  ]).then(cached => {
-    if (cached) {
-      try {
-        const entry = JSON.parse(cached);
-        if (entry.statusCode === 200 && typeof entry.body === 'string' &&
-            entry.headers && typeof entry.headers === 'object') {
-          cacheMetrics.hits += 1;
-          for (const name of CACHEABLE_HEADERS) {
-            const value = entry.headers[name];
-            if (typeof value === 'string' ||
-                (Array.isArray(value) && value.every(item => typeof item === 'string'))) {
-              res.setHeader(name, value);
-            }
-          }
-          res.setHeader('X-Redis-Cache', 'HIT');
-          return res.status(entry.statusCode).send(entry.body);
-        }
-      } catch (error) {
-        logger.error('[RESPONSE_CACHE_INVALID_ENTRY]', error.message);
-      }
-    }
+  return lookupCache();
 
-    cacheMetrics.misses += 1;
-    res.setHeader('X-Redis-Cache', 'MISS');
-    const send = res.send;
-    res.send = function sendWithCache(body) {
-      if (isCacheableResponse(req, res, body)) {
-        const bodyBytes = Buffer.isBuffer(body) ? body.length : Buffer.byteLength(body);
-        if (bodyBytes > MAX_CACHEABLE_RESPONSE_BYTES) {
-          cacheMetrics.skippedLargeResponses += 1;
-          return send.call(this, body);
+  function lookupCache() {
+    const key = hashRequest(req);
+    let timeoutId;
+    const readTimeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error('Redis response-cache read timed out.')),
+        REDIS_READ_TIMEOUT_MS
+      );
+      timeoutId.unref?.();
+    });
+    Promise.race([
+      Promise.resolve().then(() => client.get(key)),
+      readTimeout,
+    ]).then(cached => {
+      if (cached) {
+        try {
+          const entry = JSON.parse(cached);
+          if (entry.statusCode === 200 && typeof entry.body === 'string' &&
+              entry.headers && typeof entry.headers === 'object') {
+            cacheMetrics.hits += 1;
+            for (const name of CACHEABLE_HEADERS) {
+              const value = entry.headers[name];
+              if (typeof value === 'string' ||
+                  (Array.isArray(value) && value.every(item => typeof item === 'string'))) {
+                res.setHeader(name, value);
+              }
+            }
+            res.setHeader('X-Redis-Cache', 'HIT');
+            return res.status(entry.statusCode).send(entry.body);
+          }
+        } catch (error) {
+          logger.error('[RESPONSE_CACHE_INVALID_ENTRY]', error.message);
         }
-        const headers = Object.fromEntries(CACHEABLE_HEADERS
-          .filter(name => res.hasHeader(name))
-          .map(name => [name, res.getHeader(name)]));
-        const entry = JSON.stringify({
-          statusCode: res.statusCode,
-          headers,
-          body: Buffer.isBuffer(body) ? body.toString('utf8') : body,
-        });
-        Promise.resolve().then(() => client.set(key, entry, { EX: ttlSeconds })).then(() => {
-          cacheMetrics.writes += 1;
-          trackedCacheKeys.add(key);
-        }).catch(error => {
-          cacheMetrics.writeErrors += 1;
-          logger.error('[RESPONSE_CACHE_WRITE_ERROR]', error.message);
-        });
       }
-      return send.call(this, body);
-    };
-    return next();
-  }).catch(error => {
-    cacheMetrics.readErrors += 1;
-    logger.error('[RESPONSE_CACHE_READ_ERROR]', error.message);
-    next();
-  }).finally(() => {
-    clearTimeout(timeoutId);
-  });
+
+      cacheMetrics.misses += 1;
+      res.setHeader('X-Redis-Cache', 'MISS');
+      const send = res.send;
+      res.send = function sendWithCache(body) {
+        if (isCacheableResponse(req, res, body)) {
+          const bodyBytes = Buffer.isBuffer(body) ? body.length : Buffer.byteLength(body);
+          if (bodyBytes > MAX_CACHEABLE_RESPONSE_BYTES) {
+            cacheMetrics.skippedLargeResponses += 1;
+            return send.call(this, body);
+          }
+          const headers = Object.fromEntries(CACHEABLE_HEADERS
+            .filter(name => res.hasHeader(name))
+            .map(name => [name, res.getHeader(name)]));
+          const entry = JSON.stringify({
+            statusCode: res.statusCode,
+            headers,
+            body: Buffer.isBuffer(body) ? body.toString('utf8') : body,
+          });
+          Promise.resolve().then(() => client.set(key, entry, { EX: ttlSeconds })).then(() => {
+            cacheMetrics.writes += 1;
+            trackedCacheKeys.add(key);
+          }).catch(error => {
+            cacheMetrics.writeErrors += 1;
+            logger.error('[RESPONSE_CACHE_WRITE_ERROR]', error.message);
+          });
+        }
+        return send.call(this, body);
+      };
+      return next();
+    }).catch(error => {
+      cacheMetrics.readErrors += 1;
+      logger.error('[RESPONSE_CACHE_READ_ERROR]', error.message);
+      next();
+    }).finally(() => {
+      clearTimeout(timeoutId);
+    });
+  }
 };
 
 const invalidatePublicCatalogCache = async () => {
@@ -236,7 +263,9 @@ const getResponseCacheStatus = () => ({
 
 module.exports = {
   createRedisResponseCache,
-  redisResponseCache: createRedisResponseCache(redisClient),
+  redisResponseCache: createRedisResponseCache(redisClient, {
+    connectClient: () => connectResponseCache(),
+  }),
   connectResponseCache,
   closeResponseCache,
   getResponseCacheStatus,

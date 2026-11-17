@@ -356,9 +356,14 @@ const publicSwrCache = createPublicSwrCache({
   isDatabaseReady: () => databaseReady,
 });
 if (!isVercelRuntime) app.use(publicSwrCache);
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api")) countRequest(req);
+  next();
+});
+// Redis hits must be checked before the lazy database gate so cached public reads stay database-free.
+app.use(redisResponseCache);
 
 app.use(async (req, res, next) => {
-  if (req.path.startsWith("/api")) countRequest(req);
   if (databaseReady) return next();
   const memoryOnlyWorkroomRoute =
     (req.method === "GET" && req.path === "/api/inventory-software/workroom/presence") ||
@@ -396,7 +401,6 @@ app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(normalizeErrorResponses);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-app.use(redisResponseCache);
 
 // --- ROUTE REGISTRATION ---
 app.use("/api/admin/system", systemAdminRoutes);

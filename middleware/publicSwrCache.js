@@ -23,12 +23,8 @@ const CACHE_RULES = [
   { re: /^\/api\/subcategories(\/\d+|\/by-category\/\d+)?$/ },
   { re: /^\/api\/flash-sales(\/active)?$/, freshMs: 10 * MINUTE },
   { re: /^\/api\/impact\/public$/ },
-  { re: /^\/api\/reviews\/(product|combo)\/[^/]+$/ },
-  { re: /^\/api\/reviews\/public-stories$/ },
   { re: /^\/api\/shipping(\/zones\/active)?$/ },
-  {
-    re: /^\/api\/settings\/(public|catalog-availability|catalog-highlights|scarcity-simulator\/(public|popular-today))$/,
-  },
+  { re: /^\/api\/settings\/public$/ },
 ];
 
 // Writes here are high-frequency per-user noise and cannot change cached public data.
@@ -45,11 +41,8 @@ const WARMUP_PATHS = [
   '/api/subcategories',
   '/api/flash-sales',
   '/api/settings/public',
-  '/api/settings/catalog-availability',
-  '/api/settings/catalog-highlights',
   '/api/impact/public',
   '/api/shipping',
-  '/api/reviews/public-stories',
 ];
 
 const pathOf = req => (req.originalUrl.split('?')[0].replace(/\/+$/, '') || '/');
@@ -141,6 +134,12 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
       return next();
     }
 
+    if (req.get('authorization') || req.get('cookie') || req.user || req.auth) return next();
+    const requestCacheControl = `${req.get('cache-control') || ''},${req.get('pragma') || ''}`;
+    if (/\b(no-cache|no-store)\b|(?:^|,)\s*max-age\s*=\s*0(?:\s*,|$)/i.test(requestCacheControl)) {
+      return next();
+    }
+
     const rule = findRule(pathOf(req));
     if (!rule) return next();
 
@@ -166,10 +165,12 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
     const send = res.send;
     res.send = function sendAndCache(body) {
       const contentType = String(res.getHeader('Content-Type') || '');
+      const cacheControl = String(res.getHeader('Cache-Control') || '');
       const text = Buffer.isBuffer(body) ? body.toString('utf8') : body;
       if (
         res.statusCode === 200 &&
         /^application\/json\b/i.test(contentType) &&
+        !/\b(private|no-store|no-cache)\b/i.test(cacheControl) &&
         typeof text === 'string' &&
         Buffer.byteLength(text) <= MAX_BODY_BYTES
       ) {
