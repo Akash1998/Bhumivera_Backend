@@ -229,16 +229,30 @@ const updatePartner = async (id, { status, discountPercent, commissionSharePerce
       error.status = 404;
       throw error;
     }
-    const nextCode = status === 'approved'
-      ? String(referralCode || partner.referral_code || createReferralCode()).trim().toUpperCase()
-      : partner.referral_code;
+    const nextStatus = status || partner.status;
+    const nextDiscountPercent = discountPercent ?? Number(partner.discount_percent);
+    const nextCommissionSharePercent = commissionSharePercent ?? Number(partner.commission_share_percent);
+    const requestedCode = typeof referralCode === 'string' ? referralCode.trim().toUpperCase() : '';
+    const nextCode = nextStatus === 'approved'
+      ? requestedCode || partner.referral_code || createReferralCode()
+      : requestedCode || partner.referral_code;
+    const nextAdminNotes = adminNotes === undefined ? partner.admin_notes : (adminNotes.trim() || null);
     await connection.query(
       `UPDATE affiliate_partners
        SET status = ?, discount_percent = ?, commission_share_percent = ?,
-           referral_code = ?, admin_notes = ?, reviewed_by = ?,
+           referral_code = ?, admin_notes = ?, reviewed_by = COALESCE(?, reviewed_by),
            approved_at = CASE WHEN ? = 'approved' THEN COALESCE(approved_at, CURRENT_TIMESTAMP) ELSE approved_at END
        WHERE id = ?`,
-      [status, discountPercent, commissionSharePercent, nextCode, adminNotes || null, adminId, status, id]
+      [
+        nextStatus,
+        nextDiscountPercent,
+        nextCommissionSharePercent,
+        nextCode,
+        nextAdminNotes,
+        status === undefined ? null : adminId,
+        nextStatus,
+        id,
+      ]
     );
     await connection.commit();
     const [[updated]] = await pool.query('SELECT * FROM affiliate_partners WHERE id = ?', [id]);

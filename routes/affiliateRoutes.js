@@ -646,24 +646,46 @@ router.post('/admin/partners', authenticateAdmin, async (req, res) => {
 
 router.patch(['/admin/partners/:id', '/partners/:id/status'], authenticateAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const status = req.body?.status;
-  const discountPercent = Number(req.body?.discountPercent ?? req.body?.discount_percent);
-  const commissionSharePercent = Number(req.body?.commissionSharePercent ?? req.body?.commission_share_percent);
-  const adminNotes = typeof req.body?.adminNotes === 'string' ? req.body.adminNotes.trim().slice(0, 1000) : '';
-  const referralCode = typeof req.body?.referralCode === 'string' ? req.body.referralCode.trim() : '';
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const hasField = (...fields) => fields.some(field => Object.prototype.hasOwnProperty.call(body, field));
+  const hasStatus = hasField('status');
+  const hasDiscount = hasField('discountPercent', 'discount_percent');
+  const hasCommissionShare = hasField('commissionSharePercent', 'commission_share_percent');
+  const hasAdminNotes = hasField('adminNotes');
+  const hasReferralCode = hasField('referralCode');
+  const status = hasStatus ? body.status : undefined;
+  const discountValue = body.discountPercent ?? body.discount_percent;
+  const commissionShareValue = body.commissionSharePercent ?? body.commission_share_percent;
+  const discountPercent = hasDiscount ? Number(discountValue) : undefined;
+  const commissionSharePercent = hasCommissionShare ? Number(commissionShareValue) : undefined;
+  const isValidPercentInput = value => (
+    (typeof value === 'number' || typeof value === 'string') &&
+    String(value).trim() !== '' &&
+    Number.isFinite(Number(value))
+  );
+  const adminNotes = hasAdminNotes && typeof body.adminNotes === 'string'
+    ? body.adminNotes.trim().slice(0, 1000)
+    : hasAdminNotes && body.adminNotes === null ? '' : undefined;
+  const referralCode = hasReferralCode && typeof body.referralCode === 'string'
+    ? body.referralCode.trim()
+    : hasReferralCode && body.referralCode === null ? ''
+    : undefined;
   if (!Number.isSafeInteger(id) || id < 1 ||
-      !['approved', 'rejected', 'paused'].includes(status) ||
-      !Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 60 ||
-      !Number.isFinite(commissionSharePercent) || commissionSharePercent < 0 || commissionSharePercent > 100 ||
+      (!hasStatus && !hasDiscount && !hasCommissionShare && !hasAdminNotes && !hasReferralCode) ||
+      (hasStatus && !['approved', 'rejected', 'paused'].includes(status)) ||
+      (hasDiscount && (!isValidPercentInput(discountValue) || discountPercent < 0 || discountPercent > 60)) ||
+      (hasCommissionShare && (!isValidPercentInput(commissionShareValue) || commissionSharePercent < 0 || commissionSharePercent > 100)) ||
+      (hasAdminNotes && typeof body.adminNotes !== 'string' && body.adminNotes !== null) ||
+      (hasReferralCode && typeof body.referralCode !== 'string' && body.referralCode !== null) ||
       (referralCode && !/^[A-Z0-9_-]{4,32}$/i.test(referralCode))) {
-    return res.status(400).json({ code: 'INVALID_PARTNER_UPDATE', message: 'Choose a valid status and discount/commission rates.' });
+    return res.status(400).json({ code: 'INVALID_PARTNER_UPDATE', message: 'Provide valid promoter settings or a valid status change.' });
   }
   try {
     const partner = await updatePartner(id, {
-      status,
+      ...(hasStatus ? { status } : {}),
       discountPercent,
       commissionSharePercent,
-      referralCode: referralCode || null,
+      ...(hasReferralCode ? { referralCode } : {}),
       adminNotes,
       adminId: req.user.id,
     });

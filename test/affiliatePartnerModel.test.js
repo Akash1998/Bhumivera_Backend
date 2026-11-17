@@ -13,9 +13,49 @@ let dashboardSummaryQuery = '';
 let dashboardCommissionsQuery = '';
 let dashboardCommissionTotal = 0;
 let dashboardCommissionsParams = [];
+let storedPartner = {
+  id: 17,
+  status: 'approved',
+  discount_percent: 13,
+  commission_share_percent: 20,
+  referral_code: 'BVCREATOR17',
+  admin_notes: 'Existing note',
+  reviewed_by: 3,
+};
+let partnerUpdateParams;
 
 const fakePool = {
+  async getConnection() {
+    return {
+      async beginTransaction() {},
+      async query(sql, params = []) {
+        if (sql.includes('SELECT * FROM affiliate_partners WHERE id = ? FOR UPDATE')) {
+          return [[{ ...storedPartner }], []];
+        }
+        if (sql.includes('UPDATE affiliate_partners')) {
+          partnerUpdateParams = params;
+          storedPartner = {
+            ...storedPartner,
+            status: params[0],
+            discount_percent: params[1],
+            commission_share_percent: params[2],
+            referral_code: params[3],
+            admin_notes: params[4],
+            reviewed_by: params[5] ?? storedPartner.reviewed_by,
+          };
+          return [{ affectedRows: 1 }, []];
+        }
+        throw new Error(`Unexpected SQL in affiliate partner model test connection: ${sql}`);
+      },
+      async commit() {},
+      async rollback() {},
+      release() {},
+    };
+  },
   async query(sql, params = []) {
+    if (sql === 'SELECT * FROM affiliate_partners WHERE id = ?') {
+      return [[{ ...storedPartner }], []];
+    }
     if (sql.includes('SELECT * FROM affiliate_partners WHERE user_id = ? LIMIT 1')) {
       return [dashboardPartner ? [dashboardPartner] : [], []];
     }
@@ -61,10 +101,46 @@ Module._load = function (request, parent, isMain) {
   if (parent?.filename === modelPath && request === '../config/db') return fakePool;
   return originalLoad.call(this, request, parent, isMain);
 };
-const { applyForPartner, getPartnerDashboard } = require('../models/affiliatePartnerModel');
+const { applyForPartner, getPartnerDashboard, updatePartner } = require('../models/affiliatePartnerModel');
 Module._load = originalLoad;
 
 describe('affiliate partner applications', () => {
+  it('updates profile rates and notes while preserving status and unrelated values', async () => {
+    storedPartner = {
+      id: 17,
+      status: 'approved',
+      discount_percent: 13,
+      commission_share_percent: 20,
+      referral_code: 'BVCREATOR17',
+      admin_notes: 'Existing note',
+      reviewed_by: 3,
+    };
+    partnerUpdateParams = null;
+
+    const updated = await updatePartner(17, {
+      commissionSharePercent: 27.5,
+      adminNotes: 'New partnership note',
+      adminId: 7,
+    });
+
+    assert.equal(updated.status, 'approved');
+    assert.equal(updated.discount_percent, 13);
+    assert.equal(updated.commission_share_percent, 27.5);
+    assert.equal(updated.admin_notes, 'New partnership note');
+    assert.equal(updated.referral_code, 'BVCREATOR17');
+    assert.equal(updated.reviewed_by, 3);
+    assert.deepEqual(partnerUpdateParams, [
+      'approved',
+      13,
+      27.5,
+      'BVCREATOR17',
+      'New partnership note',
+      null,
+      'approved',
+      17,
+    ]);
+  });
+
   it('creates a unique reserved code while leaving a new application pending', async () => {
     const result = await applyForPartner({
       userId: 42,

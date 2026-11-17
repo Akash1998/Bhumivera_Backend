@@ -13,6 +13,7 @@ const affiliateRoutesPath = path.resolve(__dirname, '../routes/affiliateRoutes.j
 const originalLoad = Module._load;
 let capturedApplication;
 let capturedPerkUpdate;
+let capturedPartnerUpdate;
 process.env.JWT_SECRET = secret;
 
 Module._load = function (request, parent, isMain) {
@@ -30,6 +31,10 @@ Module._load = function (request, parent, isMain) {
       submitPartnerReelAndCode: async (userId, settings) => {
         capturedPerkUpdate = { userId, settings };
         return { partner: { id: 99 } };
+      },
+      updatePartner: async (id, settings) => {
+        capturedPartnerUpdate = { id, settings };
+        return { id, status: 'approved', commission_share_percent: settings.commissionSharePercent, admin_notes: settings.adminNotes };
       },
     };
   }
@@ -103,6 +108,35 @@ describe('affiliate routes', () => {
     const response = await request('PATCH', '/admin/partners/not-an-id');
     assert.equal(response.status, 400);
     assert.equal((await response.json()).code, 'INVALID_PARTNER_UPDATE');
+  });
+
+  it('saves profile-specific rates and notes without requiring a status change', async () => {
+    capturedPartnerUpdate = null;
+    const response = await request('PATCH', '/admin/partners/17', true, {
+      discountPercent: 12.5,
+      commissionSharePercent: 27.5,
+      referralCode: 'GROW27',
+      adminNotes: 'Long-term nature storytelling partner',
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(capturedPartnerUpdate.id, 17);
+    assert.deepEqual(capturedPartnerUpdate.settings, {
+      discountPercent: 12.5,
+      commissionSharePercent: 27.5,
+      referralCode: 'GROW27',
+      adminNotes: 'Long-term nature storytelling partner',
+      adminId: 7,
+    });
+  });
+
+  it('rejects out-of-range profile rates before attempting persistence', async () => {
+    capturedPartnerUpdate = null;
+    const response = await request('PATCH', '/admin/partners/17', true, { commissionSharePercent: 101 });
+
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_PARTNER_UPDATE');
+    assert.equal(capturedPartnerUpdate, null);
   });
 
   it('rejects incomplete admin promoter creation before attempting persistence', async () => {
