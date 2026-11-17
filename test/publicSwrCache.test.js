@@ -90,6 +90,32 @@ test('successful writes flush the cache so admin edits show immediately', async 
   }
 });
 
+test('an explicit cache clear removes public entries and reports the cleared memory', async () => {
+  const ctx = await startApp();
+  try {
+    await fetch(`${ctx.base}/api/products/active`);
+    const cleared = ctx.cache.clear();
+
+    assert.equal(cleared.entries, 1);
+    assert.ok(cleared.bytes > 0);
+    assert.deepEqual(ctx.cache.stats(), {
+      hits: 0,
+      stale: 0,
+      misses: 1,
+      refreshes: 0,
+      refreshFailures: 0,
+      invalidations: 1,
+      entries: 0,
+      bytes: 0,
+    });
+    const fresh = await fetch(`${ctx.base}/api/products/active`);
+    assert.equal(fresh.headers.get('x-public-cache'), 'MISS');
+    assert.deepEqual(await fresh.json(), { n: 2 });
+  } finally {
+    ctx.close();
+  }
+});
+
 test('stale entries are served instantly and refreshed in the background', async () => {
   const realNow = Date.now;
   const ctx = await startApp();

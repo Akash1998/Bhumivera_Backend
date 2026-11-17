@@ -319,10 +319,47 @@ async function fetchVercelRuntimeLogs({
   };
 }
 
+async function purgeVercelCdnCache({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  const token = env.VERCEL_TOKEN || env.VERCEL_API_TOKEN;
+  const projectId = env.VERCEL_PROJECT_ID;
+  if (!token || !projectId) {
+    return {
+      status: 'not_configured',
+      missing: getProviderConfiguration(env).vercel.missing,
+    };
+  }
+
+  const url = new URL('/v1/edge-cache/dangerously-delete-by-tags', VERCEL_API);
+  url.searchParams.set('projectIdOrName', projectId);
+  if (env.VERCEL_TEAM_ID) url.searchParams.set('teamId', env.VERCEL_TEAM_ID);
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        Authorization: ['Bearer ', token].join(''),
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ tags: ['*'], target: 'production' }),
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (error) {
+    throw new Error(error.name === 'TimeoutError'
+      ? 'Vercel production CDN purge timed out.'
+      : 'Vercel production CDN could not be reached.');
+  }
+  if (!response.ok) {
+    throw new Error(`Vercel production CDN purge failed with HTTP ${response.status}.`);
+  }
+  return { status: 'cleared', target: 'production', scope: 'entire_project' };
+}
+
 module.exports = {
   RAILWAY_HTTP_LOGS_QUERY,
   getProviderConfiguration,
   fetchRailwayHttpErrors,
   fetchVercelDeploymentEvents,
   fetchVercelRuntimeLogs,
+  purgeVercelCdnCache,
 };

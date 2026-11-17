@@ -13,6 +13,7 @@ const {
   redisResponseCache,
   connectResponseCache,
   closeResponseCache,
+  subscribeToPublicCachePurges,
 } = require("./middleware/redisResponseCache");
 const { createRequestObservability, getCurrentRequestContext } = require("./middleware/requestObservability");
 const { recordWake, countRequest } = require("./utils/wakeTracker");
@@ -360,7 +361,13 @@ const publicSwrCache = createPublicSwrCache({
   getPort: () => httpServer?.address()?.port,
   isDatabaseReady: () => databaseReady,
 });
-if (!isVercelRuntime) app.use(publicSwrCache);
+app.locals.publicSwrCache = isVercelRuntime ? null : publicSwrCache;
+if (!isVercelRuntime) {
+  app.use(publicSwrCache);
+  subscribeToPublicCachePurges(() => publicSwrCache.clear()).catch(error => {
+    console.error('[PUBLIC_CACHE_PURGE_SUBSCRIBE_ERROR]', error.message);
+  });
+}
 app.use((req, res, next) => {
   if (req.path.startsWith("/api")) countRequest(req);
   next();

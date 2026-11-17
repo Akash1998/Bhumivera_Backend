@@ -20,6 +20,7 @@ Object.assign(process.env, {
 const state = {
   serverErrorCount: 2,
   errorCountsByPath: { '/api/orders': 2 },
+  cachePurgeCalls: 0,
 };
 const pass = (_req, _res, next) => next();
 const mocks = new Map([
@@ -38,18 +39,26 @@ const mocks = new Map([
     }),
   }],
   ['../middleware/rateLimiter', { getRateLimitStoreStatus: () => ({ status: 'process_local', configured: false, sharedAcrossInstances: false }) }],
-  ['../middleware/redisResponseCache', { getResponseCacheStatus: () => ({
-    status: 'connected',
-    configured: true,
-    ttlSeconds: 60,
-    maxCacheableResponseBytes: 1024 * 1024,
-    metrics: { hits: 4, misses: 5, writes: 5, readErrors: 0, writeErrors: 0 },
-  }) }],
+  ['../middleware/redisResponseCache', {
+    getResponseCacheStatus: () => ({
+      status: 'connected',
+      configured: true,
+      ttlSeconds: 60,
+      maxCacheableResponseBytes: 1024 * 1024,
+      metrics: { hits: 4, misses: 5, writes: 5, readErrors: 0, writeErrors: 0 },
+    }),
+    purgePublicResponseCache: async () => {
+      state.cachePurgeCalls += 1;
+      return { status: 'cleared', deletedEntries: 4 };
+    },
+    publishPublicCachePurge: async () => ({ status: 'published', recipients: 2 }),
+  }],
   ['../utils/providerDiagnostics', {
     fetchRailwayHttpErrors: async () => ({}),
     fetchVercelDeploymentEvents: async () => ({}),
     fetchVercelRuntimeLogs: async () => ({}),
     getProviderConfiguration: () => ({}),
+    purgeVercelCdnCache: async () => ({ status: 'cleared', target: 'production', scope: 'entire_project' }),
   }],
   ['../utils/moduleAvailability', {
     getModuleStates: async () => [],
@@ -66,6 +75,9 @@ const systemAdminRoutes = require(routePath);
 Module._load = originalLoad;
 
 const app = express();
+app.locals.publicSwrCache = {
+  clear: () => ({ entries: 3, bytes: 2048 }),
+};
 app.use('/admin/system', systemAdminRoutes);
 let server;
 let baseUrl;
@@ -110,5 +122,26 @@ describe('admin health overview', () => {
     assert.equal(response.status, 200);
     assert.equal(health.status, 'healthy');
     assert.deepEqual(health.healthIssues, []);
+  });
+
+  it('purges public caches while preserving authentication and saved user data', async () => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/admin/system/cache/purge`, {
+      method: 'POST',
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(result.success, true);
+    assert.equal(result.layers.redis.deletedEntries, 4);
+    assert.equal(result.layers.processMemory.entries, 3);
+    assert.equal(result.layers.vercel.scope, 'entire_project');
+    assert.equal(result.layers.backendInstances.recipients, 2);
+    assert.deepEqual(result.preserves, [
+      'authentication and sessions',
+      'rate limits',
+      'database records',
+      'carts and wishlists',
+    ]);
+    assert.equal(state.cachePurgeCalls, 1);
   });
 });

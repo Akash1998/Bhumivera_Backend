@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { after, before, describe, it } = require('node:test');
 const express = require('express');
-const { createRedisResponseCache } = require('../middleware/redisResponseCache');
+const { createRedisResponseCache, purgePublicResponseCache } = require('../middleware/redisResponseCache');
 
 class MemoryRedis {
   constructor() {
@@ -15,6 +15,17 @@ class MemoryRedis {
   async set(key, value, options) {
     assert.equal(options.EX, 900);
     this.entries.set(key, value);
+  }
+
+  async *scanIterator({ MATCH }) {
+    const prefix = MATCH.replace(/\*$/, '');
+    for (const key of this.entries.keys()) {
+      if (key.startsWith(prefix)) yield key;
+    }
+  }
+
+  async del(keys) {
+    return keys.filter(key => this.entries.delete(key)).length;
   }
 }
 
@@ -74,6 +85,23 @@ after(async () => {
 });
 
 describe('Redis response cache', () => {
+  it('purges only public response-cache namespaces and preserves rate-limit/session keys', async () => {
+    const cacheStore = new MemoryRedis();
+    cacheStore.isReady = true;
+    cacheStore.entries.set('bhumivera:response-cache:v2:one', 'public');
+    cacheStore.entries.set('bhumivera:response-cache:v1:old', 'old-public');
+    cacheStore.entries.set('bhumivera:rate-limit:login:one', 'rate-limit');
+    cacheStore.entries.set('session:user:one', 'session');
+
+    const result = await purgePublicResponseCache(cacheStore);
+
+    assert.deepEqual(result, { status: 'cleared', deletedEntries: 2 });
+    assert.deepEqual([...cacheStore.entries.keys()].sort(), [
+      'bhumivera:rate-limit:login:one',
+      'session:user:one',
+    ]);
+  });
+
   it('serves the second anonymous public API request from Redis', async () => {
     const first = await fetch(`${baseUrl}/api/products/active`, {
       headers: { 'x-request-id': 'first-request' },

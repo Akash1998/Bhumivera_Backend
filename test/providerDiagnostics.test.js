@@ -5,6 +5,7 @@ const {
   fetchVercelDeploymentEvents,
   fetchVercelRuntimeLogs,
   getProviderConfiguration,
+  purgeVercelCdnCache,
 } = require('../utils/providerDiagnostics');
 const { createSystemDiagnostics, normalizeQuery } = require('../utils/systemDiagnostics');
 
@@ -109,6 +110,39 @@ describe('provider diagnostics', () => {
       VERCEL_API_TOKEN: 'private-token',
       VERCEL_PROJECT_ID: 'project-1',
     }).vercel.configured, true);
+  });
+
+  it('deletes the production Vercel CDN cache by project-wide tag', async () => {
+    let request;
+    const result = await purgeVercelCdnCache({
+      env: {
+        VERCEL_API_TOKEN: 'private-token',
+        VERCEL_PROJECT_ID: 'project-1',
+        VERCEL_TEAM_ID: 'team-1',
+      },
+      fetchImpl: async (url, options) => {
+        request = { url: new URL(url), ...options };
+        return { ok: true, status: 200 };
+      },
+    });
+
+    assert.equal(request.url.pathname, '/v1/edge-cache/dangerously-delete-by-tags');
+    assert.equal(request.url.searchParams.get('projectIdOrName'), 'project-1');
+    assert.equal(request.url.searchParams.get('teamId'), 'team-1');
+    assert.equal(request.headers.Authorization, 'Bearer private-token');
+    assert.deepEqual(JSON.parse(request.body), { tags: ['*'], target: 'production' });
+    assert.deepEqual(result, { status: 'cleared', target: 'production', scope: 'entire_project' });
+  });
+
+  it('reports an unconfigured Vercel purge without making a provider request', async () => {
+    let requested = false;
+    const result = await purgeVercelCdnCache({
+      env: {},
+      fetchImpl: async () => { requested = true; },
+    });
+
+    assert.equal(result.status, 'not_configured');
+    assert.equal(requested, false);
   });
 
   it('retrieves the latest deployment runtime logs and maps streamed records safely', async () => {

@@ -65,6 +65,7 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
   const stats = { hits: 0, stale: 0, misses: 0, refreshes: 0, refreshFailures: 0, invalidations: 0 };
 
   let totalBytes = 0;
+  let cacheGeneration = 0;
   const drop = key => {
     const old = store.get(key);
     if (old) totalBytes -= old.size;
@@ -78,8 +79,14 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
     while (store.size > MAX_ENTRIES || totalBytes > MAX_TOTAL_BYTES) drop(store.keys().next().value);
   };
   const clearStore = () => {
+    const cleared = { entries: store.size, bytes: totalBytes };
+    cacheGeneration += 1;
     store.clear();
     totalBytes = 0;
+    refreshing.clear();
+    refreshCooldown.clear();
+    stats.invalidations += 1;
+    return cleared;
   };
 
   const refresh = (req, key) => {
@@ -144,6 +151,7 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
     if (!rule) return next();
 
     const key = keyOf(req);
+    const requestGeneration = cacheGeneration;
     const forcedRefresh = isRefreshRequest(req);
     const entry = forcedRefresh ? null : store.get(key);
 
@@ -168,6 +176,7 @@ const createPublicSwrCache = ({ getPort, isDatabaseReady = () => true } = {}) =>
       const cacheControl = String(res.getHeader('Cache-Control') || '');
       const text = Buffer.isBuffer(body) ? body.toString('utf8') : body;
       if (
+        requestGeneration === cacheGeneration &&
         res.statusCode === 200 &&
         /^application\/json\b/i.test(contentType) &&
         !/\b(private|no-store|no-cache)\b/i.test(cacheControl) &&

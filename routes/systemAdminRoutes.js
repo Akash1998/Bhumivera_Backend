@@ -5,12 +5,17 @@ const { getMailMetrics } = require('../utils/mail');
 const { getRequestMetrics } = require('../middleware/requestObservability');
 const { getWakeReport } = require('../utils/wakeTracker');
 const { getRateLimitStoreStatus } = require('../middleware/rateLimiter');
-const { getResponseCacheStatus } = require('../middleware/redisResponseCache');
+const {
+  getResponseCacheStatus,
+  purgePublicResponseCache,
+  publishPublicCachePurge,
+} = require('../middleware/redisResponseCache');
 const {
   fetchRailwayHttpErrors,
   fetchVercelDeploymentEvents,
   fetchVercelRuntimeLogs,
   getProviderConfiguration,
+  purgeVercelCdnCache,
 } = require('../utils/providerDiagnostics');
 const {
   getModuleStates,
@@ -104,7 +109,7 @@ router.get('/health', authenticateAdmin, async (_req, res) => {
       responseCache: {
         ...responseCache,
         note: responseCache.status === 'connected'
-          ? 'Public JSON responses are cached in Redis for up to 60 seconds; responses over 1 MiB are not cached.'
+          ? `Public JSON responses are cached in Redis for up to ${responseCache.ttlSeconds} seconds; responses over 1 MiB are not cached.`
           : responseCache.status === 'not_configured'
             ? 'Redis response caching is disabled; the API reads directly from MySQL.'
             : 'Redis is configured but not ready; cache reads are skipped and the API reads directly from MySQL.',
@@ -171,6 +176,44 @@ router.get('/health', authenticateAdmin, async (_req, res) => {
       message: 'Could not load system health data.',
     });
   }
+});
+
+router.post('/cache/purge', authenticateAdmin, async (req, res) => {
+  const attempt = async (name, action) => {
+    try {
+      return await action();
+    } catch (error) {
+      console.error(`[ADMIN_CACHE_PURGE_${name}]`, error.code || error.name || 'CACHE_PURGE_FAILED');
+      return {
+        status: 'failed',
+        message: name === 'VERCEL'
+          ? error.message
+          : `${name === 'REDIS' ? 'Redis' : 'Backend memory'} cache purge failed; check backend logs.`,
+      };
+    }
+  };
+  const memoryCache = req.app.locals.publicSwrCache;
+  const [redis, processMemory, vercel] = await Promise.all([
+    attempt('REDIS', purgePublicResponseCache),
+    attempt('MEMORY', async () => memoryCache
+      ? { status: 'cleared', ...memoryCache.clear(), scope: 'current_instance' }
+      : { status: 'not_active', entries: 0, bytes: 0 }),
+    attempt('VERCEL', purgeVercelCdnCache),
+  ]);
+  const backendInstances = processMemory.status === 'cleared'
+    ? await attempt('INSTANCES', publishPublicCachePurge)
+    : { status: 'not_active', recipients: 0 };
+  const layers = { redis, processMemory, vercel, backendInstances };
+  const incomplete = Object.values(layers).some(layer =>
+    ['failed', 'not_configured', 'no_subscribers'].includes(layer.status)
+  );
+  return res.json({
+    success: !incomplete,
+    status: incomplete ? 'partial' : 'complete',
+    layers,
+    preserves: ['authentication and sessions', 'rate limits', 'database records', 'carts and wishlists'],
+    note: 'Public caches refill as requests arrive. Vercel purge targets production; only active backend cache subscribers receive the process-memory purge.',
+  });
 });
 
 router.get('/logs', authenticateAdmin, async (req, res) => {

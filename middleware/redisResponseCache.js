@@ -8,7 +8,9 @@ const CACHE_TTL_SECONDS = Number.isFinite(configuredTtlSeconds)
   : 900;
 const REDIS_READ_TIMEOUT_MS = 100;
 const MAX_CACHEABLE_RESPONSE_BYTES = 1024 * 1024;
+const CACHE_NAMESPACE_PREFIX = 'bhumivera:response-cache:';
 const CACHE_PREFIX = 'bhumivera:response-cache:v2:';
+const CACHE_PURGE_CHANNEL = 'bhumivera:response-cache:purge';
 const EDGE_CACHE_CONTROL = 'public, max-age=60, s-maxage=300, stale-while-revalidate=3600';
 const RATE_LIMITED_PUBLIC_PATHS = new Set([
   '/api/affiliate/referral/preview',
@@ -52,6 +54,8 @@ const cacheMetrics = {
 };
 
 const trackedCacheKeys = new Set();
+let purgeSubscriber;
+let purgeSubscriberPromise;
 
 const hashRequest = req => {
   const headers = CACHE_KEY_HEADERS.map(name => [name, req.get(name) || '']);
@@ -214,6 +218,39 @@ const invalidatePublicCatalogCache = async () => {
   }
 };
 
+const purgePublicResponseCache = async (client = redisClient) => {
+  if (!client) {
+    return {
+      status: 'not_configured',
+      deletedEntries: 0,
+      message: 'Shared Redis response caching is not configured.',
+    };
+  }
+  if (client === redisClient && !client.isReady) await connectResponseCache();
+  if (typeof client.scanIterator !== 'function' || typeof client.del !== 'function') {
+    throw new Error('Redis response-cache purge requires SCAN and DEL support.');
+  }
+
+  const keysToDelete = new Set();
+  for await (const result of client.scanIterator({
+    MATCH: `${CACHE_NAMESPACE_PREFIX}*`,
+    COUNT: 250,
+  })) {
+    const keys = Array.isArray(result) ? result : [result];
+    for (const key of keys) {
+      if (typeof key === 'string' && key.startsWith(CACHE_NAMESPACE_PREFIX)) keysToDelete.add(key);
+    }
+  }
+  const keys = [...keysToDelete];
+  let deletedEntries = 0;
+  for (let index = 0; index < keys.length; index += 250) {
+    deletedEntries += await client.del(keys.slice(index, index + 250));
+  }
+  trackedCacheKeys.clear();
+  cacheMetrics.invalidations += 1;
+  return { status: 'cleared', deletedEntries };
+};
+
 let responseCacheConnectionPromise;
 
 const connectResponseCache = async () => {
@@ -245,7 +282,47 @@ const connectResponseCache = async () => {
 };
 
 const closeResponseCache = async () => {
+  if (purgeSubscriber?.isOpen) await purgeSubscriber.quit();
+  purgeSubscriber = null;
   if (redisClient?.isOpen) await redisClient.quit();
+};
+
+const subscribeToPublicCachePurges = async onPurge => {
+  if (!redisClient) return { status: 'not_configured' };
+  if (purgeSubscriber) return { status: 'connected' };
+  if (!purgeSubscriberPromise) {
+    purgeSubscriberPromise = (async () => {
+      await connectResponseCache();
+      const subscriber = redisClient.duplicate();
+      subscriber.on('error', error => {
+        console.error('[RESPONSE_CACHE_PURGE_SUBSCRIBER_ERROR]', error.message);
+      });
+      await subscriber.connect();
+      await subscriber.subscribe(CACHE_PURGE_CHANNEL, () => onPurge());
+      purgeSubscriber = subscriber;
+    })().finally(() => {
+      purgeSubscriberPromise = null;
+    });
+  }
+  await purgeSubscriberPromise;
+  return { status: 'connected' };
+};
+
+const publishPublicCachePurge = async () => {
+  if (!redisClient) {
+    return {
+      status: 'not_configured',
+      recipients: 0,
+      message: 'Shared Redis is not configured, so other backend instances cannot be notified.',
+    };
+  }
+  await connectResponseCache();
+  const recipients = await redisClient.publish(CACHE_PURGE_CHANNEL, String(Date.now()));
+  return {
+    status: recipients > 0 ? 'published' : 'no_subscribers',
+    recipients,
+    ...(recipients > 0 ? {} : { message: 'No other active backend cache subscriber acknowledged the purge.' }),
+  };
 };
 
 const getResponseCacheStatus = () => ({
@@ -270,4 +347,7 @@ module.exports = {
   closeResponseCache,
   getResponseCacheStatus,
   invalidatePublicCatalogCache,
+  purgePublicResponseCache,
+  subscribeToPublicCachePurges,
+  publishPublicCachePurge,
 };
