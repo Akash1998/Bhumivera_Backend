@@ -422,7 +422,14 @@ app.use("/api/client-log", clientLogRoutes);
 app.use("/api/logs", logsRoutes);
 app.use("/api/newsletter", createModuleAvailabilityMiddleware('newsletter'), newsletterRoutes);
 app.use("/api/ai", createModuleAvailabilityMiddleware('ai'), aiRoutes);
-app.use("/api/affiliate", createModuleAvailabilityMiddleware('affiliate'), affiliateRoutes);
+app.use(
+  "/api/affiliate",
+  createModuleAvailabilityMiddleware(
+    'affiliate',
+    req => req.method !== 'GET' || req.path !== '/program-config'
+  ),
+  affiliateRoutes
+);
 app.use("/api/tax", createModuleAvailabilityMiddleware('tax'), taxRoutes);
 app.use("/api/wallet", createModuleAvailabilityMiddleware('wallet'), walletRoutes);
 app.use("/api/search", createModuleAvailabilityMiddleware('search'), searchRoutes);
