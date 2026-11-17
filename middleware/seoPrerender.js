@@ -203,6 +203,11 @@ const ROUTE_SEO_META = {
     description: 'Join the Bhumivera creator community. No fixed follower minimum; applications are reviewed by our team. Explore selective product gifting and transparent affiliate partnerships.',
     keywords: 'Bhumivera creator program, skincare creator partnerships India, botanical skincare product gifting, Bhumivera affiliate program, beauty influencer collaboration',
   },
+  '/promotions/dashboard': {
+    title: 'Bhumivera Creator Dashboard | Creator Partnerships & Promo Codes',
+    description: 'Apply to the Bhumivera creator program or sign in to manage your creator promo code, share links, order ledger, and payouts.',
+    keywords: 'Bhumivera creator dashboard, creator promo code, skincare creator partnerships India, Bhumivera affiliate program',
+  },
   '/sell-on-bhumivera': {
     title: 'B2B Raw Botanical Cooperatives, Luxury Spas & Retail Partnerships | Bhumivera',
     description: 'Partner with Bhumivera for traceable wild-harvested botanicals, boutique hotel & spa backbar amenities, or authorized retail distribution.',
@@ -695,6 +700,7 @@ function sitemapController(req, res) {
     '/order-tracking',
     '/affiliate',
     '/promotions',
+    '/promotions/dashboard',
     '/sell-on-bhumivera',
     '/mpgebusiness',
     '/community',

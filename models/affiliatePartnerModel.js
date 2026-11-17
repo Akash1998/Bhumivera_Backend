@@ -496,7 +496,7 @@ const getPublicPromotionsShowcase = async () => {
     onboardingSteps: [
       {
         step: '01',
-        title: 'Register at bhumivera.com/promotions',
+        title: 'Register at bhumivera.com/promotions/dashboard',
         window: '2 minutes',
         detail: 'Sign in or create a verified Bhumivera account, share your social profile and long-term partnership intent, and reserve your creator code.',
       },
