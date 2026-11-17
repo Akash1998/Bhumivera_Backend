@@ -10,6 +10,9 @@ const {
   previewReferral,
   saveReferralConfig,
   decideReferralClaim,
+  bulkDecideReferralClaims,
+  getAdminReferralStats,
+  issueManualReferralGrant,
   reissueReferralCoupon,
   approveDueReferralClaims,
 } = require('../models/referralModel');
@@ -21,6 +24,7 @@ const {
   createAdminPartner,
   getPartnerByCode,
   updatePartner,
+  bulkUpdatePartners,
   listPartners,
   getPartnerDashboard,
   listCommissions,
@@ -28,11 +32,27 @@ const {
   getAdminPromoterAnalytics,
   getPartnerPerformance,
   payCommission,
+  bulkPayCommissions,
   submitPartnerReelAndCode,
+  updatePartnerCreatorProfile,
+  listCampaignBriefs,
+  saveCampaignBrief,
+  deleteCampaignBrief,
+  getPublicPromotionsShowcase,
 } = require('../models/affiliatePartnerModel');
 
 const router = express.Router();
 const analyticsPeriods = new Set(['7d', '30d', '90d', 'month', 'all']);
+
+router.get('/promotions-showcase', async (_req, res) => {
+  try {
+    const showcase = await getPublicPromotionsShowcase();
+    return res.json({ success: true, ...showcase });
+  } catch (error) {
+    console.error('[AFFILIATE_PROMOTIONS_SHOWCASE]', error);
+    return res.status(500).json({ message: 'Could not load creator partnership showcase.' });
+  }
+});
 
 router.get('/referral/preview', referralPreviewLimiter, async (req, res) => {
   try {
@@ -118,6 +138,68 @@ router.put('/admin/config', authenticateAdmin, async (req, res) => {
   }
 });
 
+router.get('/admin/referrals/stats', authenticateAdmin, async (_req, res) => {
+  try {
+    const stats = await getAdminReferralStats();
+    return res.json({ success: true, ...stats });
+  } catch (error) {
+    console.error('[REFERRAL_ADMIN_STATS]', error);
+    return res.status(500).json({ message: 'Could not load referral engine statistics.' });
+  }
+});
+
+router.post('/admin/referrals/bulk-decision', authenticateAdmin, async (req, res) => {
+  const claimIds = Array.isArray(req.body?.claimIds) ? req.body.claimIds : [];
+  const decision = req.body?.decision;
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 255) : '';
+  if (!claimIds.length || claimIds.length > 100 || !['approved', 'rejected'].includes(decision) || (decision === 'rejected' && reason.length < 5)) {
+    return res.status(400).json({
+      code: 'INVALID_BULK_REFERRAL_DECISION',
+      message: 'Select 1 to 100 pending referrals and choose approve or reject (with a reason of at least 5 characters for rejections).',
+    });
+  }
+  try {
+    const result = await bulkDecideReferralClaims({
+      claimIds,
+      decision,
+      adminId: req.user.id,
+      reason: reason || null,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: 'BULK_REFERRAL_DECISION_FAILED', message: error.message });
+    console.error('[REFERRAL_ADMIN_BULK_DECISION]', error);
+    return res.status(500).json({ message: 'Could not process bulk referral decisions.' });
+  }
+});
+
+router.post('/admin/referrals/manual-grant', authenticateAdmin, async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+  const amount = Number(req.body?.amount);
+  const bucket = req.body?.bucket === 'cash' ? 'cash' : 'referral';
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  if (!email || !Number.isFinite(amount) || amount <= 0 || amount > 100000 || reason.length < 5) {
+    return res.status(400).json({
+      code: 'INVALID_MANUAL_REFERRAL_GRANT',
+      message: 'Enter a valid customer email, positive reward amount (up to ₹1,00,000), and a reason of at least 5 characters.',
+    });
+  }
+  try {
+    const grant = await issueManualReferralGrant({
+      email,
+      amount,
+      bucket,
+      reason,
+      adminId: req.user.id,
+    });
+    return res.status(201).json({ success: true, grant });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: 'MANUAL_REFERRAL_GRANT_FAILED', message: error.message });
+    console.error('[REFERRAL_MANUAL_GRANT]', error);
+    return res.status(500).json({ message: 'Could not issue manual referral grant.' });
+  }
+});
+
 router.get('/admin/referrals', authenticateAdmin, async (req, res) => {
   const page = Math.max(1, Math.min(10000, Number.parseInt(req.query.page, 10) || 1));
   const limit = Math.max(1, Math.min(100, Number.parseInt(req.query.limit, 10) || 25));
@@ -132,7 +214,7 @@ router.get('/admin/referrals', authenticateAdmin, async (req, res) => {
         referred.id AS referred_id, referred.name AS referred_name, referred.email AS referred_email
        FROM referral_claims c
        LEFT JOIN referral_wallets rw ON rw.user_id = c.referrer_user_id
-      LEFT JOIN referral_wallets rwr ON rwr.user_id = c.referred_user_id
+       LEFT JOIN referral_wallets rwr ON rwr.user_id = c.referred_user_id
        JOIN users referred ON referred.id = c.referred_user_id
        JOIN users referrer ON referrer.id = c.referrer_user_id
        ORDER BY (c.status = 'pending') DESC, c.verified_at DESC LIMIT ? OFFSET ?`,
@@ -185,9 +267,6 @@ router.patch('/admin/referrals/:claimId/decision', authenticateAdmin, async (req
   }
 });
 
-
-
-
 router.get('/program-config', async (_req, res) => {
   try {
     const config = await getProgramConfig();
@@ -229,6 +308,12 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
   const partnershipIntent = typeof req.body?.partnershipIntent === 'string'
     ? req.body.partnershipIntent.trim()
     : '';
+  const preferredProducts = typeof req.body?.preferredProducts === 'string' ? req.body.preferredProducts.trim().slice(0, 500) : undefined;
+  const contentFormats = typeof req.body?.contentFormats === 'string' ? req.body.contentFormats.trim().slice(0, 255) : undefined;
+  const monthlyReachEstimate = typeof req.body?.monthlyReachEstimate === 'string' ? req.body.monthlyReachEstimate.trim().slice(0, 64) : undefined;
+  const sampleContentUrl = typeof req.body?.sampleContentUrl === 'string' ? req.body.sampleContentUrl.trim().slice(0, 500) : undefined;
+  const whatsappContact = typeof req.body?.whatsappContact === 'string' ? req.body.whatsappContact.trim().slice(0, 40) : undefined;
+
   const allowedProfileHosts = {
     Facebook: ['facebook.com', 'fb.com'],
     Instagram: ['instagram.com'],
@@ -265,7 +350,7 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
     });
   }
   try {
-    const result = await applyForPartner({
+    const applicationPayload = {
       userId: req.user.id,
       socialPlatform,
       socialHandle: submittedHandle,
@@ -275,7 +360,13 @@ router.post('/partner/apply', authenticateUser, async (req, res) => {
       contentNiche,
       collaborationType,
       partnershipIntent,
-    });
+      ...(preferredProducts ? { preferredProducts } : {}),
+      ...(contentFormats ? { contentFormats } : {}),
+      ...(monthlyReachEstimate ? { monthlyReachEstimate } : {}),
+      ...(sampleContentUrl ? { sampleContentUrl } : {}),
+      ...(whatsappContact ? { whatsappContact } : {}),
+    };
+    const result = await applyForPartner(applicationPayload);
     return res.status(result.alreadyApplied ? 200 : 201).json({ success: true, ...result });
   } catch (error) {
     console.error('[AFFILIATE_PARTNER_APPLICATION]', error);
@@ -341,6 +432,72 @@ router.patch('/partner/me/perks', authenticateUser, async (req, res) => {
     if (error.status) return res.status(error.status).json({ message: error.message });
     console.error('[AFFILIATE_PARTNER_PERKS_UPDATE]', error);
     return res.status(500).json({ message: 'Could not update your creator perks.' });
+  }
+});
+
+router.patch('/partner/me/profile', authenticateUser, async (req, res) => {
+  const body = req.body || {};
+  const sampleContentUrl = typeof body.sampleContentUrl === 'string' ? body.sampleContentUrl.trim() : '';
+  if (sampleContentUrl) {
+    try {
+      const parsed = new URL(sampleContentUrl);
+      if (parsed.protocol !== 'https:') throw new Error('HTTPS required');
+    } catch {
+      return res.status(400).json({
+        code: 'INVALID_SAMPLE_CONTENT_URL',
+        message: 'Enter a valid HTTPS URL for your sample content link.',
+      });
+    }
+  }
+  try {
+    const dashboard = await updatePartnerCreatorProfile(req.user.id, {
+      preferredProducts: body.preferredProducts,
+      contentFormats: body.contentFormats,
+      monthlyReachEstimate: body.monthlyReachEstimate,
+      sampleContentUrl: sampleContentUrl || undefined,
+      payoutUpiId: body.payoutUpiId,
+      whatsappContact: body.whatsappContact,
+      acknowledgeBrief: Boolean(body.acknowledgeBrief),
+    });
+    return res.json({ success: true, dashboard });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error('[AFFILIATE_PARTNER_PROFILE_UPDATE]', error);
+    return res.status(500).json({ message: 'Could not update your creator profile preferences.' });
+  }
+});
+
+router.get('/admin/campaign-briefs', authenticateAdmin, async (_req, res) => {
+  try {
+    return res.json({ success: true, briefs: await listCampaignBriefs({ activeOnly: false }) });
+  } catch (error) {
+    console.error('[AFFILIATE_ADMIN_CAMPAIGN_BRIEFS]', error);
+    return res.status(500).json({ message: 'Could not load creator campaign briefs.' });
+  }
+});
+
+router.post('/admin/campaign-briefs', authenticateAdmin, async (req, res) => {
+  try {
+    const briefs = await saveCampaignBrief(req.body || {});
+    return res.status(201).json({ success: true, briefs });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: 'INVALID_CAMPAIGN_BRIEF', message: error.message });
+    console.error('[AFFILIATE_ADMIN_CAMPAIGN_BRIEF_SAVE]', error);
+    return res.status(500).json({ message: 'Could not save this creator campaign brief.' });
+  }
+});
+
+router.delete('/admin/campaign-briefs/:id', authenticateAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    return res.status(400).json({ code: 'INVALID_CAMPAIGN_BRIEF_ID', message: 'Choose a valid campaign brief ID.' });
+  }
+  try {
+    const briefs = await deleteCampaignBrief(id);
+    return res.json({ success: true, briefs });
+  } catch (error) {
+    console.error('[AFFILIATE_ADMIN_CAMPAIGN_BRIEF_DELETE]', error);
+    return res.status(500).json({ message: 'Could not delete this campaign brief.' });
   }
 });
 
@@ -593,6 +750,43 @@ router.get(['/admin/partners', '/partners'], authenticateAdmin, async (_req, res
   }
 });
 
+router.post('/admin/partners/bulk-update', authenticateAdmin, async (req, res) => {
+  const body = req.body || {};
+  const partnerIds = Array.isArray(body.partnerIds) ? body.partnerIds : [];
+  const status = body.status;
+  const hasDiscount = body.discountPercent !== undefined && body.discountPercent !== null && body.discountPercent !== '';
+  const hasShare = body.commissionSharePercent !== undefined && body.commissionSharePercent !== null && body.commissionSharePercent !== '';
+  const discountPercent = hasDiscount ? Number(body.discountPercent) : undefined;
+  const commissionSharePercent = hasShare ? Number(body.commissionSharePercent) : undefined;
+  const adminNotes = typeof body.adminNotes === 'string' ? body.adminNotes.trim().slice(0, 1000) : undefined;
+
+  if (!partnerIds.length || partnerIds.length > 100 ||
+      (!status && !hasDiscount && !hasShare && adminNotes === undefined) ||
+      (status && !['approved', 'rejected', 'paused'].includes(status)) ||
+      (hasDiscount && (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 60)) ||
+      (hasShare && (!Number.isFinite(commissionSharePercent) || commissionSharePercent < 0 || commissionSharePercent > 100))) {
+    return res.status(400).json({
+      code: 'INVALID_BULK_PARTNER_UPDATE',
+      message: 'Select 1 to 100 promoters and provide a valid status, discount rate (0–60%), or profit-share rate (0–100%).',
+    });
+  }
+  try {
+    const result = await bulkUpdatePartners({
+      partnerIds,
+      status,
+      discountPercent,
+      commissionSharePercent,
+      adminNotes,
+      adminId: req.user.id,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: 'BULK_PARTNER_UPDATE_FAILED', message: error.message });
+    console.error('[AFFILIATE_ADMIN_BULK_PARTNER_UPDATE]', error);
+    return res.status(500).json({ message: 'Could not complete bulk promoter update.' });
+  }
+});
+
 router.post('/admin/partners', authenticateAdmin, async (req, res) => {
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const socialPlatform = typeof req.body?.socialPlatform === 'string' ? req.body.socialPlatform.trim().slice(0, 40) : '';
@@ -708,6 +902,29 @@ router.get(['/admin/commissions', '/withdrawals'], authenticateAdmin, async (_re
   }
 });
 
+router.post('/admin/commissions/bulk-payout', authenticateAdmin, async (req, res) => {
+  const commissionIds = Array.isArray(req.body?.commissionIds) ? req.body.commissionIds : [];
+  const reference = typeof req.body?.reference === 'string' ? req.body.reference.trim().slice(0, 120) : '';
+  if (!commissionIds.length || commissionIds.length > 100 || reference.length < 3) {
+    return res.status(400).json({
+      code: 'INVALID_BULK_AFFILIATE_PAYOUT',
+      message: 'Select 1 to 100 approved commissions and enter a valid transfer reference (at least 3 characters).',
+    });
+  }
+  try {
+    const result = await bulkPayCommissions({
+      commissionIds,
+      reference,
+      adminId: req.user.id,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ code: 'BULK_AFFILIATE_PAYOUT_FAILED', message: error.message });
+    console.error('[AFFILIATE_BULK_PAYOUT]', error);
+    return res.status(500).json({ message: 'Could not record batch promoter payouts.' });
+  }
+});
+
 router.post(['/admin/commissions/:id/payout', '/withdrawals/:id/approve'], authenticateAdmin, async (req, res) => {
   const commissionId = Number(req.params.id);
   const reference = typeof req.body?.reference === 'string' ? req.body.reference.trim().slice(0, 120) : '';
@@ -736,4 +953,3 @@ router.get('/config', authenticateAdmin, async (_req, res) => {
 router.put('/config', authenticateAdmin, saveProgramConfigHandler);
 
 module.exports = router;
-

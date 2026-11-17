@@ -62,6 +62,9 @@ const fakePool = {
     if (sql.includes('SELECT key_name, value FROM settings')) {
       return [[], []];
     }
+    if (sql.includes('SELECT * FROM affiliate_campaign_briefs')) {
+      return [[], []];
+    }
     if (sql.includes('SELECT COUNT(c.id) AS attributed_orders')) {
       dashboardSummaryQuery = sql;
       return [[dashboardSummary], []];
@@ -101,7 +104,13 @@ Module._load = function (request, parent, isMain) {
   if (parent?.filename === modelPath && request === '../config/db') return fakePool;
   return originalLoad.call(this, request, parent, isMain);
 };
-const { applyForPartner, getPartnerDashboard, updatePartner } = require('../models/affiliatePartnerModel');
+const {
+  applyForPartner,
+  getPartnerDashboard,
+  updatePartner,
+  bulkUpdatePartners,
+  getPublicPromotionsShowcase,
+} = require('../models/affiliatePartnerModel');
 Module._load = originalLoad;
 
 describe('affiliate partner applications', () => {
@@ -182,5 +191,34 @@ describe('affiliate partner applications', () => {
     assert.match(dashboardCommissionsQuery, /c\.retained_profit/);
     assert.deepEqual(dashboardCommissionsParams, [17, 20, 40]);
     assert.deepEqual(dashboard.commissionPagination, { page: 3, pageSize: 20, total: 65, pages: 4 });
+  });
+
+  it('supports bulk updating multiple promoter records and returns public showcase briefs', async () => {
+    storedPartner = {
+      id: 17,
+      status: 'pending',
+      discount_percent: 10,
+      commission_share_percent: 20,
+      referral_code: 'BVCREATOR17',
+      admin_notes: null,
+      reviewed_by: null,
+    };
+
+    const bulkResult = await bulkUpdatePartners({
+      partnerIds: [17],
+      status: 'approved',
+      discountPercent: 15,
+      commissionSharePercent: 25,
+      adminId: 7,
+    });
+    assert.equal(bulkResult.updatedCount, 1);
+    assert.equal(bulkResult.partners[0].status, 'approved');
+    assert.equal(bulkResult.partners[0].discount_percent, 15);
+    assert.equal(bulkResult.partners[0].commission_share_percent, 25);
+
+    const showcase = await getPublicPromotionsShowcase();
+    assert.equal(showcase.milestones.length, 3);
+    assert.equal(showcase.campaignBriefs.length, 4);
+    assert.equal(showcase.onboardingSteps.length, 3);
   });
 });

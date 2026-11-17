@@ -13,9 +13,64 @@ const defaultProgramConfig = Object.freeze({
 });
 
 const CREATOR_MILESTONES = Object.freeze([
-  { orders: 3, key: 'milestone_3_credited_at', rewardInr: 500, label: '₹500 Bhumivera Luxury Gift Card', shareBoost: null },
-  { orders: 10, key: 'milestone_10_credited_at', rewardInr: 1200, label: '₹1,200 Creator Bonus + Full-Range PR Box', shareBoost: null },
-  { orders: 25, key: 'milestone_25_upgraded_at', rewardInr: 2500, label: '₹2,500 VIP Gift Card + 25% Profit Share Tier', shareBoost: 25 },
+  { orders: 3, key: 'milestone_3_credited_at', rewardInr: 500, label: '₹500 Bhumivera Luxury Gift Card', shareBoost: null, tierBadge: 'Ritual Educator' },
+  { orders: 10, key: 'milestone_10_credited_at', rewardInr: 1200, label: '₹1,200 Creator Bonus + Full-Range PR Box', shareBoost: null, tierBadge: 'Botanical Ambassador' },
+  { orders: 25, key: 'milestone_25_upgraded_at', rewardInr: 2500, label: '₹2,500 VIP Gift Card + 25% Profit Share Tier', shareBoost: 25, tierBadge: 'Maison Partner' },
+]);
+
+const DEFAULT_CAMPAIGN_BRIEFS = Object.freeze([
+  {
+    id: 1,
+    slug: 'seabuckthorn-radiance-ritual',
+    title: 'Himalayan Sea Buckthorn Barrier & Radiance Ritual',
+    product_name: 'Sea Buckthorn Face Wash (100ml)',
+    product_slug: 'himalayan-seabuckthorn-luxury-face-wash',
+    category: 'Skincare',
+    hook_angle: 'Why pH 5.5 barrier balance + 4% Cold-Pressed Himalayan Sea Buckthorn changes how your skin feels after cleansing',
+    key_talking_points: '4% Cold-Pressed Sea Buckthorn (Omega-7 & Vitamin C) · 5% Vegetable Glycerin · Hyaluronic Acid & Niacinamide · Sulfate-free & Paraben-free · No tight or stripped post-wash feeling',
+    disclosure_rules: 'Clearly include #ad, #BhumiveraPartner, or #gifted in the first lines. Share genuine texture and routine experience; never make medical or overnight cure claims.',
+    recommended_formats: 'Instagram Reels (30–45s), YouTube Shorts, AM/PM Sink-Side Routine',
+    is_active: 1,
+  },
+  {
+    id: 2,
+    slug: 'royal-botanical-hair-ritual',
+    title: 'Saponin-Rich Ayurvedic Hair & Scalp Wash Day',
+    product_name: 'Botanical 2-in-1 Shampoo (200ml)',
+    product_slug: 'luxury-2-in-1-botanical-shampoo-conditioner',
+    category: 'Haircare',
+    hook_angle: 'Switching from harsh sulfates to traditional Ayurvedic Reetha, Amla, Shikakai & Rosemary Oil in a single 2-in-1 step',
+    key_talking_points: '25mg Reetha (natural saponins) · 20mg Amla & Bhringraj · 10mg Pure Rosemary Oil · Built-in botanical conditioning without heavy silicones',
+    disclosure_rules: 'Clearly disclose creator code & commission relationship (#ad / #BhumiveraPartner). Focus on scalp comfort, wash-day ease, and natural shine rather than guaranteed hair regrowth claims.',
+    recommended_formats: 'Wash-Day Reel, Ingredient Breakdown Carousel, YouTube Routine',
+    is_active: 1,
+  },
+  {
+    id: 3,
+    slug: 'artisanal-charcoal-detox-ritual',
+    title: 'Daily Pollution & Pore Detox Bathing Ritual',
+    product_name: 'Artisanal Cleansing Bar (100g)',
+    product_slug: 'artisanal-charcoal-handmade-soap',
+    category: 'Skincare',
+    hook_angle: 'How microporous Activated Charcoal + soothing Aloe Vera lift urban grime and sweat without drying out body or face skin',
+    key_talking_points: 'Handcrafted small-batch Ayurvedic bar · Microporous Activated Charcoal · Soothing Aloe Vera base · Free from harsh synthetic detergents',
+    disclosure_rules: 'Use #ad or #BhumiveraPartner disclosure. Highlight lather texture, post-bath skin softness, and humid-weather freshness.',
+    recommended_formats: 'ASMR Lather & Texture Short, Gym/Commute Post-Bath Routine',
+    is_active: 1,
+  },
+  {
+    id: 4,
+    slug: 'kalpvriksh-seven-tulsi-ritual',
+    title: 'Inside-Out Botanical Vitality: 7-Tulsi Morning Ritual',
+    product_name: 'Seven-Tulsi Drops (30ml)',
+    product_slug: 'kalpvriksh-satva-tulsi-7-tulsi-extract',
+    category: 'Wellness',
+    hook_angle: '2 drops in warm water every morning: exploring 7 sacred varieties of Tulsi for daily botanical wellness',
+    key_talking_points: '90% concentrated liquid distillate · 7 Tulsi varieties (Van, Sweet, Marua, Bisva, Kala, Rama & Lemon Tulsi) · Easy warm-water or tea morning ritual',
+    disclosure_rules: 'Disclose partnership (#ad / #BhumiveraPartner). Present as a traditional Ayurvedic wellness ritual; never position as a drug or medical treatment.',
+    recommended_formats: 'Morning Desk/Tea Ritual Reel, Wellness Habit Vlog, Family Routine Short',
+    is_active: 1,
+  },
 ]);
 
 const creditCreatorReferralWallet = async (connection, { userId, amount, description, referenceId }) => {
@@ -73,6 +128,11 @@ const applyForPartner = async ({
   contentNiche,
   collaborationType,
   partnershipIntent,
+  preferredProducts,
+  contentFormats,
+  monthlyReachEstimate,
+  sampleContentUrl,
+  whatsappContact,
 }) => {
   const [existing] = await pool.query('SELECT * FROM affiliate_partners WHERE user_id = ? LIMIT 1', [userId]);
   if (existing.length) {
@@ -128,6 +188,27 @@ const applyForPartner = async ({
       ]
     );
   }
+
+  if (preferredProducts || contentFormats || monthlyReachEstimate || sampleContentUrl || whatsappContact) {
+    await pool.query(
+      `UPDATE affiliate_partners
+       SET preferred_products = COALESCE(?, preferred_products),
+           content_formats = COALESCE(?, content_formats),
+           monthly_reach_estimate = COALESCE(?, monthly_reach_estimate),
+           sample_content_url = COALESCE(?, sample_content_url),
+           whatsapp_contact = COALESCE(?, whatsapp_contact)
+       WHERE user_id = ?`,
+      [
+        preferredProducts ? String(preferredProducts).trim().slice(0, 500) : null,
+        contentFormats ? String(contentFormats).trim().slice(0, 255) : null,
+        monthlyReachEstimate ? String(monthlyReachEstimate).trim().slice(0, 64) : null,
+        sampleContentUrl ? String(sampleContentUrl).trim().slice(0, 500) : null,
+        whatsappContact ? String(whatsappContact).trim().slice(0, 40) : null,
+        userId,
+      ]
+    ).catch(() => {});
+  }
+
   const [[partner]] = await pool.query('SELECT * FROM affiliate_partners WHERE user_id = ?', [userId]);
   return { partner, alreadyApplied: false };
 };
@@ -265,10 +346,39 @@ const updatePartner = async (id, { status, discountPercent, commissionSharePerce
   }
 };
 
+const bulkUpdatePartners = async ({
+  partnerIds,
+  status,
+  discountPercent,
+  commissionSharePercent,
+  adminNotes,
+  adminId,
+}) => {
+  const ids = Array.from(new Set((Array.isArray(partnerIds) ? partnerIds : []).map(Number).filter(id => Number.isSafeInteger(id) && id > 0)));
+  if (!ids.length) {
+    const error = new Error('Select at least one promoter record to update.');
+    error.status = 400;
+    throw error;
+  }
+  const results = [];
+  for (const id of ids) {
+    const updated = await updatePartner(id, {
+      ...(status ? { status } : {}),
+      ...(discountPercent !== undefined && discountPercent !== null && discountPercent !== '' ? { discountPercent: Number(discountPercent) } : {}),
+      ...(commissionSharePercent !== undefined && commissionSharePercent !== null && commissionSharePercent !== '' ? { commissionSharePercent: Number(commissionSharePercent) } : {}),
+      ...(adminNotes !== undefined ? { adminNotes } : {}),
+      adminId,
+    });
+    results.push(updated);
+  }
+  return { updatedCount: results.length, partners: results };
+};
+
 const listPartners = async () => {
   const [partners] = await pool.query(
     `SELECT p.*, u.name AS user_name, u.email AS user_email,
        COALESCE(SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending_orders,
+       COALESCE(SUM(CASE WHEN c.status IN ('approved', 'paid') THEN 1 ELSE 0 END), 0) AS delivered_orders,
        COALESCE(SUM(CASE WHEN c.status = 'approved' THEN c.commission_amount ELSE 0 END), 0) AS payable_amount,
        0 AS balance_carryover,
        COALESCE((SELECT SUM(a.amount) FROM affiliate_payouts a WHERE a.partner_id = p.id), 0) AS paid_amount
@@ -281,11 +391,121 @@ const listPartners = async () => {
   return partners;
 };
 
+const listCampaignBriefs = async ({ activeOnly = false } = {}) => {
+  try {
+    const whereClause = activeOnly ? 'WHERE is_active = 1' : '';
+    const [rows] = await pool.query(
+      `SELECT * FROM affiliate_campaign_briefs ${whereClause} ORDER BY is_active DESC, id ASC`
+    );
+    if (Array.isArray(rows) && rows.length > 0) return rows;
+  } catch {
+    // Table may not exist yet or mock pool in unit tests; fall back to defaults
+  }
+  return activeOnly
+    ? DEFAULT_CAMPAIGN_BRIEFS.filter(brief => Number(brief.is_active) === 1)
+    : [...DEFAULT_CAMPAIGN_BRIEFS];
+};
+
+const saveCampaignBrief = async brief => {
+  const slug = String(brief.slug || brief.title || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120) || `campaign-${Date.now()}`;
+  const title = String(brief.title || '').trim().slice(0, 180);
+  const productName = String(brief.product_name || brief.productName || '').trim().slice(0, 160);
+  const productSlug = String(brief.product_slug || brief.productSlug || '').trim().slice(0, 160) || null;
+  const category = String(brief.category || 'Skincare').trim().slice(0, 60);
+  const hookAngle = String(brief.hook_angle || brief.hookAngle || '').trim().slice(0, 300);
+  const keyTalkingPoints = String(brief.key_talking_points || brief.keyTalkingPoints || '').trim().slice(0, 2000);
+  const disclosureRules = String(
+    brief.disclosure_rules || brief.disclosureRules ||
+    'Use #ad, #BhumiveraPartner, or #gifted clearly. Avoid medical or guaranteed-result claims.'
+  ).trim().slice(0, 400);
+  const recommendedFormats = String(
+    brief.recommended_formats || brief.recommendedFormats ||
+    'Instagram Reels, YouTube Shorts, Routine Walkthrough'
+  ).trim().slice(0, 160);
+  const isActive = brief.is_active === undefined ? 1 : (Number(brief.is_active) ? 1 : 0);
+
+  if (!title || !productName || !hookAngle || !keyTalkingPoints) {
+    const error = new Error('Enter a campaign title, product name, creator hook angle, and key talking points.');
+    error.status = 400;
+    throw error;
+  }
+
+  if (brief.id) {
+    await pool.query(
+      `UPDATE affiliate_campaign_briefs
+       SET slug = ?, title = ?, product_name = ?, product_slug = ?, category = ?,
+           hook_angle = ?, key_talking_points = ?, disclosure_rules = ?,
+           recommended_formats = ?, is_active = ?
+       WHERE id = ?`,
+      [slug, title, productName, productSlug, category, hookAngle, keyTalkingPoints, disclosureRules, recommendedFormats, isActive, Number(brief.id)]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO affiliate_campaign_briefs
+       (slug, title, product_name, product_slug, category, hook_angle, key_talking_points, disclosure_rules, recommended_formats, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         title = VALUES(title), product_name = VALUES(product_name), product_slug = VALUES(product_slug),
+         category = VALUES(category), hook_angle = VALUES(hook_angle), key_talking_points = VALUES(key_talking_points),
+         disclosure_rules = VALUES(disclosure_rules), recommended_formats = VALUES(recommended_formats), is_active = VALUES(is_active)`,
+      [slug, title, productName, productSlug, category, hookAngle, keyTalkingPoints, disclosureRules, recommendedFormats, isActive]
+    );
+  }
+  return listCampaignBriefs({ activeOnly: false });
+};
+
+const deleteCampaignBrief = async id => {
+  await pool.query('DELETE FROM affiliate_campaign_briefs WHERE id = ?', [Number(id)]);
+  return listCampaignBriefs({ activeOnly: false });
+};
+
+const getPublicPromotionsShowcase = async () => {
+  const programConfig = await getProgramConfig().catch(() => defaultProgramConfig);
+  const campaignBriefs = await listCampaignBriefs({ activeOnly: true });
+  return {
+    programConfig,
+    milestones: CREATOR_MILESTONES.map(m => ({
+      ordersRequired: m.orders,
+      rewardInr: m.rewardInr,
+      label: m.label,
+      shareBoost: m.shareBoost,
+      tierBadge: m.tierBadge,
+    })),
+    campaignBriefs,
+    onboardingSteps: [
+      {
+        step: '01',
+        title: 'Register at bhumivera.com/promotions',
+        window: '2 minutes',
+        detail: 'Sign in or create a verified Bhumivera account, share your social profile and long-term partnership intent, and reserve your creator code.',
+      },
+      {
+        step: '02',
+        title: '12–24h Human Team Verification',
+        window: '12–24 hours',
+        detail: 'Our curation team reviews your content voice, audience alignment, and botanical education fit—with no fixed follower minimum.',
+      },
+      {
+        step: '03',
+        title: 'Campaign Brief & Code Activation',
+        window: 'Instant on approval',
+        detail: 'Receive your active audience discount code, contribution profit-share rate, product campaign brief, and open-book earnings ledger.',
+      },
+    ],
+  };
+};
+
 const getPartnerDashboard = async (userId, { commissionPage = 1, commissionPageSize = 20 } = {}) => {
   const partner = await getPartnerByUserId(userId);
   if (!partner) return null;
   const [[summary]] = await pool.query(
     `SELECT COUNT(c.id) AS attributed_orders,
+       COALESCE(SUM(CASE WHEN c.status IN ('approved', 'paid') THEN 1 ELSE 0 END), 0) AS delivered_orders,
        COALESCE(SUM(CASE WHEN c.status = 'pending' THEN c.commission_amount ELSE 0 END), 0) AS pending_commission,
        COALESCE(SUM(CASE WHEN c.status = 'approved' THEN c.commission_amount ELSE 0 END), 0) AS payable_commission,
        COALESCE(SUM(CASE WHEN c.status = 'reversed' THEN c.commission_amount ELSE 0 END), 0) AS reversed_commission,
@@ -690,6 +910,23 @@ const payCommission = async ({ commissionId, reference, adminId }) => {
   }
 };
 
+const bulkPayCommissions = async ({ commissionIds, reference, adminId }) => {
+  const ids = Array.from(new Set((Array.isArray(commissionIds) ? commissionIds : []).map(Number).filter(id => Number.isSafeInteger(id) && id > 0)));
+  if (!ids.length) {
+    const error = new Error('Select at least one approved commission to settle.');
+    error.status = 400;
+    throw error;
+  }
+  const payouts = [];
+  let totalPaid = 0;
+  for (const commissionId of ids) {
+    const result = await payCommission({ commissionId, reference, adminId });
+    payouts.push(result);
+    totalPaid = Math.round((totalPaid + Number(result.amount || 0)) * 100) / 100;
+  }
+  return { paidCount: payouts.length, totalPaid, reference, payouts };
+};
+
 const syncCommissionOrderStatus = async (orderId, orderStatus, connection = pool) => {
   if (orderStatus === 'delivered') {
     await connection.query(
@@ -782,6 +1019,45 @@ const submitPartnerReelAndCode = async (userId, { customCode, reelUrl, trialOrde
   }
 };
 
+const updatePartnerCreatorProfile = async (userId, {
+  preferredProducts,
+  contentFormats,
+  monthlyReachEstimate,
+  sampleContentUrl,
+  payoutUpiId,
+  whatsappContact,
+  acknowledgeBrief,
+}) => {
+  const partner = await getPartnerByUserId(userId);
+  if (!partner) {
+    const error = new Error('Promoter account not found.');
+    error.status = 404;
+    throw error;
+  }
+  await pool.query(
+    `UPDATE affiliate_partners
+     SET preferred_products = COALESCE(?, preferred_products),
+         content_formats = COALESCE(?, content_formats),
+         monthly_reach_estimate = COALESCE(?, monthly_reach_estimate),
+         sample_content_url = COALESCE(?, sample_content_url),
+         payout_upi_id = COALESCE(?, payout_upi_id),
+         whatsapp_contact = COALESCE(?, whatsapp_contact),
+         campaign_brief_ack_at = CASE WHEN ? = 1 THEN COALESCE(campaign_brief_ack_at, CURRENT_TIMESTAMP) ELSE campaign_brief_ack_at END
+     WHERE id = ?`,
+    [
+      preferredProducts !== undefined ? (String(preferredProducts).trim().slice(0, 500) || null) : null,
+      contentFormats !== undefined ? (String(contentFormats).trim().slice(0, 255) || null) : null,
+      monthlyReachEstimate !== undefined ? (String(monthlyReachEstimate).trim().slice(0, 64) || null) : null,
+      sampleContentUrl !== undefined ? (String(sampleContentUrl).trim().slice(0, 500) || null) : null,
+      payoutUpiId !== undefined ? (String(payoutUpiId).trim().slice(0, 120) || null) : null,
+      whatsappContact !== undefined ? (String(whatsappContact).trim().slice(0, 40) || null) : null,
+      acknowledgeBrief ? 1 : 0,
+      partner.id,
+    ]
+  ).catch(() => {});
+  return getPartnerDashboard(userId);
+};
+
 module.exports = {
   defaultProgramConfig,
   getProgramConfig,
@@ -791,6 +1067,7 @@ module.exports = {
   getPartnerByUserId,
   getPartnerByCode,
   updatePartner,
+  bulkUpdatePartners,
   listPartners,
   getPartnerDashboard,
   listCommissions,
@@ -798,7 +1075,14 @@ module.exports = {
   getAdminPromoterAnalytics,
   getPartnerPerformance,
   payCommission,
+  bulkPayCommissions,
   syncCommissionOrderStatus,
   submitPartnerReelAndCode,
+  updatePartnerCreatorProfile,
+  listCampaignBriefs,
+  saveCampaignBrief,
+  deleteCampaignBrief,
+  getPublicPromotionsShowcase,
   CREATOR_MILESTONES,
+  DEFAULT_CAMPAIGN_BRIEFS,
 };

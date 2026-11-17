@@ -1526,6 +1526,46 @@ const migrations = [
       }
     },
   },
+  {
+    version: 93,
+    name: 'upgrade 20x creator promotions and referral engine',
+    up: async () => {
+      const extraColumns = [
+        ['preferred_products', 'VARCHAR(500) DEFAULT NULL'],
+        ['content_formats', 'VARCHAR(255) DEFAULT NULL'],
+        ['monthly_reach_estimate', 'VARCHAR(64) DEFAULT NULL'],
+        ['sample_content_url', 'VARCHAR(500) DEFAULT NULL'],
+        ['payout_upi_id', 'VARCHAR(120) DEFAULT NULL'],
+        ['whatsapp_contact', 'VARCHAR(40) DEFAULT NULL'],
+        ['campaign_brief_ack_at', 'DATETIME DEFAULT NULL'],
+        ['creator_tier_badge', "VARCHAR(40) NOT NULL DEFAULT 'Rising Co-Creator'"],
+      ];
+      for (const [col, definition] of extraColumns) {
+        const [columns] = await pool.query('SHOW COLUMNS FROM affiliate_partners LIKE ?', [col]);
+        if (columns.length === 0) {
+          await pool.query(`ALTER TABLE affiliate_partners ADD COLUMN ${col} ${definition}`);
+        }
+      }
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS affiliate_campaign_briefs (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          slug VARCHAR(120) NOT NULL UNIQUE,
+          title VARCHAR(180) NOT NULL,
+          product_name VARCHAR(160) NOT NULL,
+          product_slug VARCHAR(160) DEFAULT NULL,
+          category VARCHAR(60) NOT NULL DEFAULT 'Skincare',
+          hook_angle VARCHAR(300) NOT NULL,
+          key_talking_points TEXT NOT NULL,
+          disclosure_rules VARCHAR(400) NOT NULL DEFAULT 'Use #ad, #BhumiveraPartner, or #gifted clearly. Avoid medical or guaranteed-result claims.',
+          recommended_formats VARCHAR(160) NOT NULL DEFAULT 'Instagram Reels, YouTube Shorts, Routine Walkthrough',
+          is_active TINYINT(1) NOT NULL DEFAULT 1,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    },
+  },
 ];
 
 module.exports = migrations;

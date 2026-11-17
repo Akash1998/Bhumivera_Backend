@@ -520,6 +520,145 @@ const decideReferralClaim = async (claimId, decision, adminId = null, reason = n
   return { ...notification, alreadyDecided: false };
 };
 
+const bulkDecideReferralClaims = async ({ claimIds, decision, adminId = null, reason = null }) => {
+  const ids = Array.from(new Set((Array.isArray(claimIds) ? claimIds : []).map(Number).filter(id => Number.isSafeInteger(id) && id > 0)));
+  if (!ids.length) {
+    throw Object.assign(new Error('Select at least one pending referral claim.'), { status: 400 });
+  }
+  const results = [];
+  let approvedCount = 0;
+  let rejectedCount = 0;
+  let skippedCount = 0;
+  for (const claimId of ids) {
+    const res = await decideReferralClaim(claimId, decision, adminId, reason, false);
+    results.push({ claimId, ...res });
+    if (res.alreadyDecided) {
+      skippedCount += 1;
+    } else if (decision === 'approved') {
+      approvedCount += 1;
+    } else {
+      rejectedCount += 1;
+    }
+  }
+  return { processed: ids.length, approvedCount, rejectedCount, skippedCount, results };
+};
+
+const getAdminReferralStats = async () => {
+  await approveDueReferralClaims();
+  const [[claimStats]] = await pool.query(
+    `SELECT COUNT(*) AS total_claims,
+       COALESCE(SUM(status = 'pending'), 0) AS pending_claims,
+       COALESCE(SUM(status = 'approved'), 0) AS approved_claims,
+       COALESCE(SUM(status = 'auto_approved'), 0) AS auto_approved_claims,
+       COALESCE(SUM(status = 'rejected'), 0) AS rejected_claims,
+       COALESCE(SUM(CASE WHEN status IN ('approved', 'auto_approved') THEN wallet_amount ELSE 0 END), 0) AS total_referrer_wallet_credited,
+       COALESCE(SUM(CASE WHEN status IN ('approved', 'auto_approved') THEN referred_wallet_amount ELSE 0 END), 0) AS total_referred_wallet_credited
+     FROM referral_claims`
+  );
+  const [[walletStats]] = await pool.query(
+    `SELECT COALESCE(SUM(balance), 0) AS active_referral_wallet_balance,
+       COUNT(*) AS referral_wallet_holders
+     FROM referral_wallets
+     WHERE balance > 0`
+  ).catch(() => [[{ active_referral_wallet_balance: 0, referral_wallet_holders: 0 }]]);
+  const [[redemptionStats]] = await pool.query(
+    `SELECT COUNT(*) AS redemption_orders_count,
+       COALESCE(SUM(referral_wallet_amount), 0) AS total_redeemed_on_orders
+     FROM orders
+     WHERE referral_wallet_amount > 0 AND status NOT IN ('cancelled', 'returned')`
+  ).catch(() => [[{ redemption_orders_count: 0, total_redeemed_on_orders: 0 }]]);
+  const [topReferrers] = await pool.query(
+    `SELECT u.id AS user_id, u.name, u.email, rc.code AS referral_code,
+       COUNT(c.id) AS total_referrals,
+       SUM(c.status IN ('approved', 'auto_approved')) AS approved_referrals,
+       SUM(c.status = 'pending') AS pending_referrals,
+       COALESCE(SUM(CASE WHEN c.status IN ('approved', 'auto_approved') THEN c.wallet_amount ELSE 0 END), 0) AS total_earned,
+       COALESCE(rw.balance, 0) AS current_referral_balance
+     FROM referral_claims c
+     JOIN users u ON u.id = c.referrer_user_id
+     LEFT JOIN referral_codes rc ON rc.user_id = u.id
+     LEFT JOIN referral_wallets rw ON rw.user_id = u.id
+     GROUP BY u.id, rc.code, rw.balance
+     ORDER BY approved_referrals DESC, total_earned DESC, total_referrals DESC
+     LIMIT 15`
+  ).catch(() => [[]]);
+
+  return {
+    summary: {
+      total_claims: Number(claimStats?.total_claims) || 0,
+      pending_claims: Number(claimStats?.pending_claims) || 0,
+      approved_claims: Number(claimStats?.approved_claims) || 0,
+      auto_approved_claims: Number(claimStats?.auto_approved_claims) || 0,
+      rejected_claims: Number(claimStats?.rejected_claims) || 0,
+      total_referrer_wallet_credited: Number(claimStats?.total_referrer_wallet_credited) || 0,
+      total_referred_wallet_credited: Number(claimStats?.total_referred_wallet_credited) || 0,
+      active_referral_wallet_balance: Number(walletStats?.active_referral_wallet_balance) || 0,
+      referral_wallet_holders: Number(walletStats?.referral_wallet_holders) || 0,
+      redemption_orders_count: Number(redemptionStats?.redemption_orders_count) || 0,
+      total_redeemed_on_orders: Number(redemptionStats?.total_redeemed_on_orders) || 0,
+    },
+    topReferrers,
+  };
+};
+
+const issueManualReferralGrant = async ({ email, amount, bucket = 'referral', reason, adminId }) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const creditAmount = Math.round((Number(amount) || 0) * 100) / 100;
+  const cleanReason = String(reason || '').trim().slice(0, 220);
+  if (!normalizedEmail || !(creditAmount > 0) || creditAmount > 100000 || cleanReason.length < 5 || !['referral', 'cash'].includes(bucket)) {
+    throw Object.assign(new Error('Provide a customer email, positive grant amount (up to ₹1,00,000), valid bucket, and a reason of at least 5 characters.'), { status: 400 });
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [[user]] = await connection.query(
+      'SELECT id, name, email FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1 FOR UPDATE',
+      [normalizedEmail]
+    );
+    if (!user) {
+      throw Object.assign(new Error('Customer account with this email was not found.'), { status: 404 });
+    }
+    const referenceId = `admin-referral-grant-${adminId || 'sys'}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+    if (bucket === 'referral') {
+      await connection.query('INSERT IGNORE INTO referral_wallets (user_id, balance) VALUES (?, 0.00)', [user.id]);
+      await connection.query('UPDATE referral_wallets SET balance = balance + ? WHERE user_id = ?', [creditAmount, user.id]);
+      await connection.query(
+        `INSERT INTO referral_wallet_transactions (user_id, amount, type, description, reference_id)
+         VALUES (?, ?, 'credit', ?, ?)`,
+        [user.id, creditAmount, `Admin referral grant: ${cleanReason}`, referenceId]
+      );
+    } else {
+      await connection.query(
+        `INSERT IGNORE INTO wallets (user_id, balance)
+         SELECT id, COALESCE(wallet_balance, 0.00) FROM users WHERE id = ?`,
+        [user.id]
+      );
+      await connection.query('UPDATE wallets SET balance = balance + ? WHERE user_id = ?', [creditAmount, user.id]);
+      await connection.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE id = ?', [creditAmount, user.id]);
+      await connection.query(
+        `INSERT INTO wallet_transactions (user_id, amount, type, description, reference_id)
+         VALUES (?, ?, 'credit', ?, ?)`,
+        [user.id, creditAmount, `Admin referral grant: ${cleanReason}`, referenceId]
+      );
+    }
+    await connection.commit();
+    return {
+      userId: user.id,
+      userName: user.name,
+      userEmail: user.email,
+      amount: creditAmount,
+      bucket,
+      reason: cleanReason,
+      referenceId,
+    };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
 const reissueReferralCoupon = async claimId => {
   const connection = await pool.getConnection();
   try {
@@ -645,6 +784,9 @@ module.exports = {
   getReferralSummary,
   reconcileReferralRewards,
   decideReferralClaim,
+  bulkDecideReferralClaims,
+  getAdminReferralStats,
+  issueManualReferralGrant,
   reissueReferralCoupon,
   approveDueReferralClaims,
 };
