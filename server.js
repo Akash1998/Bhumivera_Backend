@@ -226,6 +226,11 @@ app.use(["/api/users", "/api/addresses", "/api/auth/profile"], (req, res, next) 
   res.setHeader("Vary", "Authorization");
   next();
 });
+app.use("/api/auth", (req, res, next) => {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  next();
+});
 
 // --- SEO, CRAWLER & HEADLESS BRAND METADATA ENDPOINTS (Always Available) ---
 app.get("/robots.txt", (req, res) => {
