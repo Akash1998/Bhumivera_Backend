@@ -508,21 +508,43 @@ const createOrder = async ({
     if (affiliateCode) {
       affiliatePartner = await getPartnerByCode(affiliateCode, conn);
       if (!affiliatePartner || Number(affiliatePartner.id) !== Number(affiliatePartnerId)) {
-        throw Object.assign(new Error('This promoter offer is no longer active. Remove it and try again.'), {
+        throw Object.assign(new Error('This creator promo code is no longer active. Remove it and try again.'), {
           status: 409,
           code: 'PROMOTER_OFFER_CHANGED',
         });
       }
       if (String(affiliatePartner.user_id) === String(userId)) {
-        throw Object.assign(new Error('Promoter codes cannot be used on the promoter’s own orders.'), {
+        throw Object.assign(new Error('Creators cannot use their own promo codes.'), {
           status: 400,
           code: 'PROMOTER_SELF_REFERRAL',
+        });
+      }
+      const [[promoUsage]] = await conn.query(
+        `        SELECT COUNT(*) AS total_uses,
+               COALESCE(SUM(CASE WHEN user_id = ? AND status NOT IN ('cancelled', 'returned') THEN 1 ELSE 0 END), 0) AS customer_uses
+         FROM orders
+        WHERE affiliate_partner_id = ?
+        FOR UPDATE`,
+        [userId, affiliatePartner.id]
+      );
+      const totalUseLimit = Number(affiliatePartner.promo_usage_limit) || 0;
+      const perCustomerUseLimit = Number(affiliatePartner.promo_per_user_limit ?? 1);
+      if (totalUseLimit > 0 && Number(promoUsage?.total_uses || 0) >= totalUseLimit) {
+        throw Object.assign(new Error('This creator promo code has reached its total use limit.'), {
+          status: 409,
+          code: 'PROMOTER_CODE_LIMIT_REACHED',
+        });
+      }
+      if (perCustomerUseLimit > 0 && Number(promoUsage?.customer_uses || 0) >= perCustomerUseLimit) {
+        throw Object.assign(new Error('You have already used this creator promo code the maximum allowed times.'), {
+          status: 409,
+          code: 'PROMOTER_CUSTOMER_LIMIT_REACHED',
         });
       }
       const expectedAffiliateDiscount = roundCurrency(backendSubtotal * Number(affiliatePartner.discount_percent) / 100);
       if (Math.abs(expectedAffiliateDiscount - Number(affiliateDiscount)) > 0.01 ||
           safeDiscount + 0.01 < expectedAffiliateDiscount) {
-        throw Object.assign(new Error('The promoter offer changed. Refresh checkout and try again.'), {
+        throw Object.assign(new Error('The creator promo changed. Refresh checkout and try again.'), {
           status: 409,
           code: 'PROMOTER_OFFER_CHANGED',
         });
@@ -566,7 +588,7 @@ const createOrder = async ({
         minimumRetainedMarginPercent: config.minimum_retained_margin_percent,
       });
       if (!affiliateProfit.eligible) {
-        throw Object.assign(new Error('This basket cannot receive the promoter offer while preserving the minimum product margin. Remove the offer or adjust your basket.'), {
+        throw Object.assign(new Error('This basket does not qualify for the creator promo. Remove the promo or adjust your basket.'), {
           status: 400,
           code: 'AFFILIATE_MARGIN_FLOOR_NOT_MET',
         });

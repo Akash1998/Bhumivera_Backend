@@ -376,10 +376,10 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     if (affiliateCode) {
       affiliatePartner = await getPartnerByCode(affiliateCode);
       if (!affiliatePartner) {
-        return res.status(400).json({ code: 'PROMOTER_CODE_INVALID', message: 'This promoter offer is not active.' });
+        return res.status(400).json({ code: 'PROMOTER_CODE_INVALID', message: 'This creator promo code is not active.' });
       }
       if (String(affiliatePartner.user_id) === String(req.user.id)) {
-        return res.status(400).json({ code: 'PROMOTER_SELF_REFERRAL', message: 'Promoter codes cannot be used on the promoter’s own orders.' });
+        return res.status(400).json({ code: 'PROMOTER_SELF_REFERRAL', message: 'Creators cannot use their own promo codes.' });
       }
       affiliateDiscount = roundCurrency(Number(cartTotal) * Number(affiliatePartner.discount_percent) / 100);
       discount = Math.min(Number(cartTotal) || 0, Math.max(0, discount + affiliateDiscount));
@@ -517,7 +517,7 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       if (policyItems.some(item => item === null)) {
         return res.status(400).json({
           code: 'AFFILIATE_PRODUCT_COST_MISSING',
-          message: 'This basket includes a product without a verified inventory unit cost, so the promoter offer cannot be applied.',
+          message: 'This basket includes a product that is not available for creator promos yet.',
         });
       }
       const profit = calculateAffiliateProfit({
@@ -535,7 +535,7 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
       if (!profit.eligible) {
         return res.status(400).json({
           code: 'AFFILIATE_MARGIN_FLOOR_NOT_MET',
-          message: 'This basket cannot receive the promoter offer while preserving the minimum product margin. Adjust the basket or remove the offer.',
+          message: 'This basket does not qualify for the creator promo. Adjust the basket or remove the promo.',
         });
       }
     }

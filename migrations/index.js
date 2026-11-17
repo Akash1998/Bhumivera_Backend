@@ -1566,6 +1566,41 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 94,
+    name: 'add creator promo usage limits',
+    up: async () => {
+      for (const [column, definition] of [
+        ['promo_usage_limit', 'INT UNSIGNED DEFAULT NULL'],
+        ['promo_per_user_limit', 'INT UNSIGNED NOT NULL DEFAULT 1'],
+      ]) {
+        const [columns] = await pool.query('SHOW COLUMNS FROM affiliate_partners LIKE ?', [column]);
+        if (columns.length === 0) {
+          await pool.query(`ALTER TABLE affiliate_partners ADD COLUMN ${column} ${definition}`);
+        }
+      }
+      const [partnerIndexes] = await pool.query('SHOW INDEX FROM affiliate_partners');
+      const hasUniqueCodeIndex = partnerIndexes.some(index =>
+        index.Column_name === 'referral_code' &&
+        Number(index.Non_unique) === 0 &&
+        partnerIndexes.filter(candidate => candidate.Key_name === index.Key_name).length === 1
+      );
+      if (!hasUniqueCodeIndex) {
+        await pool.query(
+          'CREATE UNIQUE INDEX uq_affiliate_partners_referral_code ON affiliate_partners (referral_code)'
+        );
+      }
+      const [indexes] = await pool.query(
+        'SHOW INDEX FROM orders WHERE Key_name = ?',
+        ['idx_orders_creator_promo_usage']
+      );
+      if (indexes.length === 0) {
+        await pool.query(
+          'CREATE INDEX idx_orders_creator_promo_usage ON orders (affiliate_partner_id, user_id)'
+        );
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

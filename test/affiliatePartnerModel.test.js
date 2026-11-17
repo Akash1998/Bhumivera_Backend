@@ -8,6 +8,8 @@ const originalLoad = Module._load;
 let insertedPartner;
 let insertParams;
 let dashboardPartner = null;
+let dashboardPromoUsage = 0;
+let partnerCodeUpdateParams = null;
 let dashboardSummary = null;
 let dashboardSummaryQuery = '';
 let dashboardCommissionsQuery = '';
@@ -19,6 +21,8 @@ let storedPartner = {
   discount_percent: 13,
   commission_share_percent: 20,
   referral_code: 'BVCREATOR17',
+  promo_usage_limit: null,
+  promo_per_user_limit: 1,
   admin_notes: 'Existing note',
   reviewed_by: 3,
 };
@@ -29,8 +33,17 @@ const fakePool = {
     return {
       async beginTransaction() {},
       async query(sql, params = []) {
+        if (sql.includes('SELECT * FROM affiliate_partners WHERE user_id = ? FOR UPDATE')) {
+          return [[{ ...storedPartner }], []];
+        }
         if (sql.includes('SELECT * FROM affiliate_partners WHERE id = ? FOR UPDATE')) {
           return [[{ ...storedPartner }], []];
+        }
+        if (sql.includes('UPDATE affiliate_partners SET referral_code = ? WHERE id = ?')) {
+          partnerCodeUpdateParams = params;
+          storedPartner = { ...storedPartner, referral_code: params[0] };
+          dashboardPartner = { ...storedPartner };
+          return [{ affectedRows: 1 }, []];
         }
         if (sql.includes('UPDATE affiliate_partners')) {
           partnerUpdateParams = params;
@@ -40,8 +53,10 @@ const fakePool = {
             discount_percent: params[1],
             commission_share_percent: params[2],
             referral_code: params[3],
-            admin_notes: params[4],
-            reviewed_by: params[5] ?? storedPartner.reviewed_by,
+            promo_usage_limit: params[4],
+            promo_per_user_limit: params[5],
+            admin_notes: params[6],
+            reviewed_by: params[7] ?? storedPartner.reviewed_by,
           };
           return [{ affectedRows: 1 }, []];
         }
@@ -58,6 +73,9 @@ const fakePool = {
     }
     if (sql.includes('SELECT * FROM affiliate_partners WHERE user_id = ? LIMIT 1')) {
       return [dashboardPartner ? [dashboardPartner] : [], []];
+    }
+    if (sql.includes('SELECT COUNT(*) AS creator_promo_uses')) {
+      return [[{ creator_promo_uses: dashboardPromoUsage }], []];
     }
     if (sql.includes('SELECT key_name, value FROM settings')) {
       return [[], []];
@@ -109,6 +127,7 @@ const {
   getPartnerDashboard,
   updatePartner,
   bulkUpdatePartners,
+  submitPartnerReelAndCode,
   getPublicPromotionsShowcase,
 } = require('../models/affiliatePartnerModel');
 Module._load = originalLoad;
@@ -121,6 +140,8 @@ describe('affiliate partner applications', () => {
       discount_percent: 13,
       commission_share_percent: 20,
       referral_code: 'BVCREATOR17',
+      promo_usage_limit: null,
+      promo_per_user_limit: 1,
       admin_notes: 'Existing note',
       reviewed_by: 3,
     };
@@ -128,6 +149,8 @@ describe('affiliate partner applications', () => {
 
     const updated = await updatePartner(17, {
       commissionSharePercent: 27.5,
+      promoUsageLimit: 80,
+      promoPerUserLimit: 3,
       adminNotes: 'New partnership note',
       adminId: 7,
     });
@@ -135,6 +158,8 @@ describe('affiliate partner applications', () => {
     assert.equal(updated.status, 'approved');
     assert.equal(updated.discount_percent, 13);
     assert.equal(updated.commission_share_percent, 27.5);
+    assert.equal(updated.promo_usage_limit, 80);
+    assert.equal(updated.promo_per_user_limit, 3);
     assert.equal(updated.admin_notes, 'New partnership note');
     assert.equal(updated.referral_code, 'BVCREATOR17');
     assert.equal(updated.reviewed_by, 3);
@@ -143,6 +168,8 @@ describe('affiliate partner applications', () => {
       13,
       27.5,
       'BVCREATOR17',
+      80,
+      3,
       'New partnership note',
       null,
       'approved',
@@ -150,7 +177,52 @@ describe('affiliate partner applications', () => {
     ]);
   });
 
+  it('renames a creator code on the same account without changing its offer settings', async () => {
+    storedPartner = {
+      id: 17,
+      user_id: 42,
+      status: 'approved',
+      discount_percent: 13,
+      commission_share_percent: 27,
+      promo_usage_limit: 80,
+      promo_per_user_limit: 3,
+      referral_code: 'CREATOR30',
+    };
+    dashboardPartner = { ...storedPartner };
+    dashboardSummary = {};
+    dashboardPromoUsage = 7;
+    partnerCodeUpdateParams = null;
+
+    const dashboard = await submitPartnerReelAndCode(42, { customCode: 'anita30' });
+
+    assert.deepEqual(partnerCodeUpdateParams, ['ANITA30', 17]);
+    assert.equal(dashboard.partner.referral_code, 'ANITA30');
+    assert.equal(dashboard.partner.discount_percent, 13);
+    assert.equal(dashboard.partner.commission_share_percent, 27);
+    assert.equal(dashboard.partner.promo_usage_limit, 80);
+    assert.equal(dashboard.partner.promo_per_user_limit, 3);
+    assert.equal(dashboard.partner.promo_used_count, 7);
+  });
+
+  it('prevents an unapproved creator from renaming a reserved code', async () => {
+    storedPartner = {
+      id: 17,
+      user_id: 42,
+      status: 'pending',
+      referral_code: 'CREATOR30',
+    };
+    partnerCodeUpdateParams = null;
+
+    await assert.rejects(
+      submitPartnerReelAndCode(42, { customCode: 'ANITA30' }),
+      error => error.status === 403
+    );
+
+    assert.equal(partnerCodeUpdateParams, null);
+  });
+
   it('creates a unique reserved code while leaving a new application pending', async () => {
+    dashboardPartner = null;
     const result = await applyForPartner({
       userId: 42,
       socialPlatform: 'Instagram',
@@ -171,6 +243,7 @@ describe('affiliate partner applications', () => {
 
   it("reports collected impact contributions from the partner's attributed orders", async () => {
     dashboardPartner = { id: 17 };
+    dashboardPromoUsage = 7;
     dashboardCommissionTotal = 65;
     dashboardSummary = {
       attributed_orders: 2,
@@ -182,6 +255,7 @@ describe('affiliate partner applications', () => {
 
     assert.equal(Number(dashboard.summary.funded_impact_contributions), 1);
     assert.equal(Number(dashboard.summary.impact_amount), 250);
+    assert.equal(dashboard.partner.promo_used_count, 7);
     assert.match(dashboardSummaryQuery, /LEFT JOIN impact_contributions ic/);
     assert.match(dashboardSummaryQuery, /ic\.status = 'collected'/);
     assert.match(dashboardSummaryQuery, /ic\.order_id = c\.order_id/);

@@ -282,7 +282,21 @@ router.get('/offer', referralPreviewLimiter, async (req, res) => {
   if (!code) return res.status(400).json({ success: false, message: 'Enter a promoter code.' });
   try {
     const [partner, config] = await Promise.all([getPartnerByCode(code), getProgramConfig()]);
-    if (!partner) return res.status(404).json({ success: false, code: 'PROMOTER_CODE_INVALID', message: 'This promoter offer is not active.' });
+    if (!partner) return res.status(404).json({ success: false, code: 'PROMOTER_CODE_INVALID', message: 'This creator promo code is not active.' });
+    const usageLimit = Number(partner.promo_usage_limit) || 0;
+    if (usageLimit > 0) {
+      const [[usage]] = await pool.query(
+        'SELECT COUNT(*) AS total_uses FROM orders WHERE affiliate_partner_id = ?',
+        [partner.id]
+      );
+      if (Number(usage?.total_uses || 0) >= usageLimit) {
+        return res.status(409).json({
+          success: false,
+          code: 'PROMOTER_CODE_LIMIT_REACHED',
+          message: 'This creator promo has reached its use limit.',
+        });
+      }
+    }
     return res.json({
       success: true,
       offer: {
@@ -293,7 +307,7 @@ router.get('/offer', referralPreviewLimiter, async (req, res) => {
     });
   } catch (error) {
     console.error('[AFFILIATE_OFFER_LOOKUP]', error);
-    return res.status(500).json({ message: 'Could not verify this promoter offer.' });
+    return res.status(500).json({ message: 'Could not verify this creator promo code.' });
   }
 });
 
@@ -423,11 +437,11 @@ router.patch('/partner/me/perks', authenticateUser, async (req, res) => {
     }
   }
   try {
-    const dashboard = await submitPartnerReelAndCode(req.user.id, { customCode, reelUrl, trialOrderId });
+    const dashboard = await submitPartnerReelAndCode(req.user.id, { customCode });
     return res.json({ success: true, dashboard });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ code: 'PROMOTER_CODE_TAKEN', message: 'That custom code is already taken. Try adding 10 or 15 at the end.' });
+      return res.status(409).json({ code: 'PROMOTER_CODE_TAKEN', message: 'That promo code name is already in use. Try another one.' });
     }
     if (error.status) return res.status(error.status).json({ message: error.message });
     console.error('[AFFILIATE_PARTNER_PERKS_UPDATE]', error);
@@ -847,11 +861,19 @@ router.patch(['/admin/partners/:id', '/partners/:id/status'], authenticateAdmin,
   const hasCommissionShare = hasField('commissionSharePercent', 'commission_share_percent');
   const hasAdminNotes = hasField('adminNotes');
   const hasReferralCode = hasField('referralCode');
+  const hasPromoUsageLimit = hasField('promoUsageLimit');
+  const hasPromoPerUserLimit = hasField('promoPerUserLimit');
   const status = hasStatus ? body.status : undefined;
   const discountValue = body.discountPercent ?? body.discount_percent;
   const commissionShareValue = body.commissionSharePercent ?? body.commission_share_percent;
   const discountPercent = hasDiscount ? Number(discountValue) : undefined;
   const commissionSharePercent = hasCommissionShare ? Number(commissionShareValue) : undefined;
+  const promoUsageLimitValue = body.promoUsageLimit;
+  const promoUsageLimit = promoUsageLimitValue === null || promoUsageLimitValue === ''
+    ? null
+    : Number(promoUsageLimitValue);
+  const promoPerUserLimitValue = body.promoPerUserLimit;
+  const promoPerUserLimit = Number(promoPerUserLimitValue);
   const isValidPercentInput = value => (
     (typeof value === 'number' || typeof value === 'string') &&
     String(value).trim() !== '' &&
@@ -865,10 +887,12 @@ router.patch(['/admin/partners/:id', '/partners/:id/status'], authenticateAdmin,
     : hasReferralCode && body.referralCode === null ? ''
     : undefined;
   if (!Number.isSafeInteger(id) || id < 1 ||
-      (!hasStatus && !hasDiscount && !hasCommissionShare && !hasAdminNotes && !hasReferralCode) ||
+      (!hasStatus && !hasDiscount && !hasCommissionShare && !hasAdminNotes && !hasReferralCode && !hasPromoUsageLimit && !hasPromoPerUserLimit) ||
       (hasStatus && !['approved', 'rejected', 'paused'].includes(status)) ||
       (hasDiscount && (!isValidPercentInput(discountValue) || discountPercent < 0 || discountPercent > 60)) ||
       (hasCommissionShare && (!isValidPercentInput(commissionShareValue) || commissionSharePercent < 0 || commissionSharePercent > 100)) ||
+      (hasPromoUsageLimit && promoUsageLimit !== null && (!Number.isSafeInteger(promoUsageLimit) || promoUsageLimit < 1 || promoUsageLimit > 1000000)) ||
+      (hasPromoPerUserLimit && (!Number.isSafeInteger(promoPerUserLimit) || promoPerUserLimit < 0 || promoPerUserLimit > 1000000)) ||
       (hasAdminNotes && typeof body.adminNotes !== 'string' && body.adminNotes !== null) ||
       (hasReferralCode && typeof body.referralCode !== 'string' && body.referralCode !== null) ||
       (referralCode && !/^[A-Z0-9_-]{4,32}$/i.test(referralCode))) {
@@ -880,6 +904,8 @@ router.patch(['/admin/partners/:id', '/partners/:id/status'], authenticateAdmin,
       discountPercent,
       commissionSharePercent,
       ...(hasReferralCode ? { referralCode } : {}),
+      ...(hasPromoUsageLimit ? { promoUsageLimit } : {}),
+      ...(hasPromoPerUserLimit ? { promoPerUserLimit } : {}),
       adminNotes,
       adminId: req.user.id,
     });

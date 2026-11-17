@@ -13,6 +13,7 @@ const affiliateRoutesPath = path.resolve(__dirname, '../routes/affiliateRoutes.j
 const originalLoad = Module._load;
 let capturedApplication;
 let capturedPerkUpdate;
+let perkUpdateError = null;
 let capturedPartnerUpdate;
 process.env.JWT_SECRET = secret;
 
@@ -30,6 +31,7 @@ Module._load = function (request, parent, isMain) {
       },
       submitPartnerReelAndCode: async (userId, settings) => {
         capturedPerkUpdate = { userId, settings };
+        if (perkUpdateError) throw perkUpdateError;
         return { partner: { id: 99 } };
       },
       updatePartner: async (id, settings) => {
@@ -116,6 +118,8 @@ describe('affiliate routes', () => {
       discountPercent: 12.5,
       commissionSharePercent: 27.5,
       referralCode: 'GROW27',
+      promoUsageLimit: 80,
+      promoPerUserLimit: 3,
       adminNotes: 'Long-term nature storytelling partner',
     });
 
@@ -125,9 +129,32 @@ describe('affiliate routes', () => {
       discountPercent: 12.5,
       commissionSharePercent: 27.5,
       referralCode: 'GROW27',
+      promoUsageLimit: 80,
+      promoPerUserLimit: 3,
       adminNotes: 'Long-term nature storytelling partner',
       adminId: 7,
     });
+  });
+
+  it('accepts unlimited total creator promo uses', async () => {
+    capturedPartnerUpdate = null;
+    const response = await request('PATCH', '/admin/partners/17', true, {
+      promoUsageLimit: null,
+      promoPerUserLimit: 0,
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(capturedPartnerUpdate.settings.promoUsageLimit, null);
+    assert.equal(capturedPartnerUpdate.settings.promoPerUserLimit, 0);
+  });
+
+  it('rejects invalid creator promo usage limits before persistence', async () => {
+    capturedPartnerUpdate = null;
+    const response = await request('PATCH', '/admin/partners/17', true, { promoUsageLimit: 0 });
+
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_PARTNER_UPDATE');
+    assert.equal(capturedPartnerUpdate, null);
   });
 
   it('rejects out-of-range profile rates before attempting persistence', async () => {
@@ -254,8 +281,17 @@ describe('affiliate routes', () => {
     assert.equal(codeUpdate.status, 200);
     assert.deepEqual(capturedPerkUpdate, {
       userId: 7,
-      settings: { customCode: 'CREATOR10', reelUrl: '', trialOrderId: null },
+      settings: { customCode: 'CREATOR10' },
     });
+  });
+
+  it('rejects a creator promo name already used by another account', async () => {
+    perkUpdateError = Object.assign(new Error('Duplicate promo code'), { code: 'ER_DUP_ENTRY' });
+    const response = await request('PATCH', '/partner/me/perks', true, { customCode: 'ANITA30' });
+    perkUpdateError = null;
+
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, 'PROMOTER_CODE_TAKEN');
   });
 
   it('rejects invalid analytics periods and malformed scenario inputs before querying data', async () => {

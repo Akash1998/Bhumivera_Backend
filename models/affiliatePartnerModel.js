@@ -220,10 +220,11 @@ const getPartnerByUserId = async userId => {
 
 const getPartnerByCode = async (code, connection = pool) => {
   const [[partner]] = await connection.query(
-    `SELECT id, user_id, referral_code, discount_percent, commission_share_percent, status
+    `SELECT id, user_id, referral_code, discount_percent, commission_share_percent,
+            promo_usage_limit, promo_per_user_limit, status
      FROM affiliate_partners
      WHERE referral_code = ? AND status = 'approved'
-     LIMIT 1`,
+     LIMIT 1${connection === pool ? '' : ' FOR UPDATE'}`,
     [String(code || '').trim().toUpperCase()]
   );
   return partner || null;
@@ -300,7 +301,16 @@ const createAdminPartner = async ({
   }
 };
 
-const updatePartner = async (id, { status, discountPercent, commissionSharePercent, referralCode, adminNotes, adminId }) => {
+const updatePartner = async (id, {
+  status,
+  discountPercent,
+  commissionSharePercent,
+  referralCode,
+  promoUsageLimit,
+  promoPerUserLimit,
+  adminNotes,
+  adminId,
+}) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -313,6 +323,8 @@ const updatePartner = async (id, { status, discountPercent, commissionSharePerce
     const nextStatus = status || partner.status;
     const nextDiscountPercent = discountPercent ?? Number(partner.discount_percent);
     const nextCommissionSharePercent = commissionSharePercent ?? Number(partner.commission_share_percent);
+    const nextPromoUsageLimit = promoUsageLimit === undefined ? partner.promo_usage_limit : promoUsageLimit;
+    const nextPromoPerUserLimit = promoPerUserLimit === undefined ? partner.promo_per_user_limit : promoPerUserLimit;
     const requestedCode = typeof referralCode === 'string' ? referralCode.trim().toUpperCase() : '';
     const nextCode = nextStatus === 'approved'
       ? requestedCode || partner.referral_code || createReferralCode()
@@ -321,7 +333,8 @@ const updatePartner = async (id, { status, discountPercent, commissionSharePerce
     await connection.query(
       `UPDATE affiliate_partners
        SET status = ?, discount_percent = ?, commission_share_percent = ?,
-           referral_code = ?, admin_notes = ?, reviewed_by = COALESCE(?, reviewed_by),
+           referral_code = ?, promo_usage_limit = ?, promo_per_user_limit = ?,
+           admin_notes = ?, reviewed_by = COALESCE(?, reviewed_by),
            approved_at = CASE WHEN ? = 'approved' THEN COALESCE(approved_at, CURRENT_TIMESTAMP) ELSE approved_at END
        WHERE id = ?`,
       [
@@ -329,6 +342,8 @@ const updatePartner = async (id, { status, discountPercent, commissionSharePerce
         nextDiscountPercent,
         nextCommissionSharePercent,
         nextCode,
+        nextPromoUsageLimit,
+        nextPromoPerUserLimit,
         nextAdminNotes,
         status === undefined ? null : adminId,
         nextStatus,
@@ -381,7 +396,8 @@ const listPartners = async () => {
        COALESCE(SUM(CASE WHEN c.status IN ('approved', 'paid') THEN 1 ELSE 0 END), 0) AS delivered_orders,
        COALESCE(SUM(CASE WHEN c.status = 'approved' THEN c.commission_amount ELSE 0 END), 0) AS payable_amount,
        0 AS balance_carryover,
-       COALESCE((SELECT SUM(a.amount) FROM affiliate_payouts a WHERE a.partner_id = p.id), 0) AS paid_amount
+       COALESCE((SELECT SUM(a.amount) FROM affiliate_payouts a WHERE a.partner_id = p.id), 0) AS paid_amount,
+       (SELECT COUNT(*) FROM orders o WHERE o.affiliate_partner_id = p.id) AS promo_used_count
      FROM affiliate_partners p
      JOIN users u ON u.id = p.user_id
      LEFT JOIN affiliate_commissions c ON c.partner_id = p.id
@@ -503,6 +519,11 @@ const getPublicPromotionsShowcase = async () => {
 const getPartnerDashboard = async (userId, { commissionPage = 1, commissionPageSize = 20 } = {}) => {
   const partner = await getPartnerByUserId(userId);
   if (!partner) return null;
+  const [[promoUsage]] = await pool.query(
+    'SELECT COUNT(*) AS creator_promo_uses FROM orders WHERE affiliate_partner_id = ?',
+    [partner.id]
+  );
+  partner.promo_used_count = Number(promoUsage?.creator_promo_uses) || 0;
   const [[summary]] = await pool.query(
     `SELECT COUNT(c.id) AS attributed_orders,
        COALESCE(SUM(CASE WHEN c.status IN ('approved', 'paid') THEN 1 ELSE 0 END), 0) AS delivered_orders,
@@ -981,7 +1002,7 @@ const syncCommissionOrderStatus = async (orderId, orderStatus, connection = pool
   }
 };
 
-const submitPartnerReelAndCode = async (userId, { customCode, reelUrl, trialOrderId }) => {
+const submitPartnerReelAndCode = async (userId, { customCode }) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -994,20 +1015,17 @@ const submitPartnerReelAndCode = async (userId, { customCode, reelUrl, trialOrde
       error.status = 404;
       throw error;
     }
+    if (partner.status !== 'approved') {
+      const error = new Error('Your creator account must be approved before changing its promo code.');
+      error.status = 403;
+      throw error;
+    }
     const nextCode = customCode
       ? String(customCode).trim().toUpperCase()
       : partner.referral_code;
-    const nextReelUrl = reelUrl ? String(reelUrl).trim().slice(0, 500) : partner.reel_submission_url;
-    const nextTrialOrderId = trialOrderId ? Number(trialOrderId) : partner.trial_order_id;
-    const nextCashbackStatus = reelUrl && (!partner.trial_cashback_status || partner.trial_cashback_status === 'none')
-      ? 'pending_review'
-      : (partner.trial_cashback_status || 'none');
-
     await connection.query(
-      `UPDATE affiliate_partners
-       SET referral_code = ?, reel_submission_url = ?, trial_order_id = ?, trial_cashback_status = ?
-       WHERE id = ?`,
-      [nextCode, nextReelUrl, nextTrialOrderId, nextCashbackStatus, partner.id]
+      'UPDATE affiliate_partners SET referral_code = ? WHERE id = ?',
+      [nextCode, partner.id]
     );
     await connection.commit();
     return getPartnerDashboard(userId);

@@ -7,6 +7,7 @@ const orderModelPath = path.resolve(__dirname, '../models/orderModel.js');
 const originalLoad = Module._load;
 let insertedOrderValues;
 let bundleScenario = null;
+let creatorPromoUsage = { total_uses: 0, customer_uses: 0 };
 const insertedOrderItems = [];
 const connection = {
   async beginTransaction() {},
@@ -14,6 +15,7 @@ const connection = {
   async rollback() {},
   release() {},
   async query(sql, values = []) {
+    if (sql.includes('SELECT COUNT(*) AS total_uses')) return [[creatorPromoUsage], []];
     if (sql.startsWith('SELECT id FROM orders WHERE user_id')) return [[{ id: 1 }, { id: 2 }], []];
     if (sql.startsWith('SELECT pending_lifecycle_gift_product_id')) {
       return [[{ pending_lifecycle_gift_product_id: null, loyalty_points: 0, loyalty_lifetime_points: 0 }], []];
@@ -96,6 +98,22 @@ Module._load = function (request, parent, isMain) {
     if (request === './shoppingWalletRewardModel') {
       return { issueOrderShoppingWalletReward: async () => {}, updateShoppingWalletRewardReversal: async () => {} };
     }
+    if (request === './affiliatePartnerModel') {
+      return {
+        getProgramConfig: async () => ({}),
+        getPartnerByCode: async () => ({
+          id: 17,
+          user_id: 99,
+          referral_code: 'CREATOR17',
+          discount_percent: 10,
+          commission_share_percent: 20,
+          promo_usage_limit: 1,
+          promo_per_user_limit: 1,
+          status: 'approved',
+        }),
+        syncCommissionOrderStatus: async () => {},
+      };
+    }
   }
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -103,6 +121,39 @@ const { createOrder } = require('../models/orderModel');
 Module._load = originalLoad;
 
 describe('order model', () => {
+  it('enforces creator promo total-use limits when the order is committed', async () => {
+    creatorPromoUsage = { total_uses: 1, customer_uses: 0 };
+
+    await assert.rejects(
+      createOrder({
+        userId: 1,
+        items: [{ product_id: 5, quantity: 1 }],
+        paymentMode: 'COD',
+        paymentStatus: 'pending',
+        affiliateCode: 'CREATOR17',
+        affiliatePartnerId: 17,
+        affiliateDiscount: 10,
+      }),
+      error => error.code === 'PROMOTER_CODE_LIMIT_REACHED'
+    );
+
+    creatorPromoUsage = { total_uses: 0, customer_uses: 1 };
+    await assert.rejects(
+      createOrder({
+        userId: 1,
+        items: [{ product_id: 5, quantity: 1 }],
+        paymentMode: 'COD',
+        paymentStatus: 'pending',
+        affiliateCode: 'CREATOR17',
+        affiliatePartnerId: 17,
+        affiliateDiscount: 10,
+      }),
+      error => error.code === 'PROMOTER_CUSTOMER_LIMIT_REACHED'
+    );
+
+    creatorPromoUsage = { total_uses: 0, customer_uses: 0 };
+  });
+
   it('stores the calculated loyalty points award when creating an order', async () => {
     insertedOrderValues = null;
     await createOrder({
