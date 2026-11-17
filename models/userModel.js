@@ -361,8 +361,10 @@ const createUser = async ({ name, email, password, phone, securityAnswer, market
   const isHashed = password.startsWith('$2b$');
   const hash = isHashed ? password : await bcrypt.hash(password, 10);
   
-  const safeSecurityAnswer = securityAnswer ? String(securityAnswer).toLowerCase() : 'default-answer';
-  const secHash = await bcrypt.hash(safeSecurityAnswer, 10);
+  const safeSecurityAnswer = (securityAnswer && String(securityAnswer).trim())
+    ? String(securityAnswer).trim().toLowerCase()
+    : null;
+  const secHash = safeSecurityAnswer ? await bcrypt.hash(safeSecurityAnswer, 10) : null;
   
   const [result] = await connection.query(
     `INSERT INTO users
@@ -622,5 +624,8 @@ module.exports = {
   saveRememberDevice,
   linkGoogleId,
   verifyPassword: async (password, hash) => bcrypt.compare(password, hash),
-  verifySecurityAnswer: async (answer, hash) => bcrypt.compare(answer.toLowerCase(), hash),
+  verifySecurityAnswer: async (answer, hash) => {
+    if (!answer || !hash) return false;
+    return bcrypt.compare(String(answer).toLowerCase(), hash);
+  },
 };

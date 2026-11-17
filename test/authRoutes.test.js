@@ -445,16 +445,15 @@ describe('customer Google sign-in', () => {
     assert.equal(state.issued.length, 0);
   });
 
-  it('requires a security answer before creating a Google account', async () => {
-    state.googlePayload.email = 'new-customer@example.com';
+  it('allows creating a Google account without requiring a security answer', async () => {
+    state.googlePayload.email = 'new-customer-no-sec@example.com';
     const response = await signIn({
       idToken: 'valid-google-token',
       mode: 'register',
       termsAccepted: true,
     });
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).code, 'SECURITY_ANSWER_REQUIRED');
-    assert.equal(state.createdGoogleUser, null);
+    assert.equal(response.status, 200);
+    assert.equal(state.createdGoogleUser.security_answer, null);
   });
 
   it('attaches a referral claim when a customer registers with Google', async () => {

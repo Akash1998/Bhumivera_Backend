@@ -389,11 +389,13 @@ router.post('/google', googleCallbackLimiter, async (req, res) => {
             message: 'Accept the Conditions of Use and acknowledge the Privacy Notice before creating an account.',
           });
         }
-        const securityAnswer = typeof req.body?.securityAnswer === 'string' ? req.body.securityAnswer.trim() : '';
-        if (!securityAnswer || securityAnswer.length > 255) {
+        const securityAnswer = typeof req.body?.securityAnswer === 'string' && req.body.securityAnswer.trim()
+          ? req.body.securityAnswer.trim()
+          : null;
+        if (securityAnswer && securityAnswer.length > 255) {
           return res.status(400).json({
-            code: 'SECURITY_ANSWER_REQUIRED',
-            message: 'Enter a security answer to protect account recovery.',
+            code: 'SECURITY_ANSWER_TOO_LONG',
+            message: 'Security answer must not exceed 255 characters.',
           });
         }
         for (const preference of ['marketingEmailOptIn', 'adPersonalizationOptIn']) {
