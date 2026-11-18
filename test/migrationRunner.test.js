@@ -106,6 +106,38 @@ describe('runMigrations', () => {
     assert.deepEqual(statements[0].params, ['partnership_intent']);
   });
 
+  it('adds category SEO metadata columns idempotently', async () => {
+    const migration = migrations.find(candidate => candidate.version === 95);
+    const originalQuery = pool.query;
+    const columns = new Set();
+    const statements = [];
+    pool.query = async (sql, params = []) => {
+      statements.push({ sql, params });
+      if (sql.startsWith('SHOW COLUMNS FROM')) {
+        const table = sql.match(/FROM (\w+)/)?.[1];
+        return [columns.has(`${table}.${params[0]}`) ? [{ Field: params[0] }] : [], []];
+      }
+      if (sql.startsWith('ALTER TABLE')) {
+        const match = sql.match(/^ALTER TABLE (\w+) ADD COLUMN (\w+)/);
+        columns.add(`${match[1]}.${match[2]}`);
+      }
+      return [{}, []];
+    };
+
+    try {
+      await migration.up();
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.equal(statements.filter(({ sql }) => sql.startsWith('ALTER TABLE')).length, 4);
+    assert.ok(columns.has('categories.meta_title'));
+    assert.ok(columns.has('categories.meta_description'));
+    assert.ok(columns.has('subcategories.meta_title'));
+    assert.ok(columns.has('subcategories.meta_description'));
+  });
+
   it('preserves the production GST migration at version 83', async () => {
     const migration = migrations.find(candidate => candidate.version === 83);
     const originalQuery = pool.query;

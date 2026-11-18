@@ -5,7 +5,9 @@ const toSlug = str => String(str || '')
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/(^-|-$)/g, '');
 
-const CATEGORY_AUDIT_FIELDS = ['id', 'name', 'description', 'image_url', 'is_active'];
+const CATEGORY_AUDIT_FIELDS = [
+  'id', 'name', 'description', 'meta_title', 'meta_description', 'image_url', 'is_active',
+];
 
 const createCategoryError = (code, message) => Object.assign(new Error(message), { code });
 
@@ -15,10 +17,14 @@ const normalizeCategory = category => {
   const slug = rawSlug || toSlug(name);
   const rawDesc = category.description ? String(category.description).trim() : '';
   const description = rawDesc || null;
+  const metaTitle = category.meta_title ? String(category.meta_title).trim() : '';
+  const metaDescription = category.meta_description ? String(category.meta_description).trim() : '';
   return {
     name,
     slug,
     description,
+    meta_title: metaTitle || null,
+    meta_description: metaDescription || null,
     image_url: category.image_url ? String(category.image_url).trim() : null,
     is_active: category.is_active !== undefined ? Number(category.is_active) : 1,
   };
@@ -33,6 +39,12 @@ const validateCategory = category => {
   }
   if (category.description && category.description.length > 10000) {
     throw createCategoryError('INVALID_CATEGORY', 'Category description must be at most 10000 characters.');
+  }
+  if (category.meta_title && category.meta_title.length > 255) {
+    throw createCategoryError('INVALID_CATEGORY', 'Category SEO title must be at most 255 characters.');
+  }
+  if (category.meta_description && category.meta_description.length > 320) {
+    throw createCategoryError('INVALID_CATEGORY', 'Category SEO description must be at most 320 characters.');
   }
   if (category.image_url && category.image_url.length > 500) {
     throw createCategoryError('INVALID_CATEGORY', 'Category image URL must be at most 500 characters.');
@@ -98,6 +110,8 @@ const initCategoriesTable = async () => {
       id INT AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
       slug VARCHAR(120),
+      meta_title VARCHAR(255),
+      meta_description VARCHAR(320),
       description TEXT,
       image_url VARCHAR(500),
       is_active TINYINT(1) DEFAULT 1,
@@ -105,6 +119,8 @@ const initCategoriesTable = async () => {
     )
   `);
   await addColumnIfMissing('categories', 'slug', 'VARCHAR(120) AFTER name');
+  await addColumnIfMissing('categories', 'meta_title', 'VARCHAR(255) AFTER slug');
+  await addColumnIfMissing('categories', 'meta_description', 'VARCHAR(320) AFTER meta_title');
   await addColumnIfMissing('categories', 'description', 'TEXT AFTER slug');
   await addColumnIfMissing('categories', 'image_url', 'VARCHAR(500) AFTER description');
   await addColumnIfMissing('categories', 'is_active', 'TINYINT(1) DEFAULT 1 AFTER image_url');
@@ -132,7 +148,7 @@ const getAllCategories = async () => {
   let rows = [];
   try {
     const [dbRows] = await pool.query(
-      'SELECT id, name, slug, description, image_url, is_active, created_at FROM categories ORDER BY name'
+      'SELECT id, name, slug, description, meta_title, meta_description, image_url, is_active, created_at FROM categories ORDER BY name'
     );
     rows = dbRows;
   } catch (err) {
@@ -157,7 +173,7 @@ const getCategoryById = async id => {
   let row = null;
   try {
     const [rows] = await pool.query(
-      'SELECT id, name, slug, description, image_url, is_active, created_at FROM categories WHERE id = ?',
+      'SELECT id, name, slug, description, meta_title, meta_description, image_url, is_active, created_at FROM categories WHERE id = ?',
       [id]
     );
     row = rows[0];
@@ -180,15 +196,24 @@ const getCategoryById = async id => {
   };
 };
 
-const createCategory = async ({ name, slug, description, image_url, is_active }, actor) => {
-  const category = normalizeCategory({ name, slug, description, image_url, is_active });
+const createCategory = async ({
+  name, slug, description, meta_title, meta_description, image_url, is_active,
+}, actor) => {
+  const category = normalizeCategory({
+    name, slug, description, meta_title, meta_description, image_url, is_active,
+  });
   validateCategory(category);
   return withCategoryAudit('created', null, actor, async connection => {
     let insertId;
     try {
       const [result] = await connection.query(
-        'INSERT INTO categories (name, slug, description, image_url, is_active) VALUES (?, ?, ?, ?, ?)',
-        [category.name, category.slug, category.description, category.image_url, category.is_active]
+        `INSERT INTO categories
+          (name, slug, description, meta_title, meta_description, image_url, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          category.name, category.slug, category.description, category.meta_title,
+          category.meta_description, category.image_url, category.is_active,
+        ]
       );
       insertId = result.insertId;
     } catch (err) {
@@ -206,19 +231,29 @@ const createCategory = async ({ name, slug, description, image_url, is_active },
   });
 };
 
-const updateCategory = async (id, { name, slug, description, image_url, is_active }, actor) => {
-  const category = normalizeCategory({ name, slug, description, image_url, is_active });
+const updateCategory = async (id, {
+  name, slug, description, meta_title, meta_description, image_url, is_active,
+}, actor) => {
+  const category = normalizeCategory({
+    name, slug, description, meta_title, meta_description, image_url, is_active,
+  });
   validateCategory(category);
   return withCategoryAudit('updated', id, actor, async connection => {
     const [rows] = await connection.query(
-      'SELECT id, name, description, image_url, is_active FROM categories WHERE id = ? FOR UPDATE',
+      'SELECT id, name, description, meta_title, meta_description, image_url, is_active FROM categories WHERE id = ? FOR UPDATE',
       [id]
     );
     if (!rows[0]) throw createCategoryError('CATEGORY_NOT_FOUND', 'Category not found.');
     try {
       await connection.query(
-        'UPDATE categories SET name = ?, slug = ?, description = ?, image_url = ?, is_active = ? WHERE id = ?',
-        [category.name, category.slug, category.description, category.image_url, category.is_active, id]
+        `UPDATE categories
+         SET name = ?, slug = ?, description = ?, meta_title = ?, meta_description = ?,
+             image_url = ?, is_active = ?
+         WHERE id = ?`,
+        [
+          category.name, category.slug, category.description, category.meta_title,
+          category.meta_description, category.image_url, category.is_active, id,
+        ]
       );
     } catch (err) {
       if (err.message && err.message.includes("Unknown column 'slug'")) {
@@ -240,7 +275,7 @@ const updateCategory = async (id, { name, slug, description, image_url, is_activ
 
 const deleteCategory = async (id, actor) => withCategoryAudit('deleted', id, actor, async connection => {
   const [rows] = await connection.query(
-    'SELECT id, name, description, image_url, is_active FROM categories WHERE id = ? FOR UPDATE',
+    'SELECT id, name, description, meta_title, meta_description, image_url, is_active FROM categories WHERE id = ? FOR UPDATE',
     [id]
   );
   if (!rows[0]) throw createCategoryError('CATEGORY_NOT_FOUND', 'Category not found.');

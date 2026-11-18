@@ -801,26 +801,57 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
     if (match) {
       product = findLuxurySkuBySlugOrId(match[1]);
     }
+    const categoryMatch = normalizedPath.match(/^\/category\/([^\/]+)\/?$/i);
 
-    if (!activeHtmlPath && !product && !req.path.startsWith('/api/seo-prerender')) {
+    if (!activeHtmlPath && !product && !categoryMatch && !req.path.startsWith('/api/seo-prerender')) {
       return next();
     }
 
     try {
+      let category = null;
+      if (categoryMatch && db?.query) {
+        const [rows] = await db.query(
+          `SELECT name, slug, description, meta_title, meta_description, image_url
+           FROM categories
+           WHERE slug = ? AND is_active = 1
+           LIMIT 1`,
+          [decodeURIComponent(categoryMatch[1])]
+        );
+        category = rows?.[0] || null;
+      }
+      if (!activeHtmlPath && !product && !category && !req.path.startsWith('/api/seo-prerender')) {
+        return next();
+      }
+
       let html = activeHtmlPath
         ? fs.readFileSync(activeHtmlPath, 'utf8')
         : '<!DOCTYPE html><html lang="en-IN"><head><title>Bhumivera | The Transparent Maison — Rooted in Heritage Since 2016</title></head><body><div id="root"></div></body></html>';
 
       const routeMeta = ROUTE_SEO_META[normalizedPath] || {};
-      const pageTitle = product ? product.seo_title : (routeMeta.title || DEFAULT_OG_TITLE);
-      const pageDesc = product ? product.short_description : (routeMeta.description || DEFAULT_OG_DESCRIPTION);
+      const pageTitle = product
+        ? product.seo_title
+        : category
+          ? category.meta_title || `${category.name} | Shop Bhumivera`
+          : (routeMeta.title || DEFAULT_OG_TITLE);
+      const pageDesc = product
+        ? product.short_description
+        : category
+          ? category.meta_description || category.description || DEFAULT_OG_DESCRIPTION
+          : (routeMeta.description || DEFAULT_OG_DESCRIPTION);
       const pageKeywords = product
         ? product.search_keywords
-        : (routeMeta.keywords || 'Bhumivera, bhumivera.com, Bhumivera Organics India Private Limited, MPG E-Business Private Limited, Dilip Prasad Nonia, Akash Prasad, Payal Prasad, Asansol West Bengal, The Transparent Maison, cold-pressed botanical skincare');
+        : category
+          ? `${category.name}, Bhumivera, botanical skincare`
+          : (routeMeta.keywords || 'Bhumivera, bhumivera.com, Bhumivera Organics India Private Limited, MPG E-Business Private Limited, Dilip Prasad Nonia, Akash Prasad, Payal Prasad, Asansol West Bengal, The Transparent Maison, cold-pressed botanical skincare');
 
+      const categoryImage = typeof category?.image_url === 'string' ? category.image_url.trim() : '';
       const pageImage = product
         ? `${siteOrigin}${product.image_url}`
-        : `${siteOrigin}/assets/logo.png`;
+        : categoryImage
+          ? (/^https?:\/\//i.test(categoryImage)
+            ? categoryImage
+            : `${siteOrigin}${categoryImage.startsWith('/') ? '' : '/'}${categoryImage}`)
+          : `${siteOrigin}/assets/logo.png`;
 
       const jsonLd = buildWikipediaLinkedJsonLd(product, canonicalUrl, siteOrigin);
 
@@ -845,6 +876,14 @@ function createSeoPrerenderMiddleware({ db, distIndexHtmlPath } = {}) {
               <ul>${allProductsNavLinks}</ul>
             </article>
           </noscript>`
+        : category
+          ? `<noscript>
+              <article>
+                <h1>${escapeXml(category.name)}</h1>
+                <p>${escapeXml(pageDesc)}</p>
+                <a href="${siteOrigin}/shop">Browse the Bhumivera catalog</a>
+              </article>
+            </noscript>`
         : `<noscript>
             <article>
               <h1>${escapeXml(pageTitle)}</h1>

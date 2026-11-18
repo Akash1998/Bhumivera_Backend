@@ -49,11 +49,13 @@ router.get('/:id', async (req, res) => {
 // POST /api/subcategories  (admin)
 router.post('/', authenticateAdmin, async (req, res) => {
   try {
-    const { name, category_id, description } = req.body;
+    const { name, slug, category_id, description, meta_title, meta_description } = req.body;
     if (!name || !category_id) {
       return res.status(400).json({ message: 'Name and category_id are required' });
     }
-    const newSub = await createSubcategory({ name, category_id, description });
+    const newSub = await createSubcategory({
+      name, slug, category_id, description, meta_title, meta_description,
+    });
     return res.status(201).json(newSub);
   } catch (err) {
     console.error('Error creating subcategory:', err);
@@ -64,11 +66,13 @@ router.post('/', authenticateAdmin, async (req, res) => {
 // PUT /api/subcategories/:id  (admin)
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {
-    const { name, category_id, description } = req.body;
+    const { name, slug, category_id, description, meta_title, meta_description } = req.body;
     if (!name || !category_id) {
       return res.status(400).json({ message: 'Name and category_id are required' });
     }
-    const updated = await updateSubcategory(req.params.id, { name, category_id, description });
+    const updated = await updateSubcategory(req.params.id, {
+      name, slug, category_id, description, meta_title, meta_description,
+    });
     return res.json(updated);
   } catch (err) {
     console.error('Error updating subcategory:', err);

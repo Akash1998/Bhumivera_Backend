@@ -76,4 +76,36 @@ describe('luxury catalog GEO/SEO compliance', () => {
     assert.match(body, /https:\/\/en\.wikipedia\.org\/wiki\/Activated_carbon/);
     assert.match(body, /<noscript>/);
   });
+
+  it('pre-renders saved category SEO metadata for category pages', async () => {
+    let statusCode = 0;
+    let body = '';
+    const res = {
+      setHeader() {},
+      status(code) { statusCode = code; return this; },
+      send(content) { body = content; return this; },
+    };
+    const mw = createSeoPrerenderMiddleware({
+      db: {
+        async query(_sql, params) {
+          assert.deepEqual(params, ['facial-cleansers']);
+          return [[{
+            name: 'Facial Cleansers',
+            slug: 'facial-cleansers',
+            description: 'Gentle daily cleansers.',
+            meta_title: 'Facial Cleansers | Bhumivera',
+            meta_description: 'Browse facial cleansers for your daily skincare routine.',
+            image_url: null,
+          }], []];
+        },
+      },
+    });
+
+    await mw({ path: '/category/facial-cleansers', method: 'GET' }, res, () => {});
+
+    assert.equal(statusCode, 200);
+    assert.match(body, /<title>Facial Cleansers \| Bhumivera<\/title>/);
+    assert.match(body, /name="description" content="Browse facial cleansers for your daily skincare routine\."/);
+    assert.match(body, /<h1>Facial Cleansers<\/h1>/);
+  });
 });

@@ -13,6 +13,8 @@ const initSubcategoriesTable = async () => {
       id INT AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
       slug VARCHAR(120),
+      meta_title VARCHAR(255),
+      meta_description VARCHAR(320),
       description TEXT,
       category_id INT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -33,6 +35,8 @@ const initSubcategoriesTable = async () => {
   };
 
   await addColIfMissing('slug', 'VARCHAR(120) AFTER name');
+  await addColIfMissing('meta_title', 'VARCHAR(255) AFTER slug');
+  await addColIfMissing('meta_description', 'VARCHAR(320) AFTER meta_title');
   await addColIfMissing('description', 'TEXT AFTER slug');
 };
 
@@ -41,7 +45,7 @@ const getAllSubcategories = async () => {
   let rows = [];
   try {
     const [dbRows] = await pool.query(`
-      SELECT sc.id, sc.name, sc.slug, sc.description, sc.category_id,
+      SELECT sc.id, sc.name, sc.slug, sc.description, sc.meta_title, sc.meta_description, sc.category_id,
         c.name AS category_name, sc.created_at
       FROM subcategories sc
       JOIN categories c ON sc.category_id = c.id
@@ -75,7 +79,7 @@ const getSubcategoriesByCategory = async (categoryId) => {
   let rows = [];
   try {
     const [dbRows] = await pool.query(
-      `SELECT sc.id, sc.name, sc.slug, sc.description, sc.category_id,
+      `SELECT sc.id, sc.name, sc.slug, sc.description, sc.meta_title, sc.meta_description, sc.category_id,
         c.name AS category_name, sc.created_at
        FROM subcategories sc
        JOIN categories c ON sc.category_id = c.id
@@ -113,7 +117,7 @@ const getSubcategoryById = async (id) => {
   let rows;
   try {
     [rows] = await pool.query(
-      `SELECT sc.id, sc.name, sc.slug, sc.description, sc.category_id,
+      `SELECT sc.id, sc.name, sc.slug, sc.description, sc.meta_title, sc.meta_description, sc.category_id,
         c.name AS category_name, sc.created_at
        FROM subcategories sc
        JOIN categories c ON sc.category_id = c.id
@@ -140,12 +144,16 @@ const getSubcategoryById = async (id) => {
 };
 
 // Create subcategory
-const createSubcategory = async ({ name, slug, description, category_id }) => {
+const createSubcategory = async ({
+  name, slug, description, meta_title, meta_description, category_id,
+}) => {
   const finalSlug = slug || toSlug(name);
   try {
     const [result] = await pool.query(
-      'INSERT INTO subcategories (name, slug, description, category_id) VALUES (?, ?, ?, ?)',
-      [name, finalSlug, description || null, category_id]
+      `INSERT INTO subcategories
+        (name, slug, description, meta_title, meta_description, category_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [name, finalSlug, description || null, meta_title || null, meta_description || null, category_id]
     );
     return result.insertId;
   } catch (err) {
@@ -161,12 +169,16 @@ const createSubcategory = async ({ name, slug, description, category_id }) => {
 };
 
 // Update subcategory
-const updateSubcategory = async (id, { name, slug, description, category_id }) => {
+const updateSubcategory = async (id, {
+  name, slug, description, meta_title, meta_description, category_id,
+}) => {
   const finalSlug = slug || toSlug(name);
   try {
     await pool.query(
-      'UPDATE subcategories SET name = ?, slug = ?, description = ?, category_id = ? WHERE id = ?',
-      [name, finalSlug, description || null, category_id, id]
+      `UPDATE subcategories
+       SET name = ?, slug = ?, description = ?, meta_title = ?, meta_description = ?, category_id = ?
+       WHERE id = ?`,
+      [name, finalSlug, description || null, meta_title || null, meta_description || null, category_id, id]
     );
   } catch (err) {
     if (err.message && err.message.includes("Unknown column 'slug'")) {

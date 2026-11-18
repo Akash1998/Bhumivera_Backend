@@ -1601,6 +1601,23 @@ const migrations = [
       }
     },
   },
+  {
+    version: 95,
+    name: 'add SEO metadata to category taxonomy',
+    up: async () => {
+      for (const [table, column, definition] of [
+        ['categories', 'meta_title', 'VARCHAR(255) DEFAULT NULL'],
+        ['categories', 'meta_description', 'VARCHAR(320) DEFAULT NULL'],
+        ['subcategories', 'meta_title', 'VARCHAR(255) DEFAULT NULL'],
+        ['subcategories', 'meta_description', 'VARCHAR(320) DEFAULT NULL'],
+      ]) {
+        const [columns] = await pool.query(`SHOW COLUMNS FROM ${table} LIKE ?`, [column]);
+        if (columns.length === 0) {
+          await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+        }
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

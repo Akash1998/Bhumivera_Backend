@@ -10,6 +10,36 @@ const {
   searchAllKnowledgeSources,
 } = require('../services/bhumiveraKnowledgeBase');
 
+const normalizeSlug = value => String(value || '')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/(^-|-$)/g, '');
+
+const parseGeminiJson = rawText => {
+  const cleaned = String(rawText || '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Expected a JSON object.');
+    }
+    return parsed;
+  } catch {
+    throw new Error('Gemini returned invalid JSON. Please retry generation.');
+  }
+};
+
+const limitText = (value, maxLength) => {
+  const text = String(value || '').trim();
+  if (text.length <= maxLength) return text;
+  const shortened = text.slice(0, maxLength + 1).replace(/\s+\S*$/, '').trim();
+  return shortened || text.slice(0, maxLength).trim();
+};
+
 router.post('/generate-product-content', authenticateAdmin, async (req, res) => {
   try {
     const { productName, category, brand, specifications } = req.body || {};
@@ -32,6 +62,7 @@ Brand: ${typeof brand === 'string' && brand.trim() ? brand.trim() : 'Bhumivera'}
 Product information supplied by the admin (not independently verified): ${JSON.stringify(specifications || {})}
 
 Do not invent ingredients, certifications, product category classifications, health or cosmetic benefits, warranties, guarantees, measurements, sourcing, sustainability attributes, or performance claims. Return a JSON object with exactly these string keys:
+"slug": lower-case URL slug using only letters, numbers, and hyphens.
 "description": Two or three concise sentences, based only on supplied facts.
 "meta_title": SEO title under 60 characters.
 "meta_description": Search snippet under 160 characters.
@@ -40,44 +71,139 @@ Do not invent ingredients, certifications, product category classifications, hea
     const rawText = await callGeminiModel({
       prompt,
       responseMimeType: 'application/json',
-      timeoutMs: 15000,
+      timeoutMs: Number(process.env.GEMINI_SEO_TIMEOUT_MS) || 45000,
     });
-
-    let parsedData = null;
-    if (rawText) {
-      try {
-        parsedData = JSON.parse(rawText);
-      } catch {
-        parsedData = null;
-      }
+    const generated = parseGeminiJson(rawText);
+    const fields = ['slug', 'description', 'meta_title', 'meta_description', 'tags'];
+    if (fields.some(field => typeof generated[field] !== 'string' || !generated[field].trim())) {
+      throw new Error('Gemini returned incomplete product SEO content. Please retry generation.');
+    }
+    const slug = normalizeSlug(generated.slug);
+    if (!slug || slug.length > 120) {
+      throw new Error('Gemini returned an invalid product slug. Please retry generation.');
     }
 
-    // Graceful grounded fallback if external API is unreachable
-    if (!parsedData) {
-      const cleanName = productName.trim();
-      const catLabel = typeof category === 'string' && category.trim() ? category.trim() : 'Botanical Care';
-      parsedData = {
-        description: `${cleanName} by ${brand || 'Bhumivera'} is part of our ${catLabel} collection. Check the product specification panel for the complete listed ingredients and directions for use.`,
-        meta_title: `${cleanName} | Bhumivera ${catLabel}`.slice(0, 58),
-        meta_description: `Explore ${cleanName} by Bhumivera. View complete ingredient notes, specifications, and daily usage directions.`.slice(0, 155),
-        tags: `${cleanName.toLowerCase()}, bhumivera, ${catLabel.toLowerCase()}, botanical care, daily ritual`,
-      };
-    }
-
-    const fields = ['description', 'meta_title', 'meta_description', 'tags'];
-    if (!parsedData || fields.some(field => typeof parsedData[field] !== 'string' || !parsedData[field].trim())) {
-      throw new Error('AI returned incomplete product content.');
-    }
-
-    return res.json({ success: true, data: parsedData });
+    return res.json({
+      success: true,
+      model: resolveGeminiConfig().model,
+      data: {
+        slug,
+        description: limitText(generated.description, 10000),
+        meta_title: limitText(generated.meta_title, 60),
+        meta_description: limitText(generated.meta_description, 160),
+        tags: generated.tags.trim(),
+      },
+    });
   } catch (error) {
     console.error('[AI Generation Error]:', error);
     const isConfigurationError = error.message?.includes('not configured');
-    return res.status(isConfigurationError ? 503 : 502).json({
+    const status = isConfigurationError ? 503 : Number(error.status) === 504 ? 504 : 502;
+    return res.status(status).json({
       success: false,
       message: isConfigurationError
         ? error.message
-        : 'AI could not generate product content right now. Check the server AI configuration and try again.',
+        : status === 504
+          ? 'Gemini timed out before finishing the generation. Retry with fewer product details.'
+          : error.message || 'Gemini could not generate product content right now.',
+    });
+  }
+});
+
+router.post('/generate-taxonomy-seo', authenticateAdmin, async (req, res) => {
+  try {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || items.length < 1 || items.length > 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Generate SEO for between 1 and 8 categories at a time.',
+      });
+    }
+
+    const normalizedItems = items.map(item => ({
+      id: String(item?.id ?? '').trim(),
+      type: item?.type,
+      name: typeof item?.name === 'string' ? item.name.trim() : '',
+      parentName: typeof item?.parentName === 'string' ? item.parentName.trim().slice(0, 120) : '',
+      currentSlug: typeof item?.slug === 'string' ? item.slug.trim().slice(0, 120) : '',
+      description: typeof item?.description === 'string' ? item.description.trim().slice(0, 1200) : '',
+    }));
+
+    if (normalizedItems.some(item =>
+      !item.id || item.id.length > 80 ||
+      !['category', 'subcategory'].includes(item.type) ||
+      !item.name || item.name.length > 100
+    ) || new Set(normalizedItems.map(item => item.id)).size !== normalizedItems.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Each item needs a unique ID, a category type, and a name under 100 characters.',
+      });
+    }
+
+    const { configured, model } = resolveGeminiConfig();
+    if (!configured) {
+      return res.status(503).json({
+        success: false,
+        message: 'SEO generation is not configured. Set GEMINI_API_KEY on the server.',
+      });
+    }
+
+    const prompt = `Generate SEO fields for each supplied Bhumivera catalog category.
+Use only the supplied category names, parent names, and descriptions. Do not invent products, ingredients, benefits, certifications, prices, or claims. Do not claim or promise rankings. Write natural, useful English for shoppers; avoid keyword stuffing.
+For each item, return its exact id, a concise lower-case URL slug, a useful category description (one or two sentences), a meta_title no longer than 60 characters, and a meta_description no longer than 160 characters.
+Return only valid JSON with this shape:
+{"items":[{"id":"exact input id","slug":"...","description":"...","meta_title":"...","meta_description":"..."}]}
+Input:
+${JSON.stringify(normalizedItems)}`;
+
+    const rawText = await callGeminiModel({
+      prompt,
+      responseMimeType: 'application/json',
+      timeoutMs: Number(process.env.GEMINI_SEO_TIMEOUT_MS) || 45000,
+    });
+    const generated = parseGeminiJson(rawText);
+    if (!Array.isArray(generated.items) || generated.items.length !== normalizedItems.length) {
+      throw new Error('Gemini returned an incomplete taxonomy SEO batch. Please retry generation.');
+    }
+
+    const generatedById = new Map();
+    for (const result of generated.items) {
+      const id = String(result?.id ?? '').trim();
+      const slug = normalizeSlug(result?.slug);
+      if (!id || generatedById.has(id) || !normalizedItems.some(item => item.id === id) ||
+          !slug || slug.length > 120 ||
+          ['description', 'meta_title', 'meta_description'].some(field =>
+            typeof result[field] !== 'string' || !result[field].trim()
+          )) {
+        throw new Error('Gemini returned invalid taxonomy SEO fields. Please retry generation.');
+      }
+      generatedById.set(id, {
+        id,
+        slug,
+        description: limitText(result.description, 600),
+        meta_title: limitText(result.meta_title, 60),
+        meta_description: limitText(result.meta_description, 160),
+      });
+    }
+
+    if (generatedById.size !== normalizedItems.length) {
+      throw new Error('Gemini did not return SEO fields for every taxonomy item. Please retry generation.');
+    }
+    return res.json({
+      success: true,
+      model,
+      items: normalizedItems.map(item => generatedById.get(item.id)),
+    });
+  } catch (error) {
+    console.error('[AI Taxonomy SEO Error]:', error);
+    const isConfigurationError = error.message?.includes('not configured');
+    const status = isConfigurationError ? 503 : Number(error.status) === 504 ? 504 : 502;
+    return res.status(status).json({
+      success: false,
+      message: isConfigurationError
+        ? error.message
+        : status === 504
+          ? 'Gemini timed out before finishing SEO generation. Retry with fewer categories.'
+          : error.message || 'Gemini could not generate taxonomy SEO right now.',
     });
   }
 });
