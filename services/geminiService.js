@@ -28,7 +28,7 @@ async function callGeminiModel({ prompt, responseMimeType, timeoutMs = 15000 } =
     contents: prompt,
     config: {
       ...(responseMimeType ? { responseMimeType } : {}),
-      httpOptions: { timeout: Math.max(1000, Number(timeoutMs) || 15000) },
+      httpOptions: { timeout: Math.max(10000, Number(timeoutMs) || 15000) },
     },
   });
   return typeof response.text === 'string' ? response.text.trim() : '';
@@ -92,7 +92,7 @@ async function synthesizeWithGeminiOrDeterministic({
     const rawResponse = await callGeminiModel({
       prompt,
       responseMimeType: 'application/json',
-      timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS) || 8000,
+      timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS) || 15000,
     });
 
     if (rawResponse) {

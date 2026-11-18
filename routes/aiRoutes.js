@@ -40,7 +40,7 @@ Do not invent ingredients, certifications, product category classifications, hea
     const rawText = await callGeminiModel({
       prompt,
       responseMimeType: 'application/json',
-      timeoutMs: 6000,
+      timeoutMs: 15000,
     });
 
     let parsedData = null;
