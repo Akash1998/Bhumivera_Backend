@@ -7,6 +7,7 @@ const {
   searchAllKnowledgeSources,
 } = require('../services/bhumiveraKnowledgeBase');
 const {
+  resolveGeminiConfig,
   synthesizeWithGeminiOrDeterministic,
 } = require('../services/geminiService');
 
@@ -46,6 +47,20 @@ test('usage questions return product-specific timing guidance', async () => {
   assert.equal(result.matchedType, 'usage');
   assert.match(result.reply, /Best Time to Use/);
   assert.match(result.reply, /30 to 45 seconds/);
+});
+
+test('Gemini config defaults to the current flash model and supports an override', t => {
+  const previousModel = process.env.GEMINI_MODEL;
+  t.after(() => {
+    if (previousModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = previousModel;
+  });
+
+  delete process.env.GEMINI_MODEL;
+  assert.equal(resolveGeminiConfig().model, 'gemini-3.8-flash');
+
+  process.env.GEMINI_MODEL = 'custom-model';
+  assert.equal(resolveGeminiConfig().model, 'custom-model');
 });
 
 test('Gemini synthesis preserves the deterministic response when not configured', async t => {

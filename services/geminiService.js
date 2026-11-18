@@ -3,7 +3,7 @@
 let GoogleGenAI;
 try { ({ GoogleGenAI } = require('@google/genai')); } catch (_) { GoogleGenAI = null; }
 
-const DEFAULT_MODEL = 'gemini-2.0-flash';
+const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 function resolveGeminiConfig() {
   const apiKey = process.env.GEMINI_API_KEY?.trim() || '';
