@@ -305,6 +305,7 @@ router.post("/", orderLimiter, authenticateUser, async (req, res) => {
     const rulePreview = evaluateCartRules(cartTotal, rules, {
       userId: req.user.id,
       enforceMinimum,
+      hasCombo: items.some(item => item.is_combo),
       loyaltyTierId: loyaltyTier?.id,
       loyaltyTierName: loyaltyTier?.name,
     });

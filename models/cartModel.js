@@ -64,9 +64,11 @@ const getCartByUser = async (userId) => {
       const imageUrl = typeof r.image === 'string' && r.image
         ? (/^https?:\/\//i.test(r.image) ? r.image : `${IMAGE_BASE_URL.replace(/\/$/, '')}/${r.image.replace(/^\/+/, '')}`)
         : null;
+      const bundleComponents = getBundleComponents(r.specifications);
       const bundleStock = await getBundleAvailableStock(pool, r.specifications);
       return {
         ...r,
+        is_combo: Boolean(bundleComponents),
         stock: bundleStock ?? r.stock,
         specifications: undefined,
         image_url: imageUrl,

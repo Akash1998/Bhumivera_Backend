@@ -72,4 +72,22 @@ describe('cart gift reward tiers', () => {
     assert.deepEqual(atHighestTier.gifts.map(gift => gift.productName), ['Configured gift one', 'Configured gift two']);
     assert.equal(atHighestTier.freeShipping, true);
   });
+
+  it('does not enforce cart-rule checkout minimums when a combo is in the cart', () => {
+    const enforcedRule = {
+      id: 21,
+      name: 'Minimum checkout',
+      status: 'active',
+      min_cart_value: 1399,
+      enforce_min_checkout: 1,
+    };
+
+    const regularCart = evaluateCartRules(899, [enforcedRule], { enforceMinimum: true });
+    const comboCart = evaluateCartRules(899, [enforcedRule], { enforceMinimum: true, hasCombo: true });
+
+    assert.equal(regularCart.enforcedMin, 1399);
+    assert.equal(regularCart.missingAmount, 500);
+    assert.equal(comboCart.enforcedMin, null);
+    assert.equal(comboCart.missingAmount, 0);
+  });
 });

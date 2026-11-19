@@ -20,7 +20,7 @@ function evaluateCartRules(subtotal, rules = [], userProfile = {}) {
       (end === null || (Number.isFinite(end) && end >= currentTime));
   });
 
-  const enforcedRules = userProfile.enforceMinimum !== false
+  const enforcedRules = userProfile.enforceMinimum !== false && userProfile.hasCombo !== true
     ? activeRules.filter(rule => Number(rule.enforce_min_checkout) === 1 && cartSubtotal < toNumber(rule.min_cart_value))
     : [];
   const enforcedMin = enforcedRules.reduce((minimum, rule) => Math.max(minimum, toNumber(rule.min_cart_value)), 0) || null;

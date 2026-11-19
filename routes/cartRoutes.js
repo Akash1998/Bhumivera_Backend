@@ -117,6 +117,7 @@ router.get('/', authenticateUser, async (req, res) => {
     const rulePreview = evaluateCartRules(Number(total) || 0, rules, {
       userId: req.user.id,
       enforceMinimum,
+      hasCombo: safeItems.some(item => item.is_combo),
       loyaltyTierId: loyaltyTier?.id,
       loyaltyTierName: loyaltyTier?.name,
     });
