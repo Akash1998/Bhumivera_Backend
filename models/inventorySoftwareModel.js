@@ -1104,6 +1104,7 @@ async function atomicAdjustProductStock(
     sku = null,
     operation = 'subtract',
     quantity = 0,
+    stockCategory = null,
     movementType = 'STOCK_ADJUSTMENT',
     reason = 'Manual adjustment',
     referenceId = null,
@@ -1139,7 +1140,8 @@ async function atomicAdjustProductStock(
         [targetProductId]
       );
       prodRow = pRows[0] || null;
-    } else if (sku) {
+    }
+    if (!prodRow && sku) {
       const [pRows] = await conn.query(
         'SELECT id, name, sku, quantity, price, discount_price FROM products WHERE sku = ? FOR UPDATE',
         [sku]
@@ -1186,7 +1188,10 @@ async function atomicAdjustProductStock(
         0,
         (Number(metaRow.damaged_quarantine_stock) || 0) + (Number(quarantineDelta) || 0)
       );
-      const nextShopDisplay = Math.min(qtyAfter, Number(metaRow.shop_display_stock) || Math.ceil(qtyAfter * 0.3));
+      const currentShopDisplay = Number(metaRow.shop_display_stock) || Math.ceil(qtyBefore * 0.3);
+      const nextShopDisplay = stockCategory === 'shop'
+        ? Math.min(qtyAfter, currentShopDisplay + Math.max(0, qtyDelta))
+        : Math.min(qtyAfter, Number(metaRow.shop_display_stock) || Math.ceil(qtyAfter * 0.3));
       const nextVaultStock = Math.max(0, qtyAfter - nextShopDisplay);
       const offlineSoldAdd =
         movementType === 'OFFLINE_POS_SALE' && qtyDelta < 0 ? Math.abs(qtyDelta) : 0;
@@ -2139,8 +2144,17 @@ async function processReturnQcGrade(db = pool, { orderId, grade, notes = '', act
     if (!order) {
       throw Object.assign(new Error(`Order #${orderId} not found.`), { status: 404 });
     }
+    if (order.rto_restock_mode && order.rto_restock_mode !== 'NONE') {
+      throw Object.assign(new Error(`Order #${orderId} has already been processed for return QC.`), { status: 409 });
+    }
+    if (!['GRADE_A', 'GRADE_B', 'GRADE_C'].includes(grade)) {
+      throw Object.assign(new Error('A valid return grade is required.'), { status: 400 });
+    }
 
     const [items] = await conn.query('SELECT * FROM order_items WHERE order_id = ?', [Number(orderId)]);
+    if (!items.length) {
+      throw Object.assign(new Error(`Order #${orderId} has no items to process.`), { status: 400 });
+    }
 
     let restockCategory = 'vault';
     let movementType = 'RTO_RESTOCK_GRADE_A';
@@ -2150,37 +2164,49 @@ async function processReturnQcGrade(db = pool, { orderId, grade, notes = '', act
       restockCategory = 'vault';
       movementType = 'RTO_QC_GRADE_A_SELLABLE';
       for (const it of items) {
-        await atomicAdjustProductStock(conn, {
+        await atomicAdjustProductStock({
           productId: it.product_id,
-          delta: Number(it.quantity),
-          category: 'vault',
-          notes: `RTO QC Grade A (Pristine): Restocked ${it.quantity} unit(s) from order #${orderId}`,
+          sku: it.sku,
+          operation: 'add',
+          quantity: Number(it.quantity),
+          stockCategory: 'vault',
+          movementType,
+          reason: `RTO QC Grade A (Pristine): Restocked ${it.quantity} unit(s) from order #${orderId}`,
+          referenceId: orderId,
           actorUsername,
-        });
+        }, conn);
       }
     } else if (grade === 'GRADE_B') {
       restockCategory = 'shop';
       movementType = 'RTO_QC_GRADE_B_DISPLAY';
       for (const it of items) {
-        await atomicAdjustProductStock(conn, {
+        await atomicAdjustProductStock({
           productId: it.product_id,
-          delta: Number(it.quantity),
-          category: 'shop',
-          notes: `RTO QC Grade B (Display/Clearance): Restocked ${it.quantity} unit(s) from order #${orderId}`,
+          sku: it.sku,
+          operation: 'add',
+          quantity: Number(it.quantity),
+          stockCategory: 'shop',
+          movementType,
+          reason: `RTO QC Grade B (Display/Clearance): Restocked ${it.quantity} unit(s) from order #${orderId}`,
+          referenceId: orderId,
           actorUsername,
-        });
+        }, conn);
       }
     } else {
       restockCategory = 'damaged';
       movementType = 'RTO_QC_GRADE_C_DAMAGED';
       for (const it of items) {
-        await atomicAdjustProductStock(conn, {
+        await atomicAdjustProductStock({
           productId: it.product_id,
-          delta: Number(it.quantity),
-          category: 'damaged',
-          notes: `RTO QC Grade C (Damaged/Quarantine): Marked ${it.quantity} unit(s) as quarantine from order #${orderId}`,
+          sku: it.sku,
+          operation: 'add',
+          quantity: 0,
+          quarantineDelta: Number(it.quantity),
+          movementType,
+          reason: `RTO QC Grade C (Damaged/Quarantine): Marked ${it.quantity} unit(s) as quarantine from order #${orderId}`,
+          referenceId: orderId,
           actorUsername,
-        });
+        }, conn);
       }
     }
 

@@ -16,6 +16,7 @@ const {
   verifyTotpCode,
   calculateEstimatedDeliveryDate,
   syncWebsiteProductsToInventoryMeta,
+  processReturnQcGrade,
 } = require('../models/inventorySoftwareModel');
 
 test('resolveInventoryPermissions grants all permissions when full_all_access or admin role', () => {
@@ -211,6 +212,101 @@ test('admin product sync refreshes only the changed inventory product', async ()
   assert.ok(metaUpsert);
   assert.equal(metaUpsert.params[0], 42);
   assert.equal(metaUpsert.params[1], 'Updated face wash');
+});
+
+test('return QC restocks by SKU and routes grade A, B, and C inventory correctly', async () => {
+  const createReturnDb = grade => {
+    const state = {
+      product: { id: 5, name: 'Returned item', sku: 'BV-RETURN-5', quantity: 8 },
+      meta: {
+        id: 9,
+        product_id: 5,
+        sku: 'BV-RETURN-5',
+        physical_stock: 8,
+        safety_buffer_stock: 0,
+        shop_display_stock: 2,
+        damaged_quarantine_stock: 0,
+      },
+      order: { id: 50, rto_restock_mode: 'NONE' },
+      movement: null,
+      committed: false,
+      rolledBack: false,
+    };
+    const connection = {
+      beginTransaction: async () => {},
+      commit: async () => { state.committed = true; },
+      rollback: async () => { state.rolledBack = true; },
+      release: () => {},
+      query: async (sql, params = []) => {
+        if (sql.includes('SELECT * FROM orders WHERE id =')) return [[state.order]];
+        if (sql === 'SELECT * FROM order_items WHERE order_id = ?') {
+          return [[{ product_id: 999, sku: 'BV-RETURN-5', quantity: 2 }]];
+        }
+        if (sql.includes('SELECT * FROM inventory_product_meta WHERE product_id =')) return [[]];
+        if (sql.includes('SELECT * FROM inventory_product_meta WHERE sku =')) return [[state.meta]];
+        if (sql.includes('FROM products WHERE id =')) {
+          return [Number(params[0]) === state.product.id ? [state.product] : []];
+        }
+        if (sql.includes('UPDATE products SET quantity =')) {
+          state.product.quantity = Number(params[0]);
+          return [{ affectedRows: 1 }];
+        }
+        if (sql.includes('UPDATE inventory_product_meta')) {
+          state.meta.physical_stock = Number(params[0]);
+          state.meta.shop_display_stock = Number(params[1]);
+          state.meta.warehouse_vault_stock = Number(params[2]);
+          state.meta.damaged_quarantine_stock = Number(params[3]);
+          return [{ affectedRows: 1 }];
+        }
+        if (sql.includes('SELECT id, sku, specifications FROM products')) return [[]];
+        if (sql.includes('INSERT INTO inventory_stock_movements')) {
+          state.movement = { params };
+          return [{ affectedRows: 1 }];
+        }
+        if (sql.includes('INSERT INTO inventory_audit_logs')) return [{ affectedRows: 1 }];
+        if (sql.includes('UPDATE orders')) {
+          state.order.rto_restock_mode = params[3];
+          return [{ affectedRows: 1 }];
+        }
+        throw new Error(`Unexpected return QC query: ${sql}`);
+      },
+    };
+    return {
+      state,
+      db: { getConnection: async () => connection },
+      grade,
+    };
+  };
+
+  const gradeA = createReturnDb('GRADE_A');
+  await processReturnQcGrade(gradeA.db, { orderId: 50, grade: gradeA.grade });
+  assert.equal(gradeA.state.product.quantity, 10);
+  assert.equal(gradeA.state.meta.physical_stock, 10);
+  assert.equal(gradeA.state.meta.shop_display_stock, 2);
+  assert.equal(gradeA.state.meta.warehouse_vault_stock, 8);
+  assert.equal(gradeA.state.committed, true);
+
+  const gradeB = createReturnDb('GRADE_B');
+  await processReturnQcGrade(gradeB.db, { orderId: 50, grade: gradeB.grade });
+  assert.equal(gradeB.state.product.quantity, 10);
+  assert.equal(gradeB.state.meta.shop_display_stock, 4);
+  assert.equal(gradeB.state.meta.warehouse_vault_stock, 6);
+
+  const gradeC = createReturnDb('GRADE_C');
+  await processReturnQcGrade(gradeC.db, { orderId: 50, grade: gradeC.grade });
+  assert.equal(gradeC.state.product.quantity, 8);
+  assert.equal(gradeC.state.meta.physical_stock, 8);
+  assert.equal(gradeC.state.meta.damaged_quarantine_stock, 2);
+  assert.equal(gradeC.state.movement.params[5], 0);
+
+  const alreadyProcessed = createReturnDb('GRADE_A');
+  alreadyProcessed.state.order.rto_restock_mode = 'vault';
+  await assert.rejects(
+    processReturnQcGrade(alreadyProcessed.db, { orderId: 50, grade: alreadyProcessed.grade }),
+    error => error.status === 409,
+  );
+  assert.equal(alreadyProcessed.state.product.quantity, 8);
+  assert.equal(alreadyProcessed.state.rolledBack, true);
 });
 
 test('generateWavePicklist groups orders and aggregates items by bin walk path', async () => {
