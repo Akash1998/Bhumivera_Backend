@@ -47,7 +47,8 @@ const connection = {
     }
     if (sql.startsWith('UPDATE products SET quantity = quantity -') && bundleScenario) {
       const component = bundleScenario.components.find(item => item.id === values[1]);
-      bundleScenario.stock.set(component.slug, bundleScenario.stock.get(component.slug) - values[0]);
+      const stockKey = bundleScenario.stock.has(component.id) ? component.id : component.slug;
+      bundleScenario.stock.set(stockKey, bundleScenario.stock.get(stockKey) - values[0]);
       return [{ affectedRows: 1 }, []];
     }
     if (sql.startsWith('INSERT INTO order_items')) {
@@ -240,5 +241,6 @@ describe('order model', () => {
     assert.equal(insertedOrderItems.length, 3);
     // Quantity for each item was 2 (requestedQty 2 * comboQty 1)
     assert.ok(insertedOrderItems.every(values => values[5] === 2));
+    assert.ok(components.every(component => stock.get(component.id) === component.quantity - 2));
   });
 });

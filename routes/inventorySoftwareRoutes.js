@@ -2220,12 +2220,8 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
     const [items] = await pool.query(
       `SELECT oi.id AS order_item_id, oi.product_id, oi.name, oi.price, oi.quantity,
               COALESCE(m.sku, p.sku, CONCAT('SKU-', oi.product_id)) AS sku,
-              p.slug AS component_slug,
               m.barcode, m.bin_code, m.batch_no, m.gst_hsn_code, m.gst_rate,
               combo.id AS combo_product_id, combo.name AS combo_name,
-              combo.sku AS combo_sku, combo.specifications AS combo_specifications,
-              (SELECT combo_meta.sku FROM inventory_product_meta combo_meta
-               WHERE combo_meta.product_id = combo.id ORDER BY combo_meta.id LIMIT 1) AS combo_meta_sku,
               COALESCE(pp.verified_quantity, 0) AS verified_count
        FROM order_items oi
        LEFT JOIN products p ON oi.product_id = p.id
@@ -2263,34 +2259,16 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
     const resolvedLine2 = addr.line2 || addr.area || '';
     const resolvedAddress = [resolvedLine1, resolvedLine2, addr.landmark, resolvedCity, resolvedState, resolvedPincode].filter(Boolean).join(', ');
     const resolvedTotal = Number(order.total ?? order.total_amount ?? 0);
-    const getComboComponents = item => {
-      if (!item.combo_product_id || !item.combo_specifications) return [];
-      const specs = parseJsonSafe(item.combo_specifications, {}) || {};
-      const configured = specs.combo_items || specs.components || specs.items;
-      if (!Array.isArray(configured) || configured.length === 0) return [];
-      const components = configured.map(component => {
-        const componentId = component.product_id ?? component.id;
-        const componentSlug = String(component.slug || '').trim();
-        const orderComponent = items.find(candidate =>
-          Number(candidate.combo_product_id) === Number(item.combo_product_id) &&
-          ((componentId != null && Number(candidate.product_id) === Number(componentId)) ||
-            (componentSlug && candidate.component_slug === componentSlug))
-        );
-        if (!orderComponent) return null;
-        return {
-          sku: orderComponent.sku,
-          name: orderComponent.name.split(' — ').slice(1).join(' — ') || component.name || orderComponent.name,
-          quantity: Math.max(1, Number(component.quantity) || 1),
-        };
-      });
-      return components.every(Boolean) ? components : [];
-    };
     const mapPackingItem = item => {
-      const comboComponents = getComboComponents(item);
+      const comboName = item.combo_product_id ? item.combo_name || '' : '';
+      const itemName = String(item.name || 'Product');
+      const componentName = comboName && itemName.startsWith(`${comboName} — `)
+        ? itemName.slice(comboName.length + 3).trim()
+        : itemName;
       return {
         orderItemId: item.order_item_id,
         productId: item.product_id,
-        name: item.name,
+        name: componentName || itemName,
         sku: item.sku,
         barcode: item.barcode || item.sku,
         price: Number(item.price) || 0,
@@ -2301,9 +2279,7 @@ router.get('/orders/:id/manifest', authenticateScannerOrStaff, async (req, res) 
         gstRate: Number(item.gst_rate) || 5,
         verifiedCount: Number(item.verified_count) || 0,
         scannedCodes: scansByItem.get(String(item.order_item_id)) || [],
-        comboSku: comboComponents.length ? item.combo_meta_sku || item.combo_sku || '' : '',
-        comboName: comboComponents.length ? item.combo_name || '' : '',
-        comboComponents,
+        comboName,
       };
     };
 

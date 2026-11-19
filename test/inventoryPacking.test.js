@@ -195,7 +195,7 @@ it('rejects PWA scans for codes that do not match the order item', async () => {
   assert.equal(scanEvents.size, 0);
 });
 
-it('includes combo QR and component details in the fulfillment manifest', async () => {
+it('shows component names and their parent combo in the fulfillment manifest', async () => {
   currentOrderStatus = 'confirmed';
   orderManifestItems = [{
     ...orderItem,
@@ -204,21 +204,13 @@ it('includes combo QR and component details in the fulfillment manifest', async 
     component_slug: 'test-formulation',
     combo_product_id: 99,
     combo_name: 'Creator Combo',
-    combo_sku: '',
-    combo_meta_sku: 'BV-CREATOR-COMBO',
-    combo_specifications: {
-      combo_items: [{ product_id: 5, name: 'Test formulation', quantity: 1 }],
-    },
   }];
 
   const response = await getManifest();
   const manifest = await response.json();
   assert.equal(response.status, 200, manifest.message);
-  assert.equal(manifest.items[0].comboSku, 'BV-CREATOR-COMBO');
   assert.equal(manifest.items[0].comboName, 'Creator Combo');
-  assert.deepEqual(manifest.items[0].comboComponents, [
-    { sku: 'BV-TEST-01', name: 'Test formulation', quantity: 1 },
-  ]);
+  assert.equal(manifest.items[0].name, 'Test formulation');
 });
 
 const getManifest = () => fetch(`${baseUrl}/orders/2/manifest`, {
