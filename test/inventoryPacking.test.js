@@ -30,6 +30,7 @@ const orderItem = {
 let verifiedQuantity = 0;
 let currentOrderStatus = 'pending';
 let savedOrderItems = [];
+let orderManifestItems = null;
 let scanEvents = new Map();
 let deviceExpiresAt = new Date(Date.now() + 3600000);
 let server;
@@ -54,6 +55,9 @@ const fakePool = {
       return [[{ ...order, status: currentOrderStatus, resolved_customer_name: 'Test customer' }]];
     }
     if (/FROM order_items oi/.test(sql)) {
+      if (/combo_product_id/.test(sql)) {
+        return [orderManifestItems || [{ ...orderItem, verified_count: verifiedQuantity }]];
+      }
       return [[{ ...orderItem, verified_count: verifiedQuantity }]];
     }
     throw new Error(`Unexpected pool query: ${sql}`);
@@ -191,6 +195,32 @@ it('rejects PWA scans for codes that do not match the order item', async () => {
   assert.equal(scanEvents.size, 0);
 });
 
+it('includes combo QR and component details in the fulfillment manifest', async () => {
+  currentOrderStatus = 'confirmed';
+  orderManifestItems = [{
+    ...orderItem,
+    order_item_id: 10,
+    name: 'Creator Combo — Test formulation',
+    component_slug: 'test-formulation',
+    combo_product_id: 99,
+    combo_name: 'Creator Combo',
+    combo_sku: '',
+    combo_meta_sku: 'BV-CREATOR-COMBO',
+    combo_specifications: {
+      combo_items: [{ product_id: 5, name: 'Test formulation', quantity: 1 }],
+    },
+  }];
+
+  const response = await getManifest();
+  const manifest = await response.json();
+  assert.equal(response.status, 200, manifest.message);
+  assert.equal(manifest.items[0].comboSku, 'BV-CREATOR-COMBO');
+  assert.equal(manifest.items[0].comboName, 'Creator Combo');
+  assert.deepEqual(manifest.items[0].comboComponents, [
+    { sku: 'BV-TEST-01', name: 'Test formulation', quantity: 1 },
+  ]);
+});
+
 const getManifest = () => fetch(`${baseUrl}/orders/2/manifest`, {
   headers: { 'x-scanner-api-key': scannerKey },
 });
@@ -235,6 +265,7 @@ beforeEach(() => {
   verifiedQuantity = 0;
   currentOrderStatus = 'pending';
   savedOrderItems = [];
+  orderManifestItems = null;
   scanEvents = new Map();
   deviceExpiresAt = new Date(Date.now() + 3600000);
 });
