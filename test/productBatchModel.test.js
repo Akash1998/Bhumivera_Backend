@@ -10,6 +10,7 @@ let failSerialInsert = false;
 let duplicateSerialInsert = false;
 let publicVerificationRows = [];
 let existingProductBatches = [];
+let otherProducts = [];
 
 const connection = {
   async beginTransaction() {
@@ -27,8 +28,9 @@ const connection = {
   async query(sql, params = []) {
     queries.push({ sql, params });
     if (sql.includes('SELECT id, name, sku FROM products')) {
-      return [[{ id: 12, name: 'Test Product', sku: 'TEST-12' }]];
+      return [[{ id: 12, name: 'Test Product', sku: 'BV-LUX-CFW-01' }]];
     }
+    if (sql.includes('SELECT id, sku FROM products WHERE id <> ?')) return [otherProducts];
     if (sql.includes('SELECT id, product_id, unit_count FROM product_batches')) {
       return [existingProductBatches];
     }
@@ -75,6 +77,7 @@ describe('product batch registry', () => {
     duplicateSerialInsert = false;
     publicVerificationRows = [];
     existingProductBatches = [];
+    otherProducts = [];
   });
 
   it('rejects invalid batch data before opening a database transaction', async () => {
@@ -151,10 +154,22 @@ describe('product batch registry', () => {
     assert.equal(result.productName, 'Test Product');
     assert.equal(result.serials.length, 200);
     assert.equal(new Set(result.serials).size, 200);
-    assert.ok(result.serials.every(serial => /^TEST-\d{4}-[A-F0-9]{24}$/.test(serial)));
+    assert.equal(result.codePrefix, 'BV_LUX_CFW');
+    assert.ok(result.serials.every(serial => /^BV_LUX_CFW_\d{11}$/.test(serial)));
     const serialInsert = queries.find(entry => entry.sql.includes('INSERT INTO product_serials'));
     assert.ok(serialInsert.params[0].every(row => row[0] === 12 && row[1] === 34 && row[3] === 'available'));
     assert.equal(queries.some(entry => entry.sql.includes('ON DUPLICATE KEY UPDATE')), false);
+  });
+
+  it('rejects a product code prefix that would collide with another catalog SKU', async () => {
+    otherProducts = [{ id: 13, sku: 'BV-LUX-CFW-02' }];
+
+    await assert.rejects(
+      batchModel.createGenuinitySerialQR({ productId: 12, count: 1 }),
+      error => error.status === 409 && /prefix.*shared/i.test(error.message)
+    );
+    assert.equal(queries.some(entry => entry.sql.includes('INSERT INTO product_serials')), false);
+    assert.equal(queries.some(entry => entry.sql === 'ROLLBACK'), true);
   });
 
   it('refuses to reactivate an item code that already exists', async () => {
@@ -195,11 +210,29 @@ describe('product batch registry', () => {
     const result = await batchModel.getPublicProductVerification(' bv-2601-unique ');
 
     assert.equal(result.verified, true);
+    assert.equal(result.isGenuine, true);
     assert.equal(result.expired, true);
     assert.deepEqual(result.details, [{ label: 'Calibrated pH', value: '5.2', visible: true }]);
     assert.equal(queries[0].params[0], 'BV-2601-UNIQUE');
 
     publicVerificationRows = [];
     assert.equal(await batchModel.getPublicProductVerification('BV-NOT-REGISTERED'), null);
+  });
+
+  it('keeps voided serials registered but marks them not genuine', async () => {
+    publicVerificationRows = [{
+      serial_number: 'BV_TEST_12345678901',
+      status: 'voided',
+      manufacture_date: new Date('2026-01-01T00:00:00.000Z'),
+      expiry_date: null,
+      product_name: 'Test Product',
+      sku: 'TEST-12',
+    }];
+
+    const result = await batchModel.getPublicProductVerification('BV_TEST_12345678901');
+
+    assert.equal(result.verified, true);
+    assert.equal(result.isGenuine, false);
+    assert.equal(result.itemStatus, 'voided');
   });
 });

@@ -190,61 +190,37 @@ const updateProductBatchDetails = async (batchId, details) => {
   return normalizedDetails;
 };
 
-const generateSerialSequence = (seed, totalCount, prefixFallback) => {
-  const serials = [];
-  const cleanSeed = String(seed || '').trim().toUpperCase();
+const normalizeGenuinityCodePrefix = sku => {
+  const normalized = String(sku || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_')
+    .replace(/_\d{2,}$/, '');
+  return normalized.startsWith('BV_') ? normalized : `BV_${normalized}`;
+};
 
-  if (!cleanSeed) {
-    const dateStamp = new Date().toISOString().slice(2, 7).replace('-', '');
-    while (serials.length < totalCount) {
-      const rand = crypto.randomBytes(12).toString('hex').toUpperCase();
-      serials.push(`${prefixFallback || 'BHMV'}-${dateStamp}-${rand}`);
-    }
-    return serials;
+const getGenuinityCodePrefix = sku => {
+  const prefix = normalizeGenuinityCodePrefix(sku);
+  if (!/^[A-Z0-9]+(?:_[A-Z0-9]+)*$/.test(prefix) || prefix.length > 80) {
+    throw Object.assign(new Error('The product SKU cannot be used to create a genuinity code prefix.'), { status: 400 });
   }
+  return prefix;
+};
 
-  if (totalCount <= 1) {
-    return [cleanSeed];
+const generateSerialSequence = (codePrefix, totalCount) => {
+  const serials = new Set();
+  while (serials.size < totalCount) {
+    const suffix = String(crypto.randomInt(0, 100000000000)).padStart(11, '0');
+    serials.add(`${codePrefix}_${suffix}`);
   }
-
-  // Pure numeric seed: e.g. "123456"
-  if (/^\d+$/.test(cleanSeed)) {
-    const startNum = BigInt(cleanSeed);
-    const padLen = cleanSeed.length;
-    for (let i = 0; i < totalCount; i++) {
-      const nextNum = (startNum + BigInt(i)).toString().padStart(padLen, '0');
-      serials.push(nextNum);
-    }
-    return serials;
-  }
-
-  // Alphanumeric with trailing digits: e.g. "BV-SB001" or "BATCH1-01"
-  const trailingDigitsMatch = cleanSeed.match(/^(.*?)(\d+)$/);
-  if (trailingDigitsMatch) {
-    const prefix = trailingDigitsMatch[1];
-    const numPart = trailingDigitsMatch[2];
-    const startNum = BigInt(numPart);
-    const padLen = numPart.length;
-    for (let i = 0; i < totalCount; i++) {
-      const nextNum = (startNum + BigInt(i)).toString().padStart(padLen, '0');
-      serials.push(`${prefix}${nextNum}`);
-    }
-    return serials;
-  }
-
-  // Prefix without trailing digits or empty: e.g. "BV-SBFW" or ""
-  const pfx = cleanSeed || prefixFallback || 'BHMV';
-  const padLen = Math.max(3, String(totalCount).length);
-  for (let i = 1; i <= totalCount; i++) {
-    serials.push(`${pfx}-${String(i).padStart(padLen, '0')}`);
-  }
-  return serials;
+  return [...serials];
 };
 
 const createGenuinitySerialQR = async ({
   productId,
   count = 1,
-  serialNumber,
   batchNumber,
   bottleSequence,
   manufactureDate,
@@ -315,14 +291,30 @@ const createGenuinitySerialQR = async ({
       throw Object.assign(new Error('Product not found.'), { status: 404 });
     }
 
-    const defaultPrefix = String(products[0].sku || products[0].name || 'BHMV').replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase();
-    const generatedSerials = generateSerialSequence(serialNumber, normalizedCount, defaultPrefix);
+    const codePrefix = getGenuinityCodePrefix(products[0].sku);
+    const [otherProducts] = await connection.query(
+      'SELECT id, sku FROM products WHERE id <> ?',
+      [normalizedProductId]
+    );
+    const prefixCollision = otherProducts.find(product =>
+      product.sku && normalizeGenuinityCodePrefix(product.sku) === codePrefix
+    );
+    if (prefixCollision) {
+      throw Object.assign(
+        new Error(`The product code prefix ${codePrefix} is shared with another catalog product. Make the SKUs unique before generating bottle codes.`),
+        { status: 409 }
+      );
+    }
+    const generatedSerials = generateSerialSequence(codePrefix, normalizedCount);
     if (
       generatedSerials.length !== normalizedCount ||
       new Set(generatedSerials).size !== normalizedCount ||
-      generatedSerials.some(serial => !/^[A-Z0-9-]{1,100}$/.test(serial))
+      generatedSerials.some(serial =>
+        !serial.startsWith(`${codePrefix}_`) ||
+        !/^\d{11}$/.test(serial.slice(codePrefix.length + 1))
+      )
     ) {
-      throw Object.assign(new Error('Generated item codes must be unique and contain only letters, numbers, and hyphens.'), { status: 400 });
+      throw Object.assign(new Error('Generated item codes must be unique and contain only letters, numbers, and underscores.'), { status: 400 });
     }
 
     // Batch Number
@@ -389,6 +381,7 @@ const createGenuinitySerialQR = async ({
       count: normalizedCount,
       serialNumber: generatedSerials[0],
       serials: generatedSerials,
+      codePrefix,
       productId: normalizedProductId,
       productName: products[0].name,
       sku: products[0].sku,
@@ -544,53 +537,7 @@ const getPublicProductVerification = async serial => {
     [cleanSerial]
   );
 
-  if (!rows.length) {
-    // Check fallback BATCH_COA_REGISTRY
-    let catalogRegistry = null;
-    try {
-      const { BATCH_COA_REGISTRY } = require('../data/luxuryCatalog');
-      catalogRegistry = BATCH_COA_REGISTRY;
-    } catch {
-      catalogRegistry = null;
-    }
-
-    if (catalogRegistry && catalogRegistry[cleanSerial]) {
-      const coa = catalogRegistry[cleanSerial];
-      return {
-        verified: true,
-        serialNumber: coa.serial,
-        productName: coa.productName,
-        sku: coa.sku || 'BHMV-MICRO-BATCH',
-        image: null,
-        batchNumber: coa.batchCode,
-        manufactureDate: coa.pressedDate,
-        expiryDate: coa.expiryDate || '2028-10-18',
-        expired: false,
-        batchQuantity: coa.remainingInBatch || 250,
-        itemStatus: 'available',
-        bottleSequence: coa.bottleSequence,
-        calibratedPh: coa.calibratedPh,
-        extractionTemp: coa.extractionTemp,
-        microbiologicalAssay: coa.microbiologicalAssay,
-        heavyMetals: coa.heavyMetals,
-        disclosedActives: coa.disclosedActives,
-        tamperCustody: coa.tamperCustody,
-        originLot: coa.originLot,
-        details: [
-          { label: 'Bottle Sequence', value: coa.bottleSequence, visible: true },
-          { label: 'Calibrated pH Assay', value: coa.calibratedPh, visible: true },
-          { label: 'Extraction Temp', value: coa.extractionTemp, visible: true },
-          { label: 'Microbiological Assay', value: coa.microbiologicalAssay, visible: true },
-          { label: 'Heavy Metal Screen', value: coa.heavyMetals, visible: true },
-          { label: 'Disclosed Actives', value: coa.disclosedActives, visible: true },
-          { label: 'Tamper Custody', value: coa.tamperCustody, visible: true },
-          { label: 'Origin Lot', value: coa.originLot, visible: true },
-        ],
-        verificationUrl: `https://bhumivera.com/verify?code=${encodeURIComponent(coa.serial)}`
-      };
-    }
-    return null;
-  }
+  if (!rows.length) return null;
 
   const row = rows[0];
   const today = new Date().toISOString().slice(0, 10);
@@ -610,7 +557,7 @@ const getPublicProductVerification = async serial => {
     return found ? found.value : null;
   };
 
-  const bottleSequence = findVal(['bottle sequence', 'bottle #', 'sequence']) || `Bottle #${row.serial_id || 1}`;
+  const bottleSequence = findVal(['bottle sequence', 'bottle #', 'sequence']);
   const calibratedPh = findVal(['calibrated ph', 'ph assay', 'ph']);
   const extractionTemp = findVal(['extraction temp', 'extraction', 'temperature']);
   const microbiologicalAssay = findVal(['microbiological', 'microbial', 'aerobic']);
@@ -618,20 +565,22 @@ const getPublicProductVerification = async serial => {
   const disclosedActives = findVal(['disclosed active', 'actives', 'active ingredients', 'composition']);
   const tamperCustody = findVal(['tamper custody', 'custody', 'tamper', 'wax']);
   const originLot = findVal(['origin', 'lot', 'harvest', 'sourcing']);
+  const itemStatus = String(row.status || '').toLowerCase();
 
   return {
     verified: true,
+    isGenuine: ['available', 'registered', 'sold'].includes(itemStatus),
     serialNumber: row.serial_number,
-    productName: row.product_name || 'Bhumivera Authentic Product',
+    productName: row.product_name || '',
     sku: row.sku || '',
     image,
-    batchNumber: row.batch_number || 'AUTHENTIC-BATCH',
+    batchNumber: row.batch_number || '',
     manufactureDate: typeof row.manufacture_date === 'string'
       ? row.manufacture_date.slice(0, 10)
-      : row.manufacture_date ? new Date(row.manufacture_date).toISOString().slice(0, 10) : today,
+      : row.manufacture_date ? new Date(row.manufacture_date).toISOString().slice(0, 10) : '',
     expiryDate,
     expired: expiryDate ? expiryDate < today : false,
-    batchQuantity: Number(row.unit_count || 1),
+    batchQuantity: Number(row.unit_count || 0),
     itemStatus: row.status,
     bottleSequence,
     calibratedPh,

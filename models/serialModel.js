@@ -77,7 +77,7 @@ const addProductSerials = async (productId, serials, base_warranty_months = null
 
   const cleanedSerials = serials.map((s) => s.trim().toUpperCase());
 
-  const invalidSerials = cleanedSerials.filter((s) => !/^[A-Z0-9-]+$/.test(s));
+  const invalidSerials = cleanedSerials.filter((s) => !/^[A-Z0-9_-]+$/.test(s));
   if (invalidSerials.length > 0) {
     throw { status: 400, message: `Invalid serial format detected. Example: ${invalidSerials[0]}` };
   }
@@ -141,7 +141,7 @@ const deleteProductSerial = async (productId, serialId) => {
 
 const updateProductSerial = async (productId, serialId, newSerial) => {
   const cleanedSerial = newSerial.trim().toUpperCase();
-  if (!/^[A-Z0-9-]+$/.test(cleanedSerial)) throw { status: 400, message: "Invalid serial number format" };
+  if (!/^[A-Z0-9_-]+$/.test(cleanedSerial)) throw { status: 400, message: "Invalid serial number format" };
   
   const [existing] = await pool.query(`SELECT serial_number, status FROM product_serials WHERE id = ? AND product_id = ?`, [serialId, productId]);
   if (existing.length === 0) throw { status: 404, message: "Serial number not found for this product" };
