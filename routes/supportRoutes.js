@@ -254,6 +254,22 @@ const optionalAuthenticateCustomer = async (req, _res, next) => {
 };
 const optionalCustomerAuth = optionalAuthenticateCustomer;
 
+const isCallerSupportStaff = req => {
+  const rawToken = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7).trim()
+    : '';
+  if (!rawToken) return false;
+  try {
+    const decoded = jwt.verify(rawToken, secret());
+    return (
+      decoded.scope === 'support-agent' ||
+      ['admin', 'superadmin', 'support_agent', 'agent', 'supervisor', 'manager'].includes(decoded.role)
+    );
+  } catch {
+    return false;
+  }
+};
+
 // ============================================================================
 // PART 1: CUSTOMER SUPPORT CHAT & LIFECYCLE ENDPOINTS (`/api/support/chat/*`)
 // ============================================================================
@@ -360,21 +376,7 @@ router.patch('/chat/session/:sessionToken/status', supportSessionLimiter, option
     }
 
     // Check if caller has a valid Support Agent / Supervisor / Manager / SuperAdmin token
-    let isSupportStaffCaller = false;
-    const rawToken = req.headers.authorization?.startsWith('Bearer ')
-      ? req.headers.authorization.slice(7).trim()
-      : '';
-    if (rawToken) {
-      try {
-        const decoded = jwt.verify(rawToken, secret());
-        if (
-          decoded.scope === 'support-agent' ||
-          ['admin', 'superadmin', 'support_agent', 'agent', 'supervisor', 'manager'].includes(decoded.role)
-        ) {
-          isSupportStaffCaller = true;
-        }
-      } catch {}
-    }
+    const isSupportStaffCaller = isCallerSupportStaff(req);
 
     const featureConfig = await getAiSupportFeatureConfig(pool);
     if (!isSupportStaffCaller && !featureConfig.allow_customer_status_change) {
@@ -650,6 +652,7 @@ router.get('/chat/history/:sessionToken', optionalAuthenticateCustomer, async (r
     if (!session) {
       return res.status(404).json({ success: false, code: 'SESSION_NOT_FOUND', message: 'Chat session not found.' });
     }
+    const isSupportStaffCaller = isCallerSupportStaff(req);
     if (!isSupportStaffCaller && session.userId && (!req.user?.id || Number(session.userId) !== Number(req.user.id))) {
       return res.status(403).json({ success: false, code: 'FORBIDDEN_SESSION', message: 'Unauthorized session access.' });
     }
@@ -2393,13 +2396,12 @@ router.delete('/tickets/:id', authenticateSupportAgent, async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ message: 'Support ticket not found.' });
     }
-    await recordSupportAuditLog({
+    await appendSupportAuditLog({
       actorId: req.supportAgent.id,
       actorName: req.supportAgent.name || req.supportAgent.username || 'SuperAdmin',
       actorRole: 'superadmin',
       actionType: 'SUPERADMIN_DELETE_TICKET',
-      targetType: 'support_ticket',
-      targetId: String(ticketId),
+      targetRef: `ticket:${ticketId}`,
       details: `Deleted support ticket #${ticketId} (${ticket.subject || 'No subject'}) from ${ticket.email || 'customer'}`,
       pool,
     }).catch(() => {});
@@ -2433,13 +2435,12 @@ router.post('/tickets/bulk-delete', authenticateSupportAgent, async (req, res) =
       const ok = await ContactModel.deleteTicket(tId);
       if (ok) deletedCount += 1;
     }
-    await recordSupportAuditLog({
+    await appendSupportAuditLog({
       actorId: req.supportAgent.id,
       actorName: req.supportAgent.name || req.supportAgent.username || 'SuperAdmin',
       actorRole: 'superadmin',
       actionType: 'SUPERADMIN_BULK_DELETE_TICKETS',
-      targetType: 'support_ticket',
-      targetId: ticketIds.join(','),
+      targetRef: `tickets:${ticketIds.join(',')}`,
       details: `Bulk deleted ${deletedCount} support ticket(s): #${ticketIds.join(', #')}`,
       pool,
     }).catch(() => {});

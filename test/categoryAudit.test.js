@@ -11,6 +11,8 @@ let lockedCategory = {
   id: 12,
   name: 'Before',
   description: 'Before description',
+  meta_title: null,
+  meta_description: null,
   image_url: null,
   is_active: 1,
 };
@@ -30,7 +32,7 @@ const connection = {
   },
   async query(sql, params = []) {
     queries.push({ sql, params });
-    if (sql.includes('SELECT id, name, description, image_url, is_active FROM categories')) {
+    if (sql.includes('FROM categories WHERE id = ? FOR UPDATE') || sql.includes('SELECT id, name, description')) {
       return [[lockedCategory]];
     }
     if (sql.includes('INSERT INTO categories')) return [{ insertId: 21 }];
@@ -69,6 +71,8 @@ describe('category audit history', () => {
       id: 12,
       name: 'Before',
       description: 'Before description',
+      meta_title: null,
+      meta_description: null,
       image_url: null,
       is_active: 1,
     };
@@ -88,6 +92,8 @@ describe('category audit history', () => {
         id: 21,
         name: 'New category',
         description: null,
+        meta_title: null,
+        meta_description: null,
         image_url: null,
         is_active: 1,
       }),

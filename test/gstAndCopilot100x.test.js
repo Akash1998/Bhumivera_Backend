@@ -2,6 +2,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const pool = require('../config/db');
+
+test.after(async () => {
+  await pool.end();
+});
 
 const {
   COMPLETE_SITE_NAVIGATION_MAP,

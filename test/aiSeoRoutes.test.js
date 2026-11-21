@@ -4,6 +4,9 @@ const assert = require('node:assert/strict');
 const { after, test } = require('node:test');
 const geminiService = require('../services/geminiService');
 
+const pool = require('../config/db');
+const { closeRateLimitStore } = require('../middleware/rateLimiter');
+
 const originalCallGeminiModel = geminiService.callGeminiModel;
 const originalApiKey = process.env.GEMINI_API_KEY;
 const originalModel = process.env.GEMINI_MODEL;
@@ -36,12 +39,13 @@ const invokeRoute = async (path, body) => {
   return response;
 };
 
-after(() => {
+after(async () => {
   geminiService.callGeminiModel = originalCallGeminiModel;
   if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = originalApiKey;
   if (originalModel === undefined) delete process.env.GEMINI_MODEL;
   else process.env.GEMINI_MODEL = originalModel;
+  await Promise.allSettled([pool.end(), closeRateLimitStore()]);
 });
 
 test('product SEO endpoint returns Gemini-generated slug and metadata', async () => {

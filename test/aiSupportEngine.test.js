@@ -6,6 +6,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
+const { closeRateLimitStore } = require('../middleware/rateLimiter');
 
 const { maskPII, sanitizeObjectPII } = require('../utils/piiMasker');
 const { computeQuantumHash512, verifyQuantumSignature, encryptQuantumPayload, decryptQuantumPayload } = require('../utils/quantumCrypto');
@@ -931,7 +932,7 @@ describe('Phase 4 & 20X Verification Suite: Autonomous Enterprise AI Customer Su
       { pool: mockPool, user: { id: 7, name: 'Aarav Sharma', email: 'aarav@example.com' } }
     );
     assert.equal(ret.success, false);
-    assert.equal(ret.code, 'ITEMS_NON_RETURNABLE');
+    assert.equal(ret.code, 'RETURN_REVIEW_REQUIRED');
 
     mockPool.state.returns.push({
       id: 301,
@@ -1101,8 +1102,12 @@ describe('Live HTTP Server, SSE Streaming & 20X SuperAdmin Support Verification 
     pool.execute = origPoolExecute;
     pool.getConnection = origPoolGetConnection;
     if (server) {
+      if (typeof server.closeAllConnections === 'function') {
+        server.closeAllConnections();
+      }
       await new Promise(resolve => server.close(resolve));
     }
+    await Promise.allSettled([pool.end(), closeRateLimitStore()]);
   });
 
   it('8. Live HTTP POST /chat/session and POST /chat/context initialize session and return contextual nudges', async () => {

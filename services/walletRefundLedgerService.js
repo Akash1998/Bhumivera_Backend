@@ -230,7 +230,14 @@ async function executeAtomicOrderCancellationAndRefund(pool, {
         gatewayStatus = 'INITIATED';
         nextPaymentStatus = 'refund_initiated';
 
-        if (razorpay?.payments?.refund && order.payment_id) {
+        if (!razorpay?.payments?.refund) {
+          const err = new Error('Razorpay gateway is not configured for automatic payment refund.');
+          err.statusCode = 503;
+          err.code = 'RAZORPAY_NOT_CONFIGURED';
+          throw err;
+        }
+
+        if (order.payment_id) {
           try {
             const amountPaise = Math.round(orderTotal * 100);
             const providerRes = await razorpay.payments.refund(order.payment_id, {
@@ -246,9 +253,12 @@ async function executeAtomicOrderCancellationAndRefund(pool, {
                 nextPaymentStatus = 'refunded';
               }
             }
-          } catch {
-            // Keep gatewayStatus = 'INITIATED' in internal refund ledger for webhook/reconciliation settlement
-            gatewayStatus = 'INITIATED';
+          } catch (gatewayErr) {
+            const err = new Error(`Payment gateway refund failed: ${gatewayErr.message}`);
+            err.statusCode = 502;
+            err.code = 'GATEWAY_REFUND_FAILED';
+            err.cause = gatewayErr;
+            throw err;
           }
         }
       }

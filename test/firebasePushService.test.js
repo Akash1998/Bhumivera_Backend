@@ -1,9 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const pool = require('../config/db');
 const {
   isFirebasePushConfigured,
   sendPushToTokens,
 } = require('../services/firebasePushService');
+
+test.after(async () => {
+  await pool.end();
+});
 
 test('reports Firebase push as configured only when project and matching credentials exist', () => {
   const envBackup = {
