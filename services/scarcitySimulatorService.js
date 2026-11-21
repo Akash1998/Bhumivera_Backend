@@ -2,9 +2,11 @@ const pool = require('../config/db');
 const {
   createDefaultConfig,
   createDefaultProduct,
+  hashString,
   getIstDayInfo,
   getIstDayRange,
   getProductSnapshot,
+  mergeActivityEntries,
   normalizeStoredConfig,
   rotateConfigDay,
 } = require('../utils/scarcitySimulator');
@@ -13,9 +15,11 @@ const SETTINGS_KEY = 'scarcity_simulator_config';
 const SETTINGS_GROUP = 'scarcity_simulator';
 const MAX_PUBLIC_PRODUCT_IDS = 100;
 const RECENT_ACTIVITY_CACHE_MS = 30 * 60 * 1000;
+const RECENT_ORDER_ACTIVITY_CACHE_MS = 10 * 1000;
 const PURCHASE_STATUS_SQL = `o.status NOT IN ('cancelled', 'returned', 'archived')
   AND (o.payment_status = 'paid' OR o.payment_mode = 'COD')`;
 const recentActivityCache = new Map();
+const recentOrderActivityCache = new Map();
 
 const parseProductIds = value => {
   if (!Array.isArray(value)) return [];
@@ -67,6 +71,67 @@ const getRecentActivityProfiles = async productIds => {
     recentActivityCache.delete(recentActivityCache.keys().next().value);
   }
   return profiles;
+};
+
+const getRecentOrderActivities = async productIds => {
+  if (!productIds.length) return {};
+  const key = productIds.slice().sort().join(',');
+  const cached = recentOrderActivityCache.get(key);
+  if (cached?.expiresAt > Date.now()) return cached.activities;
+
+  const placeholders = productIds.map(() => '?').join(', ');
+  const [rows] = await pool.query(
+    `SELECT product_id, order_id, city,
+            COALESCE(
+              DATE_FORMAT(CONVERT_TZ(created_at, @@session.time_zone, '+05:30'), '%l:%i %p'),
+              DATE_FORMAT(created_at, '%l:%i %p')
+            ) AS time
+     FROM (
+       SELECT oi.product_id,
+              o.id AS order_id,
+              o.created_at,
+              JSON_UNQUOTE(JSON_EXTRACT(o.address_snapshot, '$.city')) AS city,
+              ROW_NUMBER() OVER (
+                PARTITION BY oi.product_id
+                ORDER BY o.created_at DESC, o.id DESC
+              ) AS activity_rank
+       FROM orders o
+       JOIN order_items oi ON oi.order_id = o.id
+       WHERE oi.product_id IN (${placeholders})
+         AND o.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+         AND ${PURCHASE_STATUS_SQL}
+     ) recent_orders
+     WHERE activity_rank <= 3
+     ORDER BY product_id ASC, created_at DESC, order_id DESC`,
+    productIds
+  );
+  const activities = {};
+  for (const row of rows) {
+    const id = String(row.product_id);
+    const city = String(row.city || '')
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .trim()
+      .slice(0, 40) || 'India';
+    if (!activities[id]) activities[id] = [];
+    activities[id].push({
+      buyer: `Verified Patron #${String(hashString(row.order_id) % 900 + 100)}`,
+      city,
+      time: row.time || 'Recently',
+    });
+  }
+
+  const now = Date.now();
+  for (const [cachedKey, entry] of recentOrderActivityCache) {
+    if (entry.expiresAt <= now) recentOrderActivityCache.delete(cachedKey);
+  }
+  recentOrderActivityCache.set(key, {
+    expiresAt: now + RECENT_ORDER_ACTIVITY_CACHE_MS,
+    activities,
+  });
+  if (recentOrderActivityCache.size > 50) {
+    recentOrderActivityCache.delete(recentOrderActivityCache.keys().next().value);
+  }
+  return activities;
 };
 
 const withConfig = async mutate => {
@@ -179,15 +244,22 @@ const getPublicSnapshots = async productIds => {
     const stale = recentActivityCache.get(ids.slice().sort().join(','));
     activityProfiles = stale?.profiles || {};
   }
+  const realOrderActivities = config.enabled && config.sampleActivityEnabled
+    ? await getRecentOrderActivities(ids)
+    : {};
   return {
     enabled: config.enabled,
     sampleActivityEnabled: config.sampleActivityEnabled,
     dayKey: config.dayKey,
     label: 'Live batch allocation & dispatch status',
-    products: Object.fromEntries(ids.map(id => [
-      id,
-      getProductSnapshot(config, id, new Date(), activityProfiles[id] || []),
-    ])),
+    products: Object.fromEntries(ids.map(id => {
+      const snapshot = getProductSnapshot(config, id, new Date(), activityProfiles[id] || []);
+      snapshot.sampleActivity = mergeActivityEntries(
+        snapshot.sampleActivity,
+        realOrderActivities[id]
+      );
+      return [id, snapshot];
+    })),
   };
 };
 

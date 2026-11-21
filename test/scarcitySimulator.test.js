@@ -7,6 +7,7 @@ const {
   getIstDayInfo,
   getIstDayRange,
   getProductSnapshot,
+  mergeActivityEntries,
   normalizeStoredConfig,
   rotateConfigDay,
   validateSimulatorConfig,
@@ -93,22 +94,68 @@ test('sales progression follows anonymized hourly patterns from recent orders', 
   assert.ok(earlyWeighted.simulatedSoldToday > lateWeighted.simulatedSoldToday);
 });
 
-test('sample activity shows verified patron entries only when explicitly enabled', () => {
+test('sample activity covers active products with a zero daily target', () => {
   const now = new Date('2026-10-25T06:30:00.000Z');
   const config = createDefaultConfig(now);
-  config.products['42'] = createDefaultProduct(42);
+  config.products['42'] = {
+    ...createDefaultProduct(42),
+    minDailySold: 0,
+    maxDailySold: 0,
+  };
 
   const withoutSampleActivity = getProductSnapshot(config, 42, now);
   assert.deepEqual(withoutSampleActivity.sampleActivity, []);
+  assert.equal(withoutSampleActivity.simulatedSoldToday, 0);
 
   config.sampleActivityEnabled = true;
   const withSampleActivity = getProductSnapshot(config, 42, now);
-  assert.equal(withSampleActivity.sampleActivity.length, 3);
+  assert.equal(withSampleActivity.simulatedSoldToday, 1);
+  assert.equal(withSampleActivity.sampleActivity.length, 1);
   assert.ok(withSampleActivity.sampleActivity.every(activity =>
     /^Verified Patron #\d{3}$/.test(activity.buyer) &&
-    ['Kolkata', 'Asansol', 'Delhi'].includes(activity.city) &&
+    typeof activity.city === 'string' &&
+    activity.city.length > 0 &&
     /^\d{1,2}:\d{2}\s?(am|pm)$/i.test(activity.time)
   ));
+
+  config.products['42'].paused = true;
+  assert.deepEqual(getProductSnapshot(config, 42, now).sampleActivity, []);
+});
+
+test('sample activity shows three distinct locations across India when sales support it', () => {
+  const now = new Date('2026-10-25T18:15:00.000Z');
+  const config = createDefaultConfig(now);
+  config.sampleActivityEnabled = true;
+  config.products['42'] = {
+    ...createDefaultProduct(42),
+    dailyCap: 10,
+    minDailySold: 5,
+    maxDailySold: 5,
+  };
+
+  const { sampleActivity } = getProductSnapshot(config, 42, now);
+
+  assert.equal(sampleActivity.length, 3);
+  assert.equal(new Set(sampleActivity.map(activity => activity.city)).size, 3);
+  assert.ok(sampleActivity.some(activity => !['Kolkata', 'Asansol', 'Delhi'].includes(activity.city)));
+});
+
+test('recent real orders take priority while the activity feed stays capped at three entries', () => {
+  const simulatedEntries = [
+    { buyer: 'Verified Patron #101', city: 'Pune', time: '10:00 am' },
+    { buyer: 'Verified Patron #102', city: 'Jaipur', time: '10:05 am' },
+    { buyer: 'Verified Patron #103', city: 'Kochi', time: '10:10 am' },
+  ];
+  const realOrderEntries = [
+    { buyer: 'Verified Patron #104', city: 'Mumbai', time: '10:15 am' },
+    { buyer: 'Verified Patron #105', city: 'Guwahati', time: '10:20 am' },
+  ];
+
+  assert.deepEqual(mergeActivityEntries(simulatedEntries, realOrderEntries), [
+    ...realOrderEntries,
+    simulatedEntries[0],
+  ]);
+  assert.equal(mergeActivityEntries(simulatedEntries, realOrderEntries.slice(0, 1)).length, 3);
 });
 
 test('remaining stock stays within configured daily capacity and is repeatable', () => {

@@ -122,7 +122,39 @@ const getSampleActivity = (dayKey, productId, simulatedSoldToday, dayProgress, h
   const eventCount = Math.min(3, simulatedSoldToday);
   if (eventCount < 1) return [];
 
-  const cities = ['Kolkata', 'Asansol', 'Delhi'];
+  const cities = [
+    'Kolkata',
+    'Delhi',
+    'Mumbai',
+    'Bengaluru',
+    'Chennai',
+    'Hyderabad',
+    'Pune',
+    'Ahmedabad',
+    'Jaipur',
+    'Lucknow',
+    'Kochi',
+    'Chandigarh',
+    'Guwahati',
+    'Bhubaneswar',
+    'Patna',
+    'Indore',
+    'Nagpur',
+    'Surat',
+    'Dehradun',
+    'Visakhapatnam',
+    'Bhopal',
+    'Ranchi',
+    'Coimbatore',
+    'Mysuru',
+    'Ludhiana',
+    'Varanasi',
+    'Noida',
+    'Gurugram',
+    'Asansol',
+    'Thiruvananthapuram',
+  ];
+  const cityOffset = hashString(`${dayKey}:${productId}:cities`) % cities.length;
   const elapsedMinutes = Math.floor(dayProgress * WINDOW_DURATION_MINUTES);
   if (elapsedMinutes < 1) return [];
   const dayStart = Date.parse(`${dayKey}T00:00:00+05:30`) + WINDOW_START_MS;
@@ -154,7 +186,7 @@ const getSampleActivity = (dayKey, productId, simulatedSoldToday, dayProgress, h
 
     return {
       buyer: `Verified Patron #${String(seed % 900 + 100)}`,
-      city: cities[seed % cities.length],
+      city: cities[(cityOffset + index * 7) % cities.length],
       time,
     };
   });
@@ -168,14 +200,20 @@ const getProductSnapshot = (config, productId, now = new Date(), activityProfile
   const dailyTarget = getDailyTarget(dayKey, productId, productConfig);
   const simulationActive = config.enabled && productConfig.enabled && !productConfig.paused && !productConfig.outOfStock;
   const simulatedSoldToday = simulationActive
-    ? Math.min(productConfig.dailyCap, Math.round(dailyTarget * progress))
+    ? Math.min(
+        productConfig.dailyCap,
+        Math.max(
+          config.sampleActivityEnabled && dayProgress > 0 ? 1 : 0,
+          Math.round(dailyTarget * progress)
+        )
+      )
     : 0;
   const soldToday = simulatedSoldToday;
   const remaining = productConfig.outOfStock
     ? 0
     : Math.max(0, productConfig.dailyCap - soldToday);
 
-  const sampleActivity = config.sampleActivityEnabled
+  const sampleActivity = config.sampleActivityEnabled && simulationActive
     ? getSampleActivity(dayKey, productId, simulatedSoldToday, dayProgress, hourlyWeights)
     : [];
 
@@ -283,6 +321,11 @@ const rotateConfigDay = (config, now = new Date()) => {
   return true;
 };
 
+const mergeActivityEntries = (simulatedEntries, realOrderEntries) => [
+  ...(Array.isArray(realOrderEntries) ? realOrderEntries : []),
+  ...(Array.isArray(simulatedEntries) ? simulatedEntries : []),
+].slice(0, 3);
+
 const getIstDayRangeForDayKey = dayKey => {
   const [year, month, day] = dayKey.split('-').map(Number);
   const start = Date.UTC(year, month - 1, day) - IST_OFFSET_MS;
@@ -303,11 +346,13 @@ const getIstDayRange = (now = new Date()) => getIstDayRangeForDayKey(getIstDayIn
 module.exports = {
   createDefaultConfig,
   createDefaultProduct,
+  hashString,
   getDailyTarget,
   getIstDayInfo,
   getIstDayRange,
   getIstDayRangeForDayKey,
   getProductSnapshot,
+  mergeActivityEntries,
   normalizeStoredConfig,
   rotateConfigDay,
   validateSimulatorConfig,
