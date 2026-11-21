@@ -1618,6 +1618,27 @@ const migrations = [
       }
     },
   },
+  {
+    version: 96,
+    name: 'remove incorrect affiliate reviewer user foreign key',
+    up: async () => {
+      const [constraints] = await pool.query(`
+        SELECT CONSTRAINT_NAME
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'affiliate_partners'
+          AND COLUMN_NAME = 'reviewed_by'
+          AND CONSTRAINT_NAME = 'fk_affiliate_partners_reviewer'
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+        LIMIT 1
+      `);
+      if (constraints.length > 0) {
+        await pool.query(
+          'ALTER TABLE affiliate_partners DROP FOREIGN KEY fk_affiliate_partners_reviewer'
+        );
+      }
+    },
+  },
 ];
 
 module.exports = migrations;

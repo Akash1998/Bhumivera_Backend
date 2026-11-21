@@ -590,6 +590,27 @@ describe('runMigrations', () => {
     assert.equal(statements.filter(({ sql }) => sql.includes("VALUES ('affiliate_program', ?, ?)")).length, 8);
   });
 
+  it('removes the affiliate reviewer foreign key to customer users', async () => {
+    const migration = migrations.find(candidate => candidate.version === 96);
+    const originalQuery = pool.query;
+    const statements = [];
+    pool.query = async sql => {
+      statements.push(sql);
+      if (sql.includes('information_schema.KEY_COLUMN_USAGE')) {
+        return [[{ CONSTRAINT_NAME: 'fk_affiliate_partners_reviewer' }], []];
+      }
+      return [{}, []];
+    };
+
+    try {
+      await migration.up();
+    } finally {
+      pool.query = originalQuery;
+    }
+
+    assert.ok(statements.some(sql => sql.includes('ALTER TABLE affiliate_partners DROP FOREIGN KEY fk_affiliate_partners_reviewer')));
+  });
+
 });
 
 
